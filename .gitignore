@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+
+# uv / venv
+.venv/
+uv.lock
+
+# NMS save data must never be committed
+*.hg
+/vault/
+/sandbox/
+*.nmsvault
+
+# OS / editors
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
