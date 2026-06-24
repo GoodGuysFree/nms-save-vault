@@ -33,3 +33,17 @@ def default_vault_dir() -> Path:
     root = nms_root()
     base = root if root else Path.home()
     return base / "_SaveVault"
+
+
+def microsoft_root() -> Path | None:
+    """The Microsoft Store / Xbox Game Pass 'wgs' save root, if present."""
+    from . import msstore
+
+    return msstore.microsoft_root()
+
+
+def find_microsoft_save_dirs() -> list[Path]:
+    """Microsoft / Xbox Game Pass save folders (account folders under wgs)."""
+    from . import msstore
+
+    return msstore.find_microsoft_save_dirs()

@@ -147,6 +147,11 @@ def restore_full(
     src = Path(entry.path)
     if not src.is_dir():
         raise OperationError(f"backup folder not found: {src}")
+    if not _hg_files(src):
+        raise OperationError(
+            f"'{entry.id}' has no Steam-format save*.hg files, so it cannot be restored into a "
+            "Steam folder. (Microsoft/Xbox Game Pass saves are read-only in this tool.)"
+        )
 
     snap = snapshot_live(vault, live_dir, reason=f"pre-restore of {entry.id}")
     changed: list[str] = []

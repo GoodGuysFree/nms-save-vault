@@ -103,7 +103,7 @@ class App(tk.Tk):
         if self.live_dir and Path(self.live_dir).is_dir():
             node = self.tree.insert("", "end", text=f"LIVE  ({Path(self.live_dir).name})", open=True)
             self._meta[node] = {"type": "live"}
-            self._add_view(node, savedir.scan(self.live_dir), live=True)
+            self._add_view(node, savedir.scan_any(self.live_dir), live=True)
 
         for e in sorted(self.vault.entries, key=lambda e: e.id):
             node = self.tree.insert("", "end", text=f"{e.id}  [{e.kind}]", values=(e.label, "", "", "", ""))
@@ -128,7 +128,7 @@ class App(tk.Tk):
                     sv.display_name,
                     (n.info.game_mode if n and n.info else ""),
                     _fmt_play(n.info.total_play_time if n and n.info else 0),
-                    _fmt_ts(n.timestamp if n else 0),
+                    _fmt_ts(n.effective_timestamp if n else 0),
                     "",
                 ),
             )
@@ -145,7 +145,7 @@ class App(tk.Tk):
                         m.save_name,
                         (m.info.game_mode if m.info else ""),
                         _fmt_play(m.info.total_play_time if m.info else 0),
-                        _fmt_ts(m.timestamp),
+                        _fmt_ts(m.effective_timestamp),
                         ("valid" if m.valid else "INVALID") + (" / moved" if m.moved else ""),
                     ),
                 )
@@ -326,16 +326,17 @@ class App(tk.Tk):
         self._run(lambda _force: ops.import_backup(self.vault, Path(folder), copy_into_vault=copy), success="Imported.")
 
     def on_discover(self) -> None:
-        root = locations.nms_root()
-        if root is None:
-            messagebox.showerror("Discover", "Could not locate the NMS root folder.")
-            return
         from .core.catalog import discover_save_dirs
 
-        exclude = [p for p in locations.find_live_save_dirs()] + [self.vault.root]
+        dirs: list[Path] = []
+        root = locations.nms_root()
+        if root and root.is_dir():
+            exclude = [p for p in locations.find_live_save_dirs()] + [self.vault.root]
+            dirs += discover_save_dirs(root, exclude=exclude)
+        dirs += locations.find_microsoft_save_dirs()  # Xbox / Game Pass
         known = {Path(e.path).resolve() for e in self.vault.entries}
         added = 0
-        for d in discover_save_dirs(root, exclude=exclude):
+        for d in dirs:
             if d.resolve() not in known:
                 ops.import_backup(self.vault, d, label=d.name, copy_into_vault=False)
                 added += 1

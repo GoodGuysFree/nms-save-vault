@@ -63,6 +63,12 @@ class MemberView:
     def timestamp(self) -> int:
         return self.info.timestamp if self.info else 0
 
+    @property
+    def effective_timestamp(self) -> int:
+        """Meta timestamp, falling back to file mtime when absent (e.g. Xbox saves store
+        the save time in containers.index rather than the meta)."""
+        return self.timestamp or int(self.data_mtime)
+
 
 @dataclass
 class SlotView:
@@ -88,7 +94,7 @@ class SlotView:
         candidates = [m for m in self.present_members if m.valid] or self.present_members
         if not candidates:
             return None
-        return max(candidates, key=lambda m: (m.timestamp, m.data_mtime))
+        return max(candidates, key=lambda m: m.effective_timestamp)
 
     @property
     def display_name(self) -> str:
@@ -153,8 +159,20 @@ def scan(path: str | Path) -> SaveDirView:
 
 
 def looks_like_save_dir(path: str | Path) -> bool:
-    """True if the folder contains at least one save meta file (for import validation)."""
+    """True if the folder is a Steam-style or Microsoft-style NMS save folder."""
     folder = Path(path)
     if not folder.is_dir():
         return False
+    if (folder / "containers.index").is_file():  # Microsoft / Xbox Game Pass
+        return True
     return any(folder.glob("mf_save*.hg")) or (folder / ACCOUNT_META_NAME).is_file()
+
+
+def scan_any(path: str | Path) -> SaveDirView:
+    """Scan a folder regardless of platform (Steam ``save*.hg`` or Microsoft ``wgs``)."""
+    folder = Path(path)
+    if (folder / "containers.index").is_file():
+        from . import msstore  # lazy import avoids a circular dependency
+
+        return msstore.scan(folder)
+    return scan(folder)

@@ -90,6 +90,28 @@ src/nms_save_vault/
 * **Sandbox** integration tests: copy the live folder to a temp dir and exercise all
   write paths there — the real `st_…` is never touched during development.
 
+## Microsoft / Xbox Game Pass ("wgs") format (read-only)
+
+Root: `%LOCALAPPDATA%\Packages\HelloGames.NoMansSky_bs190hzg1sesy\SystemAppData\wgs\<account>\`.
+Implemented in `core/msstore.py`, exposed via `savedir.scan_any()`.
+
+* `containers.index` — header `0xE`, little-endian. Length-prefixed **UTF-16** strings
+  (process id, account id, save identifiers), an `0x10000000` footer, then one record per
+  save: identifier, sync state, a directory **GUID**, last-write (FILETIME) and size.
+* Each save's GUID folder holds `container.<n>` (328 bytes: header, blob count, then per
+  blob a 128-byte UTF-16 identifier + cloud GUID + **local GUID**) and the blob files,
+  named by `GUID.ToString("N").ToUpper()` (= Python `uuid.UUID(bytes_le=...).hex.upper()`).
+* Save identifiers map onto the shared model: `Slot{N}Auto`→ member A, `Slot{N}Manual`→
+  member B; `AccountData`/`Settings` are not slots.
+* **Data blob**: current saves (Worlds 5.0+) use the *same* `0xFEEDA1E5` stream as Steam
+  (handled by `lz4_block`); older ones use a single LZ4 block or an `HGSAVEV2` chunk format.
+* **Meta blob**: plaintext (NOT XXTEA), MS-specific leading fields then SaveName/Summary as
+  **UTF-8** (offsets 0x14 / 0x94). No timestamp is stored in the meta — the save time comes
+  from the blob's `containers.index` entry (used as `data_mtime`).
+
+Verified read-only against a real Game Pass install (15 slots decoded with correct names,
+play times, summaries and dates) and a synthetic fixture in `tests/test_msstore.py`.
+
 ## Manual safety backup
 A full file-copy of the live folder was taken before development began:
 `C:\Devel\NMS-SaveBackup-SAFETY-2026-06-24\` (215 files, verified byte-count match).

@@ -67,6 +67,22 @@ nmsvault verify [live|<id>|<folder>]
 Every write first checks the game is closed (override `--force`), auto-snapshots the
 live state, writes atomically, validates, and logs to `oplog.jsonl` for `undo`.
 
+## Xbox / Game Pass (read)
+
+Microsoft Store / Xbox Game Pass saves (the `wgs` container format under
+`%LOCALAPPDATA%\Packages\HelloGames.NoMansSky_bs190hzg1sesy\SystemAppData\wgs`) can be
+**read**: `discover` finds them, and `verify` / `import` / the GUI show their slots, names,
+play times and summaries just like Steam saves. Point any command at the account folder:
+
+```pwsh
+nmsvault verify "<...>\SystemAppData\wgs\<accountfolder>"
+nmsvault discover --add        # also catalogs the Xbox folder if present
+```
+
+Xbox saves are **read-only** in this tool: their data blobs share Steam's format, but the
+meta differs (plaintext, different layout) and there is no Xbox writer here, so restore /
+repopulate into a Steam slot from an Xbox source is intentionally blocked.
+
 ## Recommended workflow (Steam Cloud)
 
 No Man's Sky uses Steam Cloud, which syncs the `st_<id>` folder. To avoid cloud conflicts:

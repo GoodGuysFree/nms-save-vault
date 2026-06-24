@@ -86,7 +86,7 @@ def _member_summary(mv) -> MemberSummary:
         ms.game_mode = mv.info.game_mode
         ms.season = mv.info.season
         ms.play_time = mv.info.total_play_time
-        ms.timestamp = mv.info.timestamp
+        ms.timestamp = mv.effective_timestamp  # falls back to mtime for Xbox saves
         ms.base_version = mv.info.base_version
     return ms
 
@@ -217,7 +217,7 @@ class Vault:
 
     def make_entry_from_dir(self, entry_id, kind, label, path, *, managed, source=None, slots=None, note="") -> CatalogEntry:
         """Scan ``path`` and build a catalog entry with a cached slot summary."""
-        view = savedir.scan(path)
+        view = savedir.scan_any(path)
         return CatalogEntry(
             id=entry_id,
             kind=kind,

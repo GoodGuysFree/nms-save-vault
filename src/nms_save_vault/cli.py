@@ -62,9 +62,10 @@ def _print_view(view: savedir.SaveDirView) -> None:
                 notes.append(f"{m.label}:{m.note}")
         name = sv.display_name
         mode = n.info.game_mode if (n and n.info) else ""
+        play = n.info.total_play_time if (n and n.info) else 0
         print(
-            f"{slot:<5}{name[:27]:<28}{str(mode):<5}{_fmt_playtime(n.timestamp and n.info.total_play_time):<8}"
-            f"{(n.label if n else '?'):<7}{_fmt_ts(n.timestamp if n else 0):<18}{'; '.join(notes)}"
+            f"{slot:<5}{name[:27]:<28}{str(mode):<5}{_fmt_playtime(play):<8}"
+            f"{(n.label if n else '?'):<7}{_fmt_ts(n.effective_timestamp if n else 0):<18}{'; '.join(notes)}"
         )
         # show both members
         for m in sv.members:
@@ -72,7 +73,7 @@ def _print_view(view: savedir.SaveDirView) -> None:
                 tag = "*" if (n and m.label == n.label) else " "
                 print(
                     f"    {tag}{m.label}  {m.save_name[:24]:<25} {('valid' if m.valid else 'INVALID'):<8} "
-                    f"{_fmt_ts(m.timestamp)}  {m.info.save_summary if m.info else ''}"
+                    f"{_fmt_ts(m.effective_timestamp)}  {m.info.save_summary if m.info else ''}"
                 )
 
 
@@ -113,7 +114,7 @@ def cmd_status(args) -> int:
     state = {True: "RUNNING (writes blocked)", False: "not running", None: "unknown"}[running]
     print(f"Game: {state}")
     print(f"Vault: {vault.root}   ({len(vault.entries)} catalog entries)")
-    _print_view(savedir.scan(live))
+    _print_view(savedir.scan_any(live))
     return 0
 
 
@@ -132,12 +133,12 @@ def cmd_list(args) -> int:
 
 def cmd_show(args) -> int:
     if args.target == "live":
-        _print_view(savedir.scan(_resolve_live(args)))
+        _print_view(savedir.scan_any(_resolve_live(args)))
         return 0
     vault = _resolve_vault(args)
     entry = vault.get(args.target)
     if entry is None:
-        _print_view(savedir.scan(_resolve_source(vault, args.target)))
+        _print_view(savedir.scan_any(_resolve_source(vault, args.target)))
         return 0
     print(f"{entry.id}  [{entry.kind}]  {entry.label}")
     print(f"path: {entry.path}")
@@ -204,12 +205,15 @@ def cmd_import(args) -> int:
 
 def cmd_discover(args) -> int:
     vault = _resolve_vault(args)
+    found: list = []
     root = locations.nms_root()
-    if root is None:
-        sys.exit("error: could not locate the NMS root folder")
-    live_dirs = {p.resolve() for p in locations.find_live_save_dirs()}
-    exclude = list(live_dirs) + [vault.root]
-    found = ops_discover(root, exclude)
+    if root and root.is_dir():
+        live_dirs = {p.resolve() for p in locations.find_live_save_dirs()}
+        found += ops_discover(root, list(live_dirs) + [vault.root])
+    found += locations.find_microsoft_save_dirs()  # Xbox / Game Pass
+    if not found:
+        print("(no backups found under the Steam NMS root or the Xbox wgs folder)")
+        return 0
     known = {Path(e.path).resolve() for e in vault.entries}
     for d in found:
         new = d.resolve() not in known
@@ -235,7 +239,7 @@ def cmd_verify(args) -> int:
     else:
         vault = _resolve_vault(args)
         path = _resolve_source(vault, target)
-    view = savedir.scan(path)
+    view = savedir.scan_any(path)
     bad = [(sv.slot, m.label, m.note) for sv in view.slots.values() for m in sv.present_members if not m.valid]
     _print_view(view)
     if bad:
@@ -330,6 +334,12 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv=None) -> int:
+    # Save names/summaries can contain Unicode the Windows console (cp1252) can't encode.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
+        except (AttributeError, ValueError):
+            pass
     args = build_parser().parse_args(argv)
     try:
         return args.func(args)
