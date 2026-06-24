@@ -168,6 +168,12 @@ def looks_like_save_dir(path: str | Path) -> bool:
     return any(folder.glob("mf_save*.hg")) or (folder / ACCOUNT_META_NAME).is_file()
 
 
+def platform_of(path: str | Path) -> str:
+    """Identify a save folder's platform for labelling: ``"xbox"`` for a Microsoft /
+    Game Pass ``wgs`` folder (it has a ``containers.index``), otherwise ``"steam"``."""
+    return "xbox" if (Path(path) / "containers.index").is_file() else "steam"
+
+
 def scan_any(path: str | Path) -> SaveDirView:
     """Scan a folder regardless of platform (Steam ``save*.hg`` or Microsoft ``wgs``)."""
     folder = Path(path)

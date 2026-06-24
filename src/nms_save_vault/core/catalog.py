@@ -189,9 +189,10 @@ class Vault:
         self._entries = [e for e in self._entries if e.id != entry_id]
         self.save()
 
-    def new_id(self, kind: str, when: datetime | None = None) -> str:
+    def new_id(self, kind: str, when: datetime | None = None, tag: str | None = None) -> str:
         when = when or datetime.now()
-        base = f"{kind}-{when:%Y%m%d-%H%M%S}"
+        stamp = f"{when:%Y%m%d-%H%M%S}"
+        base = f"{kind}-{tag}-{stamp}" if tag else f"{kind}-{stamp}"
         existing = {e.id for e in self.entries}
         if base not in existing:
             return base

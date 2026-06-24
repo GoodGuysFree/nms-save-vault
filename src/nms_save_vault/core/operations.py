@@ -92,7 +92,7 @@ def _copy_save_state(src: Path, dst: Path) -> list[str]:
 def snapshot_live(vault: Vault, live_dir: Path, reason: str) -> CatalogEntry:
     """Copy the live save state into the vault as an auto-snapshot entry."""
     vault.ensure()
-    sid = vault.new_id(KIND_SNAPSHOT)
+    sid = vault.new_id(KIND_SNAPSHOT, tag=savedir.platform_of(live_dir))
     dest = vault.snapshots_dir / sid
     _copy_save_state(Path(live_dir), dest)
     entry = vault.make_entry_from_dir(
@@ -116,7 +116,7 @@ def _prune_snapshots(vault: Vault) -> None:
 def create_full_backup(vault: Vault, live_dir: Path, label: str = "", include_cache: bool = True) -> CatalogEntry:
     vault.ensure()
     live_dir = Path(live_dir)
-    bid = vault.new_id(KIND_FULL)
+    bid = vault.new_id(KIND_FULL, tag=savedir.platform_of(live_dir))
     dest = vault.backups_dir / bid
     if include_cache:
         shutil.copytree(live_dir, dest)
@@ -181,7 +181,7 @@ def restore_full(
 def extract_slot(vault: Vault, source_dir: Path, slot: int, label: str = "") -> CatalogEntry:
     vault.ensure()
     source_dir = Path(source_dir)
-    eid = vault.new_id(KIND_EXTRACT)
+    eid = vault.new_id(KIND_EXTRACT, tag=savedir.platform_of(source_dir))
     dest = vault.extracts_dir / eid
     dest.mkdir(parents=True, exist_ok=True)
     copied = 0
@@ -293,13 +293,14 @@ def import_backup(vault: Vault, path: Path, label: str = "", copy_into_vault: bo
     path = Path(path)
     if not savedir.looks_like_save_dir(path):
         raise OperationError(f"not an NMS save folder: {path}")
+    plat = savedir.platform_of(path)
     if copy_into_vault:
-        iid = vault.new_id(KIND_IMPORTED)
+        iid = vault.new_id(KIND_IMPORTED, tag=plat)
         dest = vault.backups_dir / iid
         shutil.copytree(path, dest)
         entry = vault.make_entry_from_dir(iid, KIND_IMPORTED, label or path.name, dest, managed=True, source=path.name)
     else:
-        iid = vault.new_id(KIND_INPLACE)
+        iid = vault.new_id(KIND_INPLACE, tag=plat)
         entry = vault.make_entry_from_dir(iid, KIND_INPLACE, label or path.name, path, managed=False, source=path.name)
     vault.upsert(entry)
     vault.append_oplog(_oplog("import", entry_id=entry.id, detail=str(path)))
