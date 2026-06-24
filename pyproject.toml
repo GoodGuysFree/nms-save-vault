@@ -3,6 +3,7 @@ name = "nms-save-vault"
 version = "0.1.0"
 description = "Safe backup, catalog, and slot management for No Man's Sky (PC/Steam) save files."
 readme = "README.md"
+license = { text = "GPL-3.0-or-later" }
 requires-python = ">=3.10"
 # Core is intentionally standard-library only (no compression dep needed: the app
 # copies save data verbatim and only decrypts/re-encrypts the small meta files).

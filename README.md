@@ -97,5 +97,38 @@ The vault lives outside `st_<id>`, so it is never scanned by the game or synced 
 ## Status
 
 Working. Core format/crypto and all operations verified against the real save files and
-in a temp sandbox (34 tests). A full file-copy safety backup of the live folder was made
-before development (`C:\Devel\NMS-SaveBackup-SAFETY-2026-06-24`).
+in a temp sandbox (38 tests). Xbox/Game Pass reading verified read-only against a real
+install. A full file-copy safety backup of the live folder was made before development
+(`C:\Devel\NMS-SaveBackup-SAFETY-2026-06-24`).
+
+## License
+
+This project is licensed under the **GNU General Public License v3.0** (see
+[`LICENSE`](LICENSE)). It is GPL because parts of it are derived from GPL-3.0 code (see
+Credits below); GPL-3.0's copyleft therefore applies to the whole work.
+
+## Credits & attribution
+
+The No Man's Sky save format was understood with the help of, and parts of this code are
+derived from, the excellent open-source work of **Christian Engelhardt (zencq)**:
+
+- **NomNom** — the most complete NMS save editor; the project that motivated this tool.
+  <https://github.com/zencq/NomNom>
+- **libNOM.io** — the .NET save read/write library NomNom is built on. Our meta
+  encryption/decryption (`core/meta.py`) is a Python **port** of its
+  `DecryptMetaStorageEntry` / `EncryptMeta`, and our Microsoft/Xbox reader
+  (`core/msstore.py`) plus format constants (`core/formats.py`) follow its documented
+  layout. <https://github.com/zencq/libNOM.io>
+- **libNOM.map** — the JSON key (de)obfuscation mappings.
+  <https://github.com/zencq/libNOM.map>
+- Author: zencq — <https://github.com/zencq>
+
+The save format itself (byte offsets, magic numbers, the XXTEA key derivation, the
+slot model) is factual information; XXTEA/TEA is public domain. The reused **expression**
+(the C# routines above) is what makes this a derivative work, hence the GPL-3.0 license.
+
+The rest of the code — `lz4_block` (a from-spec implementation of the public LZ4 block
+format by Yann Collet), `savedir`, `catalog`, `operations`, `safety`, `slotmap`,
+`locations`, the CLI and the Tkinter GUI — is original to this project. No third-party
+code is vendored, and there are no runtime dependencies (Python standard library only;
+`pytest` is a dev-only tool).

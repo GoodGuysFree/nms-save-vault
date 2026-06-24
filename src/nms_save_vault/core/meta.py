@@ -4,6 +4,11 @@ The meta is a fixed-size record encrypted with an XXTEA variant whose first key 
 derived from the file's storage ordinal -- so the meta is *slot-bound*. This module ports
 the exact algorithm from libNOM.io (verified to round-trip on the user's real files) and
 exposes helpers to read fields, edit the timestamp, and re-key a meta to another slot.
+
+Attribution: the decrypt/encrypt routines here are a port of ``DecryptMetaStorageEntry`` /
+``EncryptMeta`` from libNOM.io by Christian Engelhardt (zencq),
+https://github.com/zencq/libNOM.io, licensed GPL-3.0. Because of that this whole project
+is distributed under GPL-3.0 (see LICENSE and the credits in README.md).
 """
 from __future__ import annotations
 

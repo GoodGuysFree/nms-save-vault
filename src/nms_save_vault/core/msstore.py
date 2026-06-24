@@ -17,6 +17,10 @@ Save identifiers map onto the same slot/member model used elsewhere:
 This module is read-only. Current Xbox data blobs decompress with the shared
 ``lz4_block`` code; older variants (single LZ4 block, or the "HGSAVEV2" chunk format) are
 also handled.
+
+Attribution: the wgs/containers.index format and offsets were learned from libNOM.io's
+``PlatformMicrosoft`` by Christian Engelhardt (zencq),
+https://github.com/zencq/libNOM.io, licensed GPL-3.0. See LICENSE and README.md credits.
 """
 from __future__ import annotations
 
