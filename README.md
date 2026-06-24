@@ -37,6 +37,49 @@ uv pip install -e ".[dev]"
 uv run pytest
 ```
 
+## Usage
+
+Both front-ends share the same safety-checked core. The live folder and a vault folder
+(default: a `_SaveVault` sibling of `st_<id>`) are auto-detected; override with
+`--live`/`--vault`.
+
+GUI:
+
+```pwsh
+nmsvault-gui        # or: python -m nms_save_vault.gui
+```
+
+CLI:
+
+```pwsh
+nmsvault status                          # live folder + 15 slots, both saves each
+nmsvault list                            # catalog entries
+nmsvault discover --add                  # find existing backups, add them in place
+nmsvault backup --label "before update"  # full snapshot into the vault
+nmsvault extract 9 --label "main"        # lift slot 9 aside
+nmsvault repopulate --from <id|folder> --src-slot 9 --to-slot 3   # re-keys the meta
+nmsvault promote --slot 9 --member B     # force B (the restore-point) to be newest
+nmsvault restore <entry-id>              # mirror the live folder to a backup
+nmsvault undo                            # restore the last auto-snapshot
+nmsvault verify [live|<id>|<folder>]
+```
+
+Every write first checks the game is closed (override `--force`), auto-snapshots the
+live state, writes atomically, validates, and logs to `oplog.jsonl` for `undo`.
+
+## Recommended workflow (Steam Cloud)
+
+No Man's Sky uses Steam Cloud, which syncs the `st_<id>` folder. To avoid cloud conflicts:
+
+1. **Fully close the game** before any write operation (the app blocks writes while
+   `NMS.exe` is running).
+2. Make your changes (restore / repopulate / promote).
+3. Launch the game. If Steam shows a cloud conflict, choose the **local** copy.
+
+The vault lives outside `st_<id>`, so it is never scanned by the game or synced by Steam.
+
 ## Status
 
-Early development. Core format/crypto verified against real save files.
+Working. Core format/crypto and all operations verified against the real save files and
+in a temp sandbox (34 tests). A full file-copy safety backup of the live folder was made
+before development (`C:\Devel\NMS-SaveBackup-SAFETY-2026-06-24`).

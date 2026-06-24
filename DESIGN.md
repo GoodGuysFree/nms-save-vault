@@ -36,6 +36,12 @@ decompressing the user's actual files.
 | 0x15C | Slot identifier (8B) |
 | 0x164 | **Timestamp** (u32 unix) — load-screen "newest" key |
 
+> Note: `SizeDisk` (0x3C) is **not reliable** — it can be stale after a save editor
+> recompresses the data without updating it (observed on `save6.hg`, where the file is
+> 619,192 B but the meta records 523,713 B). The data file is a self-describing chunk
+> container, so `SizeDisk` is effectively vestigial. The dependable data↔meta tie is
+> `SizeDecompressed` (0x38) == the sum of chunk decompressed sizes; validation uses that.
+
 ### Meta XXTEA key
 `key = [ ((ordinal ^ 0x1422CB8C) <<<13) * 5 + 0xE6546B64,  K1, K2, K3 ]`
 where `K1..K3` come from ASCII `"NAESEVADNAYRTNRG"`. 6 rounds for Waypoint/Worlds.
