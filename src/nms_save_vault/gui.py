@@ -65,6 +65,7 @@ class App(tk.Tk):
             ("Discover", self.on_discover),
             ("Undo", self.on_undo),
             ("Refresh", self.refresh),
+            ("Help", self.on_help),
         ]:
             ttk.Button(bar, text=text, command=cmd).pack(side=tk.LEFT, padx=2)
 
@@ -91,6 +92,7 @@ class App(tk.Tk):
         self.tree.configure(yscrollcommand=vsb.set)
         self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         vsb.pack(side=tk.RIGHT, fill=tk.Y)
+        self.tree.bind("<Button-3>", self._on_right_click)  # right-click context menu
 
     # --- populate ------------------------------------------------------------
 
@@ -189,6 +191,43 @@ class App(tk.Tk):
             return None
         return self._meta.get(sel[0])
 
+    def _on_right_click(self, event) -> None:
+        """Build a context-sensitive menu for the right-clicked row."""
+        row = self.tree.identify_row(event.y)
+        if not row:
+            return
+        self.tree.selection_set(row)
+        meta = self._meta.get(row)
+        if not meta:
+            return
+        menu = tk.Menu(self, tearoff=0)
+        kind = meta.get("type")
+        if kind == "live":
+            menu.add_command(label="Backup live now", command=self.on_backup)
+            menu.add_command(label="Undo last operation", command=self.on_undo)
+        elif kind == "entry":
+            menu.add_command(label=f"Restore '{meta['entry'].id}' into live", command=lambda: self.on_restore(meta))
+        elif kind == "slot":
+            target = {"type": "slot", "dir": meta["dir"], "slot": meta["slot"]}
+            menu.add_command(label=f"Extract slot {meta['slot']} aside", command=lambda: self.on_extract(target))
+            menu.add_command(label=f"Repopulate a live slot from slot {meta['slot']}…", command=lambda: self.on_repopulate(target))
+        elif kind == "member":
+            slot = meta["slot"]
+            target = {"type": "slot", "dir": meta["dir"], "slot": slot}
+            menu.add_command(label=f"Extract slot {slot} aside", command=lambda: self.on_extract(target))
+            menu.add_command(label=f"Repopulate a live slot from slot {slot}…", command=lambda: self.on_repopulate(target))
+            if meta.get("live"):
+                menu.add_separator()
+                label = "A" if meta["member"] == 0 else "B"
+                menu.add_command(label=f"Make save {label} the newest (promote)", command=lambda: self.on_promote(meta))
+        menu.add_separator()
+        menu.add_command(label="Refresh", command=self.refresh)
+        menu.add_command(label="Help", command=self.on_help)
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
+
     # --- actions -------------------------------------------------------------
 
     def _run(self, fn, *, success: str) -> None:
@@ -227,8 +266,8 @@ class App(tk.Tk):
         label = simpledialog.askstring("Backup", "Optional label:") or ""
         self._run(lambda _force: ops.create_full_backup(self.vault, self.live_dir, label=label), success="Backup created.")
 
-    def on_restore(self) -> None:
-        sel = self._selected()
+    def on_restore(self, target: dict | None = None) -> None:
+        sel = target or self._selected()
         if not sel or sel.get("type") != "entry":
             messagebox.showinfo("Select a backup", "Select a catalog entry (top-level backup) to restore.")
             return
@@ -239,8 +278,8 @@ class App(tk.Tk):
             return
         self._run(lambda force: ops.restore_full(self.vault, entry, self.live_dir, allow_game_running=force), success="Restored.")
 
-    def on_extract(self) -> None:
-        sel = self._selected()
+    def on_extract(self, target: dict | None = None) -> None:
+        sel = target or self._selected()
         if not sel or sel.get("type") != "slot":
             messagebox.showinfo("Select a slot", "Select a slot (under LIVE or any backup) to extract.")
             return
@@ -249,8 +288,8 @@ class App(tk.Tk):
             success=f"Extracted slot {sel['slot']}.",
         )
 
-    def on_repopulate(self) -> None:
-        sel = self._selected()
+    def on_repopulate(self, target: dict | None = None) -> None:
+        sel = target or self._selected()
         if not sel or sel.get("type") != "slot":
             messagebox.showinfo("Select a source slot", "Select the source slot (under a backup or LIVE) first.")
             return
@@ -269,8 +308,8 @@ class App(tk.Tk):
             success=f"Repopulated live slot {dest}.",
         )
 
-    def on_promote(self) -> None:
-        sel = self._selected()
+    def on_promote(self, target: dict | None = None) -> None:
+        sel = target or self._selected()
         if not sel or sel.get("type") != "member" or not sel.get("live"):
             messagebox.showinfo("Select a live save", "Select a save (A or B) under a LIVE slot to make it the newest.")
             return
@@ -309,6 +348,64 @@ class App(tk.Tk):
         if not messagebox.askyesno("Undo", "Undo the last operation by restoring its auto-snapshot?"):
             return
         self._run(lambda force: ops.undo_last(self.vault, self.live_dir, allow_game_running=force), success="Undone.")
+
+    def on_help(self) -> None:
+        win = tk.Toplevel(self)
+        win.title("NMS Save Vault — Help")
+        win.geometry("760x620")
+        ttk.Button(win, text="Close", command=win.destroy).pack(side=tk.BOTTOM, pady=6)
+        vsb = ttk.Scrollbar(win, orient="vertical")
+        vsb.pack(side=tk.RIGHT, fill=tk.Y)
+        txt = tk.Text(win, wrap="word", padx=10, pady=10, yscrollcommand=vsb.set)
+        txt.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        vsb.config(command=txt.yview)
+        txt.insert("1.0", HELP_TEXT)
+        txt.configure(state="disabled")
+
+
+HELP_TEXT = """NMS Save Vault — Help
+
+The tree shows your LIVE save folder at the top, then every backup in the catalog.
+Expand a backup to see its slots; expand a slot to see its two saves:
+  - A and B are the slot's two saves: your manual save and the auto "restore point".
+  - The one marked * is the NEWEST -- the one the game loads for that slot.
+Right-click any row to get the same actions as the buttons, in context.
+
+BUTTONS
+- Backup live: Full snapshot of the entire live folder into the vault. Do this before
+  any risky change.
+- Restore: Select a backup (a top-level row), then replace the live folder with it. The
+  current state is auto-snapshotted first, so it is reversible with Undo.
+- Extract slot: Select a slot (under LIVE or a backup) to copy just that one slot aside
+  into the vault, so you can free the slot now and bring it back later.
+- Repopulate -> live: Select a SOURCE slot (in any backup or LIVE), then choose a
+  destination live slot (1-15). The save data is copied exactly and the small meta is
+  re-keyed for the new slot. This loads an archived save back into the game, in any slot.
+- Promote: Select one of a live slot's two saves (A or B) to force it to be the newest,
+  so the game loads it instead of the other -- e.g. to roll back to the restore point.
+- Import: Register an existing save folder you made yourself (or an Xbox / Game Pass
+  save) into the catalog -- either in place or copied into the vault.
+- Discover: Scan the NMS folder for existing backups and add any new ones found.
+- Undo: Restore the auto-snapshot taken just before the last operation.
+- Refresh: Re-scan the live folder and the catalog.
+- Help: This dialog.
+
+WORKFLOWS
+- More than 15 slots: Extract the slots you are not using into the vault, then Repopulate
+  them into a live slot whenever you want to play them again. Your library is unlimited;
+  only 15 are live at a time.
+- Safe experimenting: Backup live (or Extract the slot), make changes in-game, then
+  Restore / Repopulate / Undo if you do not like the result.
+- Move a save to another slot: Repopulate -- pick the source slot and the destination.
+- Roll back within a slot: expand the live slot, right-click the older save, Promote it.
+- Bring in an outside save: Import the folder, then Repopulate the slot you want.
+
+SAFETY
+- Writes are blocked while No Man's Sky is running -- close the game first.
+- Every change auto-snapshots the live state first and can be reversed with Undo.
+- Steam Cloud: operate with the game closed; if Steam shows a conflict on next launch,
+  keep the local copy.
+"""
 
 
 def main(argv=None) -> int:
