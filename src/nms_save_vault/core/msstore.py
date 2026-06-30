@@ -30,7 +30,7 @@ import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import formats, lz4_block
+from . import formats, lz4_block, safety
 from .meta import MetaInfo
 from .savedir import MemberView, SaveDirView, SlotView
 from .slotmap import SaveFileRef, file_no as _file_no
@@ -41,7 +41,13 @@ CONTAINERSINDEX_FOOTER = 0x10000000
 BLOBCONTAINER_HEADER = 0x4
 BLOB_IDENTIFIER_LENGTH = 0x80  # 128 bytes (UTF-16, 64 chars)
 BLOBCONTAINER_TOTAL_LENGTH = 4 + 4 + 2 * (BLOB_IDENTIFIER_LENGTH + 2 * 0x10)  # 328
-SYNC_STATE_DELETED = 3
+
+# MicrosoftBlobSyncStateEnum (per save) and MicrosoftIndexSyncStateEnum (whole index).
+BLOB_SYNC_SYNCED = 1
+BLOB_SYNC_MODIFIED = 2
+SYNC_STATE_DELETED = 3          # == MicrosoftBlobSyncStateEnum.Deleted
+BLOB_SYNC_CREATED = 5
+INDEX_SYNC_MODIFIED = 2
 
 HGSAVEV2_HEADER = b"HGSAVEV2\x00"
 
@@ -473,3 +479,121 @@ def build_containers_index(info: XboxIndexInfo, records: list[_Container]) -> by
     for c in records:
         out += _build_container_record(c)
     return out
+
+
+# --- writer (wgs save mutation; Phase 2b) ----------------------------------------------
+#
+# Mutating a wgs save mirrors libNOM's PlatformMicrosoft: write the data + meta blobs under
+# freshly-rotated GUIDs, write the next container.<n>, rewrite containers.index LAST (with
+# sync states bumped so the Xbox app/game picks up the change), then delete the superseded
+# files. Per-file writes are atomic; the operations layer snapshots first for crash/undo
+# recovery. No cross-platform conversion here -- data/meta bytes are written verbatim.
+
+
+def _new_guid_name() -> str:
+    """A fresh random GUID in the 32-hex uppercase 'N' form used for on-disk blob names."""
+    return uuid.uuid4().hex.upper()
+
+
+def _new_container(folder: Path, identifier: str, when: float, *, double_identifier: bool = False) -> _Container:
+    """An index record for a brand-new save: fresh directory GUID, Created sync state.
+
+    ``double_identifier`` mirrors the tree's convention: pre-Worlds-5.50 saves write the
+    identifier twice in containers.index, 5.50+ writes it once."""
+    dir_name = _new_guid_name()
+    return _Container(
+        identifier=identifier,
+        directory=Path(folder) / dir_name,
+        sync_state=BLOB_SYNC_CREATED,
+        extension=0,            # _stage_new_blobs bumps to 1 on the first write
+        last_write=when,
+        size_disk=0,
+        dir_guid=dir_name,
+        second_identifier=identifier if double_identifier else "",
+        sync_time="",
+    )
+
+
+def _stage_new_blobs(c: _Container, data_bytes: bytes, meta_bytes: bytes, when: float) -> list[Path]:
+    """Write new data/meta blobs + the next ``container.<n>`` for ``c`` and point ``c`` at
+    them. Returns the now-superseded files to delete *after* the index is rewritten, so a
+    crash before the index write leaves the old, still-referenced files intact."""
+    superseded = [p for p in (c.data_file, c.meta_file, c.blob_container_file) if p is not None]
+
+    new_ext = (c.extension % 255) + 1            # 0->1->2..->255->1 (never 0 after first write)
+    data_local = _new_guid_name()
+    meta_local = _new_guid_name()
+    cdir = c.directory
+
+    safety.atomic_write_bytes(cdir / data_local, data_bytes)   # mkdir's the dir as needed
+    safety.atomic_write_bytes(cdir / meta_local, meta_bytes)
+    container_file = cdir / f"container.{new_ext}"
+    safety.atomic_write_bytes(
+        container_file,
+        build_blob_container(data_local, meta_local, c.data_cloud_guid or "", c.meta_cloud_guid or ""),
+    )
+    if when > 0:                                 # when<=0 is the "unknown time" sentinel; leave fs mtime
+        safety.set_file_mtime(cdir / data_local, when)  # match the game stamping blob mtimes
+        safety.set_file_mtime(cdir / meta_local, when)
+
+    c.extension = new_ext
+    c.data_local_guid, c.meta_local_guid = data_local, meta_local
+    c.data_file, c.meta_file = cdir / data_local, cdir / meta_local
+    c.blob_container_file = container_file
+    c.size_disk = len(data_bytes) + len(meta_bytes)
+
+    # Belt-and-suspenders: fresh random GUIDs never collide with the old paths, but make
+    # sure we never schedule a just-written file for deletion.
+    keep = {c.data_file, c.meta_file, container_file}
+    return [p for p in superseded if p not in keep]
+
+
+def _write_containers_index_file(folder: Path, info: XboxIndexInfo, records: list[_Container]) -> None:
+    safety.atomic_write_bytes(Path(folder) / "containers.index", build_containers_index(info, records))
+
+
+def write_save(
+    folder: str | Path,
+    identifier: str,
+    data_bytes: bytes,
+    meta_bytes: bytes,
+    when: float,
+    *,
+    create_if_missing: bool = False,
+) -> None:
+    """Write ``data_bytes`` + ``meta_bytes`` for the save named ``identifier`` (e.g.
+    ``"Slot3Manual"``) into a wgs account ``folder``: rotate blob GUIDs, write the next
+    ``container.<n>``, then rewrite ``containers.index`` with bumped sync states and
+    ``when`` (unix seconds) as the last-write time. Set ``create_if_missing`` to allocate a
+    new container directory for a save that does not exist yet. Bytes are written verbatim
+    (no Steam<->Xbox conversion). Raises ``ValueError`` if the save is missing and
+    ``create_if_missing`` is False."""
+    folder = Path(folder)
+    info, containers = parse_containers_index(folder)
+    target = next((c for c in containers if c.identifier == identifier), None)
+    if target is None:
+        if not create_if_missing:
+            raise ValueError(f"no save '{identifier}' in {folder} (pass create_if_missing to add it)")
+        # Mirror the tree's identifier convention (pre-5.50 saves write the id twice).
+        double_id = any(c.second_identifier for c in containers)
+        target = _new_container(folder, identifier, when, double_identifier=double_id)
+        containers.append(target)
+
+    stale = _stage_new_blobs(target, data_bytes, meta_bytes, when)
+
+    target.last_write = when
+    if target.sync_state != BLOB_SYNC_CREATED:
+        # Synced/Deleted/Modified all become Modified on a content write; a brand-new save
+        # stays Created. Writing into a Deleted record must un-delete it, not leave it
+        # flagged for the Xbox app's cloud garbage-collection.
+        target.sync_state = BLOB_SYNC_MODIFIED
+    info.sync_state = INDEX_SYNC_MODIFIED
+    info.last_write = when
+
+    _write_containers_index_file(folder, info, containers)
+
+    for p in stale:                              # old blobs/container, now unreferenced
+        try:
+            p.unlink()
+        except OSError:
+            pass

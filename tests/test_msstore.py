@@ -8,6 +8,8 @@ from __future__ import annotations
 import struct
 import uuid
 
+import pytest
+
 from nms_save_vault.core import formats, msstore, savedir
 
 
@@ -242,3 +244,117 @@ def test_containers_index_roundtrip(tmp_path):
     view = msstore.scan(acct)
     assert view.slots[1].a.save_name == "A"
     assert view.slots[3].b.save_name == "B"
+
+
+# --- writer (Phase 2b): mutate a wgs save in a sandbox fixture --------------------------
+
+
+def test_write_save_updates_in_place(tmp_path):
+    """Writing a save rotates its blob GUIDs, bumps container.<n>, flips sync states, writes
+    the data bytes verbatim, and leaves exactly one container file with only the new blobs."""
+    acct = _build_wgs(tmp_path, [
+        ("Slot1Auto", '{"a":1}', "Old Name", "old", 100, 5),
+        ("AccountData", '{"acc":1}', "", "", 0, 0),
+    ])
+    before = msstore.scan(acct).slots[1].a.xbox
+    old_data_guid, old_meta_guid, old_ext = before.data_local_guid, before.meta_local_guid, before.extension
+
+    payload = b'{"new":42}'
+    new_data = _data_blob(payload)
+    msstore.write_save(
+        acct, "Slot1Auto", new_data,
+        _ms_meta_worlds("New Name", "new summary", play=2000, size=len(payload), timestamp=999),
+        when=123456.0,
+    )
+
+    a = msstore.scan(acct).slots[1].a
+    assert a.exists and a.save_name == "New Name" and a.info.total_play_time == 2000
+    x = a.xbox
+    assert x.extension == old_ext + 1                     # container.<n> bumped 1 -> 2
+    assert x.data_local_guid != old_data_guid             # blob GUID rotated
+    assert x.sync_state == msstore.BLOB_SYNC_MODIFIED
+    assert msstore.scan(acct).xbox_index.sync_state == msstore.INDEX_SYNC_MODIFIED
+    # data bytes written verbatim
+    assert (x.directory / x.data_local_guid).read_bytes() == new_data
+    # old data AND meta blobs unlinked; exactly one container.* file remains
+    assert not (x.directory / old_data_guid).exists()
+    assert not (x.directory / old_meta_guid).exists()
+    assert sorted(p.name for p in x.directory.glob("container.*")) == [f"container.{x.extension}"]
+    # AccountData was left untouched
+    assert msstore.scan(acct).account_present
+
+
+def test_write_save_second_write_rotates_and_cleans(tmp_path):
+    """A second write advances the extension again, deletes the FIRST write's blobs, and
+    bumps the index last-write time."""
+    acct = _build_wgs(tmp_path, [("Slot1Auto", '{"a":1}', "One", "", 1, 1)])
+    msstore.write_save(acct, "Slot1Auto", _data_blob(b'{"v":1}'),
+                       _ms_meta_worlds("V1", "", play=1, size=7, timestamp=1), when=100.0)
+    x1 = msstore.scan(acct).slots[1].a.xbox            # ext now 2
+
+    d2 = _data_blob(b'{"v":2}')
+    msstore.write_save(acct, "Slot1Auto", d2,
+                       _ms_meta_worlds("V2", "", play=2, size=7, timestamp=2), when=200.0)
+    view = msstore.scan(acct)
+    x2 = view.slots[1].a.xbox
+    assert x2.extension == x1.extension + 1            # 2 -> 3
+    assert view.slots[1].a.save_name == "V2"
+    assert (x2.directory / x2.data_local_guid).read_bytes() == d2
+    assert not (x2.directory / x1.data_local_guid).exists()   # first write's blobs gone
+    assert not (x2.directory / x1.meta_local_guid).exists()
+    assert sorted(p.name for p in x2.directory.glob("container.*")) == [f"container.{x2.extension}"]
+    assert view.xbox_index.last_write == 200.0         # global index timestamp updated
+
+
+def test_write_save_creates_new_slot(tmp_path):
+    acct = _build_wgs(tmp_path, [("Slot1Auto", '{"a":1}', "Existing", "", 100, 5)])
+    payload = b'{"z":9}'
+    msstore.write_save(
+        acct, "Slot5Manual", _data_blob(payload),
+        _ms_meta_worlds("Fresh", "", play=10, size=len(payload), timestamp=1),
+        when=222.0, create_if_missing=True,
+    )
+    view = msstore.scan(acct)
+    assert view.slots[5].occupied and view.slots[5].b.save_name == "Fresh"   # Manual -> B
+    assert view.slots[5].b.xbox.sync_state == msstore.BLOB_SYNC_CREATED
+    assert view.slots[5].b.xbox.has_second_identifier is False               # single-id (5.50+) tree
+    assert view.slots[1].a.save_name == "Existing"                            # untouched
+
+
+def test_write_save_undeletes_a_deleted_record(tmp_path):
+    """Writing content into a Deleted index record must un-delete it (Modified), else the
+    Xbox app would garbage-collect the freshly-written save."""
+    acct = _build_wgs(tmp_path, [("Slot2Manual", '{"a":1}', "Gone", "", 1, 1)])
+    info, conts = msstore.parse_containers_index(acct)
+    conts[0].sync_state = msstore.SYNC_STATE_DELETED
+    (acct / "containers.index").write_bytes(msstore.build_containers_index(info, conts))
+
+    payload = b'{"back":1}'
+    msstore.write_save(acct, "Slot2Manual", _data_blob(payload),
+                       _ms_meta_worlds("Back", "", play=5, size=len(payload), timestamp=9), when=300.0)
+    view = msstore.scan(acct)
+    assert view.slots[2].occupied and view.slots[2].b.save_name == "Back"
+    assert view.slots[2].b.xbox.sync_state == msstore.BLOB_SYNC_MODIFIED
+
+
+def test_write_save_new_save_mirrors_double_identifier(tmp_path):
+    """A created save copies the tree's identifier convention: if siblings use the pre-5.50
+    double-identifier form, the new record does too."""
+    acct = _build_wgs(tmp_path, [("Slot1Auto", '{"a":1}', "Existing", "", 1, 1)])
+    info, conts = msstore.parse_containers_index(acct)
+    conts[0].second_identifier = conts[0].identifier        # pre-5.50 double-identifier tree
+    (acct / "containers.index").write_bytes(msstore.build_containers_index(info, conts))
+
+    payload = b'{"n":1}'
+    msstore.write_save(acct, "Slot4Auto", _data_blob(payload),
+                       _ms_meta_worlds("New", "", play=1, size=len(payload), timestamp=1),
+                       when=10.0, create_if_missing=True)
+    _info, conts2 = msstore.parse_containers_index(acct)
+    new_rec = next(c for c in conts2 if c.identifier == "Slot4Auto")
+    assert new_rec.second_identifier == "Slot4Auto"         # mirrored the double-identifier form
+
+
+def test_write_save_missing_without_create_raises(tmp_path):
+    acct = _build_wgs(tmp_path, [("Slot1Auto", '{"a":1}', "X", "", 1, 1)])
+    with pytest.raises(ValueError):
+        msstore.write_save(acct, "Slot9Auto", _data_blob(b"{}"), b"\x00" * 360, when=1.0)
