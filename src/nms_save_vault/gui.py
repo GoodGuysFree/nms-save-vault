@@ -103,7 +103,7 @@ class App(tk.Tk):
         return self.state.get(self.active_source_id) if self.active_source_id else None
 
     def _refresh_source_combo(self) -> None:
-        """Populate the active-live dropdown with the writable (Steam) sources."""
+        """Populate the active-live dropdown with the writable sources (Steam + Xbox)."""
         writable = self._writable_sources()
         self._source_choices = {f"{s.label} ({Path(s.path).name})": s.id for s in writable}
         self.active_combo["values"] = list(self._source_choices)
@@ -151,7 +151,7 @@ class App(tk.Tk):
         ]:
             ttk.Button(bar, text=text, command=cmd).pack(side=tk.LEFT, padx=2)
 
-        # Active live (write target) selector -- only writable Steam accounts.
+        # Active live (write target) selector -- the writable accounts (Steam + Xbox).
         self._source_choices: dict[str, str] = {}  # label -> source id
         self.active_var = tk.StringVar(value="")
         ttk.Label(bar, text="  Active live:").pack(side=tk.LEFT)
@@ -184,7 +184,7 @@ class App(tk.Tk):
         vsb.pack(side=tk.RIGHT, fill=tk.Y)
         self.tree.bind("<Button-3>", self._on_right_click)  # right-click context menu
 
-        # Row styling: groups bold, active live emphasised, Xbox/read-only amber, backups grey.
+        # Row styling: groups bold, active live emphasised, any read-only source amber, backups grey.
         self.tree.tag_configure("group", font=("TkDefaultFont", 10, "bold"))
         self.tree.tag_configure("live", foreground="#0a6b2f")
         self.tree.tag_configure("active", foreground="#0a6b2f", font=("TkDefaultFont", 9, "bold"))
@@ -598,10 +598,11 @@ class App(tk.Tk):
 HELP_TEXT = """NMS Save Vault — Help
 
 The tree is split into two groups:
-  ● LIVE SAVES  -- every save folder found on this PC: each Steam account and, read-only,
-     each Xbox / Game Pass account. The ACTIVE one (green, bold) is the target of write
+  ● LIVE SAVES  -- every save folder found on this PC: each Steam account and each
+     Xbox / Game Pass account. The ACTIVE one (green, bold) is the target of write
      actions; pick it from the "Active live" dropdown or right-click a folder to set it.
-     Xbox folders are read-only here -- you can browse and back them up, but not write to them.
+     Xbox folders are writable for same-platform actions (backup, restore, repopulate,
+     promote within Xbox). Transferring a save between Steam and Xbox is not yet supported.
   ■ BACKUPS  -- every backup in the catalog (full snapshots, extracts, imported and
      auto-discovered copy-paste backups).
 Expand a folder to see its slots; expand a slot to see its two saves:

@@ -7,7 +7,8 @@ a backup into a live target:
   directly under ``%APPDATA%\\HelloGames\\NMS`` and looks like a save dir. Each
   distinct steamid64 is its own account (so a machine with two Steam accounts gets
   two live sources).
-* **Xbox live** -- each Game Pass account folder under the ``wgs`` root (read-only).
+* **Xbox live** -- each Game Pass account folder under the ``wgs`` root (writable for
+  same-platform operations; Steam<->Xbox transfer is not yet supported).
 * **In-place backup** -- anything else under the NMS root that still contains save
   files: a hand-pasted ``st_... - Copy``, a renamed/dated folder, etc. These are
   *not* live targets; they are handed to the catalog as in-place backups.
@@ -104,7 +105,7 @@ def discover_live_sources(
                 path=str(d),
                 label=_xbox_label(account, i),
                 role=ROLE_LIVE,
-                writable=False,  # Xbox saves are read-only in this tool
+                writable=True,  # same-platform Xbox writes are supported (Steam<->Xbox is not)
                 origin=ORIGIN_AUTO,
             )
         )

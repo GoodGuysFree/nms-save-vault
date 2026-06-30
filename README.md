@@ -119,11 +119,11 @@ nmsvault verify [live|<id>|<folder>]
 Every write first checks the game is closed (override `--force`), auto-snapshots the
 live state, writes atomically, validates, and logs to `oplog.jsonl` for `undo`.
 
-## Xbox / Game Pass (read)
+## Xbox / Game Pass (read **and write**)
 
 Microsoft Store / Xbox Game Pass saves (the `wgs` container format under
-`%LOCALAPPDATA%\Packages\HelloGames.NoMansSky_bs190hzg1sesy\SystemAppData\wgs`) can be
-**read**: `discover` finds them, and `verify` / `import` / the GUI show their slots, names,
+`%LOCALAPPDATA%\Packages\HelloGames.NoMansSky_bs190hzg1sesy\SystemAppData\wgs`) are fully
+supported: `discover` finds them, and `verify` / `import` / the GUI show their slots, names,
 play times and summaries just like Steam saves. Point any command at the account folder:
 
 ```pwsh
@@ -131,9 +131,18 @@ nmsvault verify "<...>\SystemAppData\wgs\<accountfolder>"
 nmsvault discover --add        # also catalogs the Xbox folder if present
 ```
 
-Xbox saves are **read-only** in this tool: their data blobs share Steam's format, but the
-meta differs (plaintext, different layout) and there is no Xbox writer here, so restore /
-repopulate into a Steam slot from an Xbox source is intentionally blocked.
+**Same-platform writes are supported** — backup, restore, per-slot extract / repopulate, and
+promote all work within Xbox, exactly as for Steam (every write auto-snapshots first, so
+`undo` works). The wgs writer rotates the blob GUIDs, rewrites `containers.index` with the
+correct sync state, and copies the save data verbatim — it follows the layout used by
+[libNOM.io](https://github.com/zencq/libNOM.io) (see Credits).
+
+**Cross-platform transfer (Steam ↔ Xbox) is not yet supported** and is gated with a "coming
+soon" notice: the obfuscated save body carries a platform field and the two platforms use
+different meta formats, so a faithful transfer needs a conversion step that isn't built yet.
+
+> First time writing to a real Game Pass save? Close the game, and keep the auto-snapshot
+> (the app makes one before every write) — or take a full backup first.
 
 ## Recommended workflow (Steam Cloud)
 

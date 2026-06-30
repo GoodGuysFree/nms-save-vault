@@ -84,7 +84,7 @@ def _print_view(view: savedir.SaveDirView) -> None:
 def _resolve_live(args) -> Path:
     if args.live:
         return Path(args.live)
-    # Prefer the active writable (Steam) source recorded in the config.
+    # Prefer the active writable source (Steam or Xbox) recorded in the config.
     st = appstate.load()
     if st is not None:
         for s in st.live_sources:

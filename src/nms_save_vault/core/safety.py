@@ -11,6 +11,8 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+# The game executable is "NMS.exe" for both the Steam and the Microsoft Store / Game Pass
+# editions (same HelloGames binary, just packaged differently), so this one name covers both.
 NMS_PROCESS_NAME = "NMS.exe"
 
 

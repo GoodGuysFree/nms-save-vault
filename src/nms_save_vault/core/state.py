@@ -19,7 +19,7 @@ import sys
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-STATE_VERSION = 1
+STATE_VERSION = 2  # v2: Xbox sources are writable (same-platform). See _migrate().
 
 ROLE_LIVE = "live"
 
@@ -98,11 +98,26 @@ class AppState:
 
     @classmethod
     def from_dict(cls, d: dict) -> "AppState":
-        return cls(
+        state = cls(
             sources=[_source_from_dict(s) for s in d.get("sources", [])],
             vault=d.get("vault"),
             version=d.get("version", STATE_VERSION),
         )
+        _migrate(state)
+        return state
+
+
+def _migrate(state: "AppState") -> None:
+    """Heal configs written by older app versions, in place, on load.
+
+    v1 -> v2: same-platform Xbox writes are now supported, but v1 saved every Xbox source as
+    read-only (``writable=False``). Flip them so existing installs gain the feature on the
+    next launch without a manual rescan."""
+    if state.version < 2:
+        for s in state.sources:
+            if s.platform == PLATFORM_XBOX:
+                s.writable = True
+    state.version = STATE_VERSION
 
 
 def install_dir() -> Path:

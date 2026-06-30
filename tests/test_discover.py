@@ -87,7 +87,7 @@ def test_inplace_backups_exclude_live_and_vault(tmp_path):
     assert all(vault not in p.resolve().parents for p in found)
 
 
-def test_xbox_source_is_readonly(tmp_path):
+def test_xbox_source_is_writable(tmp_path):
     root = _make_nms_root(tmp_path)
     xbox = tmp_path / "wgs" / "000901F"
     xbox.mkdir(parents=True)
@@ -96,7 +96,7 @@ def test_xbox_source_is_readonly(tmp_path):
     assert len(sources) == 1
     s = sources[0]
     assert s.platform == state.PLATFORM_XBOX
-    assert s.writable is False
+    assert s.writable is True   # same-platform Xbox writes are supported
     assert s.role == state.ROLE_LIVE
 
 
