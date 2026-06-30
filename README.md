@@ -24,10 +24,29 @@ designed to give you effectively unlimited save slots beyond the game's 15.
 
 See [DESIGN.md](DESIGN.md) for the architecture and the verified save-format details.
 
+## Install (Windows, no Python needed)
+
+Grab `NMSSaveVault-Setup.zip` from the releases, extract it, and run **`install.bat`**.
+It copies the bundled app to `%LOCALAPPDATA%\Programs\NMSSaveVault` and asks whether to
+add a Desktop shortcut and/or a Start Menu entry. If you decline both, it leaves a
+`vault.bat` launcher in the install folder, opens that folder, and tells you to run it.
+Everything (Python + Tkinter) is bundled in the single `.exe` — nothing else to install.
+The exe is unsigned, so Windows SmartScreen may prompt the first time (*More info → Run
+anyway*).
+
+### Building the distributable yourself
+
+```pwsh
+pwsh -ExecutionPolicy Bypass -File packaging\build_exe.ps1          # -> dist\NMSSaveVault.exe
+pwsh -ExecutionPolicy Bypass -File packaging\make_installer_zip.ps1 # -> dist\NMSSaveVault-Setup.zip
+```
+
+Both use an isolated `.build-venv` (via `uv`) so the dev environment is untouched.
+
 ## Requirements
 
 * Python 3.10+ (developed on 3.12), standard library only — no runtime dependencies.
-* [uv](https://github.com/astral-sh/uv) for environment management (dev).
+* [uv](https://github.com/astral-sh/uv) for environment management (dev / building the exe).
 
 ## Dev setup
 
