@@ -146,3 +146,41 @@ def test_scan_any_dispatches_to_microsoft(tmp_path):
     view = savedir.scan_any(acct)
     assert view.slots[2].occupied
     assert view.slots[2].b.save_name == "MS via scan_any"   # Manual -> member B
+
+
+def test_scan_preserves_wgs_identity(tmp_path):
+    """The scan must be non-lossy: it keeps the full wgs on-disk identity (dir/blob GUIDs,
+    container number, sync state, sync-time) so a future writer can rewrite saves in place."""
+    acct = _build_wgs(tmp_path, [("Slot1Auto", '{"a":1}', "Save", "summary", 10, 5)])
+    view = msstore.scan(acct)
+
+    # index-level identity (containers.index header)
+    assert view.xbox_index is not None
+    assert view.xbox_index.process_id == "proc"
+    assert view.xbox_index.account_id == "acct"
+    assert view.xbox_index.container_count == 1
+
+    # per-member identity (i == 0 in the fixture)
+    x = view.slots[1].a.xbox
+    assert x is not None
+    assert x.identifier == "Slot1Auto"
+    assert x.dir_guid == _guid_name(_guid_bytes(100))
+    assert x.extension == 1
+    assert x.sync_state == 2
+    assert x.sync_time == "synchex"
+    assert x.has_second_identifier is False
+    assert x.data_local_guid == _guid_name(_guid_bytes(1))
+    assert x.meta_local_guid == _guid_name(_guid_bytes(2))
+    assert x.data_cloud_guid == _guid_name(_guid_bytes(200))
+    assert x.meta_cloud_guid == _guid_name(_guid_bytes(210))
+    assert x.blob_container_file.name == "container.1"
+    # the recorded local GUIDs actually name the on-disk blob files
+    assert (x.directory / x.data_local_guid).is_file()
+    assert (x.directory / x.meta_local_guid).is_file()
+
+
+def test_steam_scan_has_no_xbox_identity(tmp_path):
+    """A Steam scan leaves the Xbox carriers empty (no regression / no false positives)."""
+    view = savedir.scan(tmp_path)  # no containers.index here -> Steam path
+    assert view.xbox_index is None
+    assert view.slots[1].a.xbox is None

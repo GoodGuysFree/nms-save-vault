@@ -33,6 +33,10 @@ class MemberView:
     ordinal_used: int | None = None
     info: MetaInfo | None = None
     note: str = ""
+    # Xbox/Microsoft only: the wgs on-disk identity (msstore.XboxBlobInfo), retained so a
+    # future writer can rewrite the save in place. None for Steam saves. Typed loosely to
+    # avoid a circular import with msstore.
+    xbox: object | None = None
 
     @property
     def slot(self) -> int:
@@ -110,6 +114,9 @@ class SaveDirView:
     slots: dict[int, SlotView]
     account_present: bool
     stray_files: list[str] = field(default_factory=list)
+    # Xbox/Microsoft only: containers.index header identity (msstore.XboxIndexInfo). None
+    # for Steam folders.
+    xbox_index: object | None = None
 
     @property
     def occupied_slots(self) -> list[SlotView]:

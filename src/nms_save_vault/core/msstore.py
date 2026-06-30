@@ -85,6 +85,38 @@ def is_microsoft_save_dir(path: str | Path) -> bool:
 
 
 @dataclass
+class XboxBlobInfo:
+    """The wgs on-disk identity of one save, captured read-only so a future writer can
+    rewrite it in place (see the Xbox read-write study). ``None`` on Steam members."""
+
+    identifier: str              # e.g. "Slot3Manual" / "AccountData"
+    directory: Path              # <wgs>/<DIRGUID>
+    dir_guid: str                # 32-hex "N" form of the save's directory GUID
+    extension: int               # current container.<n> number
+    sync_state: int              # MicrosoftBlobSyncStateEnum: 1=Synced 2=Modified 3=Deleted 5=Created
+    sync_time: str               # the index "sync hex" string (preserved verbatim)
+    has_second_identifier: bool  # identifier written twice (pre-Worlds-5.50)
+    last_write: float            # unix epoch seconds (from the index FILETIME)
+    blob_container_file: Path | None = None  # the container.<n> file actually read
+    data_local_guid: str | None = None       # 32-hex names of the on-disk blob files
+    meta_local_guid: str | None = None
+    data_cloud_guid: str | None = None        # cloud GUIDs preserved inside container.<n>
+    meta_cloud_guid: str | None = None
+
+
+@dataclass
+class XboxIndexInfo:
+    """containers.index header: account/process identity and global state. ``None`` for
+    Steam folders."""
+
+    process_id: str
+    account_id: str
+    sync_state: int
+    last_write: float            # unix epoch seconds
+    container_count: int
+
+
+@dataclass
 class _Container:
     identifier: str
     directory: Path
@@ -94,6 +126,15 @@ class _Container:
     size_disk: int
     data_file: Path | None = None
     meta_file: Path | None = None
+    # --- retained for a future writer (non-lossy scan) ---
+    dir_guid: str = ""
+    second_identifier: str = ""
+    sync_time: str = ""
+    blob_container_file: Path | None = None
+    data_local_guid: str | None = None
+    meta_local_guid: str | None = None
+    data_cloud_guid: str | None = None
+    meta_cloud_guid: str | None = None
 
 
 def _read_lp_string(b: bytes, off: int) -> tuple[str, int]:
@@ -114,16 +155,18 @@ def _filetime_to_unix(filetime: int) -> float:
     return filetime / 1e7 - 11644473600.0
 
 
-def parse_containers_index(folder: Path) -> list[_Container]:
+def parse_containers_index(folder: Path) -> tuple[XboxIndexInfo, list[_Container]]:
     folder = Path(folder)
     b = (folder / "containers.index").read_bytes()
     if struct.unpack_from("<i", b, 0)[0] != CONTAINERSINDEX_HEADER:
         raise ValueError("bad containers.index header")
     count = struct.unpack_from("<q", b, 4)[0]
 
-    _proc, off = _read_lp_string(b, 12)          # process identifier
+    proc, off = _read_lp_string(b, 12)           # process identifier
     # [last write 8][sync state 4] then account identifier
-    _acct, off = _read_lp_string(b, off + 12)
+    index_last_write = _filetime_to_unix(struct.unpack_from("<q", b, off)[0])
+    index_sync_state = struct.unpack_from("<i", b, off + 8)[0]
+    acct, off = _read_lp_string(b, off + 12)
     if struct.unpack_from("<q", b, off)[0] != CONTAINERSINDEX_FOOTER:
         raise ValueError("bad containers.index footer")
     off += 8
@@ -132,13 +175,20 @@ def parse_containers_index(folder: Path) -> list[_Container]:
     for _ in range(count):
         c, off = _parse_blob_container_index(b, off, folder)
         containers.append(c)
-    return containers
+    info = XboxIndexInfo(
+        process_id=proc,
+        account_id=acct,
+        sync_state=index_sync_state,
+        last_write=index_last_write,
+        container_count=count,
+    )
+    return info, containers
 
 
 def _parse_blob_container_index(b: bytes, off: int, folder: Path) -> tuple[_Container, int]:
     identifier, off = _read_lp_string(b, off)    # save identifier 1
-    _second, off = _read_lp_string(b, off)       # save identifier 2 (unused since 5.50)
-    _sync, off = _read_lp_string(b, off)         # sync hex
+    second, off = _read_lp_string(b, off)        # save identifier 2 (unused since 5.50)
+    sync, off = _read_lp_string(b, off)          # sync hex
     # [ext 1][sync state 4][dir guid 16][last mod 8][empty 8][total size 8]
     extension = b[off]
     sync_state = struct.unpack_from("<i", b, off + 1)[0]
@@ -154,6 +204,9 @@ def _parse_blob_container_index(b: bytes, off: int, folder: Path) -> tuple[_Cont
         extension=extension,
         last_write=last_write,
         size_disk=int(size_disk),
+        dir_guid=dir_guid,
+        second_identifier=second,
+        sync_time=sync,
     )
     if c.directory.is_dir() and c.sync_state != SYNC_STATE_DELETED:
         _resolve_blobs(c)
@@ -175,14 +228,16 @@ def _resolve_blobs(c: _Container) -> None:
             ident = b[off : off + BLOB_IDENTIFIER_LENGTH].decode("utf-16-le").split("\x00", 1)[0]
             off += BLOB_IDENTIFIER_LENGTH
             # [cloud guid 16][local guid 16] -- the local (second) guid names the on-disk file
-            local = b[off + 16 : off + 32]
+            cloud_name = _guid_name(b[off : off + 16])
+            local_name = _guid_name(b[off + 16 : off + 32])
             off += 32
-            fpath = c.directory / _guid_name(local)
+            fpath = c.directory / local_name
             if ident == "data":
-                c.data_file = fpath
+                c.data_file, c.data_local_guid, c.data_cloud_guid = fpath, local_name, cloud_name
             elif ident == "meta":
-                c.meta_file = fpath
+                c.meta_file, c.meta_local_guid, c.meta_cloud_guid = fpath, local_name, cloud_name
         if c.data_file is not None and c.data_file.is_file():
+            c.blob_container_file = cf
             break
 
 
@@ -248,6 +303,24 @@ def _empty_member(slot: int, member: int) -> MemberView:
     return MemberView(ref=ref, data_path=Path(), meta_path=Path(), exists=False)
 
 
+def _xbox_info(c: _Container) -> XboxBlobInfo:
+    return XboxBlobInfo(
+        identifier=c.identifier,
+        directory=c.directory,
+        dir_guid=c.dir_guid,
+        extension=c.extension,
+        sync_state=c.sync_state,
+        sync_time=c.sync_time,
+        has_second_identifier=bool(c.second_identifier),
+        last_write=c.last_write,
+        blob_container_file=c.blob_container_file,
+        data_local_guid=c.data_local_guid,
+        meta_local_guid=c.meta_local_guid,
+        data_cloud_guid=c.data_cloud_guid,
+        meta_cloud_guid=c.meta_cloud_guid,
+    )
+
+
 def _build_member(slot: int, member: int, c: _Container) -> MemberView:
     ref = SaveFileRef(_file_no(slot, member))
     data_file = c.data_file
@@ -259,6 +332,7 @@ def _build_member(slot: int, member: int, c: _Container) -> MemberView:
         meta_path=meta_file or (c.directory / "meta"),
         exists=exists,
     )
+    mv.xbox = _xbox_info(c)  # retained on every Xbox member (present, missing, or deleted)
     if not exists:
         mv.note = "Xbox save: blob missing" if c.sync_state != SYNC_STATE_DELETED else "Xbox save: deleted"
         return mv
@@ -293,7 +367,7 @@ def scan(folder: str | Path) -> SaveDirView:
     slots = {k: SlotView(slot=k, a=_empty_member(k, 0), b=_empty_member(k, 1)) for k in range(1, formats.MAX_SAVE_SLOTS + 1)}
     account_present = False
     try:
-        containers = parse_containers_index(folder)
+        index_info, containers = parse_containers_index(folder)
     except Exception:  # noqa: BLE001 - return an empty view rather than raise during a scan
         return SaveDirView(path=folder, slots=slots, account_present=False)
 
@@ -317,4 +391,4 @@ def scan(folder: str | Path) -> SaveDirView:
         else:
             slots[slot].b = mv
 
-    return SaveDirView(path=folder, slots=slots, account_present=account_present)
+    return SaveDirView(path=folder, slots=slots, account_present=account_present, xbox_index=index_info)
