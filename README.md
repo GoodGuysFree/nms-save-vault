@@ -3,6 +3,18 @@
 Safe backup, catalog, and slot management for **No Man's Sky** (PC / Steam) save files —
 designed to give you effectively unlimited save slots beyond the game's 15.
 
+## QuickStart
+
+**Just want to run it? No Python needed.** Download the ready-to-use Windows kit from the
+[**latest release**](https://github.com/GoodGuysFree/nms-save-vault/releases/latest) — grab
+`NMSSaveVault-Setup-v0.0.1.zip` under **Assets**.
+
+Extract the zip and run **`install.bat`**. Everything (Python + Tkinter) is bundled in the
+single `.exe`; the installer offers Desktop / Start-Menu shortcuts. The exe is unsigned, so
+Windows SmartScreen may prompt the first time (*More info → Run anyway*). Full details under
+[Install](#install-windows-no-python-needed); every version is on the
+[Releases](https://github.com/GoodGuysFree/nms-save-vault/releases) page.
+
 ## What it does
 
 1. **Full backup / restore** — snapshot the entire live save folder, and restore any
@@ -26,7 +38,9 @@ See [DESIGN.md](DESIGN.md) for the architecture and the verified save-format det
 
 ## Install (Windows, no Python needed)
 
-Grab `NMSSaveVault-Setup.zip` from the releases, extract it, and run **`install.bat`**.
+Download **`NMSSaveVault-Setup-v0.0.1.zip`** from the
+[**Releases**](https://github.com/GoodGuysFree/nms-save-vault/releases) page (under the
+release's **Assets**), extract it, and run **`install.bat`**.
 It copies the bundled app to `%LOCALAPPDATA%\Programs\NMSSaveVault` and asks whether to
 add a Desktop shortcut and/or a Start Menu entry. If you decline both, it leaves a
 `vault.bat` launcher in the install folder, opens that folder, and tells you to run it.
@@ -135,9 +149,18 @@ The vault lives outside `st_<id>`, so it is never scanned by the game or synced 
 ## Status
 
 Working. Core format/crypto and all operations verified against the real save files and
-in a temp sandbox (38 tests). Xbox/Game Pass reading verified read-only against a real
+in a temp sandbox (49 tests). Xbox/Game Pass reading verified read-only against a real
 install. A full file-copy safety backup of the live folder was made before development
 (`C:\Devel\NMS-SaveBackup-SAFETY-2026-06-24`).
+
+## Version history
+
+| Version | Date | Highlights |
+|---|---|---|
+| **0.0.1** | 2026-06-30 | First public release. Full backup / restore; catalog with per-slot extract / repopulate (meta re-keyed across slots) / promote; manual-backup import; multi-account auto-config (Steam live read-write, Xbox / Game Pass read-only); Tkinter GUI + `nmsvault` CLI; one-file Windows installer kit. Xbox→Steam transfer is gated ("coming soon"). |
+
+Each version's installer kit is attached to its
+[GitHub Release](https://github.com/GoodGuysFree/nms-save-vault/releases).
 
 ## License
 
