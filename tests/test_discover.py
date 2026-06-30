@@ -1,6 +1,7 @@
 """Discovery + state: live-vs-backup classification, multi-account, and round-trip."""
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 from nms_save_vault.core import discover, state
@@ -8,6 +9,24 @@ from nms_save_vault.core.formats import ACCOUNT_META_NAME
 
 ACCT_A = "76561197975032661"
 ACCT_B = "76561198000000001"
+
+
+def test_state_path_is_next_to_frozen_exe(tmp_path, monkeypatch):
+    """When frozen (packaged exe), state.json sits beside the executable."""
+    exe = tmp_path / "Programs" / "NMSSaveVault" / "NMSSaveVault.exe"
+    exe.parent.mkdir(parents=True)
+    exe.write_bytes(b"MZ")
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "executable", str(exe), raising=False)
+    assert state.install_dir() == exe.parent
+    assert state.default_state_path() == exe.parent / "state.json"
+
+
+def test_state_path_from_source_uses_localappdata(tmp_path, monkeypatch):
+    """From source (not frozen), config stays out of the tree, in %LOCALAPPDATA%."""
+    monkeypatch.setattr(sys, "frozen", False, raising=False)
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "Local"))
+    assert state.default_state_path() == tmp_path / "Local" / "NMSSaveVault" / "state.json"
 
 
 def _make_steam_dir(parent: Path, name: str) -> Path:

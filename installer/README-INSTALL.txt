@@ -26,8 +26,9 @@ No Python or other software is required — everything is bundled in the .exe.
 
 First run
 ---------
-The app auto-detects your save folders and writes a small config file:
-    %APPDATA%\HelloGames\NMS\NMSSaveVault\state.json
+The app auto-detects your save folders and writes a small config file next to the
+program itself:
+    %LOCALAPPDATA%\Programs\NMSSaveVault\state.json
 It shows your LIVE saves (each Steam account; Xbox accounts read-only) separately
 from your BACKUPS. Use "Rescan" to pick up a new account or backup later.
 
@@ -42,9 +43,9 @@ The .exe is not code-signed, so SmartScreen may warn the first time. Choose
 Uninstall
 ---------
 - Delete the folder:  %LOCALAPPDATA%\Programs\NMSSaveVault
+  (this also removes the config, state.json, which lives there — it does NOT touch
+   your game saves or your backups/vault).
 - Delete any shortcuts you created (Desktop / Start Menu).
-- Optional: delete the config at %APPDATA%\HelloGames\NMS\NMSSaveVault
-  (this does NOT touch your game saves or your backups/vault).
 
 Source & license
 ----------------

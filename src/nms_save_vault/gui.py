@@ -519,9 +519,9 @@ Expand a folder to see its slots; expand a slot to see its two saves:
   - The one marked * is the NEWEST -- the one the game loads for that slot.
 Right-click any row to get the same actions as the buttons, in context.
 
-First run auto-detects your save folders and writes a small config (state.json) under
-%APPDATA%\\HelloGames\\NMS\\NMSSaveVault. Use Rescan to pick up a newly added account or
-a freshly pasted backup later on.
+First run auto-detects your save folders and writes a small config (state.json) in the
+program's own install folder (next to the .exe). Use Rescan to pick up a newly added
+account or a freshly pasted backup later on.
 
 BUTTONS
 - Backup live: Full snapshot of the entire live folder into the vault. Do this before

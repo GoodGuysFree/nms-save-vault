@@ -15,10 +15,9 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-
-from . import locations
 
 STATE_VERSION = 1
 
@@ -106,11 +105,25 @@ class AppState:
         )
 
 
+def install_dir() -> Path:
+    """The directory the app runs from -- where the config is kept.
+
+    For the packaged one-file executable this is the folder that contains the
+    ``.exe`` (the install dir, e.g. ``%LOCALAPPDATA%\\Programs\\NMSSaveVault``), so
+    the config sits next to the program and is portable with it. ``sys.executable``
+    points at the real exe, not the temporary one-file unpack dir. When running from
+    source we keep the config out of the source tree, in a dedicated per-user folder.
+    """
+    if getattr(sys, "frozen", False):  # running inside a PyInstaller bundle
+        return Path(sys.executable).resolve().parent
+    local = os.environ.get("LOCALAPPDATA")
+    base = Path(local) if local else Path.home()
+    return base / "NMSSaveVault"
+
+
 def default_state_path() -> Path:
-    """``%APPDATA%\\HelloGames\\NMS\\NMSSaveVault\\state.json`` (falls back to ~)."""
-    root = locations.nms_root()
-    base = root if root else Path.home()
-    return base / "NMSSaveVault" / "state.json"
+    """``state.json`` lives in the install directory (next to the executable)."""
+    return install_dir() / "state.json"
 
 
 def load(path: str | Path | None = None) -> AppState | None:

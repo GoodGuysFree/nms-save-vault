@@ -59,7 +59,9 @@ uv run pytest
 ## Auto-configuration
 
 On first run the app **auto-detects** every save folder on the PC and records them in a
-small config file, `state.json`, under `%APPDATA%\HelloGames\NMS\NMSSaveVault`:
+small config file, `state.json`, kept **in the install directory next to the executable**
+(so the config is portable with the program; from source it falls back to
+`%LOCALAPPDATA%\NMSSaveVault`):
 
 * Each canonical `st_<steamid64>` folder directly under the NMS root is a **live** source
   (writable). Two Steam accounts → two live sources.
