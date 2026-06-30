@@ -7,6 +7,9 @@ and undo. Every write goes through the safety-wrapped core (auto-snapshot + vali
 """
 from __future__ import annotations
 
+import sys
+import threading
+import time
 import tkinter as tk
 from datetime import datetime
 from pathlib import Path
@@ -17,6 +20,17 @@ from .core import operations as ops
 from .core import savedir
 from .core import state as appstate
 from .core.catalog import Vault
+
+
+def _icon_path() -> Path | None:
+    """Locate nmsvault.ico — bundled (frozen) or in the repo's packaging/ folder."""
+    candidates = []
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        candidates.append(Path(meipass) / "nmsvault.ico")
+    candidates.append(Path(sys.executable).resolve().parent / "nmsvault.ico")
+    candidates.append(Path(__file__).resolve().parents[2] / "packaging" / "nmsvault.ico")
+    return next((c for c in candidates if c.is_file()), None)
 
 
 def _fmt_ts(unix: int) -> str:
@@ -42,6 +56,12 @@ class App(tk.Tk):
         super().__init__()
         self.title("NMS Save Vault")
         self.geometry("1000x640")
+        _ico = _icon_path()
+        if _ico:
+            try:
+                self.iconbitmap(str(_ico))
+            except tk.TclError:
+                pass
 
         # Load the config (or build it on first run by auto-discovering save folders).
         self.state = self._load_or_bootstrap_state()
@@ -359,6 +379,9 @@ class App(tk.Tk):
             messagebox.showerror("Unexpected error", repr(exc))
             return
         self.refresh()
+        self._present_result(result, success)
+
+    def _present_result(self, result, success: str) -> None:
         if isinstance(result, ops.OpResult):
             msg = result.detail + (f"\n\nUndo available (snapshot {result.snapshot_id})." if result.snapshot_id else "")
             if result.warnings:
@@ -366,6 +389,61 @@ class App(tk.Tk):
             messagebox.showinfo("Done", msg)
         else:
             messagebox.showinfo("Done", success)
+
+    def _busy(self, message: str) -> tk.Toplevel:
+        """A small modal 'please wait' window with an animated indeterminate bar."""
+        win = tk.Toplevel(self)
+        win.title("Please wait")
+        win.transient(self)
+        win.resizable(False, False)
+        ttk.Label(win, text=message, padding=(24, 18, 24, 8)).pack()
+        pb = ttk.Progressbar(win, mode="indeterminate", length=260)
+        pb.pack(padx=24, pady=(0, 20))
+        pb.start(12)
+        win.update_idletasks()
+        # centre over the main window
+        x = self.winfo_rootx() + (self.winfo_width() - win.winfo_width()) // 2
+        y = self.winfo_rooty() + (self.winfo_height() - win.winfo_height()) // 3
+        win.geometry(f"+{max(x, 0)}+{max(y, 0)}")
+        win.protocol("WM_DELETE_WINDOW", lambda: None)  # not closable mid-op
+        win.grab_set()
+        win.update()
+        return win
+
+    def _run_busy(self, fn, *, success: str, message: str) -> None:
+        """Run a (non-game-guarded) core op on a worker thread, showing a wait dialog.
+
+        Only the core file work runs off-thread (it never touches Tk); the dialog and
+        all result/error UI stay on the main thread.
+        """
+        win = self._busy(message)
+        holder: dict = {}
+
+        def worker() -> None:
+            try:
+                holder["result"] = fn(False)
+            except Exception as exc:  # noqa: BLE001 - reported on the main thread below
+                holder["error"] = exc
+
+        t = threading.Thread(target=worker, daemon=True)
+        t.start()
+        try:
+            while t.is_alive():
+                self.update()  # keep the bar animating / window responsive
+                time.sleep(0.02)
+        finally:
+            win.grab_release()
+            win.destroy()
+
+        err = holder.get("error")
+        if isinstance(err, ops.OperationError):
+            messagebox.showerror("Operation failed", str(err))
+            return
+        if err is not None:
+            messagebox.showerror("Unexpected error", repr(err))
+            return
+        self.refresh()
+        self._present_result(holder.get("result"), success)
 
     def _require_live(self) -> bool:
         if not (self.live_dir and Path(self.live_dir).is_dir()):
@@ -379,10 +457,16 @@ class App(tk.Tk):
         self._backup_dir(self.live_dir)
 
     def _backup_dir(self, directory) -> None:
-        label = simpledialog.askstring("Backup", "Optional label:") or ""
-        self._run(
+        platform = savedir.platform_of(directory)
+        prefix = "Xbox" if platform == "xbox" else "Steam"
+        suggested = f"{prefix}{datetime.now():%Y%m%d-%H%M}"
+        label = simpledialog.askstring("Backup", "Optional label:", initialvalue=suggested)
+        if label is None:  # user cancelled
+            return
+        self._run_busy(
             lambda _force: ops.create_full_backup(self.vault, Path(directory), label=label),
             success="Backup created.",
+            message="Creating backup — please wait…",
         )
 
     def on_restore(self, target: dict | None = None) -> None:

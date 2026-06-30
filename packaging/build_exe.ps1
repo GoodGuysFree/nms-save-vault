@@ -34,7 +34,10 @@ $pyiArgs = @(
     "--workpath", $workDir,
     "--specpath", $specDir
 )
-if (Test-Path $icon) { $pyiArgs += @("--icon", $icon) }
+if (Test-Path $icon) {
+    $pyiArgs += @("--icon", $icon)
+    $pyiArgs += @("--add-data", "$icon;.")   # bundle it so the window icon works too
+}
 $pyiArgs += (Join-Path $pkgDir "nmsvault_gui.py")
 
 Write-Host "==> Running PyInstaller"
