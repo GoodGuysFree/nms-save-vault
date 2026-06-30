@@ -9,6 +9,7 @@ dist/
 
 # uv / venv
 .venv/
+.build-venv/
 uv.lock
 
 # NMS save data must never be committed
