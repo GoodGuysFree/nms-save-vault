@@ -41,6 +41,15 @@ class ValidationError(OperationError):
     pass
 
 
+class FeatureNotYetAvailableError(OperationError):
+    """A deliberately-gated capability the UI should present as 'coming soon',
+    not as an error/failure."""
+
+
+# Shown when a write would transfer a Microsoft/Xbox save into a Steam slot.
+XBOX_TO_STEAM_MSG = "Transferring Xbox / Game Pass saves into a Steam slot is coming soon."
+
+
 @dataclass
 class OpResult:
     ok: bool
@@ -147,6 +156,8 @@ def restore_full(
     src = Path(entry.path)
     if not src.is_dir():
         raise OperationError(f"backup folder not found: {src}")
+    if savedir.platform_of(src) == "xbox" and savedir.platform_of(live_dir) == "steam":
+        raise FeatureNotYetAvailableError(XBOX_TO_STEAM_MSG)
     if not _hg_files(src):
         raise OperationError(
             f"'{entry.id}' has no Steam-format save*.hg files, so it cannot be restored into a "
@@ -212,9 +223,13 @@ def repopulate_slot(
     """Write the two saves of ``source_slot`` (from ``source_dir``) into ``dest_slot`` of
     the live folder, re-keying each meta when the slot number differs."""
     warnings: list[str] = []
-    _guard_game(allow_game_running, warnings)
     source_dir = Path(source_dir)
     live_dir = Path(live_dir)
+    # Xbox meta is plaintext (not XXTEA); the re-key path below would crash on it. Until a
+    # cross-platform writer exists, refuse Xbox->Steam transfers with a 'coming soon' notice.
+    if savedir.platform_of(source_dir) == "xbox" and savedir.platform_of(live_dir) == "steam":
+        raise FeatureNotYetAvailableError(XBOX_TO_STEAM_MSG)
+    _guard_game(allow_game_running, warnings)
 
     # Pre-flight: build the (data_bytes, new_meta_bytes, dst paths, mtime) for each member.
     planned = []

@@ -372,6 +372,9 @@ class App(tk.Tk):
                 if not messagebox.askyesno("Game running", "No Man's Sky appears to be running.\nProceed anyway (risky)?"):
                     return
                 result = fn(True)
+        except ops.FeatureNotYetAvailableError as exc:
+            messagebox.showinfo("Coming soon", str(exc))
+            return
         except ops.OperationError as exc:
             messagebox.showerror("Operation failed", str(exc))
             return
@@ -436,6 +439,9 @@ class App(tk.Tk):
             win.destroy()
 
         err = holder.get("error")
+        if isinstance(err, ops.FeatureNotYetAvailableError):
+            messagebox.showinfo("Coming soon", str(err))
+            return
         if isinstance(err, ops.OperationError):
             messagebox.showerror("Operation failed", str(err))
             return

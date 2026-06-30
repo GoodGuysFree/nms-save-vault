@@ -12,7 +12,7 @@ import pytest
 
 from nms_save_vault.core import operations as ops
 from nms_save_vault.core import savedir, slotmap
-from nms_save_vault.core.catalog import Vault
+from nms_save_vault.core.catalog import CatalogEntry, Vault
 
 
 @pytest.fixture
@@ -126,3 +126,28 @@ def test_import_inplace(sandbox, live_save_dir):
     entry = ops.import_backup(vault, live_save_dir, label="real", copy_into_vault=False)
     assert entry.kind == "inplace" and not entry.managed
     assert vault.get(entry.id) is not None
+
+
+def _xbox_dir(tmp_path: Path) -> Path:
+    """A minimal folder that ``platform_of`` classifies as Xbox (has containers.index)."""
+    d = tmp_path / "wgs_src"
+    d.mkdir()
+    (d / "containers.index").write_bytes(b"")
+    return d
+
+
+def test_repopulate_from_xbox_source_is_gated(sandbox, tmp_path):
+    """Xbox->Steam repopulate is refused as 'coming soon' before touching the live folder
+    (and before the XXTEA path that would crash on Xbox plaintext meta)."""
+    live, vault = sandbox
+    xbox = _xbox_dir(tmp_path)
+    with pytest.raises(ops.FeatureNotYetAvailableError):
+        ops.repopulate_slot(vault, xbox, 1, live, 1, allow_game_running=True)
+
+
+def test_restore_full_from_xbox_entry_is_gated(sandbox, tmp_path):
+    live, vault = sandbox
+    xbox = _xbox_dir(tmp_path)
+    entry = CatalogEntry(id="imported-xbox-test", kind="imported", label="", path=str(xbox), created="now")
+    with pytest.raises(ops.FeatureNotYetAvailableError):
+        ops.restore_full(vault, entry, live, allow_game_running=True)
