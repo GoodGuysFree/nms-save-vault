@@ -12,9 +12,10 @@ from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
-from .core import locations
+from .core import discover, locations
 from .core import operations as ops
 from .core import savedir
+from .core import state as appstate
 from .core.catalog import Vault
 
 
@@ -41,13 +42,73 @@ class App(tk.Tk):
         super().__init__()
         self.title("NMS Save Vault")
         self.geometry("1000x640")
-        self.live_dir = Path(live) if live else locations.default_live_save_dir()
-        vault_root = Path(vault) if vault else locations.default_vault_dir()
+
+        # Load the config (or build it on first run by auto-discovering save folders).
+        self.state = self._load_or_bootstrap_state()
+        vault_root = Path(vault) if vault else (self.state.vault or locations.default_vault_dir())
         self.vault = Vault(vault_root)
         self.vault.ensure()
         self.vault.load()
+
+        # The active *writable* live source is the target of write operations. An
+        # explicit --live wins; otherwise the first writable (Steam) source.
+        self.active_source_id: str | None = None
+        if live:
+            self.live_dir: Path | None = Path(live)
+        else:
+            first = self._writable_sources()
+            self.active_source_id = first[0].id if first else None
+            self.live_dir = Path(first[0].path) if first else locations.default_live_save_dir()
+
         self._meta: dict[str, dict] = {}
         self._build_widgets()
+        self.refresh()
+
+    # --- state ---------------------------------------------------------------
+
+    def _load_or_bootstrap_state(self) -> appstate.AppState:
+        st = appstate.load()
+        if st is None:  # first run: discover everything and write state.json
+            st = discover.bootstrap_state()
+            try:
+                appstate.save(st)
+            except OSError:
+                pass  # read-only location; carry on with the in-memory state
+        return st
+
+    def _writable_sources(self) -> list[appstate.Source]:
+        return [s for s in self.state.live_sources if s.writable and s.exists]
+
+    def _active_source(self) -> appstate.Source | None:
+        return self.state.get(self.active_source_id) if self.active_source_id else None
+
+    def _refresh_source_combo(self) -> None:
+        """Populate the active-live dropdown with the writable (Steam) sources."""
+        writable = self._writable_sources()
+        self._source_choices = {f"{s.label} ({Path(s.path).name})": s.id for s in writable}
+        self.active_combo["values"] = list(self._source_choices)
+        active = self._active_source()
+        if active is not None:
+            for label, sid in self._source_choices.items():
+                if sid == active.id:
+                    self.active_var.set(label)
+                    break
+        else:
+            self.active_var.set("")
+        # Nothing selectable -> disable the control so its state is obvious.
+        self.active_combo.configure(state="readonly" if writable else "disabled")
+
+    def _on_active_changed(self, _event=None) -> None:
+        sid = self._source_choices.get(self.active_var.get())
+        if sid:
+            self._set_active(sid)
+
+    def _set_active(self, source_id: str) -> None:
+        src = self.state.get(source_id)
+        if src is None:
+            return
+        self.active_source_id = source_id
+        self.live_dir = Path(src.path)
         self.refresh()
 
     # --- layout --------------------------------------------------------------
@@ -62,12 +123,21 @@ class App(tk.Tk):
             ("Repopulate → live", self.on_repopulate),
             ("Promote", self.on_promote),
             ("Import…", self.on_import),
+            ("Rescan", self.on_rescan),
             ("Discover", self.on_discover),
             ("Undo", self.on_undo),
             ("Refresh", self.refresh),
             ("Help", self.on_help),
         ]:
             ttk.Button(bar, text=text, command=cmd).pack(side=tk.LEFT, padx=2)
+
+        # Active live (write target) selector -- only writable Steam accounts.
+        self._source_choices: dict[str, str] = {}  # label -> source id
+        self.active_var = tk.StringVar(value="")
+        ttk.Label(bar, text="  Active live:").pack(side=tk.LEFT)
+        self.active_combo = ttk.Combobox(bar, textvariable=self.active_var, state="readonly", width=22)
+        self.active_combo.pack(side=tk.LEFT, padx=2)
+        self.active_combo.bind("<<ComboboxSelected>>", self._on_active_changed)
 
         self.status = tk.StringVar(value="")
         ttk.Label(self, textvariable=self.status, anchor="w", relief="sunken").pack(
@@ -94,27 +164,62 @@ class App(tk.Tk):
         vsb.pack(side=tk.RIGHT, fill=tk.Y)
         self.tree.bind("<Button-3>", self._on_right_click)  # right-click context menu
 
+        # Row styling: groups bold, active live emphasised, Xbox/read-only amber, backups grey.
+        self.tree.tag_configure("group", font=("TkDefaultFont", 10, "bold"))
+        self.tree.tag_configure("live", foreground="#0a6b2f")
+        self.tree.tag_configure("active", foreground="#0a6b2f", font=("TkDefaultFont", 9, "bold"))
+        self.tree.tag_configure("readonly", foreground="#7a5b00")
+        self.tree.tag_configure("backup", foreground="#333333")
+
     # --- populate ------------------------------------------------------------
 
     def refresh(self) -> None:
         self.tree.delete(*self.tree.get_children())
         self._meta.clear()
 
-        if self.live_dir and Path(self.live_dir).is_dir():
-            node = self.tree.insert("", "end", text=f"LIVE  ({Path(self.live_dir).name})", open=True)
-            self._meta[node] = {"type": "live"}
-            self._add_view(node, savedir.scan_any(self.live_dir), live=True)
+        # --- LIVE SAVES group: every live source, grouped by account ----------
+        live_group = self.tree.insert("", "end", text="● LIVE SAVES", open=True, tags=("group",))
+        self._meta[live_group] = {"type": "group"}
+        sources = self.state.live_sources
+        if not sources and self.live_dir and Path(self.live_dir).is_dir():
+            # No state (e.g. explicit --live): fall back to the single folder.
+            sources = [appstate.Source(id="live", platform="steam", account="",
+                                       path=str(self.live_dir), label=Path(self.live_dir).name)]
+        for s in sources:
+            if not Path(s.path).is_dir():
+                continue
+            active = s.id == self.active_source_id
+            badge = " — read-only (Xbox)" if not s.writable else (" — ACTIVE" if active else "")
+            tags = ("active",) if active else (("readonly",) if not s.writable else ("live",))
+            node = self.tree.insert(
+                live_group, "end", open=active,
+                text=f"{s.label}  ({Path(s.path).name}){badge}",
+                values=("", "", "", "", "writable" if s.writable else "read-only"),
+                tags=tags,
+            )
+            self._meta[node] = {"type": "live", "dir": s.path, "writable": s.writable, "source_id": s.id}
+            self._add_view(node, savedir.scan_any(s.path), writable=s.writable)
 
+        # --- BACKUPS group: catalog entries -----------------------------------
+        backup_group = self.tree.insert("", "end", text="■ BACKUPS", open=True, tags=("group",))
+        self._meta[backup_group] = {"type": "group"}
         for e in sorted(self.vault.entries, key=lambda e: e.id):
-            node = self.tree.insert("", "end", text=f"{e.id}  [{e.kind}]", values=(e.label, "", "", "", ""))
+            node = self.tree.insert(backup_group, "end", text=f"{e.id}  [{e.kind}]",
+                                    values=(e.label, "", "", "", ""), tags=("backup",))
             self._meta[node] = {"type": "entry", "entry": e}
             self._add_entry(node, e)
 
+        self._refresh_source_combo()
         running = ops.safety.is_game_running()
         game = {True: "RUNNING (writes blocked)", False: "closed", None: "unknown"}[running]
-        self.status.set(f"Live: {self.live_dir}   |   Vault: {self.vault.root}   |   Game: {game}")
+        active = self._active_source()
+        active_txt = active.label if active else (str(self.live_dir) if self.live_dir else "none")
+        self.status.set(
+            f"Active live: {active_txt}   |   Sources: {len(sources)}   |   "
+            f"Vault: {self.vault.root}   |   Game: {game}"
+        )
 
-    def _add_view(self, parent: str, view: savedir.SaveDirView, live: bool) -> None:
+    def _add_view(self, parent: str, view: savedir.SaveDirView, writable: bool) -> None:
         for slot in sorted(view.slots):
             sv = view.slots[slot]
             if not sv.occupied:
@@ -132,7 +237,7 @@ class App(tk.Tk):
                     "",
                 ),
             )
-            self._meta[node] = {"type": "slot", "dir": str(view.path), "slot": slot, "live": live}
+            self._meta[node] = {"type": "slot", "dir": str(view.path), "slot": slot, "live": writable}
             for m in sv.members:
                 if not m.exists:
                     continue
@@ -154,7 +259,7 @@ class App(tk.Tk):
                     "dir": str(view.path),
                     "slot": slot,
                     "member": 0 if m.label == "A" else 1,
-                    "live": live,
+                    "live": writable,
                 }
 
     def _add_entry(self, parent: str, entry) -> None:
@@ -203,8 +308,16 @@ class App(tk.Tk):
         menu = tk.Menu(self, tearoff=0)
         kind = meta.get("type")
         if kind == "live":
-            menu.add_command(label="Backup live now", command=self.on_backup)
-            menu.add_command(label="Undo last operation", command=self.on_undo)
+            sid = meta.get("source_id")
+            if meta.get("writable") and sid and sid != self.active_source_id:
+                menu.add_command(label="Set as active live target", command=lambda: self._set_active(sid))
+                menu.add_separator()
+            if meta.get("writable"):
+                menu.add_command(label="Backup this live folder now", command=lambda: self._backup_dir(meta["dir"]))
+                menu.add_command(label="Undo last operation", command=self.on_undo)
+            else:
+                menu.add_command(label="Import this Xbox folder as a backup",
+                                 command=lambda: self._import_dir(meta["dir"]))
         elif kind == "entry":
             menu.add_command(label=f"Restore '{meta['entry'].id}' into live", command=lambda: self.on_restore(meta))
         elif kind == "slot":
@@ -263,8 +376,14 @@ class App(tk.Tk):
     def on_backup(self) -> None:
         if not self._require_live():
             return
+        self._backup_dir(self.live_dir)
+
+    def _backup_dir(self, directory) -> None:
         label = simpledialog.askstring("Backup", "Optional label:") or ""
-        self._run(lambda _force: ops.create_full_backup(self.vault, self.live_dir, label=label), success="Backup created.")
+        self._run(
+            lambda _force: ops.create_full_backup(self.vault, Path(directory), label=label),
+            success="Backup created.",
+        )
 
     def on_restore(self, target: dict | None = None) -> None:
         sel = target or self._selected()
@@ -320,20 +439,42 @@ class App(tk.Tk):
 
     def on_import(self) -> None:
         folder = filedialog.askdirectory(title="Select a save-folder backup to import")
-        if not folder:
-            return
+        if folder:
+            self._import_dir(folder)
+
+    def _import_dir(self, directory) -> None:
         copy = messagebox.askyesno("Import", "Copy the backup into the vault?\n(No = index it where it is.)")
-        self._run(lambda _force: ops.import_backup(self.vault, Path(folder), copy_into_vault=copy), success="Imported.")
+        self._run(
+            lambda _force: ops.import_backup(self.vault, Path(directory), copy_into_vault=copy),
+            success="Imported.",
+        )
+
+    def on_rescan(self) -> None:
+        """Re-scan AppData for live sources and merge any new accounts into the config."""
+        added = discover.merge_live_sources(self.state)
+        try:
+            appstate.save(self.state)
+        except OSError as exc:
+            messagebox.showwarning("Rescan", f"Found sources but could not save config:\n{exc}")
+        # If we had no active writable source yet, adopt the first one found.
+        if self.active_source_id is None:
+            writable = self._writable_sources()
+            if writable:
+                self.active_source_id = writable[0].id
+                self.live_dir = Path(writable[0].path)
+        self.refresh()
+        messagebox.showinfo(
+            "Rescan",
+            f"Added {added} new live source(s).\n"
+            f"Now tracking {len(self.state.live_sources)} live source(s).\n\n"
+            "Tip: use Discover to also catalog copy-paste backups.",
+        )
 
     def on_discover(self) -> None:
-        from .core.catalog import discover_save_dirs
-
-        dirs: list[Path] = []
-        root = locations.nms_root()
-        if root and root.is_dir():
-            exclude = [p for p in locations.find_live_save_dirs()] + [self.vault.root]
-            dirs += discover_save_dirs(root, exclude=exclude)
-        dirs += locations.find_microsoft_save_dirs()  # Xbox / Game Pass
+        # Exclude every live source (so a copy-paste "st_... - Copy" is still seen as a
+        # backup, but the real live folders are not) plus the vault itself.
+        exclude = [s.path for s in self.state.live_sources] + [self.vault.root]
+        dirs = discover.discover_inplace_backups(exclude=exclude)
         known = {Path(e.path).resolve() for e in self.vault.entries}
         added = 0
         for d in dirs:
@@ -366,11 +507,21 @@ class App(tk.Tk):
 
 HELP_TEXT = """NMS Save Vault — Help
 
-The tree shows your LIVE save folder at the top, then every backup in the catalog.
-Expand a backup to see its slots; expand a slot to see its two saves:
+The tree is split into two groups:
+  ● LIVE SAVES  -- every save folder found on this PC: each Steam account and, read-only,
+     each Xbox / Game Pass account. The ACTIVE one (green, bold) is the target of write
+     actions; pick it from the "Active live" dropdown or right-click a folder to set it.
+     Xbox folders are read-only here -- you can browse and back them up, but not write to them.
+  ■ BACKUPS  -- every backup in the catalog (full snapshots, extracts, imported and
+     auto-discovered copy-paste backups).
+Expand a folder to see its slots; expand a slot to see its two saves:
   - A and B are the slot's two saves: your manual save and the auto "restore point".
   - The one marked * is the NEWEST -- the one the game loads for that slot.
 Right-click any row to get the same actions as the buttons, in context.
+
+First run auto-detects your save folders and writes a small config (state.json) under
+%APPDATA%\\HelloGames\\NMS\\NMSSaveVault. Use Rescan to pick up a newly added account or
+a freshly pasted backup later on.
 
 BUTTONS
 - Backup live: Full snapshot of the entire live folder into the vault. Do this before
@@ -386,6 +537,8 @@ BUTTONS
   so the game loads it instead of the other -- e.g. to roll back to the restore point.
 - Import: Register an existing save folder you made yourself (or an Xbox / Game Pass
   save) into the catalog -- either in place or copied into the vault.
+- Rescan: Re-detect live save folders (new Steam account, new Xbox account) and add them
+  to the LIVE SAVES list. Your manual entries are left untouched.
 - Discover: Scan the NMS folder for existing backups and add any new ones found.
 - Undo: Restore the auto-snapshot taken just before the last operation.
 - Refresh: Re-scan the live folder and the catalog.

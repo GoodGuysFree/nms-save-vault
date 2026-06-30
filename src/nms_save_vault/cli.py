@@ -21,8 +21,9 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from .core import locations, operations as ops
+from .core import discover, locations, operations as ops
 from .core import savedir, slotmap
+from .core import state as appstate
 from .core.catalog import Vault
 
 
@@ -83,6 +84,12 @@ def _print_view(view: savedir.SaveDirView) -> None:
 def _resolve_live(args) -> Path:
     if args.live:
         return Path(args.live)
+    # Prefer the active writable (Steam) source recorded in the config.
+    st = appstate.load()
+    if st is not None:
+        for s in st.live_sources:
+            if s.writable and s.exists:
+                return Path(s.path)
     d = locations.default_live_save_dir()
     if d is None:
         sys.exit("error: could not locate a live NMS save folder; pass --live <dir>")
@@ -90,7 +97,11 @@ def _resolve_live(args) -> Path:
 
 
 def _resolve_vault(args) -> Vault:
-    root = Path(args.vault) if args.vault else locations.default_vault_dir()
+    if args.vault:
+        root = Path(args.vault)
+    else:
+        st = appstate.load()
+        root = Path(st.vault) if (st and st.vault) else locations.default_vault_dir()
     return Vault(root).load()
 
 
@@ -267,6 +278,32 @@ def _report(res: ops.OpResult) -> None:
         print(f"  (undo available: nmsvault undo  -> restores snapshot {res.snapshot_id})")
 
 
+def cmd_sources(args) -> int:
+    """List the configured live sources; optionally (re)discover and merge new ones."""
+    st = appstate.load()
+    if st is None:
+        st = discover.bootstrap_state()
+        appstate.save(st)
+        print("Initialised config by auto-discovery.")
+    if args.rescan:
+        added = discover.merge_live_sources(st)
+        appstate.save(st)
+        print(f"Rescan: added {added} new live source(s).")
+    print(f"Config: {appstate.default_state_path()}")
+    print(f"Vault:  {st.vault}\n")
+    print(f"{'Role':<7}{'Platform':<9}{'Write':<7}{'Account':<20}Path")
+    print("-" * 92)
+    for s in st.sources:
+        missing = "" if s.exists else "   (MISSING)"
+        print(
+            f"{s.role:<7}{s.platform:<9}{('yes' if s.writable else 'no'):<7}"
+            f"{(s.account or '-'):<20}{s.path}{missing}"
+        )
+    if not st.sources:
+        print("(none found)")
+    return 0
+
+
 # --- argument parser ---------------------------------------------------------
 
 
@@ -278,6 +315,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("status", help="show the live folder and slot table").set_defaults(func=cmd_status)
     sub.add_parser("list", help="list catalog entries").set_defaults(func=cmd_list)
+
+    s = sub.add_parser("sources", help="list configured live sources (Steam/Xbox accounts)")
+    s.add_argument("--rescan", action="store_true", help="re-detect live folders and merge any new ones")
+    s.set_defaults(func=cmd_sources)
 
     s = sub.add_parser("show", help="show slots of an entry (or 'live')")
     s.add_argument("target")

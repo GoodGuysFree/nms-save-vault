@@ -37,11 +37,27 @@ uv pip install -e ".[dev]"
 uv run pytest
 ```
 
+## Auto-configuration
+
+On first run the app **auto-detects** every save folder on the PC and records them in a
+small config file, `state.json`, under `%APPDATA%\HelloGames\NMS\NMSSaveVault`:
+
+* Each canonical `st_<steamid64>` folder directly under the NMS root is a **live** source
+  (writable). Two Steam accounts → two live sources.
+* Each Xbox / Game Pass `wgs` account folder is a **live** source, **read-only**.
+* Any *other* save folder under the NMS root — a hand-pasted `st_… - Copy`, a renamed or
+  dated folder — is treated as an **in-place backup**, not a live target.
+
+The GUI shows the two groups separately (**● LIVE SAVES** vs **■ BACKUPS**), highlights the
+active write target, and badges Xbox folders read-only. Use **Rescan** (GUI) or
+`nmsvault sources --rescan` (CLI) to pick up a new account or backup later; your manual
+edits to the config are preserved. Discovery is strictly read-only.
+
 ## Usage
 
 Both front-ends share the same safety-checked core. The live folder and a vault folder
-(default: a `_SaveVault` sibling of `st_<id>`) are auto-detected; override with
-`--live`/`--vault`.
+(default: a `_SaveVault` sibling of `st_<id>`) come from the config (or are auto-detected);
+override with `--live`/`--vault`.
 
 GUI:
 
@@ -53,6 +69,7 @@ CLI:
 
 ```pwsh
 nmsvault status                          # live folder + 15 slots, both saves each
+nmsvault sources [--rescan]              # configured live sources (Steam/Xbox accounts)
 nmsvault list                            # catalog entries
 nmsvault discover --add                  # find existing backups, add them in place
 nmsvault backup --label "before update"  # full snapshot into the vault
