@@ -4,7 +4,8 @@ __pycache__/
 *.egg-info/
 build/
 dist/
-/releases/        # local staging for release kits; published as GitHub Release assets
+# local staging for release kits; published as GitHub Release assets, never committed
+/releases/
 .pytest_cache/
 .ruff_cache/
 
