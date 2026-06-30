@@ -184,3 +184,61 @@ def test_steam_scan_has_no_xbox_identity(tmp_path):
     view = savedir.scan(tmp_path)  # no containers.index here -> Steam path
     assert view.xbox_index is None
     assert view.slots[1].a.xbox is None
+
+
+# --- serialization (round-trip the wgs writers against the readers) ---------------------
+
+
+def test_build_lp_string_roundtrips_non_bmp():
+    """The length prefix must count UTF-16 code units, not Python chars, so astral chars
+    (emoji) survive _read_lp_string instead of splitting the surrogate pair."""
+    for s in ("", "ascii", "Slot1Auto", "Hi\U0001F600", "emoji\U0001F600here", "汉字"):
+        blob = msstore._build_lp_string(s)
+        decoded, end = msstore._read_lp_string(blob, 0)
+        assert decoded == s
+        assert end == len(blob)
+
+
+def test_guid_and_filetime_inverses():
+    raw = _guid_bytes(7)
+    assert msstore._guid_bytes_from_name(_guid_name(raw)) == raw
+    for unix in (0.0, 1782240635.0):
+        assert msstore._filetime_to_unix(msstore._unix_to_filetime(unix)) == unix
+
+
+def test_build_blob_container_roundtrip():
+    data_local, meta_local = _guid_name(_guid_bytes(1)), _guid_name(_guid_bytes(2))
+    data_cloud, meta_cloud = _guid_name(_guid_bytes(3)), _guid_name(_guid_bytes(4))
+    blob = msstore.build_blob_container(data_local, meta_local, data_cloud, meta_cloud)
+
+    assert len(blob) == msstore.BLOBCONTAINER_TOTAL_LENGTH
+    assert struct.unpack_from("<i", blob, 0)[0] == msstore.BLOBCONTAINER_HEADER
+    assert struct.unpack_from("<i", blob, 4)[0] == 2
+    assert blob[8 : 8 + 8].decode("utf-16-le") == "data"
+    assert msstore._guid_name(blob[0x88:0x98]) == data_cloud
+    assert msstore._guid_name(blob[0x98:0xA8]) == data_local
+    assert blob[0xA8 : 0xA8 + 8].decode("utf-16-le") == "meta"
+    assert msstore._guid_name(blob[0x128:0x138]) == meta_cloud
+    assert msstore._guid_name(blob[0x138:0x148]) == meta_local
+
+
+def test_containers_index_roundtrip(tmp_path):
+    """Parse -> rebuild -> parse yields identical structures (header + every record)."""
+    saves = [
+        ("Slot1Auto", '{"a":1}', "A", "sa", 10, 5),
+        ("Slot3Manual", '{"bb":2}', "B", "sb", 20, 7),
+        ("AccountData", '{"acc":1}', "", "", 0, 0),
+    ]
+    acct = _build_wgs(tmp_path, saves)
+    info1, conts1 = msstore.parse_containers_index(acct)
+
+    rebuilt = msstore.build_containers_index(info1, conts1)
+    (acct / "containers.index").write_bytes(rebuilt)
+    info2, conts2 = msstore.parse_containers_index(acct)
+
+    assert info2 == info1
+    assert conts2 == conts1   # dataclass field-wise equality (incl. resolved blob paths/GUIDs)
+    # and the whole-folder scan still decodes the same way after the rewrite
+    view = msstore.scan(acct)
+    assert view.slots[1].a.save_name == "A"
+    assert view.slots[3].b.save_name == "B"

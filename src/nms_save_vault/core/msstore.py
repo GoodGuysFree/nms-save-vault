@@ -392,3 +392,84 @@ def scan(folder: str | Path) -> SaveDirView:
             slots[slot].b = mv
 
     return SaveDirView(path=folder, slots=slots, account_present=account_present, xbox_index=index_info)
+
+
+# --- serialization (inverse of the parsers; groundwork for the wgs writer) --------------
+#
+# These rebuild the exact byte layouts the readers above consume, so a future Xbox writer
+# can round-trip a save back to disk. Pure functions, no I/O; verified by round-trip tests.
+
+
+def _build_lp_string(s: str) -> bytes:
+    """Inverse of ``_read_lp_string``: [int UTF-16 code-unit count][UTF-16LE chars].
+
+    The count is code units, NOT Python code points: an astral char (e.g. an emoji) is one
+    ``str`` element but two UTF-16 units, and the reader consumes ``2 * count`` bytes."""
+    data = s.encode("utf-16-le")
+    return struct.pack("<i", len(data) // 2) + data
+
+
+def _guid_bytes_from_name(name: str) -> bytes:
+    """Inverse of ``_guid_name``: a 32-hex 'N' string -> 16 GUID bytes (little-endian)."""
+    return uuid.UUID(hex=name).bytes_le
+
+
+def _unix_to_filetime(unix: float) -> int:
+    """Inverse of ``_filetime_to_unix`` (Windows FILETIME: 100ns ticks since 1601-01-01)."""
+    if unix <= 0:
+        return 0
+    return int(round((unix + 11644473600.0) * 1e7))
+
+
+def _fixed_utf16(s: str, total: int = BLOB_IDENTIFIER_LENGTH) -> bytes:
+    """A UTF-16LE string in a fixed-size, NUL-padded field (the blob identifiers)."""
+    raw = s.encode("utf-16-le")
+    if len(raw) > total:
+        raise ValueError(f"{s!r} encodes to {len(raw)} bytes, exceeds the {total}-byte field")
+    return raw + b"\x00" * (total - len(raw))
+
+
+def build_blob_container(data_local: str, meta_local: str, data_cloud: str = "", meta_cloud: str = "") -> bytes:
+    """Serialize a ``container.<n>`` blob-container file (328 bytes): the data/meta blob
+    identifiers and their cloud + local GUIDs. The *local* GUID names the on-disk blob."""
+
+    def _guid(name: str) -> bytes:
+        return _guid_bytes_from_name(name) if name else b"\x00" * 16
+
+    out = struct.pack("<ii", BLOBCONTAINER_HEADER, 2)
+    out += _fixed_utf16("data") + _guid(data_cloud) + _guid(data_local)
+    out += _fixed_utf16("meta") + _guid(meta_cloud) + _guid(meta_local)
+    if len(out) != BLOBCONTAINER_TOTAL_LENGTH:  # invariant guard (never expected to fire)
+        raise ValueError(f"blob container is {len(out)} bytes, expected {BLOBCONTAINER_TOTAL_LENGTH}")
+    return out
+
+
+def _build_container_record(c: _Container) -> bytes:
+    """Serialize one ``containers.index`` per-save record from a parsed ``_Container``."""
+    out = _build_lp_string(c.identifier)
+    out += _build_lp_string(c.second_identifier)
+    out += _build_lp_string(c.sync_time)
+    out += bytes([c.extension & 0xFF])
+    out += struct.pack("<i", c.sync_state)
+    out += _guid_bytes_from_name(c.dir_guid)
+    out += struct.pack("<q", _unix_to_filetime(c.last_write))
+    out += struct.pack("<q", 0)                  # reserved / empty
+    out += struct.pack("<q", int(c.size_disk))
+    return out
+
+
+def build_containers_index(info: XboxIndexInfo, records: list[_Container]) -> bytes:
+    """Serialize a complete ``containers.index`` from parsed structures (header + records).
+
+    The record ``count`` is taken from ``records`` (authoritative), so adding or removing a
+    save stays consistent."""
+    out = struct.pack("<i", CONTAINERSINDEX_HEADER)
+    out += struct.pack("<q", len(records))
+    out += _build_lp_string(info.process_id)
+    out += struct.pack("<q", _unix_to_filetime(info.last_write))
+    out += struct.pack("<i", info.sync_state)
+    out += _build_lp_string(info.account_id)
+    out += struct.pack("<q", CONTAINERSINDEX_FOOTER)
+    for c in records:
+        out += _build_container_record(c)
+    return out
