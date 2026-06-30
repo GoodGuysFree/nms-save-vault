@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-from . import formats, lz4_block, meta, safety, savedir
+from . import formats, lz4_block, meta, msstore, safety, savedir
 from .catalog import (
     KIND_EXTRACT,
     KIND_FULL,
@@ -46,8 +46,9 @@ class FeatureNotYetAvailableError(OperationError):
     not as an error/failure."""
 
 
-# Shown when a write would transfer a Microsoft/Xbox save into a Steam slot.
-XBOX_TO_STEAM_MSG = "Transferring Xbox / Game Pass saves into a Steam slot is coming soon."
+# Shown when a write would transfer a save between Steam and Xbox (either direction).
+# Same-platform writes (Steam->Steam, Xbox->Xbox) are supported; cross-platform is gated.
+CROSS_PLATFORM_MSG = "Transferring saves between Steam and Xbox / Game Pass is coming soon."
 
 
 @dataclass
@@ -82,11 +83,36 @@ def _guard_game(allow_game_running: bool, warnings: list[str]) -> None:
         warnings.append("Could not determine whether the game is running.")
 
 
+def _is_xbox(path: Path) -> bool:
+    return savedir.platform_of(path) == "xbox"
+
+
+def _guard_same_platform(src: Path, dst: Path) -> None:
+    """Cross-platform (Steam<->Xbox) transfer is gated; same-platform is supported."""
+    if savedir.platform_of(src) != savedir.platform_of(dst):
+        raise FeatureNotYetAvailableError(CROSS_PLATFORM_MSG)
+
+
+def _now() -> float:
+    return datetime.now().timestamp()
+
+
+def _check_slot(slot: int) -> None:
+    if not 1 <= slot <= formats.MAX_SAVE_SLOTS:
+        raise OperationError(f"slot {slot} is out of range (1-{formats.MAX_SAVE_SLOTS})")
+
+
 # --- snapshots & copying -----------------------------------------------------
 
 
 def _copy_save_state(src: Path, dst: Path) -> list[str]:
-    """Copy all *.hg (+ steam_autocloud.vdf) from src to dst. Returns copied names."""
+    """Copy the live save state from src to dst. Steam: all *.hg (+ steam_autocloud.vdf).
+    Xbox/wgs: the whole account folder (containers.index + every blob dir). Returns the
+    copied file names (relative to dst)."""
+    src = Path(src)
+    if _is_xbox(src):
+        shutil.copytree(src, dst, dirs_exist_ok=True)
+        return [str(p.relative_to(dst)) for p in dst.rglob("*") if p.is_file()]
     dst.mkdir(parents=True, exist_ok=True)
     copied = []
     for p in _hg_files(src):
@@ -131,7 +157,8 @@ def create_full_backup(vault: Vault, live_dir: Path, label: str = "", include_ca
         shutil.copytree(live_dir, dest)
     else:
         _copy_save_state(live_dir, dest)
-    _verify_copy(live_dir, dest, only_hg=not include_cache)
+    # Xbox always copies the whole wgs tree (no *.hg), so verify the full tree, not just *.hg.
+    _verify_copy(live_dir, dest, only_hg=not include_cache and not _is_xbox(live_dir))
     entry = vault.make_entry_from_dir(bid, KIND_FULL, label, dest, managed=True, source=live_dir.name)
     vault.upsert(entry)
     vault.append_oplog(_oplog("full_backup", entry_id=bid))
@@ -156,12 +183,13 @@ def restore_full(
     src = Path(entry.path)
     if not src.is_dir():
         raise OperationError(f"backup folder not found: {src}")
-    if savedir.platform_of(src) == "xbox" and savedir.platform_of(live_dir) == "steam":
-        raise FeatureNotYetAvailableError(XBOX_TO_STEAM_MSG)
+    _guard_same_platform(src, live_dir)
+    if _is_xbox(live_dir):
+        return _restore_full_xbox(vault, entry, src, live_dir, warnings)
     if not _hg_files(src):
         raise OperationError(
             f"'{entry.id}' has no Steam-format save*.hg files, so it cannot be restored into a "
-            "Steam folder. (Microsoft/Xbox Game Pass saves are read-only in this tool.)"
+            "Steam folder."
         )
 
     snap = snapshot_live(vault, live_dir, reason=f"pre-restore of {entry.id}")
@@ -225,10 +253,11 @@ def repopulate_slot(
     warnings: list[str] = []
     source_dir = Path(source_dir)
     live_dir = Path(live_dir)
-    # Xbox meta is plaintext (not XXTEA); the re-key path below would crash on it. Until a
-    # cross-platform writer exists, refuse Xbox->Steam transfers with a 'coming soon' notice.
-    if savedir.platform_of(source_dir) == "xbox" and savedir.platform_of(live_dir) == "steam":
-        raise FeatureNotYetAvailableError(XBOX_TO_STEAM_MSG)
+    _check_slot(source_slot)
+    _check_slot(dest_slot)
+    _guard_same_platform(source_dir, live_dir)
+    if _is_xbox(live_dir):
+        return _repopulate_slot_xbox(vault, source_dir, source_slot, live_dir, dest_slot, allow_game_running)
     _guard_game(allow_game_running, warnings)
 
     # Pre-flight: build the (data_bytes, new_meta_bytes, dst paths, mtime) for each member.
@@ -271,8 +300,11 @@ def repopulate_slot(
 def promote_member(vault: Vault, live_dir: Path, slot: int, member: int, allow_game_running: bool = False) -> OpResult:
     """Force a slot member to be the one the game treats as newest (timestamp bump)."""
     warnings: list[str] = []
-    _guard_game(allow_game_running, warnings)
     live_dir = Path(live_dir)
+    _check_slot(slot)
+    if _is_xbox(live_dir):
+        return _promote_member_xbox(vault, live_dir, slot, member, allow_game_running)
+    _guard_game(allow_game_running, warnings)
     view = savedir.scan(live_dir)
     sv = view.slots[slot]
     target = sv.members[member]
@@ -299,6 +331,129 @@ def promote_member(vault: Vault, live_dir: Path, slot: int, member: int, allow_g
     changed = [target.meta_path.name, target.data_path.name]
     vault.append_oplog(_oplog("promote_member", snapshot_id=snap.id, detail=f"slot {slot}{'AB'[member]} ts->{new_ts}", changed=changed))
     return OpResult(True, "promote_member", f"slot {slot}{'AB'[member]} promoted", snapshot_id=snap.id, changed=changed, warnings=warnings)
+
+
+# --- Xbox / Game Pass (wgs) variants -----------------------------------------
+#
+# Same-platform only: data + meta blobs are copied verbatim and the slot identity lives in
+# containers.index (no XXTEA, no re-keying). All three snapshot the live folder first, so
+# `undo` (which routes back through restore_full -> _restore_full_xbox) recovers the prior
+# state. Cross-platform Steam<->Xbox transfer stays gated (see _guard_same_platform).
+
+
+def _ms_identifier(slot: int, member: int) -> str:
+    return f"Slot{slot}{'Auto' if member == 0 else 'Manual'}"
+
+
+def _validate_xbox_slot(live_dir: Path, slot: int, warnings: list[str]) -> None:
+    view = savedir.scan_any(live_dir)
+    present = view.slots[slot].present_members if slot in view.slots else []
+    if not present:
+        raise ValidationError(f"slot {slot} has no readable save after the write")
+    for m in present:
+        if m.info is None:
+            raise ValidationError(f"slot {slot}{m.label} is unreadable after the write: {m.note}")
+
+
+def _validate_xbox_dir(live_dir: Path, warnings: list[str]) -> None:
+    view = savedir.scan_any(live_dir)
+    for sv in view.slots.values():
+        for m in sv.present_members:
+            if m.info is None:
+                warnings.append(f"slot {sv.slot}{m.label}: {m.note}")
+
+
+def _promote_member_xbox(vault: Vault, live_dir: Path, slot: int, member: int, allow_game_running: bool) -> OpResult:
+    warnings: list[str] = []
+    _guard_game(allow_game_running, warnings)
+    view = savedir.scan_any(live_dir)
+    sv = view.slots[slot]
+    target, sibling = sv.members[member], sv.members[1 - member]
+    if not target.exists or target.xbox is None:
+        raise OperationError(f"slot {slot}{'AB'[member]} is missing or not an Xbox save")
+    new_ts = target.effective_timestamp
+    if sibling.exists:
+        new_ts = max(new_ts, sibling.effective_timestamp)
+    new_ts += 1
+
+    # Bump BOTH the index FILETIME (write_save's `when`) and the meta timestamp field, so the
+    # promoted member is newest regardless of which one the game keys off.
+    data_bytes = Path(target.data_path).read_bytes()
+    meta_bytes = msstore.set_ms_meta_timestamp(Path(target.meta_path).read_bytes(), new_ts)
+    snap = snapshot_live(vault, live_dir, reason=f"pre-promote slot {slot}{'AB'[member]}")
+    msstore.write_save(live_dir, target.xbox.identifier, data_bytes, meta_bytes, float(new_ts))
+    _validate_xbox_slot(live_dir, slot, warnings)
+    changed = [target.xbox.identifier]
+    vault.append_oplog(_oplog("promote_member", snapshot_id=snap.id, detail=f"xbox slot {slot}{'AB'[member]} ts->{new_ts}", changed=changed))
+    return OpResult(True, "promote_member", f"slot {slot}{'AB'[member]} promoted", snapshot_id=snap.id, changed=changed, warnings=warnings)
+
+
+def _repopulate_slot_xbox(vault: Vault, source_dir: Path, source_slot: int, live_dir: Path, dest_slot: int, allow_game_running: bool) -> OpResult:
+    warnings: list[str] = []
+    _guard_game(allow_game_running, warnings)
+    src_view = savedir.scan_any(source_dir)
+    src_sv = src_view.slots.get(source_slot)
+
+    planned = []  # (dest_identifier, data_bytes, meta_bytes, when)
+    for member in (0, 1):
+        sm = src_sv.members[member] if src_sv else None
+        if sm is None or not sm.exists or sm.xbox is None or sm.info is None:
+            warnings.append(f"source slot {source_slot}{'AB'[member]} missing or unreadable; skipped")
+            continue
+        data_bytes = Path(sm.data_path).read_bytes()
+        meta_bytes = Path(sm.meta_path).read_bytes()
+        ts = sm.effective_timestamp
+        when = float(ts) if ts else _now()    # 0 == unknown time -> stamp now
+        planned.append((_ms_identifier(dest_slot, member), data_bytes, meta_bytes, when))
+
+    if not planned:
+        raise OperationError(f"source slot {source_slot} has no readable saves in {source_dir}")
+
+    snap = snapshot_live(vault, live_dir, reason=f"pre-repopulate slot {dest_slot}")
+    changed: list[str] = []
+    for dest_ident, data_bytes, meta_bytes, when in planned:
+        msstore.write_save(live_dir, dest_ident, data_bytes, meta_bytes, when, create_if_missing=True)
+        changed.append(dest_ident)
+
+    _validate_xbox_slot(live_dir, dest_slot, warnings)
+    vault.append_oplog(_oplog("repopulate_slot", snapshot_id=snap.id, detail=f"xbox {Path(source_dir).name} slot {source_slot} -> slot {dest_slot}", changed=changed))
+    return OpResult(True, "repopulate_slot", f"slot {source_slot} -> {dest_slot}", snapshot_id=snap.id, changed=changed, warnings=warnings)
+
+
+def _restore_full_xbox(vault: Vault, entry: CatalogEntry, src: Path, live_dir: Path, warnings: list[str]) -> OpResult:
+    if not (src / "containers.index").is_file():
+        raise OperationError(f"'{entry.id}' is not an Xbox/wgs backup")
+    if src.resolve() == live_dir.resolve():
+        # Restoring a folder onto itself is a no-op; the mirror below would otherwise wipe it.
+        return OpResult(True, "restore_full", f"'{entry.id}' is the live folder; nothing to do", warnings=warnings)
+
+    snap = snapshot_live(vault, live_dir, reason=f"pre-restore of {entry.id}")
+    # Mirror the backup into the live folder (captured on this same account/machine, so its
+    # containers.index identity is valid here). Reconcile rather than clear-then-copy, so a
+    # mid-operation failure can't leave a half-emptied tree.
+    src_names = {c.name for c in src.iterdir()}
+    changed: list[str] = []
+    for child in list(live_dir.iterdir()):          # 1) drop live entries not in the backup
+        if child.name not in src_names:
+            if child.is_dir():
+                shutil.rmtree(child, ignore_errors=True)
+            else:
+                child.unlink()
+            changed.append(f"-{child.name}")
+    for child in src.iterdir():                      # 2) copy/overwrite the backup entries
+        dst = live_dir / child.name
+        if child.is_dir():
+            if dst.exists():
+                shutil.rmtree(dst, ignore_errors=True)
+            shutil.copytree(child, dst)
+        else:
+            shutil.copy2(child, dst)
+        changed.append(child.name)
+
+    msstore.mark_modified(live_dir)  # so the Xbox app re-syncs the restored tree
+    _validate_xbox_dir(live_dir, warnings)
+    vault.append_oplog(_oplog("restore_full", entry_id=entry.id, snapshot_id=snap.id, changed=changed))
+    return OpResult(True, "restore_full", f"restored {entry.id}", snapshot_id=snap.id, changed=changed, warnings=warnings)
 
 
 # --- feature 3: import -------------------------------------------------------

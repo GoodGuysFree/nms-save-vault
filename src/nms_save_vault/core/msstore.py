@@ -294,6 +294,17 @@ def parse_ms_meta(disk: bytes) -> dict:
     return out
 
 
+def set_ms_meta_timestamp(meta_bytes: bytes, ts: int) -> bytes:
+    """Set the timestamp field of a Worlds-era MS meta blob (no-op for shorter metas that
+    don't carry one). Promote uses this so the meta and the containers.index FILETIME agree
+    on which save is newest, regardless of which the game keys off."""
+    if len(meta_bytes) >= formats.META_LEN_WORLDS_I and MS_OFF_TIMESTAMP + 4 <= len(meta_bytes):
+        b = bytearray(meta_bytes)
+        struct.pack_into("<I", b, MS_OFF_TIMESTAMP, int(ts) & 0xFFFFFFFF)
+        return bytes(b)
+    return meta_bytes
+
+
 def _data_decompressed_size(data: bytes, fallback: int) -> int:
     """Total decompressed size from the data container, or the meta fallback."""
     try:
@@ -597,3 +608,15 @@ def write_save(
             p.unlink()
         except OSError:
             pass
+
+
+def mark_modified(folder: str | Path) -> None:
+    """Flip every Synced record (and the global index) to Modified so the Xbox app re-syncs
+    a tree that was restored/edited wholesale (e.g. a full Xbox restore)."""
+    folder = Path(folder)
+    info, containers = parse_containers_index(folder)
+    for c in containers:
+        if c.sync_state == BLOB_SYNC_SYNCED:
+            c.sync_state = BLOB_SYNC_MODIFIED
+    info.sync_state = INDEX_SYNC_MODIFIED
+    _write_containers_index_file(folder, info, containers)
