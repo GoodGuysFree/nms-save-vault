@@ -15,6 +15,10 @@ from pathlib import Path
 # editions (same HelloGames binary, just packaged differently), so this one name covers both.
 NMS_PROCESS_NAME = "NMS.exe"
 
+# Suppress the console window that ``tasklist`` would otherwise flash on-screen every time
+# this runs from the windowed GUI build. Defined only on Windows; 0 elsewhere is a no-op.
+_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
 
 def is_game_running() -> bool | None:
     """Return True/False if NMS is running, or None if it could not be determined.
@@ -27,6 +31,7 @@ def is_game_running() -> bool | None:
             capture_output=True,
             text=True,
             timeout=10,
+            creationflags=_NO_WINDOW,
         )
     except (OSError, subprocess.SubprocessError):
         return None

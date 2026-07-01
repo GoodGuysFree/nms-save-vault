@@ -363,26 +363,27 @@ class App(tk.Tk):
 
     # --- actions -------------------------------------------------------------
 
-    def _run(self, fn, *, success: str) -> None:
-        """Run a core operation, prompting to override the game-running guard if needed."""
-        try:
-            try:
-                result = fn(False)
-            except ops.GameRunningError:
-                if not messagebox.askyesno("Game running", "No Man's Sky appears to be running.\nProceed anyway (risky)?"):
-                    return
-                result = fn(True)
-        except ops.FeatureNotYetAvailableError as exc:
-            messagebox.showinfo("Coming soon", str(exc))
+    def _run(self, fn, *, success: str, message: str = "Working — please wait…") -> None:
+        """Run a core operation on a worker thread behind a modal wait dialog, prompting to
+        override the game-running guard if the op reports the game is open."""
+        holder = self._run_worker(fn, False, message)
+        if isinstance(holder.get("error"), ops.GameRunningError):
+            if not messagebox.askyesno("Game running", "No Man's Sky appears to be running.\nProceed anyway (risky)?"):
+                return
+            holder = self._run_worker(fn, True, message)
+
+        err = holder.get("error")
+        if isinstance(err, ops.FeatureNotYetAvailableError):
+            messagebox.showinfo("Coming soon", str(err))
             return
-        except ops.OperationError as exc:
-            messagebox.showerror("Operation failed", str(exc))
+        if isinstance(err, ops.OperationError):
+            messagebox.showerror("Operation failed", str(err))
             return
-        except Exception as exc:  # noqa: BLE001 - surface unexpected errors to the user
-            messagebox.showerror("Unexpected error", repr(exc))
+        if err is not None:
+            messagebox.showerror("Unexpected error", repr(err))
             return
         self.refresh()
-        self._present_result(result, success)
+        self._present_result(holder.get("result"), success)
 
     def _present_result(self, result, success: str) -> None:
         if isinstance(result, ops.OpResult):
@@ -413,19 +414,17 @@ class App(tk.Tk):
         win.update()
         return win
 
-    def _run_busy(self, fn, *, success: str, message: str) -> None:
-        """Run a (non-game-guarded) core op on a worker thread, showing a wait dialog.
-
-        Only the core file work runs off-thread (it never touches Tk); the dialog and
-        all result/error UI stay on the main thread.
-        """
+    def _run_worker(self, fn, force: bool, message: str) -> dict:
+        """Run ``fn(force)`` off the Tk thread behind a modal wait dialog. Returns a holder
+        dict with 'result' or 'error'. Only the core file work runs off-thread (it never
+        touches Tk); all result/error UI stays on the main thread in the caller."""
         win = self._busy(message)
         holder: dict = {}
 
         def worker() -> None:
             try:
-                holder["result"] = fn(False)
-            except Exception as exc:  # noqa: BLE001 - reported on the main thread below
+                holder["result"] = fn(force)
+            except Exception as exc:  # noqa: BLE001 - reported by the caller on the main thread
                 holder["error"] = exc
 
         t = threading.Thread(target=worker, daemon=True)
@@ -437,19 +436,7 @@ class App(tk.Tk):
         finally:
             win.grab_release()
             win.destroy()
-
-        err = holder.get("error")
-        if isinstance(err, ops.FeatureNotYetAvailableError):
-            messagebox.showinfo("Coming soon", str(err))
-            return
-        if isinstance(err, ops.OperationError):
-            messagebox.showerror("Operation failed", str(err))
-            return
-        if err is not None:
-            messagebox.showerror("Unexpected error", repr(err))
-            return
-        self.refresh()
-        self._present_result(holder.get("result"), success)
+        return holder
 
     def _require_live(self) -> bool:
         if not (self.live_dir and Path(self.live_dir).is_dir()):
@@ -469,7 +456,7 @@ class App(tk.Tk):
         label = simpledialog.askstring("Backup", "Optional label:", initialvalue=suggested)
         if label is None:  # user cancelled
             return
-        self._run_busy(
+        self._run(
             lambda _force: ops.create_full_backup(self.vault, Path(directory), label=label),
             success="Backup created.",
             message="Creating backup — please wait…",
@@ -485,7 +472,11 @@ class App(tk.Tk):
         entry = sel["entry"]
         if not messagebox.askyesno("Restore", f"Replace the live saves with backup '{entry.id}'?\n(The current state is auto-snapshotted first.)"):
             return
-        self._run(lambda force: ops.restore_full(self.vault, entry, self.live_dir, allow_game_running=force), success="Restored.")
+        self._run(
+            lambda force: ops.restore_full(self.vault, entry, self.live_dir, allow_game_running=force),
+            success="Restored.",
+            message="Restoring — please wait…",
+        )
 
     def on_extract(self, target: dict | None = None) -> None:
         sel = target or self._selected()
@@ -495,6 +486,7 @@ class App(tk.Tk):
         self._run(
             lambda _force: ops.extract_slot(self.vault, Path(sel["dir"]), sel["slot"], label=""),
             success=f"Extracted slot {sel['slot']}.",
+            message=f"Extracting slot {sel['slot']} — please wait…",
         )
 
     def on_repopulate(self, target: dict | None = None) -> None:
@@ -515,6 +507,7 @@ class App(tk.Tk):
         self._run(
             lambda force: ops.repopulate_slot(self.vault, Path(sel["dir"]), sel["slot"], self.live_dir, dest, allow_game_running=force),
             success=f"Repopulated live slot {dest}.",
+            message=f"Writing live slot {dest} — please wait…",
         )
 
     def on_promote(self, target: dict | None = None) -> None:
@@ -525,6 +518,7 @@ class App(tk.Tk):
         self._run(
             lambda force: ops.promote_member(self.vault, self.live_dir, sel["slot"], sel["member"], allow_game_running=force),
             success="Promoted.",
+            message="Promoting — please wait…",
         )
 
     def on_import(self) -> None:
@@ -537,6 +531,7 @@ class App(tk.Tk):
         self._run(
             lambda _force: ops.import_backup(self.vault, Path(directory), copy_into_vault=copy),
             success="Imported.",
+            message="Importing — please wait…",
         )
 
     def on_rescan(self) -> None:
@@ -579,7 +574,11 @@ class App(tk.Tk):
             return
         if not messagebox.askyesno("Undo", "Undo the last operation by restoring its auto-snapshot?"):
             return
-        self._run(lambda force: ops.undo_last(self.vault, self.live_dir, allow_game_running=force), success="Undone.")
+        self._run(
+            lambda force: ops.undo_last(self.vault, self.live_dir, allow_game_running=force),
+            success="Undone.",
+            message="Undoing — please wait…",
+        )
 
     def on_help(self) -> None:
         win = tk.Toplevel(self)
