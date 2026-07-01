@@ -139,7 +139,11 @@ def snapshot_live(vault: Vault, live_dir: Path, reason: str) -> CatalogEntry:
 
 
 def _prune_snapshots(vault: Vault) -> None:
-    snaps = sorted((e for e in vault.entries if e.kind == KIND_SNAPSHOT), key=lambda e: e.id)
+    # Sort by creation time, not id: ids are "snapshot-<platform>-<stamp>", so sorting by id
+    # groups by platform and would prune the wrong (not the oldest) snapshots when a user has
+    # both Steam and Xbox live folders -- including a just-created one still referenced by the
+    # oplog, which would silently defeat undo.
+    snaps = sorted((e for e in vault.entries if e.kind == KIND_SNAPSHOT), key=lambda e: e.created)
     for old in snaps[:-SNAPSHOT_RETENTION]:
         shutil.rmtree(old.path, ignore_errors=True)
         vault.remove(old.id)

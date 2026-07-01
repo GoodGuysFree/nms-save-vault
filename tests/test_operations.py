@@ -151,3 +151,32 @@ def test_restore_full_from_xbox_entry_is_gated(sandbox, tmp_path):
     entry = CatalogEntry(id="imported-xbox-test", kind="imported", label="", path=str(xbox), created="now")
     with pytest.raises(ops.FeatureNotYetAvailableError):
         ops.restore_full(vault, entry, live, allow_game_running=True)
+
+
+def test_prune_snapshots_is_chronological_across_platforms(tmp_path):
+    """Regression: snapshot ids embed the platform ('snapshot-<platform>-<stamp>'), so a
+    naive id sort groups every Steam snapshot before every Xbox one and would prune the wrong
+    end -- including a just-created snapshot still referenced by the oplog, silently defeating
+    undo. Pruning must be by creation time."""
+    vault = Vault(tmp_path / "vault")
+    vault.ensure()
+
+    def add(entry_id: str, created: str) -> Path:
+        d = vault.snapshots_dir / entry_id
+        d.mkdir(parents=True)
+        vault.upsert(CatalogEntry(id=entry_id, kind="snapshot", label="", path=str(d), created=created))
+        return d
+
+    # 20 older Xbox snapshots + 1 Steam snapshot created most recently (21 > retention of 20).
+    oldest = add("snapshot-xbox-20260601-000000", "2026-06-01T00:00:00")
+    for day in range(2, 21):
+        add(f"snapshot-xbox-202606{day:02d}-000000", f"2026-06-{day:02d}T00:00:00")
+    newest = add("snapshot-steam-20260701-120000", "2026-07-01T12:00:00")
+
+    ops._prune_snapshots(vault)
+
+    ids = {e.id for e in vault.entries}
+    assert len(ids) == ops.SNAPSHOT_RETENTION
+    # The most recent snapshot survives; the single oldest is the one pruned.
+    assert newest.name in ids and newest.is_dir()
+    assert oldest.name not in ids and not oldest.exists()
