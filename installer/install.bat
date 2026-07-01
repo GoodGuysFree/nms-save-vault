@@ -14,6 +14,7 @@ set "SRC=%~dp0"
 set "EXE=NMSSaveVault.exe"
 set "INSTALL_DIR=%LOCALAPPDATA%\Programs\NMSSaveVault"
 set "TARGET=%INSTALL_DIR%\%EXE%"
+set "ICON=%INSTALL_DIR%\nmsvault.ico"
 set "DESKTOP_LNK=%USERPROFILE%\Desktop\NMS Save Vault.lnk"
 set "STARTMENU_DIR=%APPDATA%\Microsoft\Windows\Start Menu\Programs"
 set "STARTMENU_LNK=%STARTMENU_DIR%\NMS Save Vault.lnk"
@@ -47,6 +48,12 @@ rem --- convenience launcher in the install folder ----------------------------
 > "%INSTALL_DIR%\vault.bat" echo @echo off
 >>"%INSTALL_DIR%\vault.bat" echo start "" "%%~dp0%EXE%"
 
+rem --- bundle the uninstaller alongside the app so it's always available ------
+if exist "%SRC%uninstall.bat" copy /y "%SRC%uninstall.bat" "%INSTALL_DIR%\uninstall.bat" >nul
+
+rem --- keep the app icon on disk so shortcuts point straight at it ------------
+if exist "%SRC%nmsvault.ico" copy /y "%SRC%nmsvault.ico" "%ICON%" >nul
+
 echo(
 set "DESK=Y"
 set /p "DESK=  Create a Desktop shortcut?  [Y/n] "
@@ -70,6 +77,7 @@ echo(
 if defined DID_SHORTCUT (
     echo  Done. Start "NMS Save Vault" from your new shortcut.
     echo  ^(Installed at %INSTALL_DIR%^)
+    echo  To remove it later, run uninstall.bat in that folder.
     echo(
     pause
     exit /b 0
@@ -88,5 +96,5 @@ rem ---------------------------------------------------------------------------
 rem  %~1 = full path of the .lnk to create. Paths are passed via environment
 rem  variables so spaces/quotes never break the PowerShell command line.
 set "LNK=%~1"
-powershell -NoProfile -Command "$w = New-Object -ComObject WScript.Shell; $s = $w.CreateShortcut($env:LNK); $s.TargetPath = $env:TARGET; $s.WorkingDirectory = $env:INSTALL_DIR; $s.IconLocation = $env:TARGET + ',0'; $s.Description = 'NMS Save Vault'; $s.Save()"
+powershell -NoProfile -Command "$w = New-Object -ComObject WScript.Shell; $s = $w.CreateShortcut($env:LNK); $s.TargetPath = $env:TARGET; $s.WorkingDirectory = $env:INSTALL_DIR; $s.IconLocation = $(if (Test-Path $env:ICON) { $env:ICON + ',0' } else { $env:TARGET + ',0' }); $s.Description = 'NMS Save Vault'; $s.Save()"
 exit /b %errorlevel%

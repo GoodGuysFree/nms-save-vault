@@ -4,7 +4,9 @@ Assemble the distributable installer zip.
 Produces dist\NMSSaveVault-Setup.zip containing:
     NMSSaveVault.exe        (the self-contained app)
     install.bat             (copies it in + offers shortcuts)
+    uninstall.bat           (removes the app, config, and shortcuts)
     README-INSTALL.txt
+    nmsvault.ico            (app icon, used for the shortcuts)
 
 If the exe is missing it builds it first via build_exe.ps1.
 
@@ -32,7 +34,9 @@ if (Test-Path $stageDir) { Remove-Item -Recurse -Force $stageDir }
 New-Item -ItemType Directory -Path $stageDir | Out-Null
 Copy-Item $exe                                   (Join-Path $stageDir "NMSSaveVault.exe")
 Copy-Item (Join-Path $installer "install.bat")   (Join-Path $stageDir "install.bat")
+Copy-Item (Join-Path $installer "uninstall.bat") (Join-Path $stageDir "uninstall.bat")
 Copy-Item (Join-Path $installer "README-INSTALL.txt") (Join-Path $stageDir "README-INSTALL.txt")
+Copy-Item (Join-Path $pkgDir    "nmsvault.ico")  (Join-Path $stageDir "nmsvault.ico")
 
 Write-Host "==> Compressing -> $zipPath"
 if (Test-Path $zipPath) { Remove-Item -Force $zipPath }

@@ -7,7 +7,7 @@ designed to give you effectively unlimited save slots beyond the game's 15.
 
 **Just want to run it? No Python needed.** Download the ready-to-use Windows kit from the
 [**latest release**](https://github.com/GoodGuysFree/nms-save-vault/releases/latest) — grab
-`NMSSaveVault-Setup-v0.0.3.zip` under **Assets**.
+`NMSSaveVault-Setup-v0.0.4.zip` under **Assets**.
 
 Extract the zip and run **`install.bat`**. Everything (Python + Tkinter) is bundled in the
 single `.exe`; the installer offers Desktop / Start-Menu shortcuts. The exe is unsigned, so
@@ -38,7 +38,7 @@ See [DESIGN.md](DESIGN.md) for the architecture and the verified save-format det
 
 ## Install (Windows, no Python needed)
 
-Download **`NMSSaveVault-Setup-v0.0.3.zip`** from the
+Download **`NMSSaveVault-Setup-v0.0.4.zip`** from the
 [**Releases**](https://github.com/GoodGuysFree/nms-save-vault/releases) page (under the
 release's **Assets**), extract it, and run **`install.bat`**.
 It copies the bundled app to `%LOCALAPPDATA%\Programs\NMSSaveVault` and asks whether to
@@ -47,6 +47,10 @@ add a Desktop shortcut and/or a Start Menu entry. If you decline both, it leaves
 Everything (Python + Tkinter) is bundled in the single `.exe` — nothing else to install.
 The exe is unsigned, so Windows SmartScreen may prompt the first time (*More info → Run
 anyway*).
+
+To remove it, run **`uninstall.bat`** (placed in the install folder, and also in the zip):
+it deletes the app, its config, and the shortcuts, leaving your game saves and
+backups / vault untouched. No registry entries or admin rights are involved either way.
 
 ### Building the distributable yourself
 
@@ -166,6 +170,7 @@ install. A full file-copy safety backup of the live folder was made before devel
 
 | Version | Date | Highlights |
 |---|---|---|
+| **0.0.4** | 2026-07-01 | Installer-kit improvements (no changes to the app itself): added an uninstaller (`uninstall.bat`) that removes the app, its config (`state.json`), and the Desktop / Start Menu shortcuts while leaving your game saves and backups / vault untouched — no registry entries, no admin rights; `install.bat` drops it into the install folder so it's always available. The Desktop / Start Menu shortcuts now use the app icon directly (the `.ico` is installed on disk and referenced explicitly, instead of relying on the exe's embedded icon index). |
 | **0.0.3** | 2026-07-01 | Reliability fixes: auto-snapshot pruning is now chronological, so it can no longer delete the snapshot that an `undo` needs (it previously grouped by platform when both Steam and Xbox were in use); the game-running check no longer flashes a console window on every action in the windowed build; and every write operation (not just backup) now shows a modal "please wait" dialog while it works. |
 | **0.0.2** | 2026-06-30 | **Xbox / Game Pass saves are now read-write** for same-platform operations (backup, restore, per-slot repopulate, promote) — the wgs writer rotates blob GUIDs and rewrites `containers.index` with correct sync states, following the libNOM.io layout; every write auto-snapshots so `undo` works. Steam↔Xbox transfer remains gated ("coming soon"). |
 | **0.0.1** | 2026-06-30 | First public release. Full backup / restore; catalog with per-slot extract / repopulate (meta re-keyed across slots) / promote; manual-backup import; multi-account auto-config (Steam live read-write, Xbox / Game Pass read-only); Tkinter GUI + `nmsvault` CLI; one-file Windows installer kit. Xbox→Steam transfer is gated ("coming soon"). |

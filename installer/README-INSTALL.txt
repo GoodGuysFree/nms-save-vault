@@ -42,9 +42,14 @@ The .exe is not code-signed, so SmartScreen may warn the first time. Choose
 
 Uninstall
 ---------
+Easiest: run  uninstall.bat  — it's placed in the install folder next to the app
+(and is also in this zip). It removes the app, its config (state.json) and the
+Desktop / Start Menu shortcuts. Your game saves and your backups / vault are NOT
+touched. Close the app first, or it can't delete the running .exe.
+
+Manual alternative (does the same thing by hand):
 - Delete the folder:  %LOCALAPPDATA%\Programs\NMSSaveVault
-  (this also removes the config, state.json, which lives there — it does NOT touch
-   your game saves or your backups/vault).
+  (this also removes the config, state.json, which lives there).
 - Delete any shortcuts you created (Desktop / Start Menu).
 
 Source & license
