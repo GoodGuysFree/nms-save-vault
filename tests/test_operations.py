@@ -153,6 +153,107 @@ def test_restore_full_from_xbox_entry_is_gated(sandbox, tmp_path):
         ops.restore_full(vault, entry, live, allow_game_running=True)
 
 
+def _mk_vault_entry(vault: Vault, subdir: Path, entry_id: str, kind: str, created: str,
+                    *, managed: bool = True, payload: bytes = b"x") -> Path:
+    """Add a managed catalog entry to ``vault`` with a real data folder under ``subdir``."""
+    folder = subdir / entry_id
+    folder.mkdir(parents=True)
+    (folder / "save.hg").write_bytes(payload)
+    vault.upsert(CatalogEntry(id=entry_id, kind=kind, label=entry_id, path=str(folder),
+                              created=created, managed=managed))
+    return folder
+
+
+def _source_vault(tmp_path: Path) -> Vault:
+    """A synthetic 'copied' vault: one full backup + one snapshot (both managed)."""
+    src = Vault(tmp_path / "src")
+    src.ensure()
+    _mk_vault_entry(src, src.backups_dir, "full-steam-20260601-000000", "full", "2026-06-01T00:00:00", payload=b"full")
+    _mk_vault_entry(src, src.snapshots_dir, "snapshot-steam-20260602-000000", "snapshot", "2026-06-02T00:00:00", payload=b"snap")
+    return src
+
+
+def test_import_vault_copy_brings_files_in_and_is_idempotent(tmp_path):
+    src = _source_vault(tmp_path)
+    cur = Vault(tmp_path / "cur")
+    cur.ensure()
+
+    res = ops.import_vault(cur, src.root, copy_into_vault=True)
+    assert res.ok and sorted(res.changed) == ["full-steam-20260601-000000", "snapshot-steam-20260602-000000"]
+
+    # Files were copied into THIS vault, entries re-pointed and still managed.
+    assert (cur.backups_dir / "full-steam-20260601-000000" / "save.hg").read_bytes() == b"full"
+    assert (cur.snapshots_dir / "snapshot-steam-20260602-000000" / "save.hg").read_bytes() == b"snap"
+    full = cur.get("full-steam-20260601-000000")
+    assert Path(full.path) == cur.backups_dir / "full-steam-20260601-000000" and full.managed
+
+    # Idempotent: a second import adds nothing.
+    res2 = ops.import_vault(cur, src.root, copy_into_vault=True)
+    assert res2.changed == []
+    assert {e.id for e in cur.entries} == {"full-steam-20260601-000000", "snapshot-steam-20260602-000000"}
+
+
+def test_import_vault_in_place_references_source_and_is_unmanaged(tmp_path):
+    src = _source_vault(tmp_path)
+    cur = Vault(tmp_path / "cur")
+    cur.ensure()
+
+    res = ops.import_vault(cur, src.root, copy_into_vault=False)
+    assert res.ok and len(res.changed) == 2
+
+    snap = cur.get("snapshot-steam-20260602-000000")
+    # Points back at the source vault, and is NOT managed (so our pruning won't delete it).
+    assert Path(snap.path) == src.snapshots_dir / "snapshot-steam-20260602-000000"
+    assert snap.managed is False
+    # Nothing was copied into the current vault.
+    assert not (cur.snapshots_dir / "snapshot-steam-20260602-000000").exists()
+
+
+def test_import_vault_preview_and_guards(tmp_path):
+    src = _source_vault(tmp_path)
+    cur = Vault(tmp_path / "cur")
+    cur.ensure()
+
+    pv = ops.preview_vault_import(cur, src.root)
+    assert pv["total"] == 2 and len(pv["new"]) == 2 and pv["existing"] == []
+
+    # After importing, preview reports them all as existing.
+    ops.import_vault(cur, src.root, copy_into_vault=True)
+    pv2 = ops.preview_vault_import(cur, src.root)
+    assert len(pv2["new"]) == 0 and len(pv2["existing"]) == 2
+
+    # Not a vault, and importing a vault into itself, are both refused.
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    with pytest.raises(ops.OperationError):
+        ops.import_vault(cur, plain, copy_into_vault=True)
+    with pytest.raises(ops.OperationError):
+        ops.import_vault(cur, cur.root, copy_into_vault=True)
+
+
+def test_prune_leaves_unmanaged_snapshots_untouched(tmp_path):
+    """An in-place-imported snapshot (managed=False) must never be pruned/deleted, and must
+    not count toward the managed-snapshot retention budget."""
+    vault = Vault(tmp_path / "vault")
+    vault.ensure()
+    foreign = tmp_path / "foreign"
+    foreign.mkdir()
+    (foreign / "save.hg").write_bytes(b"keep")
+    vault.upsert(CatalogEntry(id="snapshot-xbox-20250101-000000", kind="snapshot", label="",
+                              path=str(foreign), created="2025-01-01T00:00:00", managed=False))
+    # Fill the managed retention budget so prune would evict the oldest if it counted foreign.
+    for day in range(1, ops.SNAPSHOT_RETENTION + 1):
+        _mk_vault_entry(vault, vault.snapshots_dir, f"snapshot-steam-202606{day:02d}-000000",
+                        "snapshot", f"2026-06-{day:02d}T00:00:00")
+
+    ops._prune_snapshots(vault)
+
+    ids = {e.id for e in vault.entries}
+    assert "snapshot-xbox-20250101-000000" in ids  # unmanaged foreign snapshot survives
+    assert foreign.is_dir() and (foreign / "save.hg").is_file()  # its files were not touched
+    assert len([e for e in vault.entries if e.managed and e.kind == "snapshot"]) == ops.SNAPSHOT_RETENTION
+
+
 def test_prune_snapshots_is_chronological_across_platforms(tmp_path):
     """Regression: snapshot ids embed the platform ('snapshot-<platform>-<stamp>'), so a
     naive id sort groups every Steam snapshot before every Xbox one and would prune the wrong
@@ -164,7 +265,8 @@ def test_prune_snapshots_is_chronological_across_platforms(tmp_path):
     def add(entry_id: str, created: str) -> Path:
         d = vault.snapshots_dir / entry_id
         d.mkdir(parents=True)
-        vault.upsert(CatalogEntry(id=entry_id, kind="snapshot", label="", path=str(d), created=created))
+        vault.upsert(CatalogEntry(id=entry_id, kind="snapshot", label="", path=str(d),
+                                  created=created, managed=True))
         return d
 
     # 20 older Xbox snapshots + 1 Steam snapshot created most recently (21 > retention of 20).

@@ -232,6 +232,13 @@ class Vault:
         )
 
 
+def looks_like_vault_dir(path: str | Path) -> bool:
+    """True if ``path`` is an NMS Save Vault root. The authoritative marker is
+    ``catalog.json`` (written the first time the vault gains an entry); a vault copied
+    elsewhere carries it along with its ``backups``/``snapshots``/``extracts`` folders."""
+    return (Path(path) / "catalog.json").is_file()
+
+
 def discover_save_dirs(root: str | Path, exclude=(), max_depth: int = 3) -> list[Path]:
     """Find folders under ``root`` (to a bounded depth) that look like NMS save dirs."""
     root = Path(root)

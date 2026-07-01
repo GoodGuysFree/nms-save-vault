@@ -24,7 +24,9 @@ Windows SmartScreen may prompt the first time (*More info → Run anyway*). Full
    any save in any cataloged backup (re-keying the meta when the slot number differs).
    You can also inspect a slot's two saves (manual + auto restore-point) individually and
    force the older one to become the newest.
-3. **Import** — register an existing manual backup folder into the catalog.
+3. **Import** — register an existing manual backup folder into the catalog, or import an
+   entire copied Save Vault folder: it compares that vault's entries with yours and offers
+   to copy the new ones in or index them in place (idempotent — re-importing is harmless).
 
 ## Why it's safe
 

@@ -10,7 +10,7 @@ member only edits the meta timestamp. The data bytes are never recompressed.
 from __future__ import annotations
 
 import shutil
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
 
@@ -23,6 +23,7 @@ from .catalog import (
     KIND_SNAPSHOT,
     CatalogEntry,
     Vault,
+    looks_like_vault_dir,
 )
 from .slotmap import SaveFileRef, slot_file_numbers, storage_ordinal
 
@@ -142,8 +143,11 @@ def _prune_snapshots(vault: Vault) -> None:
     # Sort by creation time, not id: ids are "snapshot-<platform>-<stamp>", so sorting by id
     # groups by platform and would prune the wrong (not the oldest) snapshots when a user has
     # both Steam and Xbox live folders -- including a just-created one still referenced by the
-    # oplog, which would silently defeat undo.
-    snaps = sorted((e for e in vault.entries if e.kind == KIND_SNAPSHOT), key=lambda e: e.created)
+    # oplog, which would silently defeat undo. Only prune snapshots this vault manages -- an
+    # in-place-imported snapshot (managed=False) belongs to another vault; never delete it.
+    snaps = sorted(
+        (e for e in vault.entries if e.kind == KIND_SNAPSHOT and e.managed), key=lambda e: e.created
+    )
     for old in snaps[:-SNAPSHOT_RETENTION]:
         shutil.rmtree(old.path, ignore_errors=True)
         vault.remove(old.id)
@@ -479,6 +483,100 @@ def import_backup(vault: Vault, path: Path, label: str = "", copy_into_vault: bo
     vault.upsert(entry)
     vault.append_oplog(_oplog("import", entry_id=entry.id, detail=str(path)))
     return entry
+
+
+# --- feature 4: import a whole vault ----------------------------------------
+#
+# Recognise a copied vault directory (its own catalog.json + backups/snapshots/extracts) and
+# fold the entries this vault does not already have into it -- either copying each entry's
+# files in (self-contained) or cataloguing them in place (referencing the source folder).
+# Keyed on entry id, so re-importing the same vault is a no-op (idempotent).
+
+
+def preview_vault_import(vault: Vault, source_dir: Path) -> dict:
+    """Compare a source vault against ``vault`` without changing anything. Returns
+    ``{"total", "new", "existing"}`` where new/existing are lists of the source's
+    ``CatalogEntry``. Raises ``OperationError`` if ``source_dir`` is not a vault or is this
+    same vault."""
+    source_dir = Path(source_dir)
+    if not looks_like_vault_dir(source_dir):
+        raise OperationError(f"not an NMS Save Vault folder (no catalog.json): {source_dir}")
+    if source_dir.resolve() == vault.root.resolve():
+        raise OperationError("that is the current vault; nothing to import")
+    src_entries = Vault(source_dir).load().entries
+    have = {e.id for e in vault.entries}
+    return {
+        "total": len(src_entries),
+        "new": [e for e in src_entries if e.id not in have],
+        "existing": [e for e in src_entries if e.id in have],
+    }
+
+
+def import_vault(vault: Vault, source_dir: Path, copy_into_vault: bool) -> OpResult:
+    """Import the entries of another vault at ``source_dir`` into ``vault``. With
+    ``copy_into_vault`` each managed entry's files are copied into this vault (self-contained);
+    otherwise they are catalogued in place, referencing the source folder. Idempotent: an
+    entry whose id this vault already has is skipped, and an existing target folder is never
+    overwritten."""
+    source_dir = Path(source_dir)
+    total = preview_vault_import(vault, source_dir)["total"]  # also validates source_dir
+    vault.ensure()
+    src = Vault(source_dir).load()
+
+    added: list[str] = []
+    warnings: list[str] = []
+    have = {e.id for e in vault.entries}
+    for e in src.entries:
+        if e.id in have:
+            continue
+        new_entry = _relocate_entry(vault, src, e, copy_into_vault, warnings)
+        if new_entry is None:
+            continue
+        vault.upsert(new_entry)
+        have.add(e.id)
+        added.append(e.id)
+
+    skipped = total - len(added)
+    mode = "copied into vault" if copy_into_vault else "indexed in place"
+    detail = (
+        f"imported {len(added)} new entr{'y' if len(added) == 1 else 'ies'} ({mode}); "
+        f"{skipped} already present"
+    )
+    vault.append_oplog(_oplog("import_vault", detail=f"{source_dir} [{mode}] +{len(added)}"))
+    return OpResult(True, "import_vault", detail, changed=added, warnings=warnings)
+
+
+def _entry_folder(vault: Vault, entry: CatalogEntry) -> Path:
+    """Where a managed entry's files live within ``vault`` (subfolder by kind, named by id)."""
+    subdir = {KIND_SNAPSHOT: vault.snapshots_dir, KIND_EXTRACT: vault.extracts_dir}.get(
+        entry.kind, vault.backups_dir
+    )
+    return subdir / entry.id
+
+
+def _relocate_entry(
+    vault: Vault, src: Vault, entry: CatalogEntry, copy_into_vault: bool, warnings: list[str]
+) -> CatalogEntry | None:
+    """Build a current-vault entry from a source-vault entry: copy its files in (copy mode) or
+    point at the source folder (in place). Returns None to skip (source data missing)."""
+    if not entry.managed or entry.kind == KIND_INPLACE:
+        # External reference: the data was never inside the source vault. Re-catalogue as-is;
+        # the recorded path still points at the external save folder.
+        if not Path(entry.path).is_dir():
+            warnings.append(f"{entry.id}: referenced folder is missing ({entry.path})")
+        return replace(entry)
+    src_folder = _entry_folder(src, entry)
+    if not src_folder.is_dir():
+        warnings.append(f"{entry.id}: data folder not found in source vault ({src_folder})")
+        return None
+    if copy_into_vault:
+        dst_folder = _entry_folder(vault, entry)
+        if not dst_folder.exists():  # idempotent: never re-copy over an existing folder
+            shutil.copytree(src_folder, dst_folder)
+        return replace(entry, path=str(dst_folder), managed=True)
+    # In place: reference the source vault's folder, but do NOT manage it, so this vault's
+    # snapshot pruning never deletes files that belong to the other vault.
+    return replace(entry, path=str(src_folder), managed=False)
 
 
 # --- undo --------------------------------------------------------------------

@@ -10,6 +10,7 @@ Examples:
     nmsvault repopulate --from <entry-id|path> --src-slot 9 --to-slot 3
     nmsvault promote --slot 9 --member A
     nmsvault import "D:\\some\\st_backup" [--copy]
+    nmsvault import "E:\\Backup\\_SaveVault" [--copy]   # a whole copied vault
     nmsvault discover [--add]
     nmsvault undo
     nmsvault verify [live|<entry-id>|<path>]
@@ -21,7 +22,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from .core import discover, locations, operations as ops
+from .core import catalog, discover, locations, operations as ops
 from .core import savedir, slotmap
 from .core import state as appstate
 from .core.catalog import Vault
@@ -209,7 +210,12 @@ def cmd_promote(args) -> int:
 
 def cmd_import(args) -> int:
     vault = _resolve_vault(args)
-    entry = ops.import_backup(vault, Path(args.path), label=args.label or "", copy_into_vault=args.copy)
+    path = Path(args.path)
+    if catalog.looks_like_vault_dir(path):
+        res = ops.import_vault(vault, path, copy_into_vault=args.copy)
+        _report(res)
+        return 0
+    entry = ops.import_backup(vault, path, label=args.label or "", copy_into_vault=args.copy)
     print(f"imported '{entry.id}' [{entry.kind}] ({len(entry.occupied_slots)} slots)")
     return 0
 
@@ -354,9 +360,9 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--force", action="store_true")
     s.set_defaults(func=cmd_promote)
 
-    s = sub.add_parser("import", help="register a manual backup folder in the catalog")
+    s = sub.add_parser("import", help="register a save folder, or a whole copied vault, in the catalog")
     s.add_argument("path")
-    s.add_argument("--copy", action="store_true", help="copy into the vault instead of indexing in place")
+    s.add_argument("--copy", action="store_true", help="copy files into the vault instead of indexing in place")
     s.add_argument("--label", default="")
     s.set_defaults(func=cmd_import)
 

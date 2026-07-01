@@ -15,7 +15,7 @@ from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
-from .core import discover, locations
+from .core import catalog, discover, locations
 from .core import operations as ops
 from .core import savedir
 from .core import state as appstate
@@ -527,11 +527,50 @@ class App(tk.Tk):
             self._import_dir(folder)
 
     def _import_dir(self, directory) -> None:
+        directory = Path(directory)
+        if catalog.looks_like_vault_dir(directory):
+            self._import_vault_dir(directory)
+            return
         copy = messagebox.askyesno("Import", "Copy the backup into the vault?\n(No = index it where it is.)")
         self._run(
-            lambda _force: ops.import_backup(self.vault, Path(directory), copy_into_vault=copy),
+            lambda _force: ops.import_backup(self.vault, directory, copy_into_vault=copy),
             success="Imported.",
             message="Importing — please wait…",
+        )
+
+    def _import_vault_dir(self, directory: Path) -> None:
+        """Import another Save Vault folder: compare it to the current vault, then offer to
+        copy its new entries in or index them in place."""
+        try:
+            pv = ops.preview_vault_import(self.vault, directory)
+        except ops.OperationError as exc:
+            messagebox.showerror("Import vault", str(exc))
+            return
+        total, new, existing = pv["total"], pv["new"], pv["existing"]
+        plural = "y" if total == 1 else "ies"
+        if not new:
+            messagebox.showinfo(
+                "Import vault",
+                f"'{directory.name}' is a Save Vault with {total} entr{plural}, "
+                "all already in your vault. Nothing to import.",
+            )
+            return
+        ans = messagebox.askyesnocancel(
+            "Import vault",
+            f"'{directory.name}' is a Save Vault with {total} entr{plural}:\n"
+            f"  - {len(new)} new\n"
+            f"  - {len(existing)} already in your vault\n\n"
+            "Copy the new entries' files INTO your vault?\n\n"
+            "Yes  = copy in (self-contained)\n"
+            "No  = index in place (reference that folder)\n"
+            "Cancel = don't import",
+        )
+        if ans is None:
+            return
+        self._run(
+            lambda _force: ops.import_vault(self.vault, directory, copy_into_vault=bool(ans)),
+            success="Vault imported.",
+            message="Importing vault — please wait…",
         )
 
     def on_rescan(self) -> None:
@@ -626,7 +665,9 @@ BUTTONS
 - Promote: Select one of a live slot's two saves (A or B) to force it to be the newest,
   so the game loads it instead of the other -- e.g. to roll back to the restore point.
 - Import: Register an existing save folder you made yourself (or an Xbox / Game Pass
-  save) into the catalog -- either in place or copied into the vault.
+  save) into the catalog -- either in place or copied into the vault. You can also point
+  Import at a whole copied Save Vault folder: it compares that vault's entries with yours
+  and offers to copy the new ones in or index them in place (re-importing is harmless).
 - Rescan: Re-detect live save folders (new Steam account, new Xbox account) and add them
   to the LIVE SAVES list. Your manual entries are left untouched.
 - Discover: Scan the NMS folder for existing backups and add any new ones found.
