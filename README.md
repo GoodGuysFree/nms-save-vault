@@ -38,6 +38,31 @@ Windows SmartScreen may prompt the first time (*More info → Run anyway*). Full
 
 See [DESIGN.md](DESIGN.md) for the architecture and the verified save-format details.
 
+## Platform support
+
+| Platform | Status |
+|---|---|
+| **Steam** (Windows) | **Supported and tested** — the primary target. |
+| **GOG.com** (Windows) | **Should work — untested.** GOG uses the *identical* Steam save format, just in a `DefaultUser` folder instead of `st_<steamid>`. |
+| **Epic Games Store** (Windows) | **Should work — untested.** Same as GOG: Epic and GOG share the exact same `DefaultUser` folder and save format. |
+| **Microsoft Store / Xbox Game Pass** (Windows) | **Supported** — read *and* same-platform write; see [Xbox / Game Pass](#xbox--game-pass-read-and-write). |
+| **Steam Deck / Linux** (Proton) | **Not yet supported.** The save format is the same, but this is a Windows desktop app and the saves live inside a Proton prefix. |
+| **macOS** (native or via Steam) | **Not yet supported.** Different OS; the Windows app can't reach `~/Library/Application Support/HelloGames/NMS`. |
+
+**GOG & Epic — testers wanted.** The on-disk files are byte-for-byte the same Steam format
+this tool already reads and writes, so everything *should* just work. But nobody has confirmed
+it on a real GOG or Epic install yet, and auto-discovery does not yet recognise the
+`DefaultUser` folder as a live source — for now, point commands at it explicitly, e.g.
+`nmsvault status --live "%AppData%\HelloGames\NMS\DefaultUser"`. **If you play on GOG or Epic,
+we'd love your help:** try it against a *copy* of your save first, then
+[open an issue or discussion](https://github.com/GoodGuysFree/nms-save-vault/issues) with how it
+went. Both success testimonials and bug reports move these from "untested" to officially supported.
+
+**Linux / Steam Deck and macOS are not supported yet, and help is welcome.** If you'd like to
+work on a Proton-aware path finder, a Linux/macOS build, or just test on those platforms, please
+[open an issue](https://github.com/GoodGuysFree/nms-save-vault/issues) — contributions and
+volunteers are very welcome.
+
 ## Install (Windows, no Python needed)
 
 Download **`NMSSaveVault-Setup-v0.0.5.zip`** from the
