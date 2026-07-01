@@ -228,6 +228,9 @@ def restore_full(
 def extract_slot(vault: Vault, source_dir: Path, slot: int, label: str = "") -> CatalogEntry:
     vault.ensure()
     source_dir = Path(source_dir)
+    _check_slot(slot)
+    if _is_xbox(source_dir):
+        return _extract_slot_xbox(vault, source_dir, slot, label)
     eid = vault.new_id(KIND_EXTRACT, tag=savedir.platform_of(source_dir))
     dest = vault.extracts_dir / eid
     dest.mkdir(parents=True, exist_ok=True)
@@ -394,6 +397,32 @@ def _promote_member_xbox(vault: Vault, live_dir: Path, slot: int, member: int, a
     changed = [target.xbox.identifier]
     vault.append_oplog(_oplog("promote_member", snapshot_id=snap.id, detail=f"xbox slot {slot}{'AB'[member]} ts->{new_ts}", changed=changed))
     return OpResult(True, "promote_member", f"slot {slot}{'AB'[member]} promoted", snapshot_id=snap.id, changed=changed, warnings=warnings)
+
+
+def _extract_slot_xbox(vault: Vault, source_dir: Path, slot: int, label: str) -> CatalogEntry:
+    """Extract one wgs slot into the vault as a minimal, self-contained wgs folder: its own
+    ``containers.index`` (just this slot's records) plus the slot's blob directories copied
+    verbatim. That way it scans, summarises and repopulates exactly like any Xbox source."""
+    info, containers = msstore.parse_containers_index(source_dir)
+    wanted = {_ms_identifier(slot, 0), _ms_identifier(slot, 1)}
+    picked = [c for c in containers if c.identifier in wanted and c.data_file and c.data_file.is_file()]
+    if not picked:
+        raise OperationError(f"slot {slot} has no saves to extract in {source_dir}")
+
+    eid = vault.new_id(KIND_EXTRACT, tag="xbox")
+    dest = vault.extracts_dir / eid
+    dest.mkdir(parents=True, exist_ok=True)
+    for c in picked:
+        shutil.copytree(c.directory, dest / c.dir_guid)  # the GUID blob folder, verbatim
+    # Rebuild the index from just the picked records; build uses their dir_guid (not absolute
+    # paths), so the copied folders resolve under dest.
+    safety.atomic_write_bytes(dest / "containers.index", msstore.build_containers_index(info, picked))
+
+    lbl = label or f"slot {slot} from {source_dir.name}"
+    entry = vault.make_entry_from_dir(eid, KIND_EXTRACT, lbl, dest, managed=True, source=source_dir.name, slots=[slot])
+    vault.upsert(entry)
+    vault.append_oplog(_oplog("extract_slot", entry_id=eid, detail=f"xbox slot {slot}"))
+    return entry
 
 
 def _repopulate_slot_xbox(vault: Vault, source_dir: Path, source_slot: int, live_dir: Path, dest_slot: int, allow_game_running: bool) -> OpResult:

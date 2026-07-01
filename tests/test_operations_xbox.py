@@ -3,6 +3,8 @@
 snapshots first so ``undo`` can be asserted."""
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from nms_save_vault.core import operations as ops
@@ -160,3 +162,34 @@ def test_repopulate_invalid_slot_raises(make_wgs_account, tmp_path):
     vault = _vault(tmp_path)
     with pytest.raises(ops.OperationError):
         ops.repopulate_slot(vault, live, 1, live, 99, allow_game_running=True)
+
+
+def test_extract_slot_xbox_scans_and_repopulates(make_wgs_account, tmp_path):
+    """Extracting an Xbox slot yields a self-contained wgs folder that scans back with both
+    members and can be repopulated into a live Xbox slot (the original bug: extract raised
+    'no saves to extract' on wgs sources)."""
+    live = make_wgs_account(tmp_path, [
+        ("Slot2Auto", '{"a":1}', "Two A", "", 100, 1000),
+        ("Slot2Manual", '{"b":2}', "Two B", "", 90, 900),
+    ])
+    vault = _vault(tmp_path)
+
+    entry = ops.extract_slot(vault, live, 2, label="aside")
+    assert entry.kind == "extract"
+    ev = savedir.scan_any(entry.path)
+    assert ev.slots[2].a.save_name == "Two A" and ev.slots[2].b.save_name == "Two B"
+
+    # The extracted-aside slot repopulates back into a different live slot, verbatim.
+    src_bytes = ev.slots[2].a.data_path.read_bytes()
+    res = ops.repopulate_slot(vault, Path(entry.path), 2, live, 5, allow_game_running=True)
+    assert res.ok
+    after = savedir.scan_any(live)
+    assert after.slots[5].a.save_name == "Two A" and after.slots[5].b.save_name == "Two B"
+    assert after.slots[5].a.data_path.read_bytes() == src_bytes
+
+
+def test_extract_empty_xbox_slot_raises(make_wgs_account, tmp_path):
+    live = make_wgs_account(tmp_path, [("Slot1Auto", '{"a":1}', "A", "", 1, 100)])
+    vault = _vault(tmp_path)
+    with pytest.raises(ops.OperationError):
+        ops.extract_slot(vault, live, 7, label="")
