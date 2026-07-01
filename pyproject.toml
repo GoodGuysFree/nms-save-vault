@@ -1,6 +1,6 @@
 [project]
 name = "nms-save-vault"
-version = "0.0.2"
+version = "0.0.3"
 description = "Safe backup, catalog, and slot management for No Man's Sky (PC/Steam) save files."
 readme = "README.md"
 license = { text = "GPL-3.0-or-later" }
