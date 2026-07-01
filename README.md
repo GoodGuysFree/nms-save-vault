@@ -1,7 +1,8 @@
 # NMS Save Vault
 
-Safe backup, catalog, and slot management for **No Man's Sky** (PC / Steam) save files —
-designed to give you effectively unlimited save slots beyond the game's 15.
+Safe backup, catalog, and slot management for **No Man's Sky** (PC — Steam and Xbox /
+Game Pass; GOG / Epic use the same format) save files — designed to give you effectively
+unlimited save slots beyond the game's 15. See [Platform support](#platform-support).
 
 ## QuickStart
 
@@ -188,9 +189,10 @@ The vault lives outside `st_<id>`, so it is never scanned by the game or synced 
 
 ## Status
 
-Working. Core format/crypto and all operations verified against the real save files and
-in a temp sandbox (49 tests). Xbox/Game Pass reading verified read-only against a real
-install. A full file-copy safety backup of the live folder was made before development
+Working. Core format/crypto and all operations are verified against the real save files and
+in a temp sandbox (78 tests). Xbox / Game Pass saves are supported for reading **and**
+same-platform writing — verified against a real install (reads) and synthetic `wgs` fixtures
+(writes). A full file-copy safety backup of the live folder was made before development
 (`C:\Devel\NMS-SaveBackup-SAFETY-2026-06-24`).
 
 ## Version history

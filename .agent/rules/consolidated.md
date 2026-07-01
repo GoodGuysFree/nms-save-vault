@@ -153,5 +153,13 @@ Before saying "done":
   behavior. `CLAUDE.md` and `AGENTS.md` in the root are pointers, not content.
 - `README.md`, `DESIGN.md` (verified save-format facts + architecture), and `RELEASING.md`
   are the authoritative human docs; keep them accurate when behavior changes.
+- **Keep the README's living facts in sync — do not let them go stale.** Whenever a change
+  affects any of these, update the README in the *same* commit: the tagline/one-liner and
+  the **Platform support** matrix (when supported platforms or their read/write status
+  change); the **Status** section's test count (state the real `uv run pytest` total, never
+  a guess or a stale number) and its capability summary; the **Version history** table and
+  every version marker (`VERSION`, `src/nms_save_vault/__init__.py`, `pyproject.toml`,
+  README download filenames) on a release. If you add or remove tests, or change what a
+  platform supports, the README's numbers and matrix must move with it.
 - Treat anything under `archive/` (if present) as stale and superseded by the source code
   and these rules; do not rely on it for current behavior.
