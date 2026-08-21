@@ -8,13 +8,14 @@ unlimited save slots beyond the game's 15. See [Platform support](#platform-supp
 
 **Just want to run it? No Python needed.** Download the ready-to-use Windows kit from the
 [**latest release**](https://github.com/GoodGuysFree/nms-save-vault/releases/latest) — grab
-`NMSSaveVault-Setup-v0.0.6.zip` under **Assets**.
+`NMSSaveVault-Setup-v0.0.7.zip` under **Assets**.
 
-Extract the zip and run **`install.bat`**. Everything (Python + Tkinter) is bundled in the
-`NMSSaveVault` folder; the installer offers Desktop / Start-Menu shortcuts. The app starts
-through a signed copy of the official Python runtime rather than an unsigned custom `.exe`,
-so Windows should not warn about an unknown publisher. Full details under
-[Install](#install-windows-no-python-needed); every version is on the
+Extract the zip, open the `NMSSaveVault` folder and run **`NMSSaveVault.exe`**. That is the
+whole thing — Python and Tkinter are bundled, nothing is installed, and because the app
+starts through a signed copy of the official Python runtime rather than an unsigned custom
+`.exe`, Windows should not warn about an unknown publisher. Want Desktop / Start-Menu
+shortcuts? `install.bat` in the zip adds them. Full details under
+[Run it](#run-it-windows-no-python-needed); every version is on the
 [Releases](https://github.com/GoodGuysFree/nms-save-vault/releases) page.
 
 ## What it does
@@ -65,22 +66,27 @@ work on a Proton-aware path finder, a Linux/macOS build, or just test on those p
 [open an issue](https://github.com/GoodGuysFree/nms-save-vault/issues) — contributions and
 volunteers are very welcome.
 
-## Install (Windows, no Python needed)
+## Run it (Windows, no Python needed)
 
-Download **`NMSSaveVault-Setup-v0.0.6.zip`** from the
+Download **`NMSSaveVault-Setup-v0.0.7.zip`** from the
 [**Releases**](https://github.com/GoodGuysFree/nms-save-vault/releases) page (under the
-release's **Assets**), extract it, and run **`install.bat`**.
-It copies the bundled `NMSSaveVault` folder to `%LOCALAPPDATA%\Programs\NMSSaveVault` and
-asks whether to add a Desktop shortcut and/or a Start Menu entry. If you decline both, it
-leaves a `vault.bat` launcher in the install folder, opens that folder, and tells you to run
-it. Everything (Python + Tkinter) is bundled — nothing else to install, and installing over
-an older version keeps your config. If you would rather not install at all, run
-`NMSSaveVault\NMSSaveVault.exe` straight from where you extracted the zip. Beside it sits
-`nmsvault.exe`, the same tool on the command line (see [Usage](#usage)).
+release's **Assets**) and extract it. Open the `NMSSaveVault` folder and run
+**`NMSSaveVault.exe`** — that is all. Everything (Python + Tkinter) is bundled, nothing is
+installed, and the config (`state.json`) is written beside the program, so the folder is
+self-contained: move it, put it on a USB stick, delete it to be rid of it. Beside the GUI
+launcher sits `nmsvault.exe`, the same tool on the command line (see [Usage](#usage)).
 
-To remove it, run **`uninstall.bat`** (placed in the install folder, and also in the zip):
-it deletes the app, its config, and the shortcuts, leaving your game saves and
-backups / vault untouched. No registry entries or admin rights are involved either way.
+### Optional: shortcuts and a tidy install folder
+
+Would rather have it on the Start Menu? Run **`install.bat`** from the zip. It copies the
+`NMSSaveVault` folder to `%LOCALAPPDATA%\Programs\NMSSaveVault` and asks whether to add a
+Desktop shortcut and/or a Start Menu entry; if you decline both it leaves a `vault.bat`
+launcher there instead. Installing over an older version keeps your config. To undo it, run
+**`uninstall.bat`** — it deletes the app, its config, and the shortcuts, leaving your game
+saves and backups / vault untouched. No registry entries or admin rights either way.
+
+Windows tags everything that came out of a downloaded zip, and can prompt about a `.bat` on
+that basis alone. Running `NMSSaveVault.exe` directly avoids that entirely.
 
 ### Why there's no unknown-publisher warning
 
@@ -90,15 +96,15 @@ trusts instead of an unsigned custom one. Renaming a file does not affect its si
 check for yourself:
 
 ```pwsh
-Get-AuthenticodeSignature "$env:LOCALAPPDATA\Programs\NMSSaveVault\NMSSaveVault.exe"
+Get-AuthenticodeSignature .\NMSSaveVault\NMSSaveVault.exe
 # Status: Valid   SignerCertificate: CN=Python Software Foundation, ...
 ```
 
 Nothing is patched into it — that would void the signature — so the app is dispatched from
 `_runtime\sitecustomize.py`, which Python imports during startup. The trade-off is that the
 launcher is not self-contained: it only works beside its `_runtime` folder and the `.dll`
-files that ship with it. The installer's shortcuts use the app's own icon, so only the file
-in the install folder shows Python's.
+files that ship with it. `install.bat`'s shortcuts use the app's own icon, so Python's shows
+only on the file in the folder itself.
 
 This is the genuine article being trusted, not this project's code being vouched for: it
 removes the warning, but signing *this* app would need a paid certificate.
@@ -139,7 +145,7 @@ small config file, `state.json`, kept **in the install directory next to the exe
 
 * Each canonical `st_<steamid64>` folder directly under the NMS root is a **live** source
   (writable). Two Steam accounts → two live sources.
-* Each Xbox / Game Pass `wgs` account folder is a **live** source, **read-only**.
+* Each Xbox / Game Pass `wgs` account folder is a **live** source, writable within Xbox.
 * Any *other* save folder under the NMS root — a hand-pasted `st_… - Copy`, a renamed or
   dated folder — is treated as an **in-place backup**, not a live target.
 
@@ -227,6 +233,7 @@ same-platform writing — verified against a real install (reads) and synthetic 
 
 | Version | Date | Highlights |
 |---|---|---|
+| **0.0.7** | 2026-08-21 | **No more "unknown publisher" warning, and no installation needed.** The distributable is no longer a one-file PyInstaller build. It ships as a folder whose launcher is a verbatim renamed copy of the Authenticode-signed `pythonw.exe` published by the Python Software Foundation, so Windows starts a binary it already trusts instead of an unsigned custom `.exe` (renaming does not affect a signature — check it yourself with `Get-AuthenticodeSignature`). Extract the zip and run `NMSSaveVault.exe`; `install.bat` is now optional, for Desktop / Start Menu shortcuts. The command-line `nmsvault.exe` ships alongside it, so installed users get the CLI too. The build downloads the official runtime from python.org and refuses to package anything not validly signed, so there is no build dependency left at all. No change to what the app does; upgrading keeps your config. |
 | **0.0.6** | 2026-07-01 | **Fix: extract a single slot from Xbox / Game Pass saves.** `extract_slot` only understood Steam filenames, so extracting a slot from a `wgs` folder always failed with "slot N has no saves to extract"; it now has an Xbox variant that copies the slot's blobs into a self-contained mini-`wgs` folder in the vault, so it catalogs and repopulates like any Xbox source. (Extract was the only operation missing an Xbox code path.) |
 | **0.0.5** | 2026-07-01 | **Import a whole Save Vault directory.** Point Import at a copied `_SaveVault` folder and it compares that vault's entries with yours (by entry id) and offers to copy the new ones into your vault (self-contained) or index them in place (referencing that folder) — idempotent, so re-importing is harmless. In-place-imported entries are unmanaged, and snapshot pruning now only touches snapshots this vault owns, so importing another vault in place can never delete its files. Works in the GUI (Import shows new/existing counts, then copy vs in-place) and the CLI (`nmsvault import <vault-dir> [--copy]`). |
 | **0.0.4** | 2026-07-01 | Installer-kit improvements (no changes to the app itself): added an uninstaller (`uninstall.bat`) that removes the app, its config (`state.json`), and the Desktop / Start Menu shortcuts while leaving your game saves and backups / vault untouched — no registry entries, no admin rights; `install.bat` drops it into the install folder so it's always available. The Desktop / Start Menu shortcuts now use the app icon directly (the `.ico` is installed on disk and referenced explicitly, instead of relying on the exe's embedded icon index). |

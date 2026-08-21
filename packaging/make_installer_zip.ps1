@@ -3,13 +3,14 @@ Assemble the distributable installer zip.
 
 Produces dist\NMSSaveVault-Setup.zip containing:
     NMSSaveVault\           the portable app (launchers + _runtime), self-contained
+    README.txt              how to run it; install.bat is the optional path
     install.bat             copies it in + offers shortcuts
     uninstall.bat           removes the app, config, and shortcuts
-    README-INSTALL.txt
 
-The app folder is shipped whole rather than flattened into the zip root so that
-install.bat is a single copy, and so anyone who would rather not install can just
-run NMSSaveVault\NMSSaveVault.exe where they extracted it.
+The app folder is shipped whole rather than flattened into the zip root so that running
+NMSSaveVault\NMSSaveVault.exe straight from the extracted zip -- the normal way to use
+it -- works without picking the app out of a pile of loose files. install.bat is then
+a single copy for anyone who wants shortcuts.
 
 If the app folder is missing it is built first via build_portable.ps1.
 
@@ -36,7 +37,7 @@ Write-Host "==> Staging installer files"
 if (Test-Path $stageDir) { Remove-Item -Recurse -Force $stageDir }
 New-Item -ItemType Directory -Path $stageDir | Out-Null
 Copy-Item $appDir $stageDir -Recurse
-foreach ($f in @("install.bat", "uninstall.bat", "README-INSTALL.txt")) {
+foreach ($f in @("install.bat", "uninstall.bat", "README.txt")) {
     Copy-Item (Join-Path $installer $f) (Join-Path $stageDir $f)
 }
 
