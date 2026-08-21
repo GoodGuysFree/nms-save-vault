@@ -2,13 +2,16 @@
 Assemble the distributable installer zip.
 
 Produces dist\NMSSaveVault-Setup.zip containing:
-    NMSSaveVault.exe        (the self-contained app)
-    install.bat             (copies it in + offers shortcuts)
-    uninstall.bat           (removes the app, config, and shortcuts)
+    NMSSaveVault\           the portable app (launchers + _runtime), self-contained
+    install.bat             copies it in + offers shortcuts
+    uninstall.bat           removes the app, config, and shortcuts
     README-INSTALL.txt
-    nmsvault.ico            (app icon, used for the shortcuts)
 
-If the exe is missing it builds it first via build_exe.ps1.
+The app folder is shipped whole rather than flattened into the zip root so that
+install.bat is a single copy, and so anyone who would rather not install can just
+run NMSSaveVault\NMSSaveVault.exe where they extracted it.
+
+If the app folder is missing it is built first via build_portable.ps1.
 
 Usage:
     pwsh -ExecutionPolicy Bypass -File packaging\make_installer_zip.ps1
@@ -19,24 +22,29 @@ $ErrorActionPreference = "Stop"
 $pkgDir    = $PSScriptRoot
 $root      = Split-Path -Parent $pkgDir
 $distDir   = Join-Path $root "dist"
-$exe       = Join-Path $distDir "NMSSaveVault.exe"
+$appDir    = Join-Path $distDir "NMSSaveVault"
 $stageDir  = Join-Path $distDir "installer-stage"
 $zipPath   = Join-Path $distDir "NMSSaveVault-Setup.zip"
 $installer = Join-Path $root "installer"
 
-if (-not (Test-Path $exe)) {
-    Write-Host "==> NMSSaveVault.exe not found; building it first"
-    & (Join-Path $pkgDir "build_exe.ps1")
+if (-not (Test-Path (Join-Path $appDir "NMSSaveVault.exe"))) {
+    Write-Host "==> Portable app not found; building it first"
+    & (Join-Path $pkgDir "build_portable.ps1")
 }
 
 Write-Host "==> Staging installer files"
 if (Test-Path $stageDir) { Remove-Item -Recurse -Force $stageDir }
 New-Item -ItemType Directory -Path $stageDir | Out-Null
-Copy-Item $exe                                   (Join-Path $stageDir "NMSSaveVault.exe")
-Copy-Item (Join-Path $installer "install.bat")   (Join-Path $stageDir "install.bat")
-Copy-Item (Join-Path $installer "uninstall.bat") (Join-Path $stageDir "uninstall.bat")
-Copy-Item (Join-Path $installer "README-INSTALL.txt") (Join-Path $stageDir "README-INSTALL.txt")
-Copy-Item (Join-Path $pkgDir    "nmsvault.ico")  (Join-Path $stageDir "nmsvault.ico")
+Copy-Item $appDir $stageDir -Recurse
+foreach ($f in @("install.bat", "uninstall.bat", "README-INSTALL.txt")) {
+    Copy-Item (Join-Path $installer $f) (Join-Path $stageDir $f)
+}
+
+# Running the app from dist\ leaves the builder's own config and byte-code behind;
+# neither belongs in someone else's download.
+$staged = Join-Path $stageDir "NMSSaveVault"
+Remove-Item (Join-Path $staged "state.json") -Force -ErrorAction SilentlyContinue
+Get-ChildItem $staged -Recurse -Directory -Filter "__pycache__" | Remove-Item -Recurse -Force
 
 Write-Host "==> Compressing -> $zipPath"
 if (Test-Path $zipPath) { Remove-Item -Force $zipPath }

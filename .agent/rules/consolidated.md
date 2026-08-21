@@ -12,7 +12,8 @@ NMS Save Vault (`nms-save-vault`) is a Python 3.10+ Windows desktop utility that
 backs up, catalogs, and manages No Man's Sky save files (Steam and Xbox / Game Pass), giving
 effectively unlimited save slots. It ships two front-ends over one safety-checked core: an
 `nmsvault` argparse CLI and a Tkinter GUI. The runtime is **standard-library only** (no
-third-party runtime dependencies); `pytest` is dev-only and `pyinstaller` is build-only.
+third-party runtime dependencies); `pytest` is dev-only, and the distributable has no build
+dependency at all — it is the official signed CPython runtime with the app laid out beside it.
 Environment and builds are managed with `uv`. The code is GPL-3.0 (parts are a Python port
 of the GPL-licensed libNOM.io / NomNom work — see README Credits).
 
@@ -94,7 +95,9 @@ of the GPL-licensed libNOM.io / NomNom work — see README Credits).
 - **Isolated environment is mandatory:** run all commands through the project environment via
   `uv` (`uv run pytest`, `uv run python -m nms_save_vault.cli ...`) or the venv interpreter
   (`.\.venv\Scripts\python.exe`) — never rely on `PATH` resolving to a system interpreter.
-  The build uses a separate `.build-venv`. Adapt safely in CI/containers.
+  Packaging needs no environment: `packaging\build_portable.ps1` downloads the signed CPython
+  runtime from python.org and caches it under `build\runtime-cache\`. Adapt safely in
+  CI/containers.
 - **Keep the runtime standard-library only.** Do not add a runtime dependency to
   `pyproject.toml` without clear need and user sign-off — "no runtime dependencies" is a
   design guarantee. Dev tooling goes under `[project.optional-dependencies] dev`; build

@@ -4,14 +4,18 @@ title NMS Save Vault - Installer
 
 rem ---------------------------------------------------------------------------
 rem  NMS Save Vault installer.
-rem  Copies the app to %LOCALAPPDATA%\Programs\NMSSaveVault, then offers a
-rem  Desktop shortcut and/or a Start Menu entry. If you decline both, it leaves
-rem  a vault.bat launcher in the install folder, opens that folder, and tells
-rem  you to run vault.bat.
+rem  Copies the NMSSaveVault folder next to this script into
+rem  %LOCALAPPDATA%\Programs\NMSSaveVault, then offers a Desktop shortcut and/or
+rem  a Start Menu entry. If you decline both, it leaves a vault.bat launcher in
+rem  the install folder, opens that folder, and tells you to run vault.bat.
+rem
+rem  The app is a folder, not a single file: the launcher is a renamed copy of
+rem  the signed Python runtime and only works beside its _runtime folder.
 rem ---------------------------------------------------------------------------
 
 set "SRC=%~dp0"
 set "EXE=NMSSaveVault.exe"
+set "APPSRC=%~dp0NMSSaveVault"
 set "INSTALL_DIR=%LOCALAPPDATA%\Programs\NMSSaveVault"
 set "TARGET=%INSTALL_DIR%\%EXE%"
 set "ICON=%INSTALL_DIR%\nmsvault.ico"
@@ -25,8 +29,8 @@ echo    NMS Save Vault - Installer
 echo  ============================================
 echo(
 
-if not exist "%SRC%%EXE%" (
-    echo  ERROR: %EXE% was not found next to this installer.
+if not exist "%APPSRC%\%EXE%" (
+    echo  ERROR: the NMSSaveVault folder was not found next to this installer.
     echo  Please extract the WHOLE zip first, then run install.bat again.
     echo(
     pause
@@ -35,9 +39,26 @@ if not exist "%SRC%%EXE%" (
 
 echo  Installing to: %INSTALL_DIR%
 if not exist "%INSTALL_DIR%" mkdir "%INSTALL_DIR%"
-copy /y "%SRC%%EXE%" "%TARGET%" >nul
+
+rem --- clear the old program first --------------------------------------------
+rem  A locked exe is how we detect a running app, and a stale _runtime must not be
+rem  left to mix with the new one. state.json lives in this folder too and is
+rem  deliberately left alone, so upgrading keeps your config.
+if exist "%TARGET%" (
+    del /f /q "%TARGET%" >nul 2>&1
+    if exist "%TARGET%" (
+        echo  ERROR: could not replace %EXE% -- the app may be running.
+        echo  Close NMS Save Vault, then run install.bat again.
+        echo(
+        pause
+        exit /b 1
+    )
+)
+if exist "%INSTALL_DIR%\_runtime" rmdir /s /q "%INSTALL_DIR%\_runtime"
+
+xcopy "%APPSRC%" "%INSTALL_DIR%" /e /i /y /q >nul
 if errorlevel 1 (
-    echo  ERROR: could not copy %EXE% into the install folder.
+    echo  ERROR: could not copy the app into the install folder.
     echo  Is the app already running? Close it and try again.
     echo(
     pause
@@ -50,9 +71,6 @@ rem --- convenience launcher in the install folder ----------------------------
 
 rem --- bundle the uninstaller alongside the app so it's always available ------
 if exist "%SRC%uninstall.bat" copy /y "%SRC%uninstall.bat" "%INSTALL_DIR%\uninstall.bat" >nul
-
-rem --- keep the app icon on disk so shortcuts point straight at it ------------
-if exist "%SRC%nmsvault.ico" copy /y "%SRC%nmsvault.ico" "%ICON%" >nul
 
 echo(
 set "DESK=Y"

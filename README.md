@@ -11,8 +11,9 @@ unlimited save slots beyond the game's 15. See [Platform support](#platform-supp
 `NMSSaveVault-Setup-v0.0.6.zip` under **Assets**.
 
 Extract the zip and run **`install.bat`**. Everything (Python + Tkinter) is bundled in the
-single `.exe`; the installer offers Desktop / Start-Menu shortcuts. The exe is unsigned, so
-Windows SmartScreen may prompt the first time (*More info → Run anyway*). Full details under
+`NMSSaveVault` folder; the installer offers Desktop / Start-Menu shortcuts. The app starts
+through a signed copy of the official Python runtime rather than an unsigned custom `.exe`,
+so Windows should not warn about an unknown publisher. Full details under
 [Install](#install-windows-no-python-needed); every version is on the
 [Releases](https://github.com/GoodGuysFree/nms-save-vault/releases) page.
 
@@ -69,30 +70,57 @@ volunteers are very welcome.
 Download **`NMSSaveVault-Setup-v0.0.6.zip`** from the
 [**Releases**](https://github.com/GoodGuysFree/nms-save-vault/releases) page (under the
 release's **Assets**), extract it, and run **`install.bat`**.
-It copies the bundled app to `%LOCALAPPDATA%\Programs\NMSSaveVault` and asks whether to
-add a Desktop shortcut and/or a Start Menu entry. If you decline both, it leaves a
-`vault.bat` launcher in the install folder, opens that folder, and tells you to run it.
-Everything (Python + Tkinter) is bundled in the single `.exe` — nothing else to install.
-The exe is unsigned, so Windows SmartScreen may prompt the first time (*More info → Run
-anyway*).
+It copies the bundled `NMSSaveVault` folder to `%LOCALAPPDATA%\Programs\NMSSaveVault` and
+asks whether to add a Desktop shortcut and/or a Start Menu entry. If you decline both, it
+leaves a `vault.bat` launcher in the install folder, opens that folder, and tells you to run
+it. Everything (Python + Tkinter) is bundled — nothing else to install, and installing over
+an older version keeps your config. If you would rather not install at all, run
+`NMSSaveVault\NMSSaveVault.exe` straight from where you extracted the zip. Beside it sits
+`nmsvault.exe`, the same tool on the command line (see [Usage](#usage)).
 
 To remove it, run **`uninstall.bat`** (placed in the install folder, and also in the zip):
 it deletes the app, its config, and the shortcuts, leaving your game saves and
 backups / vault untouched. No registry entries or admin rights are involved either way.
 
+### Why there's no unknown-publisher warning
+
+`NMSSaveVault.exe` is a verbatim renamed copy of the Authenticode-signed `pythonw.exe`
+published by the Python Software Foundation, so Windows starts a signed binary it already
+trusts instead of an unsigned custom one. Renaming a file does not affect its signature —
+check for yourself:
+
+```pwsh
+Get-AuthenticodeSignature "$env:LOCALAPPDATA\Programs\NMSSaveVault\NMSSaveVault.exe"
+# Status: Valid   SignerCertificate: CN=Python Software Foundation, ...
+```
+
+Nothing is patched into it — that would void the signature — so the app is dispatched from
+`_runtime\sitecustomize.py`, which Python imports during startup. The trade-off is that the
+launcher is not self-contained: it only works beside its `_runtime` folder and the `.dll`
+files that ship with it. The installer's shortcuts use the app's own icon, so only the file
+in the install folder shows Python's.
+
+This is the genuine article being trusted, not this project's code being vouched for: it
+removes the warning, but signing *this* app would need a paid certificate.
+
 ### Building the distributable yourself
 
 ```pwsh
-pwsh -ExecutionPolicy Bypass -File packaging\build_exe.ps1          # -> dist\NMSSaveVault.exe
+pwsh -ExecutionPolicy Bypass -File packaging\build_portable.ps1     # -> dist\NMSSaveVault\
 pwsh -ExecutionPolicy Bypass -File packaging\make_installer_zip.ps1 # -> dist\NMSSaveVault-Setup.zip
 ```
 
-Both use an isolated `.build-venv` (via `uv`) so the dev environment is untouched.
+`build_portable.ps1` downloads the official runtime from python.org (the embeddable package,
+plus `tcltk.msi` for Tkinter, which that package omits), caches both under
+`build\runtime-cache\`, refuses to package anything not validly signed by the Python Software
+Foundation, and lays the result out around a copy of `src\nms_save_vault`. Nothing needs to be
+installed to build it.
 
 ## Requirements
 
 * Python 3.10+ (developed on 3.12), standard library only — no runtime dependencies.
-* [uv](https://github.com/astral-sh/uv) for environment management (dev / building the exe).
+* [uv](https://github.com/astral-sh/uv) for environment management (dev and tests); building
+  the distributable needs nothing beyond Windows and an internet connection.
 
 ## Dev setup
 

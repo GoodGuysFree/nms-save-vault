@@ -23,13 +23,11 @@ from .core.catalog import Vault
 
 
 def _icon_path() -> Path | None:
-    """Locate nmsvault.ico — bundled (frozen) or in the repo's packaging/ folder."""
-    candidates = []
-    meipass = getattr(sys, "_MEIPASS", None)
-    if meipass:
-        candidates.append(Path(meipass) / "nmsvault.ico")
-    candidates.append(Path(sys.executable).resolve().parent / "nmsvault.ico")
-    candidates.append(Path(__file__).resolve().parents[2] / "packaging" / "nmsvault.ico")
+    """Locate nmsvault.ico — beside the packaged launcher, or in the repo's packaging/."""
+    candidates = [
+        Path(sys.executable).resolve().parent / "nmsvault.ico",
+        Path(__file__).resolve().parents[2] / "packaging" / "nmsvault.ico",
+    ]
     return next((c for c in candidates if c.is_file()), None)
 
 

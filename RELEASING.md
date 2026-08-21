@@ -23,13 +23,14 @@ uv run pytest          # or: & .venv\Scripts\python.exe -m pytest -q
 ## 3. Build the installer kit
 
 ```pwsh
-& packaging\build_exe.ps1            # -> dist\NMSSaveVault.exe  (always rebuilds, --clean)
+& packaging\build_portable.ps1       # -> dist\NMSSaveVault\  (always rebuilt from scratch)
 & packaging\make_installer_zip.ps1   # -> dist\NMSSaveVault-Setup.zip
 ```
 
-`make_installer_zip.ps1` **reuses an existing `dist\NMSSaveVault.exe` if present**, so always
-run `build_exe.ps1` first to pick up code changes. Both scripts use an isolated `.build-venv`
-so the dev `.venv` is untouched.
+`make_installer_zip.ps1` **reuses an existing `dist\NMSSaveVault\` if present**, so always run
+`build_portable.ps1` first to pick up code changes. Neither needs a build environment: the
+Python runtime is downloaded from python.org and cached under `build\runtime-cache\`, and the
+build fails if any part of it is not validly signed by the Python Software Foundation.
 
 Stage a versioned copy (the `releases/` folder is gitignored — local staging only):
 
@@ -67,5 +68,7 @@ newest release automatically.
 
 - Binaries are distributed **only** as GitHub Release assets, never committed — `releases/`
   and `dist/` are gitignored. This keeps the repo lean.
-- The exe is unsigned, so Windows SmartScreen may warn on first run
-  (*More info → Run anyway*).
+- `NMSSaveVault.exe` is a verbatim renamed copy of the Authenticode-signed CPython
+  `pythonw.exe`, so Windows raises no unknown-publisher warning. That is the Python
+  runtime's own signature, not a signature over this project's code — keep the release
+  notes accurate about the difference.

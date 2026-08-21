@@ -5,7 +5,13 @@ What this is
 ------------
 A safe backup, catalog and slot manager for No Man's Sky save files (PC), so you
 can keep far more than the game's 15 save slots. It reads Steam saves (read/write)
-and Xbox / Game Pass saves (read-only).
+and Xbox / Game Pass saves (read/write, same platform only).
+
+What's in this zip
+------------------
+    NMSSaveVault\   the app: a launcher plus the _runtime folder it needs
+    install.bat     copies that folder into place and offers shortcuts
+    uninstall.bat   removes the app, its config and the shortcuts
 
 Install
 -------
@@ -22,30 +28,44 @@ Install
 The app installs to:
     %LOCALAPPDATA%\Programs\NMSSaveVault\NMSSaveVault.exe
 
-No Python or other software is required — everything is bundled in the .exe.
+No Python or other software is required — everything is bundled in the folder.
+Installing over an older version keeps your config.
+
+If you would rather not install at all, you can simply run
+NMSSaveVault\NMSSaveVault.exe straight from where you extracted the zip.
+
+Keep the folder together
+------------------------
+NMSSaveVault.exe is an unmodified, digitally signed copy of the official Python
+runtime, renamed. Using the genuine signed program is what stops Windows warning
+you about an unknown publisher, but it also means the launcher is not a
+self-contained file: it only works next to the _runtime folder and the .dll files
+that ship beside it. Copying the .exe out on its own will not work.
+
+The Start Menu / Desktop shortcuts and vault.bat all handle this for you.
 
 First run
 ---------
 The app auto-detects your save folders and writes a small config file next to the
 program itself:
     %LOCALAPPDATA%\Programs\NMSSaveVault\state.json
-It shows your LIVE saves (each Steam account; Xbox accounts read-only) separately
-from your BACKUPS. Use "Rescan" to pick up a new account or backup later.
+It shows your LIVE saves (each Steam account; Xbox accounts too) separately from
+your BACKUPS. Use "Rescan" to pick up a new account or backup later.
 
-Your saves are treated as precious: every change auto-snapshots first, writes are
-blocked while the game is running, and Xbox saves are never written to.
+Your saves are treated as precious: every change auto-snapshots first, and writes
+are blocked while the game is running.
 
-Windows SmartScreen
--------------------
-The .exe is not code-signed, so SmartScreen may warn the first time. Choose
-"More info" -> "Run anyway". (You can inspect/build it yourself from the source.)
+Command line
+------------
+nmsvault.exe, in the same folder, is the command-line version of the same tool
+(nmsvault.exe status, nmsvault.exe list, and so on).
 
 Uninstall
 ---------
 Easiest: run  uninstall.bat  — it's placed in the install folder next to the app
 (and is also in this zip). It removes the app, its config (state.json) and the
 Desktop / Start Menu shortcuts. Your game saves and your backups / vault are NOT
-touched. Close the app first, or it can't delete the running .exe.
+touched. Close the app first, or it can't delete the running program.
 
 Manual alternative (does the same thing by hand):
 - Delete the folder:  %LOCALAPPDATA%\Programs\NMSSaveVault
@@ -55,3 +75,5 @@ Manual alternative (does the same thing by hand):
 Source & license
 ----------------
 GPL-3.0. Source: https://github.com/GoodGuysFree/nms-save-vault
+The bundled Python runtime is distributed under the PSF License; its full text is
+in PYTHON_LICENSE.txt inside the NMSSaveVault folder.

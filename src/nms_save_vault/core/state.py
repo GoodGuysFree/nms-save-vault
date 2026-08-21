@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import json
 import os
-import sys
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -123,14 +122,17 @@ def _migrate(state: "AppState") -> None:
 def install_dir() -> Path:
     """The directory the app runs from -- where the config is kept.
 
-    For the packaged one-file executable this is the folder that contains the
-    ``.exe`` (the install dir, e.g. ``%LOCALAPPDATA%\\Programs\\NMSSaveVault``), so
-    the config sits next to the program and is portable with it. ``sys.executable``
-    points at the real exe, not the temporary one-file unpack dir. When running from
-    source we keep the config out of the source tree, in a dedicated per-user folder.
+    The packaged app is a portable runtime whose launcher is a renamed copy of the
+    signed CPython executable, so there is no ``sys.frozen`` to test. Its bootstrap
+    (``packaging/sitecustomize.py``) exports ``NMSVAULT_PORTABLE_ROOT``, the folder
+    holding that launcher (the install dir, e.g.
+    ``%LOCALAPPDATA%\\Programs\\NMSSaveVault``), so the config sits next to the
+    program and is portable with it. When running from source we keep the config out
+    of the source tree, in a dedicated per-user folder.
     """
-    if getattr(sys, "frozen", False):  # running inside a PyInstaller bundle
-        return Path(sys.executable).resolve().parent
+    portable_root = os.environ.get("NMSVAULT_PORTABLE_ROOT")
+    if portable_root:
+        return Path(portable_root)
     local = os.environ.get("LOCALAPPDATA")
     base = Path(local) if local else Path.home()
     return base / "NMSSaveVault"
