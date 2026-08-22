@@ -14,7 +14,7 @@ Run it
 3. Double-click  NMSSaveVault.exe
 
 That is all there is to it. No Python, no installation, no administrator rights,
-nothing written outside the folder. The app's config (state.json) is saved next
+nothing written outside the folder. The app's config (state.json, accounts.ini) is saved next
 to the program, so the folder is self-contained: move it, copy it to a USB
 stick, or delete it when you are done with it.
 
@@ -45,7 +45,7 @@ decline both it leaves a launcher named vault.bat in that folder instead.
 Installing over an older version keeps your config.
 
 To undo it, run uninstall.bat -- it is placed in the install folder next to the
-app, and is also in this zip. It removes the app, its config (state.json) and the
+app, and is also in this zip. It removes the app, its config (state.json, accounts.ini) and the
 shortcuts. Your game saves and your backups / vault are NOT touched. Close the
 app first, or it cannot delete the running program.
 

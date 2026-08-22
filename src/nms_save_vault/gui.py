@@ -15,7 +15,7 @@ from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
-from .core import catalog, discover, locations
+from .core import aliases, catalog, discover, locations
 from .core import operations as ops
 from .core import savedir
 from .core import state as appstate
@@ -45,6 +45,49 @@ def _fmt_play(seconds: int) -> str:
         return ""
     h, rem = divmod(int(seconds), 3600)
     return f"{h}h{rem // 60:02d}"
+
+
+def _source_caption(source) -> str:
+    """How a live source is named in the tree and the dropdown.
+
+    Normally "Steam (<id>)  (st_<id>)" -- label plus folder. Once a display name replaces
+    both halves they read as "Steam (Main)  (Main)", so the folder is dropped when the
+    label already says it.
+    """
+    label = aliases.redact(source.label)
+    folder = aliases.redact(Path(source.path).name)
+    return label if folder in label else f"{label}  ({folder})"
+
+
+def _filtered(dialog):
+    """Wrap a messagebox call so its message passes through the account-alias filter."""
+
+    def show(title, message, **kwargs):
+        return dialog(title, aliases.redact(message), **kwargs)
+
+    return show
+
+
+_showinfo = _filtered(messagebox.showinfo)
+_showwarning = _filtered(messagebox.showwarning)
+_showerror = _filtered(messagebox.showerror)
+_askyesno = _filtered(messagebox.askyesno)
+_askyesnocancel = _filtered(messagebox.askyesnocancel)
+
+
+class RedactingTreeview(ttk.Treeview):
+    """A tree whose row text and cell values pass through the account-alias filter.
+
+    Filtering here rather than at each call site is what makes the guarantee structural:
+    no row added now or later can leak a real account id once an alias is configured.
+    """
+
+    def insert(self, parent, index, iid=None, **kw):
+        if "text" in kw:
+            kw["text"] = aliases.redact(kw["text"])
+        if "values" in kw:
+            kw["values"] = tuple(aliases.redact(v) for v in kw["values"])
+        return super().insert(parent, index, iid, **kw)
 
 
 class App(tk.Tk):
@@ -103,7 +146,14 @@ class App(tk.Tk):
     def _refresh_source_combo(self) -> None:
         """Populate the active-live dropdown with the writable sources (Steam + Xbox)."""
         writable = self._writable_sources()
-        self._source_choices = {f"{s.label} ({Path(s.path).name})": s.id for s in writable}
+        self._source_choices = {}
+        for s in writable:
+            label = _source_caption(s)
+            # Two accounts may be given the same display name; keep both selectable.
+            unique, n = label, 2
+            while unique in self._source_choices:
+                unique, n = f"{label} #{n}", n + 1
+            self._source_choices[unique] = s.id
         self.active_combo["values"] = list(self._source_choices)
         active = self._active_source()
         if active is not None:
@@ -145,6 +195,7 @@ class App(tk.Tk):
             ("Discover", self.on_discover),
             ("Undo", self.on_undo),
             ("Refresh", self.refresh),
+            ("Accounts…", self.on_accounts),
             ("Help", self.on_help),
         ]:
             ttk.Button(bar, text=text, command=cmd).pack(side=tk.LEFT, padx=2)
@@ -164,7 +215,7 @@ class App(tk.Tk):
 
         frame = ttk.Frame(self)
         frame.pack(fill=tk.BOTH, expand=True, padx=6, pady=4)
-        self.tree = ttk.Treeview(frame, columns=self.COLUMNS, show="tree headings")
+        self.tree = RedactingTreeview(frame, columns=self.COLUMNS, show="tree headings")
         self.tree.heading("#0", text="Backup / Slot / Save")
         self.tree.column("#0", width=320, anchor="w")
         for col, label, width in [
@@ -211,7 +262,7 @@ class App(tk.Tk):
             tags = ("active",) if active else (("readonly",) if not s.writable else ("live",))
             node = self.tree.insert(
                 live_group, "end", open=active,
-                text=f"{s.label}  ({Path(s.path).name}){badge}",
+                text=f"{_source_caption(s)}{badge}",
                 values=("", "", "", "", "writable" if s.writable else "read-only"),
                 tags=tags,
             )
@@ -233,8 +284,10 @@ class App(tk.Tk):
         active = self._active_source()
         active_txt = active.label if active else (str(self.live_dir) if self.live_dir else "none")
         self.status.set(
-            f"Active live: {active_txt}   |   Sources: {len(sources)}   |   "
-            f"Vault: {self.vault.root}   |   Game: {game}"
+            aliases.redact(
+                f"Active live: {active_txt}   |   Sources: {len(sources)}   |   "
+                f"Vault: {self.vault.root}   |   Game: {game}"
+            )
         )
 
     def _add_view(self, parent: str, view: savedir.SaveDirView, writable: bool) -> None:
@@ -353,6 +406,7 @@ class App(tk.Tk):
                 menu.add_command(label=f"Make save {label} the newest (promote)", command=lambda: self.on_promote(meta))
         menu.add_separator()
         menu.add_command(label="Refresh", command=self.refresh)
+        menu.add_command(label="Account display names…", command=self.on_accounts)
         menu.add_command(label="Help", command=self.on_help)
         try:
             menu.tk_popup(event.x_root, event.y_root)
@@ -366,19 +420,19 @@ class App(tk.Tk):
         override the game-running guard if the op reports the game is open."""
         holder = self._run_worker(fn, False, message)
         if isinstance(holder.get("error"), ops.GameRunningError):
-            if not messagebox.askyesno("Game running", "No Man's Sky appears to be running.\nProceed anyway (risky)?"):
+            if not _askyesno("Game running", "No Man's Sky appears to be running.\nProceed anyway (risky)?"):
                 return
             holder = self._run_worker(fn, True, message)
 
         err = holder.get("error")
         if isinstance(err, ops.FeatureNotYetAvailableError):
-            messagebox.showinfo("Coming soon", str(err))
+            _showinfo("Coming soon", str(err))
             return
         if isinstance(err, ops.OperationError):
-            messagebox.showerror("Operation failed", str(err))
+            _showerror("Operation failed", str(err))
             return
         if err is not None:
-            messagebox.showerror("Unexpected error", repr(err))
+            _showerror("Unexpected error", repr(err))
             return
         self.refresh()
         self._present_result(holder.get("result"), success)
@@ -388,9 +442,9 @@ class App(tk.Tk):
             msg = result.detail + (f"\n\nUndo available (snapshot {result.snapshot_id})." if result.snapshot_id else "")
             if result.warnings:
                 msg += "\n\nWarnings:\n - " + "\n - ".join(result.warnings)
-            messagebox.showinfo("Done", msg)
+            _showinfo("Done", msg)
         else:
-            messagebox.showinfo("Done", success)
+            _showinfo("Done", success)
 
     def _busy(self, message: str) -> tk.Toplevel:
         """A small modal 'please wait' window with an animated indeterminate bar."""
@@ -438,7 +492,7 @@ class App(tk.Tk):
 
     def _require_live(self) -> bool:
         if not (self.live_dir and Path(self.live_dir).is_dir()):
-            messagebox.showerror("No live folder", "Could not locate the live save folder.")
+            _showerror("No live folder", "Could not locate the live save folder.")
             return False
         return True
 
@@ -463,12 +517,12 @@ class App(tk.Tk):
     def on_restore(self, target: dict | None = None) -> None:
         sel = target or self._selected()
         if not sel or sel.get("type") != "entry":
-            messagebox.showinfo("Select a backup", "Select a catalog entry (top-level backup) to restore.")
+            _showinfo("Select a backup", "Select a catalog entry (top-level backup) to restore.")
             return
         if not self._require_live():
             return
         entry = sel["entry"]
-        if not messagebox.askyesno("Restore", f"Replace the live saves with backup '{entry.id}'?\n(The current state is auto-snapshotted first.)"):
+        if not _askyesno("Restore", f"Replace the live saves with backup '{entry.id}'?\n(The current state is auto-snapshotted first.)"):
             return
         self._run(
             lambda force: ops.restore_full(self.vault, entry, self.live_dir, allow_game_running=force),
@@ -479,7 +533,7 @@ class App(tk.Tk):
     def on_extract(self, target: dict | None = None) -> None:
         sel = target or self._selected()
         if not sel or sel.get("type") != "slot":
-            messagebox.showinfo("Select a slot", "Select a slot (under LIVE or any backup) to extract.")
+            _showinfo("Select a slot", "Select a slot (under LIVE or any backup) to extract.")
             return
         self._run(
             lambda _force: ops.extract_slot(self.vault, Path(sel["dir"]), sel["slot"], label=""),
@@ -490,14 +544,14 @@ class App(tk.Tk):
     def on_repopulate(self, target: dict | None = None) -> None:
         sel = target or self._selected()
         if not sel or sel.get("type") != "slot":
-            messagebox.showinfo("Select a source slot", "Select the source slot (under a backup or LIVE) first.")
+            _showinfo("Select a source slot", "Select the source slot (under a backup or LIVE) first.")
             return
         if not self._require_live():
             return
         dest = simpledialog.askinteger("Repopulate", "Destination live slot (1-15):", minvalue=1, maxvalue=15)
         if not dest:
             return
-        if not messagebox.askyesno(
+        if not _askyesno(
             "Repopulate",
             f"Write slot {sel['slot']} from\n{sel['dir']}\ninto LIVE slot {dest}?\n(The current state is auto-snapshotted first.)",
         ):
@@ -511,7 +565,7 @@ class App(tk.Tk):
     def on_promote(self, target: dict | None = None) -> None:
         sel = target or self._selected()
         if not sel or sel.get("type") != "member" or not sel.get("live"):
-            messagebox.showinfo("Select a live save", "Select a save (A or B) under a LIVE slot to make it the newest.")
+            _showinfo("Select a live save", "Select a save (A or B) under a LIVE slot to make it the newest.")
             return
         self._run(
             lambda force: ops.promote_member(self.vault, self.live_dir, sel["slot"], sel["member"], allow_game_running=force),
@@ -529,7 +583,7 @@ class App(tk.Tk):
         if catalog.looks_like_vault_dir(directory):
             self._import_vault_dir(directory)
             return
-        copy = messagebox.askyesno("Import", "Copy the backup into the vault?\n(No = index it where it is.)")
+        copy = _askyesno("Import", "Copy the backup into the vault?\n(No = index it where it is.)")
         self._run(
             lambda _force: ops.import_backup(self.vault, directory, copy_into_vault=copy),
             success="Imported.",
@@ -542,18 +596,18 @@ class App(tk.Tk):
         try:
             pv = ops.preview_vault_import(self.vault, directory)
         except ops.OperationError as exc:
-            messagebox.showerror("Import vault", str(exc))
+            _showerror("Import vault", str(exc))
             return
         total, new, existing = pv["total"], pv["new"], pv["existing"]
         plural = "y" if total == 1 else "ies"
         if not new:
-            messagebox.showinfo(
+            _showinfo(
                 "Import vault",
                 f"'{directory.name}' is a Save Vault with {total} entr{plural}, "
                 "all already in your vault. Nothing to import.",
             )
             return
-        ans = messagebox.askyesnocancel(
+        ans = _askyesnocancel(
             "Import vault",
             f"'{directory.name}' is a Save Vault with {total} entr{plural}:\n"
             f"  - {len(new)} new\n"
@@ -577,7 +631,7 @@ class App(tk.Tk):
         try:
             appstate.save(self.state)
         except OSError as exc:
-            messagebox.showwarning("Rescan", f"Found sources but could not save config:\n{exc}")
+            _showwarning("Rescan", f"Found sources but could not save config:\n{exc}")
         # If we had no active writable source yet, adopt the first one found.
         if self.active_source_id is None:
             writable = self._writable_sources()
@@ -585,7 +639,7 @@ class App(tk.Tk):
                 self.active_source_id = writable[0].id
                 self.live_dir = Path(writable[0].path)
         self.refresh()
-        messagebox.showinfo(
+        _showinfo(
             "Rescan",
             f"Added {added} new live source(s).\n"
             f"Now tracking {len(self.state.live_sources)} live source(s).\n\n"
@@ -604,18 +658,27 @@ class App(tk.Tk):
                 ops.import_backup(self.vault, d, label=d.name, copy_into_vault=False)
                 added += 1
         self.refresh()
-        messagebox.showinfo("Discover", f"Added {added} newly found backup(s) to the catalog.")
+        _showinfo("Discover", f"Added {added} newly found backup(s) to the catalog.")
 
     def on_undo(self) -> None:
         if not self._require_live():
             return
-        if not messagebox.askyesno("Undo", "Undo the last operation by restoring its auto-snapshot?"):
+        if not _askyesno("Undo", "Undo the last operation by restoring its auto-snapshot?"):
             return
         self._run(
             lambda force: ops.undo_last(self.vault, self.live_dir, allow_game_running=force),
             success="Undone.",
             message="Undoing — please wait…",
         )
+
+    def on_accounts(self) -> None:
+        try:
+            AccountsDialog(self)
+        except aliases.AliasConfigError as exc:
+            messagebox.showerror(  # raw: the alias file is what failed to parse
+                "Account display names",
+                f"Could not read the account display names.\n\nFix or delete this file:\n{exc}",
+            )
 
     def on_help(self) -> None:
         win = tk.Toplevel(self)
@@ -629,6 +692,83 @@ class App(tk.Tk):
         vsb.config(command=txt.yview)
         txt.insert("1.0", HELP_TEXT)
         txt.configure(state="disabled")
+
+
+class AccountsDialog(tk.Toplevel):
+    """Map each account id to the name shown in its place.
+
+    This dialog is the one place in the app that shows the real identifiers -- it is
+    where they are configured -- so its fields are deliberately not filtered.
+    """
+
+    def __init__(self, app: App):
+        super().__init__(app)
+        self.app = app
+        self.title("Account display names")
+        self.transient(app)
+        self.resizable(False, False)
+        self.amap = aliases.load()
+        self._vars: dict[str, tk.StringVar] = {}
+
+        ttk.Label(
+            self,
+            padding=(14, 12, 14, 8),
+            justify="left",
+            text=(
+                "Show a name of your choosing instead of the real account id.\n"
+                "Once a name is set, the app shows only that name -- in folder names,\n"
+                "paths, labels and messages. This is the only place the real ids appear.\n"
+                "Clear a name to go back to showing the real id."
+            ),
+        ).pack(anchor="w")
+
+        grid = ttk.Frame(self, padding=(14, 0, 14, 8))
+        grid.pack(fill=tk.X)
+        accounts = self._known_accounts()
+        if not accounts:
+            ttk.Label(grid, text="No accounts found yet -- use Rescan first.").grid(sticky="w")
+        for column, heading in enumerate(("Platform", "Real account id", "Shows as")):
+            ttk.Label(grid, text=heading, font=("TkDefaultFont", 9, "bold")).grid(
+                row=0, column=column, sticky="w", padx=(0, 10), pady=(0, 4)
+            )
+        for row, (platform, account) in enumerate(accounts, start=1):
+            ttk.Label(grid, text=platform).grid(row=row, column=0, sticky="w", padx=(0, 10), pady=2)
+            real = ttk.Entry(grid, width=52)  # fits a 49-char Xbox <xuid>_<titleid> whole
+            real.insert(0, account)
+            real.configure(state="readonly")  # selectable so it can be copied, not edited
+            real.grid(row=row, column=1, sticky="w", padx=(0, 10), pady=2)
+            var = tk.StringVar(value=self.amap.alias_for(account))
+            self._vars[account] = var
+            ttk.Entry(grid, textvariable=var, width=26).grid(row=row, column=2, sticky="w", pady=2)
+
+        buttons = ttk.Frame(self, padding=(14, 0, 14, 12))
+        buttons.pack(fill=tk.X)
+        ttk.Button(buttons, text="Cancel", command=self.destroy).pack(side=tk.RIGHT)
+        ttk.Button(buttons, text="Save", command=self._save).pack(side=tk.RIGHT, padx=6)
+
+        self.update_idletasks()
+        x = app.winfo_rootx() + (app.winfo_width() - self.winfo_width()) // 2
+        y = app.winfo_rooty() + (app.winfo_height() - self.winfo_height()) // 3
+        self.geometry(f"+{max(x, 0)}+{max(y, 0)}")
+        self.grab_set()
+
+    def _known_accounts(self) -> list[tuple[str, str]]:
+        """Every account the app knows about, plus any left over in the file."""
+        known = [(s.platform, s.account) for s in self.app.state.sources if s.account]
+        seen = {account for _platform, account in known}
+        return known + [("-", a) for a in self.amap.entries if a not in seen]
+
+    def _save(self) -> None:
+        for account, var in self._vars.items():
+            self.amap.set(account, var.get())
+        try:
+            aliases.save(self.amap)
+        except OSError as exc:
+            _showerror("Account display names", f"Could not save the account names:\n{exc}")
+            return
+        aliases.set_active(self.amap)
+        self.destroy()
+        self.app.refresh()
 
 
 HELP_TEXT = """NMS Save Vault — Help
@@ -671,6 +811,11 @@ BUTTONS
 - Discover: Scan the NMS folder for existing backups and add any new ones found.
 - Undo: Restore the auto-snapshot taken just before the last operation.
 - Refresh: Re-scan the live folder and the catalog.
+- Accounts: Give each account a display name to show instead of its real id (the Steam
+  st_<steamid64> folder, the Xbox <xuid>_<titleid> folder). Once a name is set, the app
+  shows only that name everywhere -- folder names, paths, labels, messages -- and that
+  dialog is the only place the real ids still appear. The names are stored in
+  accounts.ini next to state.json; clearing a name shows the real id again.
 - Help: This dialog.
 
 WORKFLOWS
@@ -692,6 +837,19 @@ SAFETY
 
 
 def main(argv=None) -> int:
+    try:
+        aliases.active()  # fail before any window shows a real id we were told to hide
+    except aliases.AliasConfigError as exc:
+        root = tk.Tk()
+        root.withdraw()
+        # Raw messagebox: the filter itself is what failed, so it cannot be used here.
+        messagebox.showerror(
+            "Account display names",
+            "Could not read the account display names, so the app stopped rather than "
+            f"show account ids you asked it to hide.\n\nFix or delete this file:\n{exc}",
+        )
+        root.destroy()
+        return 1
     App().mainloop()
     return 0
 

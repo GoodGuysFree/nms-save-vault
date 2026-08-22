@@ -66,6 +66,7 @@ src/nms_save_vault/
     catalog.py    JSON index of backups; scan/import; dedup by sha256
     operations.py backup/restore/extract/repopulate/promote
     safety.py     game-running check, atomic staged writes, auto-snapshot, op-log/undo
+    aliases.py    account-id -> display-name filter (accounts.ini); display only
   cli.py          argparse front end
   gui.py          Tkinter app
 ```

@@ -19,6 +19,9 @@ uv.lock
 /vault/
 /sandbox/
 *.nmsvault
+# app config: accounts.ini holds real Steam/Xbox account ids
+state.json
+accounts.ini
 
 # OS / editors
 .DS_Store

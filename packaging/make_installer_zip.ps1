@@ -42,9 +42,12 @@ foreach ($f in @("install.bat", "uninstall.bat", "README.txt")) {
 }
 
 # Running the app from dist\ leaves the builder's own config and byte-code behind;
-# neither belongs in someone else's download.
+# neither belongs in someone else's download. accounts.ini matters most: it holds the
+# builder's real Steam / Xbox account ids, so shipping it would publish them.
 $staged = Join-Path $stageDir "NMSSaveVault"
-Remove-Item (Join-Path $staged "state.json") -Force -ErrorAction SilentlyContinue
+foreach ($cfg in @("state.json", "accounts.ini")) {
+    Remove-Item (Join-Path $staged $cfg) -Force -ErrorAction SilentlyContinue
+}
 Get-ChildItem $staged -Recurse -Directory -Filter "__pycache__" | Remove-Item -Recurse -Force
 
 Write-Host "==> Compressing -> $zipPath"

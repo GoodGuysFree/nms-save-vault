@@ -30,6 +30,10 @@ shortcuts? `install.bat` in the zip adds them. Full details under
 3. **Import** — register an existing manual backup folder into the catalog, or import an
    entire copied Save Vault folder: it compares that vault's entries with yours and offers
    to copy the new ones in or index them in place (idempotent — re-importing is harmless).
+4. **Account display names** — give each account a name of your choosing and the app shows
+   that instead of the real id everywhere, so a screenshot or a screen-share never exposes
+   your `st_<steamid64>` or Xbox `<xuid>_<titleid>`. See
+   [Account display names](#account-display-names).
 
 ## Why it's safe
 
@@ -154,6 +158,31 @@ active write target, and badges Xbox folders read-only. Use **Rescan** (GUI) or
 `nmsvault sources --rescan` (CLI) to pick up a new account or backup later; your manual
 edits to the config are preserved. Discovery is strictly read-only.
 
+## Account display names
+
+Save folders are named after the account that owns them, so the raw id would otherwise show
+up in folder names, paths, source labels and operation messages throughout both front-ends.
+Map each account to a name of your choosing and the app shows only that name — everywhere:
+
+* **GUI:** **Accounts…** on the toolbar (or right-click any row → *Account display names…*).
+* **CLI:** `nmsvault accounts` lists them; `nmsvault accounts --set <id>="Main"` sets one and
+  `--clear <id>` removes it.
+
+Those two places are the *only* ones that still show the real identifiers — they are where
+you configure them. The mapping is a plain `accounts.ini` beside `state.json`, safe to edit
+by hand:
+
+```ini
+[accounts]
+76561197975032661 = Main
+000901F0DD67CC4E_29070100B936489ABCE8B9AF3980429C = Xbox
+```
+
+Clearing a name shows the real id again. This is **display only** — `state.json`,
+`catalog.json` and every path the app opens keep the real identifiers, so nothing about how
+saves are found or written changes. If `accounts.ini` cannot be parsed the app stops with an
+error rather than falling back to showing the ids you asked it to hide.
+
 ## Usage
 
 Both front-ends share the same safety-checked core. The live folder and a vault folder
@@ -180,6 +209,7 @@ nmsvault promote --slot 9 --member B     # force B (the restore-point) to be new
 nmsvault restore <entry-id>              # mirror the live folder to a backup
 nmsvault undo                            # restore the last auto-snapshot
 nmsvault verify [live|<id>|<folder>]
+nmsvault accounts [--set <id>=NAME] [--clear <id>]   # hide the real account ids
 ```
 
 Every write first checks the game is closed (override `--force`), auto-snapshots the
@@ -224,7 +254,7 @@ The vault lives outside `st_<id>`, so it is never scanned by the game or synced 
 ## Status
 
 Working. Core format/crypto and all operations are verified against the real save files and
-in a temp sandbox (80 tests). Xbox / Game Pass saves are supported for reading **and**
+in a temp sandbox (101 tests). Xbox / Game Pass saves are supported for reading **and**
 same-platform writing — verified against a real install (reads) and synthetic `wgs` fixtures
 (writes). A full file-copy safety backup of the live folder was made before development
 (`C:\Devel\NMS-SaveBackup-SAFETY-2026-06-24`).

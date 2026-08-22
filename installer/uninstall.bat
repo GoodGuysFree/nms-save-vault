@@ -64,7 +64,7 @@ echo  Done. NMS Save Vault has been uninstalled.
 echo  ^(Your saves and backups were left untouched.^)
 echo(
 
-rem --- remove the install folder (state.json, vault.bat, and this script) -----
+rem --- remove the install folder (state.json, accounts.ini, vault.bat, this script)
 if /i "%~dp0"=="%INSTALL_DIR%\" (
     rem running from inside the folder we must delete: release our own handle first
     pause

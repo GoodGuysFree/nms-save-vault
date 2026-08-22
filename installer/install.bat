@@ -42,8 +42,8 @@ if not exist "%INSTALL_DIR%" mkdir "%INSTALL_DIR%"
 
 rem --- clear the old program first --------------------------------------------
 rem  A locked exe is how we detect a running app, and a stale _runtime must not be
-rem  left to mix with the new one. state.json lives in this folder too and is
-rem  deliberately left alone, so upgrading keeps your config.
+rem  left to mix with the new one. state.json and accounts.ini live in this folder too
+rem  and are deliberately left alone, so upgrading keeps your config.
 if exist "%TARGET%" (
     del /f /q "%TARGET%" >nul 2>&1
     if exist "%TARGET%" (

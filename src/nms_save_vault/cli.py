@@ -12,20 +12,40 @@ Examples:
     nmsvault import "D:\\some\\st_backup" [--copy]
     nmsvault import "E:\\Backup\\_SaveVault" [--copy]   # a whole copied vault
     nmsvault discover [--add]
+    nmsvault accounts --set 7656119...=Main    # hide the real account ids
     nmsvault undo
     nmsvault verify [live|<entry-id>|<path>]
 """
 from __future__ import annotations
 
 import argparse
+import builtins
 import sys
 from datetime import datetime
 from pathlib import Path
 
-from .core import catalog, discover, locations, operations as ops
+from .core import aliases, catalog, discover, locations, operations as ops
 from .core import savedir, slotmap
 from .core import state as appstate
 from .core.catalog import Vault
+
+_print = builtins.print
+
+
+def print(*args, **kwargs) -> None:  # noqa: A001 - deliberate module-wide output filter
+    """Print through the account-alias filter.
+
+    Shadowing the builtin is what makes the guarantee structural: every line this
+    module emits -- existing or added later -- is filtered, so a configured alias
+    cannot leak a real account id. ``cmd_accounts`` calls ``_print`` directly; it is
+    the one command meant to show the real ids.
+    """
+    _print(*(aliases.redact(a) for a in args), **kwargs)
+
+
+def _die(message: str):
+    """Exit with an error message, filtered like everything else the CLI prints."""
+    sys.exit(aliases.redact(message))
 
 
 # --- formatting helpers ------------------------------------------------------
@@ -93,7 +113,7 @@ def _resolve_live(args) -> Path:
                 return Path(s.path)
     d = locations.default_live_save_dir()
     if d is None:
-        sys.exit("error: could not locate a live NMS save folder; pass --live <dir>")
+        _die("error: could not locate a live NMS save folder; pass --live <dir>")
     return d
 
 
@@ -113,7 +133,7 @@ def _resolve_source(vault: Vault, value: str) -> Path:
     p = Path(value)
     if p.is_dir():
         return p
-    sys.exit(f"error: source '{value}' is neither a catalog entry id nor a folder")
+    _die(f"error: source '{value}' is neither a catalog entry id nor a folder")
 
 
 # --- commands ----------------------------------------------------------------
@@ -176,7 +196,7 @@ def cmd_restore(args) -> int:
     vault = _resolve_vault(args)
     entry = vault.get(args.entry_id)
     if entry is None:
-        sys.exit(f"error: no catalog entry '{args.entry_id}'")
+        _die(f"error: no catalog entry '{args.entry_id}'")
     res = ops.restore_full(vault, entry, live, mirror=not args.no_mirror, allow_game_running=args.force)
     _report(res)
     return 0
@@ -301,12 +321,57 @@ def cmd_sources(args) -> int:
     print("-" * 92)
     for s in st.sources:
         missing = "" if s.exists else "   (MISSING)"
+        # Redact before padding: the column width has to be measured on what is shown.
+        account = aliases.redact(s.account) or "-"
         print(
             f"{s.role:<7}{s.platform:<9}{('yes' if s.writable else 'no'):<7}"
-            f"{(s.account or '-'):<20}{s.path}{missing}"
+            f"{account:<20}{s.path}{missing}"
         )
     if not st.sources:
         print("(none found)")
+    return 0
+
+
+def cmd_accounts(args) -> int:
+    """List / set the display names that replace the real account ids.
+
+    This is the one command that prints the real identifiers -- it is where they are
+    configured, so it uses the unfiltered ``_print``.
+    """
+    path = aliases.default_path()
+    amap = aliases.load(path)
+
+    changed = False
+    for pair in args.set or []:
+        account, sep, alias = pair.partition("=")
+        if not sep or not account.strip():
+            _die(f"error: --set expects <account-id>=<display name>, got '{pair}'")
+        amap.set(account, alias)
+        changed = True
+    for account in args.clear or []:
+        amap.clear(account)
+        changed = True
+    if changed:
+        aliases.save(amap, path)
+        aliases.set_active(amap)
+
+    st = appstate.load()
+    known = [(s.platform, s.account) for s in (st.sources if st else []) if s.account]
+    seen = {account for _p, account in known}
+    known += [("-", account) for account in amap.entries if account not in seen]
+
+    _print(f"Config: {path}" + ("" if path.is_file() else "   (not created yet)"))
+    if not known:
+        _print("(no accounts known yet -- run 'nmsvault sources' first)")
+        return 0
+    _print("")
+    _print(f"{'Platform':<9}{'Account id':<52}Shows as")
+    _print("-" * 92)
+    for platform, account in known:
+        _print(f"{platform:<9}{account:<52}{amap.alias_for(account) or '(not set)'}")
+    _print("")
+    _print('Set:   nmsvault accounts --set <account-id>="Display name"')
+    _print("Clear: nmsvault accounts --clear <account-id>")
     return 0
 
 
@@ -373,6 +438,16 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("undo", help="undo the last operation (restore its snapshot)")
     s.add_argument("--force", action="store_true")
     s.set_defaults(func=cmd_undo)
+
+    s = sub.add_parser(
+        "accounts",
+        help="show/set the display names that hide the real Steam/Xbox account ids",
+    )
+    s.add_argument("--set", action="append", metavar="ID=NAME",
+                   help="show NAME wherever account ID would appear (repeatable)")
+    s.add_argument("--clear", action="append", metavar="ID",
+                   help="drop an account's display name (repeatable)")
+    s.set_defaults(func=cmd_accounts)
 
     s = sub.add_parser("verify", help="scan and validate a folder (live/entry/path)")
     s.add_argument("target", nargs="?")
