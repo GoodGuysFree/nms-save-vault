@@ -90,6 +90,24 @@ BACKUP_COLUMNS = (
     Column("saved", "Saved", 130),
 )
 
+@dataclass(frozen=True)
+class SlotSource:
+    """One slot's worth of saves that can be copied into a live slot.
+
+    Copying is slot-granular: the core writes *both* of a slot's saves (the Auto-Save and
+    the Restore-Point) and re-keys each meta for the destination. So a source is always a
+    slot, even when the user right-clicked one of the two saves inside it.
+    """
+
+    folder: str      # the folder holding the saves (a live folder, backup, or extract)
+    slot: int
+    where: str = ""  # human name of the folder: a backup id, or a live source's caption
+
+    @property
+    def caption(self) -> str:
+        return f"slot {self.slot} of {self.where}" if self.where else f"slot {self.slot}"
+
+
 _SAVE_TYPE_HELP = {
     "Auto-Save": "the game writes this one by itself, every few minutes",
     "Restore-Point": "written when you leave your ship, or use a save point, save beacon,\n"
@@ -337,7 +355,7 @@ class App(tk.Tk):
             ("Backup live", self.on_backup),
             ("Restore", self.on_restore),
             ("Extract slot", self.on_extract),
-            ("Repopulate → live", self.on_repopulate),
+            ("Copy into live slot…", self.on_copy_slot),
             ("Promote", self.on_promote),
             ("Import…", self.on_import),
             ("Rescan", self.on_rescan),
@@ -570,6 +588,18 @@ class App(tk.Tk):
 
     # --- populate ------------------------------------------------------------
 
+    def _remember(self, tree, row: str, meta: dict) -> None:
+        """Record what a row means.
+
+        Keyed by (tree, row) rather than row alone: Tk numbers items per widget, so the
+        live tree and the backups tree both produce "I001", "I002", ... and a single
+        row-keyed dict silently let the second-populated tree overwrite the first.
+        """
+        self._meta[(str(tree), row)] = meta
+
+    def _meta_for(self, tree, row: str) -> dict | None:
+        return self._meta.get((str(tree), row))
+
     def refresh(self) -> None:
         for tree in (self.live_tree, self.backup_tree):
             tree.delete(*tree.get_children())
@@ -594,10 +624,10 @@ class App(tk.Tk):
                 values=("", "", "", "", "writable" if s.writable else "read-only"),
                 tags=tags,
             )
-            self._meta[node] = {
+            self._remember(self.live_tree, node, {
                 "type": "live", "dir": s.path, "writable": s.writable, "source_id": s.id,
                 "tip": self._source_tip(s, view),
-            }
+            })
             self._add_view(node, view, writable=s.writable)
 
         # --- BACKUPS pane: catalog entries, sortable by any column ------------
@@ -614,7 +644,7 @@ class App(tk.Tk):
                 ),
                 tags=("backup",),
             )
-            self._meta[node] = {"type": "entry", "entry": e, "tip": self._entry_tip(e)}
+            self._remember(self.backup_tree, node, {"type": "entry", "entry": e, "tip": self._entry_tip(e)})
             self._add_entry(node, e)
         self._apply_backup_sort()
 
@@ -648,10 +678,10 @@ class App(tk.Tk):
                     "",
                 ),
             )
-            self._meta[node] = {
+            self._remember(self.live_tree, node, {
                 "type": "slot", "dir": str(view.path), "slot": slot, "live": writable,
                 "tip": self._slot_tip(sv, view),
-            }
+            })
             for m in sv.members:
                 if not m.exists:
                     continue
@@ -671,14 +701,14 @@ class App(tk.Tk):
                         status,
                     ),
                 )
-                self._meta[mid] = {
+                self._remember(self.live_tree, mid, {
                     "type": "member",
                     "dir": str(view.path),
                     "slot": slot,
                     "member": slotmap.member_index(m.label),
                     "live": writable,
                     "tip": self._member_tip(m, sv),
-                }
+                })
 
     def _add_entry(self, parent: str, entry) -> None:
         for s in entry.slots:
@@ -692,10 +722,10 @@ class App(tk.Tk):
                 text=f"Slot {s.slot}",
                 values=("", "", s.name, newest.difficulty_label if newest else "", "", _fmt_ts(ts)),
             )
-            self._meta[node] = {
+            self._remember(self.backup_tree, node, {
                 "type": "slot", "dir": entry.path, "slot": s.slot, "live": False, "entry": entry,
                 "tip": self._backup_slot_tip(s, entry),
-            }
+            })
             for m in s.members:
                 if not m.present:
                     continue
@@ -713,14 +743,15 @@ class App(tk.Tk):
                         _fmt_ts(m.timestamp),
                     ),
                 )
-                self._meta[mid] = {
+                self._remember(self.backup_tree, mid, {
                     "type": "member",
                     "dir": entry.path,
                     "slot": s.slot,
                     "member": slotmap.member_index(m.label),
                     "live": False,
+                    "entry": entry,
                     "tip": self._backup_member_tip(m, s),
-                }
+                })
 
     # --- sorting (backups pane) ----------------------------------------------
 
@@ -737,7 +768,7 @@ class App(tk.Tk):
         column = self.backup_tree["columns"].index(self._sort_key)
 
         def sort_value(row: str):
-            entry = (self._meta.get(row) or {}).get("entry")
+            entry = (self._meta_for(self.backup_tree, row) or {}).get("entry")
             if self._sort_key == "saved" and entry is not None:
                 return entry.created  # ISO-8601: sorts correctly as text
             if self._sort_key == "slots" and entry is not None:
@@ -756,7 +787,7 @@ class App(tk.Tk):
     # --- tooltips ------------------------------------------------------------
 
     def _tip_for_row(self, tree, row_id: str) -> str:
-        meta = self._meta.get(row_id)
+        meta = self._meta_for(tree, row_id)
         return meta.get("tip", "") if meta else ""
 
     def _source_tip(self, source, view: savedir.SaveDirView) -> str:
@@ -858,49 +889,46 @@ class App(tk.Tk):
         for tree in (self._active_tree, self.live_tree, self.backup_tree):
             sel = tree.selection()
             if sel:
-                return self._meta.get(sel[0])
+                return self._meta_for(tree, sel[0])
+        return None
+
+    def _source_from(self, meta: dict) -> SlotSource | None:
+        """The slot a row can be copied FROM, or None if the row is not a slot at all.
+
+        A save row resolves to its slot, because copying is slot-granular; a single-slot
+        extract resolves to the slot it holds.
+        """
+        kind = meta.get("type")
+        if kind in ("slot", "member"):
+            entry = meta.get("entry")
+            where = entry.id if entry is not None else Path(meta["dir"]).name
+            return SlotSource(meta["dir"], meta["slot"], where)
+        if kind == "entry":
+            slot = _extract_slot_number(meta["entry"])
+            if slot is not None:
+                return SlotSource(meta["entry"].path, slot, meta["entry"].id)
         return None
 
     def _on_right_click(self, event) -> None:
-        """Build a context-sensitive menu for the right-clicked row."""
+        """Build a context menu offering exactly what makes sense for the row clicked."""
         tree = event.widget
         row = tree.identify_row(event.y)
         if not row:
             return
         tree.selection_set(row)  # fires <<TreeviewSelect>>, which clears the other tree
-        meta = self._meta.get(row)
+        meta = self._meta_for(tree, row)
         if not meta:
             return
         menu = tk.Menu(self, tearoff=0)
         kind = meta.get("type")
+
         if kind == "live":
-            sid = meta.get("source_id")
-            if meta.get("writable") and sid and sid != self.active_source_id:
-                menu.add_command(label="Set as active live target", command=lambda: self._set_active(sid))
-                menu.add_separator()
-            if meta.get("writable"):
-                menu.add_command(label="Backup this live folder now", command=lambda: self._backup_dir(meta["dir"]))
-                menu.add_command(label="Undo last operation", command=self.on_undo)
-            else:
-                menu.add_command(label="Import this Xbox folder as a backup",
-                                 command=lambda: self._import_dir(meta["dir"]))
+            self._menu_for_live_folder(menu, meta)
         elif kind == "entry":
-            menu.add_command(
-                label=_restore_menu_label(meta["entry"]), command=lambda: self.on_restore(meta)
-            )
-        elif kind == "slot":
-            target = {"type": "slot", "dir": meta["dir"], "slot": meta["slot"]}
-            menu.add_command(label=f"Extract slot {meta['slot']} aside", command=lambda: self.on_extract(target))
-            menu.add_command(label=f"Repopulate a live slot from slot {meta['slot']}…", command=lambda: self.on_repopulate(target))
-        elif kind == "member":
-            slot = meta["slot"]
-            target = {"type": "slot", "dir": meta["dir"], "slot": slot}
-            menu.add_command(label=f"Extract slot {slot} aside", command=lambda: self.on_extract(target))
-            menu.add_command(label=f"Repopulate a live slot from slot {slot}…", command=lambda: self.on_repopulate(target))
-            if meta.get("live"):
-                menu.add_separator()
-                label = slotmap.save_type_label(meta["member"])
-                menu.add_command(label=f"Make the {label} the newest (promote)", command=lambda: self.on_promote(meta))
+            self._menu_for_backup(menu, meta)
+        elif kind in ("slot", "member"):
+            self._menu_for_slot(menu, meta)
+
         menu.add_separator()
         menu.add_command(label="Refresh", command=self.refresh)
         menu.add_command(label="Account display names…", command=self.on_accounts)
@@ -910,6 +938,84 @@ class App(tk.Tk):
             menu.tk_popup(event.x_root, event.y_root)
         finally:
             menu.grab_release()
+
+    # A live save folder: back it up, aim writes at it, or pull a backup into it.
+    def _menu_for_live_folder(self, menu, meta: dict) -> None:
+        sid = meta.get("source_id")
+        writable = meta.get("writable")
+        if writable and sid and sid != self.active_source_id:
+            menu.add_command(label="Set as active live target", command=lambda: self._set_active(sid))
+            menu.add_separator()
+        if writable:
+            menu.add_command(label="Back up this folder now…", command=lambda: self._backup_dir(meta["dir"]))
+            menu.add_command(
+                label="Copy a save into one of its slots…",
+                command=lambda: self.on_copy_slot(dest_dir=meta["dir"]),
+            )
+            menu.add_separator()
+            menu.add_command(label="Undo the last change to live saves", command=self.on_undo)
+        else:
+            menu.add_command(
+                label="Import this Xbox folder as a backup",
+                command=lambda: self._import_dir(meta["dir"]),
+            )
+
+    # A backup: a whole folder goes back wholesale, a one-slot extract goes into a slot.
+    def _menu_for_backup(self, menu, meta: dict) -> None:
+        entry = meta["entry"]
+        slot = _extract_slot_number(entry)
+        menu.add_command(label=_restore_menu_label(entry), command=lambda: self.on_restore(meta))
+        if slot is not None:
+            # An extract is one slot: it can go back where it came from (above), or into
+            # any slot you choose. Only offering the former was too narrow.
+            menu.add_command(
+                label=f"Copy slot {slot} into a different live slot…",
+                command=lambda: self.on_copy_slot(source=self._source_from(meta)),
+            )
+
+    # A slot, or one of the two saves in it, in either pane.
+    def _menu_for_slot(self, menu, meta: dict) -> None:
+        slot = meta["slot"]
+        live = meta.get("live")
+        source = self._source_from(meta)
+        target = {"type": "slot", "dir": meta["dir"], "slot": slot}
+
+        if meta.get("type") == "member" and live:
+            label = slotmap.save_type_label(meta["member"])
+            menu.add_command(
+                label=f"Make the {label} the one the game loads (promote)",
+                command=lambda: self.on_promote(meta),
+            )
+            menu.add_separator()
+
+        if live:
+            menu.add_command(
+                label=f"Replace live slot {slot} with a save from anywhere…",
+                command=lambda: self.on_copy_slot(dest_dir=meta["dir"], dest_slot=slot),
+            )
+            menu.add_command(
+                label=f"Copy live slot {slot} into another live slot…",
+                command=lambda: self.on_copy_slot(source=source),
+            )
+            menu.add_separator()
+            menu.add_command(
+                label=f"Extract live slot {slot} to the vault",
+                command=lambda: self.on_extract(target),
+            )
+        else:
+            menu.add_command(
+                label=f"Copy slot {slot} into live slot {slot}",
+                command=lambda: self.on_copy_slot(source=source, dest_slot=slot, ask=False),
+            )
+            menu.add_command(
+                label=f"Copy slot {slot} into a live slot…",
+                command=lambda: self.on_copy_slot(source=source),
+            )
+            menu.add_separator()
+            menu.add_command(
+                label=f"Extract slot {slot} to the vault as its own backup",
+                command=lambda: self.on_extract(target),
+            )
 
     # --- actions -------------------------------------------------------------
 
@@ -1015,7 +1121,11 @@ class App(tk.Tk):
     def on_restore(self, target: dict | None = None) -> None:
         sel = target or self._selected()
         if not sel or sel.get("type") != "entry":
-            _showinfo("Select a backup", "Select a catalog entry (top-level backup) to restore.")
+            _showinfo(
+                "Select a backup",
+                "Select a backup — one of the top-level rows in the BACKUPS pane. To put "
+                "back a single slot instead, select that slot and use Copy into live slot.",
+            )
             return
         if not self._require_live():
             return
@@ -1045,9 +1155,14 @@ class App(tk.Tk):
         )
 
     def on_extract(self, target: dict | None = None) -> None:
+        """Lift a slot aside into the vault. Works from a slot row or either save in it."""
         sel = target or self._selected()
-        if not sel or sel.get("type") != "slot":
-            _showinfo("Select a slot", "Select a slot (under LIVE or any backup) to extract.")
+        if not sel or sel.get("type") not in ("slot", "member"):
+            _showinfo(
+                "Select a slot",
+                "Select a slot — or either of the two saves inside it — in the LIVE SAVES "
+                "pane or inside a backup, then press Extract slot.",
+            )
             return
         self._run(
             lambda _force: ops.extract_slot(self.vault, Path(sel["dir"]), sel["slot"], label=""),
@@ -1055,31 +1170,65 @@ class App(tk.Tk):
             message=f"Extracting slot {sel['slot']} — please wait…",
         )
 
-    def on_repopulate(self, target: dict | None = None) -> None:
-        sel = target or self._selected()
-        if not sel or sel.get("type") != "slot":
-            _showinfo("Select a source slot", "Select the source slot (under a backup or LIVE) first.")
+    def on_copy_slot(self, source=None, dest_dir=None, dest_slot=None, ask: bool = True) -> None:
+        """Copy one slot's saves into a live slot.
+
+        Either end may be supplied by the caller and the other asked for, because the user
+        can sensibly start from either: "put this backup somewhere" or "fill this live slot
+        from something". With ``ask=False`` and both ends known it only confirms.
+        """
+        if source is None and dest_dir is None and dest_slot is None:
+            # Toolbar with a selection: use whatever the selected row can be.
+            sel = self._selected()
+            if sel:
+                source = self._source_from(sel)
+                if source is None and sel.get("type") == "live":
+                    dest_dir = sel["dir"]
+                elif sel.get("live") and sel.get("type") in ("slot", "member"):
+                    # A live slot is ambiguous -- it is a perfectly good source AND a
+                    # perfectly good destination -- so let the dialog show both ends.
+                    dest_dir, dest_slot = sel["dir"], sel["slot"]
+
+        if not self._writable_sources():
+            _showerror("No writable live folder", "There is no live save folder to copy into.")
             return
-        if not self._require_live():
-            return
-        dest = simpledialog.askinteger("Repopulate", "Destination live slot (1-15):", minvalue=1, maxvalue=15)
-        if not dest:
-            return
-        if not _askyesno(
-            "Repopulate",
-            f"Write slot {sel['slot']} from\n{sel['dir']}\ninto LIVE slot {dest}?\n(The current state is auto-snapshotted first.)",
-        ):
-            return
+
+        if ask or source is None or dest_slot is None:
+            outcome = CopySlotDialog(self, source=source, dest_dir=dest_dir, dest_slot=dest_slot).result
+            if outcome is None:
+                return
+            source, dest_dir, dest_slot = outcome
+        else:
+            dest_dir = Path(dest_dir or self.live_dir)
+            view = savedir.scan_any(dest_dir)
+            occupant = view.slots[dest_slot].display_name if dest_slot in view.slots else ""
+            if not _askyesno(
+                "Copy into a live slot",
+                f"Copy {source.caption}\ninto live slot {dest_slot} of {Path(dest_dir).name}?\n\n"
+                f"Live slot {dest_slot} currently holds: {occupant or 'nothing'}\n"
+                "Both saves in the slot are copied, and the current state is "
+                "auto-snapshotted first.",
+            ):
+                return
+
+        src_folder, dest_folder, slot = Path(source.folder), Path(dest_dir), dest_slot
         self._run(
-            lambda force: ops.repopulate_slot(self.vault, Path(sel["dir"]), sel["slot"], self.live_dir, dest, allow_game_running=force),
-            success=f"Repopulated live slot {dest}.",
-            message=f"Writing live slot {dest} — please wait…",
+            lambda force: ops.repopulate_slot(
+                self.vault, src_folder, source.slot, dest_folder, slot, allow_game_running=force
+            ),
+            success=f"Copied into live slot {slot}.",
+            message=f"Writing live slot {slot} — please wait…",
         )
 
     def on_promote(self, target: dict | None = None) -> None:
         sel = target or self._selected()
         if not sel or sel.get("type") != "member" or not sel.get("live"):
-            _showinfo("Select a live save", "Select the Auto-Save or Restore-Point under a LIVE slot to make it the newest.")
+            _showinfo(
+                "Select a live save",
+                "Promote changes WHICH of a slot's two saves the game loads, so it needs "
+                "one of them: expand a slot in the LIVE SAVES pane and select its "
+                "Auto-Save or Restore-Point.",
+            )
             return
         self._run(
             lambda force: ops.promote_member(self.vault, self.live_dir, sel["slot"], sel["member"], allow_game_running=force),
@@ -1291,6 +1440,222 @@ class AccountsDialog(tk.Toplevel):
         self.app.refresh()
 
 
+class ChooseSourceDialog(tk.Toplevel):
+    """Pick which slot to copy from: any occupied slot, in a live folder or any backup."""
+
+    def __init__(self, app: App):
+        super().__init__(app)
+        self.app = app
+        self.result: SlotSource | None = None
+        self.title("Choose the save to copy from")
+        self.transient(app)
+        self.geometry("760x460")
+
+        ttk.Label(
+            self, padding=(14, 12, 14, 6), justify="left",
+            text="Pick the slot you want to copy. Both of its saves (the Auto-Save and the\n"
+                 "Restore-Point) are copied together.",
+        ).pack(anchor="w")
+
+        body = ttk.Frame(self, padding=(14, 0, 14, 8))
+        body.pack(fill=tk.BOTH, expand=True)
+        self.tree = RedactingTreeview(body, columns=("name", "saved"), show="tree headings")
+        self.tree.heading("#0", text="Folder / Slot")
+        self.tree.column("#0", width=330, anchor="w")
+        self.tree.heading("name", text="Save name")
+        self.tree.column("name", width=230, anchor="w")
+        self.tree.heading("saved", text="Saved")
+        self.tree.column("saved", width=130, anchor="w")
+        vsb = ttk.Scrollbar(body, orient="vertical", command=self.tree.yview)
+        self.tree.configure(yscrollcommand=vsb.set)
+        self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        vsb.pack(side=tk.RIGHT, fill=tk.Y)
+        self.tree.bind("<Double-1>", lambda _e: self._accept())
+
+        self._sources: dict[str, SlotSource] = {}
+        self._populate()
+
+        buttons = ttk.Frame(self, padding=(14, 0, 14, 12))
+        buttons.pack(fill=tk.X)
+        ttk.Button(buttons, text="Cancel", command=self.destroy).pack(side=tk.RIGHT)
+        ttk.Button(buttons, text="Use this slot", command=self._accept).pack(side=tk.RIGHT, padx=6)
+
+        self.grab_set()
+        self.wait_window()
+
+    def _populate(self) -> None:
+        for source in self.app.state.live_sources:
+            if not Path(source.path).is_dir():
+                continue
+            view = savedir.scan_any(source.path)
+            if not view.occupied_slots:
+                continue
+            caption = _source_caption(source)
+            node = self.tree.insert("", "end", text=f"[live] {caption}", open=False)
+            for sv in view.occupied_slots:
+                newest = sv.newest
+                row = self.tree.insert(
+                    node, "end", text=f"Slot {sv.slot}",
+                    values=(sv.display_name, _fmt_ts(newest.effective_timestamp if newest else 0)),
+                )
+                self._sources[row] = SlotSource(str(view.path), sv.slot, caption)
+
+        for entry in self.app.vault.entries:
+            if not entry.occupied_slots:
+                continue
+            node = self.tree.insert("", "end", text=f"[{entry.kind}] {entry.id}", open=False)
+            for s in entry.occupied_slots:
+                ts = max((m.timestamp for m in s.members if m.present), default=0)
+                row = self.tree.insert(node, "end", text=f"Slot {s.slot}",
+                                       values=(s.name, _fmt_ts(ts)))
+                self._sources[row] = SlotSource(entry.path, s.slot, entry.id)
+
+    def _accept(self) -> None:
+        selection = self.tree.selection()
+        source = self._sources.get(selection[0]) if selection else None
+        if source is None:
+            _showinfo("Choose a slot", "Expand a folder and pick one of its slots.")
+            return
+        self.result = source
+        self.destroy()
+
+
+class CopySlotDialog(tk.Toplevel):
+    """Copy one slot's saves into a live slot, showing both ends before anything is written.
+
+    The old flow asked only "Destination live slot (1-15):" -- a bare number, with no way
+    to see what you were about to overwrite, and with the source implied by whatever
+    happened to be selected. Here both ends are named, either can be changed, and every
+    destination slot shows what is currently in it.
+    """
+
+    def __init__(self, app: App, source=None, dest_dir=None, dest_slot=None):
+        super().__init__(app)
+        self.app = app
+        self.source = source
+        self.result = None
+        self.title("Copy a save into a live slot")
+        self.transient(app)
+        self.geometry("700x540")
+
+        self._targets = [s for s in app.state.live_sources if s.writable and s.exists]
+        if not self._targets:
+            self.destroy()
+            _showerror("No writable live folder", "There is no live save folder to copy into.")
+            return
+
+        frame = ttk.LabelFrame(self, text=" Copy from ", padding=(12, 8))
+        frame.pack(fill=tk.X, padx=14, pady=(12, 6))
+        self.source_var = tk.StringVar()
+        ttk.Label(frame, textvariable=self.source_var, anchor="w").pack(
+            side=tk.LEFT, fill=tk.X, expand=True
+        )
+        ttk.Button(frame, text="Change…", command=self._choose_source).pack(side=tk.RIGHT)
+
+        frame = ttk.LabelFrame(self, text=" Into this live slot ", padding=(12, 8))
+        frame.pack(fill=tk.BOTH, expand=True, padx=14, pady=6)
+        picker = ttk.Frame(frame)
+        picker.pack(fill=tk.X, pady=(0, 6))
+        ttk.Label(picker, text="Live folder:").pack(side=tk.LEFT)
+        self._target_labels = {_source_caption(s): s for s in self._targets}
+        self.target_var = tk.StringVar()
+        self.target_combo = ttk.Combobox(
+            picker, textvariable=self.target_var, state="readonly",
+            values=list(self._target_labels), width=40,
+        )
+        self.target_combo.pack(side=tk.LEFT, padx=6)
+        self.target_combo.bind("<<ComboboxSelected>>", lambda _e: self._reload_slots())
+        if len(self._targets) == 1:
+            self.target_combo.configure(state="disabled")
+
+        holder = ttk.Frame(frame)
+        holder.pack(fill=tk.BOTH, expand=True)
+        self.slots = RedactingTreeview(
+            holder, columns=("name", "saved"), show="tree headings", height=12
+        )
+        self.slots.heading("#0", text="Slot")
+        self.slots.column("#0", width=70, anchor="w")
+        self.slots.heading("name", text="What is in it now")
+        self.slots.column("name", width=330, anchor="w")
+        self.slots.heading("saved", text="Saved")
+        self.slots.column("saved", width=130, anchor="w")
+        vsb = ttk.Scrollbar(holder, orient="vertical", command=self.slots.yview)
+        self.slots.configure(yscrollcommand=vsb.set)
+        self.slots.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        vsb.pack(side=tk.RIGHT, fill=tk.Y)
+        self.slots.bind("<Double-1>", lambda _e: self._accept())
+
+        ttk.Label(
+            self, padding=(14, 0, 14, 6), justify="left",
+            text="Both saves in the slot are copied. Whatever is in the destination slot is\n"
+                 "replaced — the live folder is auto-snapshotted first, so Undo puts it back.",
+        ).pack(anchor="w")
+
+        buttons = ttk.Frame(self, padding=(14, 0, 14, 12))
+        buttons.pack(fill=tk.X)
+        ttk.Button(buttons, text="Cancel", command=self.destroy).pack(side=tk.RIGHT)
+        ttk.Button(buttons, text="Copy", command=self._accept).pack(side=tk.RIGHT, padx=6)
+
+        chosen = next(
+            (s for s in self._targets if dest_dir and Path(s.path) == Path(dest_dir)),
+            self._targets[0],
+        )
+        self.target_var.set(_source_caption(chosen))
+        self._reload_slots(select=dest_slot or (source.slot if source else None))
+        self._show_source()
+
+        self.grab_set()
+        self.wait_window()
+
+    def _show_source(self) -> None:
+        self.source_var.set(
+            aliases.redact(self.source.caption) if self.source
+            else "(nothing chosen yet — press Change…)"
+        )
+
+    def _choose_source(self) -> None:
+        picked = ChooseSourceDialog(self.app).result
+        if picked is not None:
+            self.source = picked
+            self._show_source()
+
+    def _target_source(self):
+        return self._target_labels.get(self.target_var.get(), self._targets[0])
+
+    def _reload_slots(self, select: int | None = None) -> None:
+        keep = select or self._selected_slot()
+        self.slots.delete(*self.slots.get_children())
+        view = savedir.scan_any(self._target_source().path)
+        for number in sorted(view.slots):
+            sv = view.slots[number]
+            newest = sv.newest
+            row = self.slots.insert(
+                "", "end", iid=str(number), text=f"{number}",
+                values=(
+                    sv.display_name if sv.occupied else "empty",
+                    _fmt_ts(newest.effective_timestamp if newest else 0),
+                ),
+            )
+            if number == keep:
+                self.slots.selection_set(row)
+                self.slots.see(row)
+
+    def _selected_slot(self) -> int | None:
+        selection = self.slots.selection()
+        return int(selection[0]) if selection else None
+
+    def _accept(self) -> None:
+        if self.source is None:
+            _showinfo("Choose a source", "Press Change… and pick the slot you want to copy.")
+            return
+        slot = self._selected_slot()
+        if slot is None:
+            _showinfo("Choose a slot", "Pick the live slot to copy into.")
+            return
+        self.result = (self.source, Path(self._target_source().path), slot)
+        self.destroy()
+
+
 HELP_TEXT = """NMS Save Vault — Help
 
 The window is split into two panes. Drag the divider to give either one more room.
@@ -1340,11 +1705,16 @@ BUTTONS
       save not in the backup is removed;
     * a single-slot extract goes back into ITS OWN slot and nothing else is touched.
   Either way the current state is auto-snapshotted first, so it is reversible with Undo.
-- Extract slot: Select a slot (under LIVE or a backup) to copy just that one slot aside
-  into the vault, so you can free the slot now and bring it back later.
-- Repopulate -> live: Select a SOURCE slot (in any backup or LIVE), then choose a
-  destination live slot (1-15). The save data is copied exactly and the small meta is
-  re-keyed for the new slot. This loads an archived save back into the game, in any slot.
+- Extract slot: Select a slot -- or either of the two saves inside it -- under LIVE or a
+  backup, to copy just that one slot aside into the vault. You can free the slot now and
+  bring it back later.
+- Copy into live slot: Copies one slot's saves into a live slot. It opens a window
+  showing BOTH ends: what is being copied, and every live slot with what is currently in
+  it, so you can see what you are about to replace. Either end can be changed there, so
+  it does not matter which way round you were thinking:
+    * select a slot in a backup and it is the source -- pick where it lands;
+    * select a live slot and it is the destination -- press Change... to pick what fills it.
+  The save data is copied exactly and the small meta is re-keyed for the new slot number.
 - Promote: Select one of a live slot's two saves (Auto-Save or Restore-Point) to force it
   to be the newest, so the game loads it instead of the other -- e.g. to roll back to the
   Restore-Point.
@@ -1368,16 +1738,29 @@ BUTTONS
   accounts.ini next to state.json; clearing a name shows the real id again.
 - Help: This dialog.
 
+RIGHT-CLICK
+Every row offers exactly what makes sense for it:
+- a live save folder: back it up, make it the active write target, copy a save into one
+  of its slots, or undo the last change;
+- a live slot: replace it with a save from anywhere, copy it to another live slot, or
+  extract it to the vault;
+- one of the two saves in a live slot: the same, plus Promote to make that one the save
+  the game loads;
+- a backup: restore all of it (which replaces the live folder), and for a single-slot
+  extract, also copy that slot into any live slot you choose;
+- a slot inside a backup, or either save in it: copy it straight into the same-numbered
+  live slot, copy it into a live slot you choose, or extract it to the vault.
+
 WORKFLOWS
-- More than 15 slots: Extract the slots you are not using into the vault, then Repopulate
-  them into a live slot whenever you want to play them again. Your library is unlimited;
+- More than 15 slots: Extract the slots you are not using into the vault, then copy them
+  back into a live slot whenever you want to play them again. Your library is unlimited;
   only 15 are live at a time.
 - Safe experimenting: Backup live (or Extract the slot), make changes in-game, then
-  Restore / Repopulate / Undo if you do not like the result.
-- Move a save to another slot: Repopulate -- pick the source slot and the destination.
+  Restore / copy back / Undo if you do not like the result.
+- Move a save to another slot: right-click it and Copy into a live slot.
 - Roll back within a slot: expand the live slot, right-click the save you want (usually
   the older one, or the Restore-Point), Promote it.
-- Bring in an outside save: Import the folder, then Repopulate the slot you want.
+- Bring in an outside save: Import the folder, then copy the slot you want into live.
 
 UPDATES
 The first time you run it, the app asks whether it may check for new versions. If you
