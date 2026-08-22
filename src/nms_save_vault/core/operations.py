@@ -182,6 +182,39 @@ def _verify_copy(src: Path, dst: Path, only_hg: bool) -> None:
             raise ValidationError(f"backup verification failed for {rel}")
 
 
+def restore_entry(
+    vault: Vault, entry: CatalogEntry, live_dir: Path, allow_game_running: bool = False
+) -> OpResult:
+    """Put a catalog entry back into the live folder, the right way for its kind.
+
+    A single-slot **extract** is not a picture of a whole save folder -- it is one slot
+    lifted aside. Restoring it means putting that slot back where it came from and leaving
+    every other slot alone. Running it through :func:`restore_full` instead would mirror
+    the live folder onto a one-slot backup and delete every other save in it, which is
+    exactly the accident this function exists to prevent.
+    """
+    if entry.kind != KIND_EXTRACT:
+        return restore_full(vault, entry, live_dir, allow_game_running=allow_game_running)
+
+    slots = [s.slot for s in entry.occupied_slots]
+    if not slots:
+        raise OperationError(f"'{entry.id}' contains no saves to restore")
+    if len(slots) > 1:
+        raise OperationError(
+            f"'{entry.id}' is an extract covering slots {slots}; restore them one at a time "
+            "with repopulate, choosing the destination slot for each."
+        )
+    slot = slots[0]
+    result = repopulate_slot(
+        vault, Path(entry.path), slot, live_dir, slot, allow_game_running=allow_game_running
+    )
+    return replace(
+        result,
+        op="restore_extract",
+        detail=f"put slot {slot} back into live slot {slot} from {entry.id}",
+    )
+
+
 def restore_full(
     vault: Vault, entry: CatalogEntry, live_dir: Path, mirror: bool = True, allow_game_running: bool = False
 ) -> OpResult:
@@ -191,6 +224,14 @@ def restore_full(
     src = Path(entry.path)
     if not src.is_dir():
         raise OperationError(f"backup folder not found: {src}")
+    if mirror and entry.kind == KIND_EXTRACT:
+        # Refused structurally, not just in the UI: mirroring the live folder onto a
+        # single-slot extract deletes every other save (and the account data) in it.
+        raise OperationError(
+            f"'{entry.id}' is a single-slot extract, not a full backup. Restoring it as one "
+            "would delete every other save in the live folder. Use restore_entry(), which "
+            "puts the slot back where it came from."
+        )
     _guard_same_platform(src, live_dir)
     if _is_xbox(live_dir):
         return _restore_full_xbox(vault, entry, src, live_dir, warnings)
@@ -612,18 +653,44 @@ def _relocate_entry(
 
 
 def undo_last(vault: Vault, live_dir: Path, allow_game_running: bool = False) -> OpResult:
-    for record in reversed(vault.read_oplog()):
+    """Restore the auto-snapshot taken before the last change to the live folder.
+
+    Only operations that *write into* the live folder take a snapshot. Backing up,
+    extracting and importing merely add to the vault, so there is nothing to put back --
+    and the message says so, rather than implying the op log is broken.
+    """
+    records = vault.read_oplog()
+    if not records:
+        raise OperationError("Nothing has been done yet, so there is nothing to undo.")
+
+    unusable: list[str] = []
+    for record in reversed(records):
         sid = record.get("snapshot_id")
         if not sid:
             continue
         snap = vault.get(sid)
         if snap is None:
+            unusable.append(f"{sid} (not in the catalog)")
+            continue
+        if not Path(snap.path).is_dir():
+            unusable.append(f"{sid} (its folder is gone)")
             continue
         result = restore_full(vault, snap, live_dir, mirror=True, allow_game_running=allow_game_running)
         vault.append_oplog(_oplog("undo", snapshot_id=sid, detail=f"undid {record.get('op')}"))
         result.detail = f"undid {record.get('op')} (restored {sid})"
         return result
-    raise OperationError("no undoable operation found in the op log")
+
+    if unusable:
+        raise OperationError(
+            "The auto-snapshot for the last change can no longer be found, so it cannot be "
+            f"undone: {'; '.join(unusable[:3])}."
+        )
+    last = records[-1].get("op", "the last operation")
+    raise OperationError(
+        f"There is nothing to undo. The last thing done was '{last}', and backing up, "
+        "extracting and importing only add to the vault -- they never change your live "
+        "saves, so there is nothing to put back."
+    )
 
 
 # --- validation helpers ------------------------------------------------------

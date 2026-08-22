@@ -202,7 +202,12 @@ def cmd_restore(args) -> int:
     entry = vault.get(args.entry_id)
     if entry is None:
         _die(f"error: no catalog entry '{args.entry_id}'")
-    res = ops.restore_full(vault, entry, live, mirror=not args.no_mirror, allow_game_running=args.force)
+    if entry.kind == catalog.KIND_EXTRACT:
+        # A single-slot extract goes back into its own slot; mirroring the live folder
+        # onto it would delete every other save.
+        res = ops.restore_entry(vault, entry, live, allow_game_running=args.force)
+    else:
+        res = ops.restore_full(vault, entry, live, mirror=not args.no_mirror, allow_game_running=args.force)
     _report(res)
     return 0
 

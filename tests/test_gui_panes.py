@@ -154,3 +154,34 @@ def test_selecting_in_one_pane_clears_the_other(app):
     assert app._selected() is not None
     assert app._active_tree is app.backup_tree
     assert not app.live_tree.selection()
+
+
+# --- restoring: an extract is not a full backup ------------------------------
+
+
+def test_restore_label_for_an_extract_names_the_slot(app):
+    """Right-clicking an extract used to offer a plain "Restore ... into live", which ran
+    a mirroring full restore and deleted every other save."""
+    from nms_save_vault import gui
+
+    extract = next(e for e in app.vault.entries if e.kind == "extract")
+    assert gui._restore_menu_label(extract) == "Put slot 1 back into live slot 1"
+
+
+def test_restore_label_for_a_backup_warns_that_it_replaces(app):
+    from nms_save_vault import gui
+
+    full = next(e for e in app.vault.entries if e.kind == "full")
+    label = gui._restore_menu_label(full)
+    assert "Restore all" in label and "replaces other slots" in label
+
+
+def test_only_single_slot_extracts_are_treated_as_slot_restores(app):
+    from nms_save_vault import gui
+    from nms_save_vault.core.catalog import SlotSummary
+
+    extract = next(e for e in app.vault.entries if e.kind == "extract")
+    assert gui._extract_slot_number(extract) == 1
+    extract.slots.append(SlotSummary(slot=7, occupied=True, name="x", newest_label="A", members=[]))
+    assert gui._extract_slot_number(extract) is None  # ambiguous: never guess a slot
+    extract.slots.pop()

@@ -188,6 +188,23 @@ def _source_caption(source) -> str:
     return label if folder in label else f"{label}  ({folder})"
 
 
+def _extract_slot_number(entry) -> int | None:
+    """The one slot a single-slot extract holds, else None (it is not that kind of entry)."""
+    if entry.kind != catalog.KIND_EXTRACT:
+        return None
+    slots = [s.slot for s in entry.occupied_slots]
+    return slots[0] if len(slots) == 1 else None
+
+
+def _restore_menu_label(entry) -> str:
+    """Say what Restore will actually do, since the two cases differ enormously: an extract
+    puts one slot back, a backup replaces the whole folder."""
+    slot = _extract_slot_number(entry)
+    if slot is not None:
+        return f"Put slot {slot} back into live slot {slot}"
+    return f"Restore all of '{entry.id}' into live (replaces other slots)"
+
+
 def _filtered(dialog):
     """Wrap a messagebox call so its message passes through the account-alias filter."""
 
@@ -868,7 +885,9 @@ class App(tk.Tk):
                 menu.add_command(label="Import this Xbox folder as a backup",
                                  command=lambda: self._import_dir(meta["dir"]))
         elif kind == "entry":
-            menu.add_command(label=f"Restore '{meta['entry'].id}' into live", command=lambda: self.on_restore(meta))
+            menu.add_command(
+                label=_restore_menu_label(meta["entry"]), command=lambda: self.on_restore(meta)
+            )
         elif kind == "slot":
             target = {"type": "slot", "dir": meta["dir"], "slot": meta["slot"]}
             menu.add_command(label=f"Extract slot {meta['slot']} aside", command=lambda: self.on_extract(target))
@@ -1001,10 +1020,26 @@ class App(tk.Tk):
         if not self._require_live():
             return
         entry = sel["entry"]
-        if not _askyesno("Restore", f"Replace the live saves with backup '{entry.id}'?\n(The current state is auto-snapshotted first.)"):
+        slots = [s.slot for s in entry.occupied_slots]
+        if _extract_slot_number(entry) is not None:
+            # An extract is one slot lifted aside, not a whole folder: it goes back where
+            # it came from, and nothing else in the live folder is touched.
+            question = (
+                f"Put slot {slots[0]} back into live slot {slots[0]}, from '{entry.id}'?\n\n"
+                f"Only slot {slots[0]} is overwritten — every other save is left alone.\n"
+                "The current state is auto-snapshotted first."
+            )
+        else:
+            question = (
+                f"Replace the live saves with backup '{entry.id}'?\n\n"
+                f"The backup holds {len(slots)} slot(s): {', '.join(map(str, slots)) or 'none'}.\n"
+                "Any live save NOT in the backup is REMOVED.\n"
+                "The current state is auto-snapshotted first."
+            )
+        if not _askyesno("Restore", question):
             return
         self._run(
-            lambda force: ops.restore_full(self.vault, entry, self.live_dir, allow_game_running=force),
+            lambda force: ops.restore_entry(self.vault, entry, self.live_dir, allow_game_running=force),
             success="Restored.",
             message="Restoring — please wait…",
         )
@@ -1299,8 +1334,12 @@ account or a freshly pasted backup later on.
 BUTTONS
 - Backup live: Full snapshot of the entire live folder into the vault. Do this before
   any risky change.
-- Restore: Select a backup (a top-level row), then replace the live folder with it. The
-  current state is auto-snapshotted first, so it is reversible with Undo.
+- Restore: Select a backup (a top-level row) and put it back. What that means depends on
+  what you picked, and the menu says which before you commit:
+    * a full backup / snapshot / imported folder REPLACES the live folder -- any live
+      save not in the backup is removed;
+    * a single-slot extract goes back into ITS OWN slot and nothing else is touched.
+  Either way the current state is auto-snapshotted first, so it is reversible with Undo.
 - Extract slot: Select a slot (under LIVE or a backup) to copy just that one slot aside
   into the vault, so you can free the slot now and bring it back later.
 - Repopulate -> live: Select a SOURCE slot (in any backup or LIVE), then choose a
@@ -1316,7 +1355,9 @@ BUTTONS
 - Rescan: Re-detect live save folders (new Steam account, new Xbox account) and add them
   to the LIVE SAVES list. Your manual entries are left untouched.
 - Discover: Scan the NMS folder for existing backups and add any new ones found.
-- Undo: Restore the auto-snapshot taken just before the last operation.
+- Undo: Restore the auto-snapshot taken just before the last change to your live saves.
+  Only actions that WRITE into the live folder can be undone -- Backup, Extract and
+  Import merely add to the vault, so after one of those there is nothing to put back.
 - Refresh: Re-scan the live folder and the catalog.
 - Theme (top right): Light, Dark, or System, which follows your Windows light/dark
   setting. Your choice is remembered in the config.
