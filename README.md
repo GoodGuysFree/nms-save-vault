@@ -8,7 +8,7 @@ unlimited save slots beyond the game's 15. See [Platform support](#platform-supp
 
 **Just want to run it? No Python needed.** Download the ready-to-use Windows kit from the
 [**latest release**](https://github.com/GoodGuysFree/nms-save-vault/releases/latest) — grab
-`NMSSaveVault-Setup-v0.1.1.zip` under **Assets**.
+`NMSSaveVault-Setup-v0.1.2.zip` under **Assets**.
 
 Extract the zip, open the `NMSSaveVault` folder and run **`NMSSaveVault.exe`**. That is the
 whole thing — Python and Tkinter are bundled, nothing is installed, and because the app
@@ -76,7 +76,7 @@ volunteers are very welcome.
 
 ## Run it (Windows, no Python needed)
 
-Download **`NMSSaveVault-Setup-v0.1.1.zip`** from the
+Download **`NMSSaveVault-Setup-v0.1.2.zip`** from the
 [**Releases**](https://github.com/GoodGuysFree/nms-save-vault/releases) page (under the
 release's **Assets**) and extract it. Open the `NMSSaveVault` folder and run
 **`NMSSaveVault.exe`** — that is all. Everything (Python + Tkinter) is bundled, nothing is
@@ -250,11 +250,26 @@ fully-colourable widget theme, because the native one ignores colour settings.)
 
 **Update checks are opt-in.** The first run asks whether the app may check for new versions.
 If you say yes, it asks GitHub **once a day, on startup**, whether a newer release exists and
-shows a bar at the top when there is one, with a button to open the download page. Nothing is
-downloaded or installed for you, and nothing about you or your saves is sent — this is the
-only thing the app uses the network for. Right-click anywhere → **Check for updates…** to
-check immediately, or to turn the daily check back on. The answer lives in `state.json` as
-`update_check` (`ask` / `on` / `off`).
+shows a bar at the top when there is one. Nothing about you or your saves is sent, and nothing
+is downloaded until you ask for it — this is the only thing the app uses the network for.
+Right-click anywhere → **Check for updates…** to check immediately, or to turn the daily check
+back on. The answer lives in `state.json` as `update_check` (`ask` / `on` / `off`).
+
+**Installing an update.** The bar's **Install update** button does the whole thing: it
+downloads the release zip from GitHub, checks that the program inside it is a validly signed
+Python Software Foundation binary and declares the version it promised, and only then closes
+the app, swaps the files and reopens on the new version. Your `state.json`, `accounts.ini`,
+vault and saves are never touched — they are not in the zip.
+
+A running program cannot overwrite its own files, so the swap is done by a small script the
+app writes to your temp folder and starts on its way out. That script is deliberately
+paranoid: it waits until the launcher can actually be deleted (Windows refuses to delete a
+running program, which is the only reliable proof the app has gone), keeps the old `_runtime`
+aside until the copy succeeds, and puts everything back if anything fails. If it cannot
+proceed it changes nothing and says so. Failures are logged to `%TEMP%\nmsvault-update-*.log`.
+
+Only the packaged app can update itself; running from a source checkout the button is not
+offered, and **Open download page** is there instead.
 
 ## Usage
 
@@ -327,7 +342,7 @@ The vault lives outside `st_<id>`, so it is never scanned by the game or synced 
 ## Status
 
 Working. Core format/crypto and all operations are verified against the real save files and
-in a temp sandbox (215 tests). Xbox / Game Pass saves are supported for reading **and**
+in a temp sandbox (263 tests). Xbox / Game Pass saves are supported for reading **and**
 same-platform writing — verified against a real install (reads) and synthetic `wgs` fixtures
 (writes). A full file-copy safety backup of the live folder was made before development
 (`C:\Devel\NMS-SaveBackup-SAFETY-2026-06-24`).
@@ -336,6 +351,7 @@ same-platform writing — verified against a real install (reads) and synthetic 
 
 | Version | Date | Highlights |
 |---|---|---|
+| **0.1.2** | 2026-08-22 | **Updates install themselves.** The update bar's new **Install update** button downloads the release from GitHub, verifies it, then closes the app, swaps the files and reopens on the new version - no browser, no zip, no install.bat. The download URL is pinned to GitHub hosts (including across the redirect), the extracted launcher must be a validly signed Python Software Foundation binary and must declare the version that was promised, and the zip is rejected if any entry would write outside the folder it is unpacked into. Because a running program cannot overwrite itself, the swap is handed to a script that waits until the launcher can actually be deleted - the only reliable proof the app has exited - keeps the old `_runtime` aside until the copy succeeds, and restores everything if it does not. Your config, vault and saves are untouched. **The window title now shows the version.** |
 | **0.1.1** | 2026-08-22 | **Fix: the two panes shared row identity.** Tk numbers rows per widget, so both panes emit `I001`, `I002`, … and the row-metadata map was keyed by that id alone — the backups pane, populated second, overwrote the live pane's. Right-clicking a live folder built a menu for a *backup*, and its tooltip showed the backup's text. Metadata is now keyed per pane. **The action model was rebuilt around what you selected.** Copying a slot has a source and a destination, but the UI only ever asked "Destination live slot (1-15):" with the source implied — so an extract could only go back to its own slot, selecting a save inside a backup answered "Select a source slot" (a save *is* a source — it resolves to its slot), and selecting a live slot only offered to copy it away, never to fill it. Copying now opens a window naming **both ends**, either changeable, listing every live slot with what is currently in it so you can see what you are about to replace; the source picker offers every occupied slot in every live folder and backup. Right-click menus now offer exactly what each row supports — see [What each row can do](#what-each-row-can-do). |
 | **0.1.0** | 2026-08-22 | **First milestone release.** Identical code to 0.0.10 — this is the 0.0.x line promoted to a round number now that the app knows what it is showing you and the last data-losing edge has been closed. Rolling up everything since 0.0.7: **account display names** (0.0.8) so a screenshot never exposes your `st_<steamid64>` or Xbox `<xuid>_<titleid>`; the two saves in each slot **named for what they are** — Auto-Save vs Restore-Point — plus a real **Difficulty** column, per-save **Xbox cloud sync state**, and hover tooltips throughout; **live saves and backups split into two panes** with sortable backup columns; a **Light / Dark / System theme**; an **opt-in update check** (0.0.9); and the fix for **restoring a single-slot extract deleting every other save** (0.0.10). |
 | **0.0.10** | 2026-08-22 | **Fix: restoring a single-slot extract wiped every other save.** An extract is one slot lifted aside, but Restore ran it through the *full* restore path, which mirrors — so every live file not in the one-slot extract, including `accountdata.hg`, was deleted, and the folder was left holding only that slot. Restoring an extract now puts that slot back into **its own slot** and touches nothing else. The dangerous call is refused in the core, not merely avoided by the UI, so no front-end can reach it. The menu and the confirmation now say which of the two things will happen — a backup replaces the folder, an extract restores one slot — and a full restore states how many slots it holds and that anything not in it is removed. **Undo now explains itself:** it used to answer every failure with "no undoable operation found in the op log"; it now distinguishes nothing-done-yet, nothing-to-undo (Backup / Extract / Import only add to the vault and never change live saves), and a snapshot that has gone missing. |

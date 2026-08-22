@@ -74,7 +74,7 @@ src/nms_save_vault/
     safety.py     game-running check, atomic staged writes, auto-snapshot, op-log/undo
     aliases.py    account-id -> display-name filter (accounts.ini); display only
   theme.py        light/dark/system palettes + ttk restyling (front-end)
-  updates.py      opt-in GitHub release check (the only network access)
+  updates.py      opt-in GitHub release check + in-place self-update (the only network access)
   cli.py          argparse front end
   gui.py          Tkinter app (two panes: live saves / backups)
 ```

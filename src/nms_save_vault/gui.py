@@ -257,7 +257,7 @@ class RedactingTreeview(ttk.Treeview):
 class App(tk.Tk):
     def __init__(self, live: str | Path | None = None, vault: str | Path | None = None):
         super().__init__()
-        self.title("NMS Save Vault")
+        self.title(f"NMS Save Vault v{__version__}")
         self.geometry("1000x640")
         # Whatever ttk chose for this OS; light mode restores it so the app keeps the
         # native look it has always had (see theme.apply).
@@ -291,6 +291,9 @@ class App(tk.Tk):
         self._apply_theme()
         self.refresh()
         self.after(300, self._startup_update_check)  # after the window is on screen
+        # Sweep up after a previous update. Deliberately late: when this run *is* the
+        # update, the script that started it is still finishing its own cleanup.
+        self.after(30_000, updates.clean_temp)
 
     # --- state ---------------------------------------------------------------
 
@@ -400,6 +403,10 @@ class App(tk.Tk):
         ttk.Label(self.banner, textvariable=self.banner_var, style="Banner.TLabel").pack(side=tk.LEFT)
         ttk.Button(self.banner, text="Dismiss", command=self._hide_banner).pack(side=tk.RIGHT, padx=(6, 0))
         ttk.Button(self.banner, text="Open download page", command=self._open_releases).pack(side=tk.RIGHT)
+        # Packed only when this build can actually replace itself -- see _show_update_banner.
+        self.install_button = ttk.Button(
+            self.banner, text="Install update", command=self.on_install_update
+        )
 
         panes = ttk.PanedWindow(self, orient=tk.VERTICAL)
         panes.pack(fill=tk.BOTH, expand=True, padx=6, pady=4)
@@ -481,8 +488,9 @@ class App(tk.Tk):
             "Check for updates?",
             "Would you like NMS Save Vault to check for new versions?\n\n"
             "If you say yes it asks api.github.com once a day, on startup, whether a newer "
-            "release exists, and shows a bar at the top when there is one. Nothing is "
-            "downloaded or installed, and nothing about you or your saves is sent.\n\n"
+            "release exists, and shows a bar at the top when there is one. Nothing about "
+            "you or your saves is sent, and nothing is downloaded unless you press "
+            "Install update on that bar.\n\n"
             "This is the only thing the app uses the network for. You can change this "
             "later from any right-click menu.",
         )
@@ -531,10 +539,18 @@ class App(tk.Tk):
         self._show_update_banner(outcome)
 
     def _show_update_banner(self, release) -> None:
+        self._release = release
         self._release_url = release.page_url
         self.banner_var.set(
             f"Version {release.version} is available — you have {__version__}."
         )
+        # "Install update" only appears when it would actually work: the packaged app, on
+        # Windows, and a release with a zip attached. Offering a button that can only
+        # apologise is worse than not offering it.
+        if updates.can_install(release)[0]:
+            self.install_button.pack(side=tk.RIGHT, padx=(0, 6))
+        else:
+            self.install_button.pack_forget()
         self.banner.pack(side=tk.TOP, fill=tk.X, padx=6, pady=(0, 4), before=self._panes)
 
     def _hide_banner(self) -> None:
@@ -542,6 +558,114 @@ class App(tk.Tk):
 
     def _open_releases(self) -> None:
         webbrowser.open(getattr(self, "_release_url", updates.RELEASES_PAGE))
+
+    # --- installing an update ------------------------------------------------
+
+    def on_install_update(self) -> None:
+        """Download the new release, verify it, and hand off to the updater.
+
+        The program cannot overwrite its own running files, so the last step is to start a
+        small script that waits for this process to exit, swaps the folders and starts the
+        new build. Everything before that point is reversible by doing nothing: the
+        install folder is not touched until this window has closed.
+        """
+        release = getattr(self, "_release", None)
+        if release is None:
+            _showinfo("Install update", "Check for updates first.")
+            return
+        allowed, why = updates.can_install(release)
+        if not allowed:
+            _showinfo("Install update", f"{why}\n\nYou can still download it from the releases page.")
+            return
+
+        size = f" (about {release.asset_size / 1_048_576:.0f} MB)" if release.asset_size else ""
+        if not _askyesno(
+            "Install update",
+            f"Download and install version {release.version}{size}?\n\n"
+            f"It is downloaded from GitHub and checked before anything is replaced. "
+            f"NMS Save Vault will then close and reopen on the new version.\n\n"
+            f"Your settings, your vault and your saves are not touched.",
+        ):
+            return
+
+        staged = self._download_update(release)
+        if staged is None:
+            return
+        try:
+            updates.launch(staged)
+        except updates.UpdateInstallError as exc:
+            _showerror("Install update", f"{exc}\n\nNothing was changed.")
+            return
+        # The updater is now waiting on this PID. Leave promptly so it can have the files.
+        self.destroy()
+
+    def _download_update(self, release):
+        """Fetch and verify the release behind a progress bar. ``None`` on any failure."""
+        win, bar, label = self._download_progress(release.version)
+        holder: dict = {}
+
+        def report(done: int, total: int) -> None:
+            holder["progress"] = (done, total)
+
+        def worker() -> None:
+            try:
+                holder["staged"] = updates.prepare(release, progress=report)
+            except Exception as exc:  # noqa: BLE001 - reported on the main thread below
+                holder["error"] = exc
+
+        thread = threading.Thread(target=worker, daemon=True)
+        thread.start()
+        try:
+            measured = False
+            while thread.is_alive():
+                done, total = holder.get("progress", (0, 0))
+                if total:
+                    if not measured:
+                        # Stop the marching animation first, or it keeps driving the value
+                        # it is no longer meant to own.
+                        bar.stop()
+                        bar.configure(mode="determinate")
+                        measured = True
+                    bar.configure(maximum=total, value=done)
+                    label.configure(
+                        text=f"Downloading version {release.version} — "
+                        f"{done / 1_048_576:.1f} of {total / 1_048_576:.1f} MB"
+                    )
+                elif done:
+                    label.configure(
+                        text=f"Downloading version {release.version} — "
+                        f"{done / 1_048_576:.1f} MB"
+                    )
+                self.update()
+                time.sleep(0.05)
+        finally:
+            win.grab_release()
+            win.destroy()
+
+        if "error" in holder:
+            _showerror("Install update", f"{holder['error']}\n\nNothing was changed.")
+            return None
+        return holder.get("staged")
+
+    def _download_progress(self, version: str):
+        """A wait window with a real progress bar; a download is worth measuring."""
+        win = tk.Toplevel(self)
+        win.title("Installing update")
+        win.transient(self)
+        win.resizable(False, False)
+        label = ttk.Label(win, text=f"Contacting GitHub for version {version}…", padding=(24, 18, 24, 8))
+        label.pack()
+        bar = ttk.Progressbar(win, mode="indeterminate", length=320)
+        bar.pack(padx=24, pady=(0, 20))
+        bar.start(12)
+        win.update_idletasks()
+        x = self.winfo_rootx() + (self.winfo_width() - win.winfo_width()) // 2
+        y = self.winfo_rooty() + (self.winfo_height() - win.winfo_height()) // 3
+        win.geometry(f"+{max(x, 0)}+{max(y, 0)}")
+        win.protocol("WM_DELETE_WINDOW", lambda: None)  # closing mid-download helps nobody
+        win.grab_set()
+        win.update()
+        return win, bar, label
 
     def _on_theme_changed(self, _event=None) -> None:
         label = self.theme_var.get()
@@ -1765,10 +1889,17 @@ WORKFLOWS
 UPDATES
 The first time you run it, the app asks whether it may check for new versions. If you
 say yes it asks GitHub once a day, on startup, whether a newer release exists, and shows
-a bar at the top when there is one -- with a button to open the download page. Nothing is
-downloaded or installed for you, and nothing about you or your saves is ever sent. This
-is the only thing the app uses the network for. Right-click anywhere and choose "Check
-for updates..." to check straight away, or to turn the daily check back on.
+a bar at the top when there is one. Nothing about you or your saves is ever sent, and
+nothing is downloaded until you ask for it. This is the only thing the app uses the
+network for. Right-click anywhere and choose "Check for updates..." to check straight
+away, or to turn the daily check back on.
+
+"Install update" on that bar does the whole thing: it downloads the release from GitHub,
+checks that the program inside it is a validly signed Python Software Foundation binary,
+and only then closes the app, swaps the files and reopens it on the new version. Your
+config, your vault and your saves are untouched, and if the swap fails the previous
+version is put back. If it cannot install (you are running from source rather than the
+packaged app), the button is not offered and "Open download page" is there instead.
 
 SAFETY
 - Writes are blocked while No Man's Sky is running -- close the game first.
