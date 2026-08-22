@@ -8,7 +8,7 @@ unlimited save slots beyond the game's 15. See [Platform support](#platform-supp
 
 **Just want to run it? No Python needed.** Download the ready-to-use Windows kit from the
 [**latest release**](https://github.com/GoodGuysFree/nms-save-vault/releases/latest) — grab
-`NMSSaveVault-Setup-v0.1.0.zip` under **Assets**.
+`NMSSaveVault-Setup-v0.1.1.zip` under **Assets**.
 
 Extract the zip, open the `NMSSaveVault` folder and run **`NMSSaveVault.exe`**. That is the
 whole thing — Python and Tkinter are bundled, nothing is installed, and because the app
@@ -76,7 +76,7 @@ volunteers are very welcome.
 
 ## Run it (Windows, no Python needed)
 
-Download **`NMSSaveVault-Setup-v0.1.0.zip`** from the
+Download **`NMSSaveVault-Setup-v0.1.1.zip`** from the
 [**Releases**](https://github.com/GoodGuysFree/nms-save-vault/releases) page (under the
 release's **Assets**) and extract it. Open the `NMSSaveVault` folder and run
 **`NMSSaveVault.exe`** — that is all. Everything (Python + Tkinter) is bundled, nothing is
@@ -217,6 +217,30 @@ longer worth showing on its own.)
 the whole folder, and `steam_autocloud.vdf` holds only an account id — so a Steam folder is
 reported as cloud-enabled at folder level and no per-save state is invented.
 
+## What each row can do
+
+Right-click anything and you get exactly the actions that make sense for it. Nothing is
+offered that cannot work, and nothing sensible is missing.
+
+| You right-clicked | You can |
+|---|---|
+| **A live save folder** | Back it up · make it the active write target · copy a save into one of its slots · undo the last change |
+| **A live slot** | **Replace it with a save from anywhere** · copy it into another live slot · extract it to the vault |
+| **One of the two saves in a live slot** | All of the above, plus **Promote** — make *that* save the one the game loads |
+| **A backup** (full / snapshot / imported / in-place) | Restore all of it, which **replaces** the live folder |
+| **A single-slot extract** | Put it back in its own slot · **or** copy it into any live slot you choose |
+| **A slot inside a backup, or either save in it** | Copy it into the same-numbered live slot · copy it into a slot you choose · extract it to the vault |
+
+**Copying always shows both ends.** Pick a slot in a backup and it is the source; pick a
+live slot and it is the destination. Either way the same window opens, naming what is
+being copied and listing every live slot with what is currently in it, so you can see what
+you are about to replace before anything is written. Either end can be changed there, so
+it never matters which way round you were thinking.
+
+Copying is **slot-granular**: a slot's two saves (the Auto-Save and the Restore-Point)
+travel together, and each meta is re-keyed for the destination slot number. Promote is the
+per-save action — it changes *which* of a slot's two saves the game loads.
+
 ## Appearance and updates
 
 **Theme.** The dropdown at the top right offers **Light**, **Dark**, or **System**, which
@@ -303,7 +327,7 @@ The vault lives outside `st_<id>`, so it is never scanned by the game or synced 
 ## Status
 
 Working. Core format/crypto and all operations are verified against the real save files and
-in a temp sandbox (196 tests). Xbox / Game Pass saves are supported for reading **and**
+in a temp sandbox (215 tests). Xbox / Game Pass saves are supported for reading **and**
 same-platform writing — verified against a real install (reads) and synthetic `wgs` fixtures
 (writes). A full file-copy safety backup of the live folder was made before development
 (`C:\Devel\NMS-SaveBackup-SAFETY-2026-06-24`).
@@ -312,6 +336,7 @@ same-platform writing — verified against a real install (reads) and synthetic 
 
 | Version | Date | Highlights |
 |---|---|---|
+| **0.1.1** | 2026-08-22 | **Fix: the two panes shared row identity.** Tk numbers rows per widget, so both panes emit `I001`, `I002`, … and the row-metadata map was keyed by that id alone — the backups pane, populated second, overwrote the live pane's. Right-clicking a live folder built a menu for a *backup*, and its tooltip showed the backup's text. Metadata is now keyed per pane. **The action model was rebuilt around what you selected.** Copying a slot has a source and a destination, but the UI only ever asked "Destination live slot (1-15):" with the source implied — so an extract could only go back to its own slot, selecting a save inside a backup answered "Select a source slot" (a save *is* a source — it resolves to its slot), and selecting a live slot only offered to copy it away, never to fill it. Copying now opens a window naming **both ends**, either changeable, listing every live slot with what is currently in it so you can see what you are about to replace; the source picker offers every occupied slot in every live folder and backup. Right-click menus now offer exactly what each row supports — see [What each row can do](#what-each-row-can-do). |
 | **0.1.0** | 2026-08-22 | **First milestone release.** Identical code to 0.0.10 — this is the 0.0.x line promoted to a round number now that the app knows what it is showing you and the last data-losing edge has been closed. Rolling up everything since 0.0.7: **account display names** (0.0.8) so a screenshot never exposes your `st_<steamid64>` or Xbox `<xuid>_<titleid>`; the two saves in each slot **named for what they are** — Auto-Save vs Restore-Point — plus a real **Difficulty** column, per-save **Xbox cloud sync state**, and hover tooltips throughout; **live saves and backups split into two panes** with sortable backup columns; a **Light / Dark / System theme**; an **opt-in update check** (0.0.9); and the fix for **restoring a single-slot extract deleting every other save** (0.0.10). |
 | **0.0.10** | 2026-08-22 | **Fix: restoring a single-slot extract wiped every other save.** An extract is one slot lifted aside, but Restore ran it through the *full* restore path, which mirrors — so every live file not in the one-slot extract, including `accountdata.hg`, was deleted, and the folder was left holding only that slot. Restoring an extract now puts that slot back into **its own slot** and touches nothing else. The dangerous call is refused in the core, not merely avoided by the UI, so no front-end can reach it. The menu and the confirmation now say which of the two things will happen — a backup replaces the folder, an extract restores one slot — and a full restore states how many slots it holds and that anything not in it is removed. **Undo now explains itself:** it used to answer every failure with "no undoable operation found in the op log"; it now distinguishes nothing-done-yet, nothing-to-undo (Backup / Extract / Import only add to the vault and never change live saves), and a snapshot that has gone missing. |
 | **0.0.9** | 2026-08-22 | **You can tell what you are looking at.** A slot's two saves are no longer "A" and "B": they are named for what the game actually uses them for — the periodic **Auto-Save** and the **Restore-Point** written when you leave your ship or use a save point / beacon / POI save. Either can be the newer one, and the app marks whichever the game will load. The **Mode** column, which printed `1` on every row because Waypoint retired that field, is now **Difficulty** and shows the real preset by name (Normal, Creative, Custom, Relaxed, Survival, Permadeath; pre-Waypoint saves fall back to the old game mode). Xbox saves report their **cloud sync state**; Steam has no per-save equivalent, so it is reported at folder level only. "Play" is now "Play Time". **Live saves and backups are now two separate panes** with a draggable divider — the backups pane has its own columns and every heading sorts (dates chronologically, slot counts numerically), newest-first by default. **Hover any row** for what it is, its difficulty, play time, where you were, its file, size, integrity and cloud state. Plus a **Light / Dark / System theme** that follows Windows, and an **opt-in update check** that asks first, then looks at GitHub once a day and shows a bar when a newer release exists — nothing is downloaded or installed, and it is the only network access in the app. |
