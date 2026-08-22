@@ -183,21 +183,20 @@ def test_gui_source_caption_unchanged_without_a_display_name(monkeypatch, config
     assert gui._source_caption(steam) == f"Steam ({STEAM_ID})  (st_{STEAM_ID})"
 
 
-def test_gui_tree_redacts_row_text_and_values(configured):
-    """The tree is where the live-source rows are drawn, so it filters structurally."""
-    tk = pytest.importorskip("tkinter")
+def test_gui_tree_redacts_row_text_and_values(configured, gui_app):
+    """The tree is where the live-source rows are drawn, so it filters structurally.
+
+    Parented to the session's single Tk root (see conftest.gui_app) -- this Python cannot
+    reliably build a second root once one has been destroyed.
+    """
+    pytest.importorskip("tkinter")
     from nms_save_vault import gui
 
+    tree = gui.RedactingTreeview(gui_app, columns=("a",))
     try:
-        root = tk.Tk()
-    except tk.TclError:  # no display
-        pytest.skip("no Tk display available")
-    try:
-        root.withdraw()
-        tree = gui.RedactingTreeview(root, columns=("a",))
         node = tree.insert("", "end", text=f"Steam ({STEAM_ID})  (st_{STEAM_ID})",
                            values=(f"slot 9 from st_{STEAM_ID}",))
         assert tree.item(node, "text") == "Steam (Main)  (Main)"
         assert tree.item(node, "values") == ("slot 9 from Main",)
     finally:
-        root.destroy()
+        tree.destroy()

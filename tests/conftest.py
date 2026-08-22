@@ -1,6 +1,7 @@
 """Shared fixtures. Locates the live NMS save dir for read-only verification tests."""
 from __future__ import annotations
 
+import json
 import os
 import struct
 import uuid
@@ -8,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from nms_save_vault.core import formats, msstore, slotmap
+from nms_save_vault.core import catalog, formats, msstore, slotmap
 
 
 def find_live_save_dir() -> Path | None:
@@ -113,3 +114,67 @@ def make_wgs_account():
         return acct
 
     return build
+
+
+# --- the single Tk root for the whole session ------------------------------------------
+
+@pytest.fixture(scope="session")
+def gui_app(tmp_path_factory):
+    """A real App over a synthetic vault, with no live sources and no window shown.
+
+    Session-scoped on purpose, and the ONLY Tk root the suite may create: this Python's
+    Tcl cannot reliably build a second root once one has been destroyed ("Can't find a
+    usable tk.tcl"), which made per-test Apps flaky. Tests that mutate it reset it
+    afterwards (see test_gui_panes._reset_app); tests needing a widget parent use this App.
+    """
+    from nms_save_vault import gui
+    from nms_save_vault.core import aliases, locations
+    from nms_save_vault.core import state as appstate
+
+    tmp_path = tmp_path_factory.mktemp("gui")
+    # The patches are only needed while the App reads its config; a session-scoped
+    # MonkeyPatch context would stay open for the rest of the run and break unrelated
+    # tests, so undo them as soon as construction is done.
+    mp = pytest.MonkeyPatch()
+    mp.setattr(aliases, "_active", aliases.AliasMap())
+    mp.setattr(appstate, "load", lambda *a, **k: appstate.AppState(sources=[], vault=None))
+    # Keep the real machine's save folder out of the test: the App falls back to it when
+    # the config lists no sources.
+    mp.setattr(locations, "default_live_save_dir", lambda: None)
+    try:
+        application = _build_app(gui, tmp_path)
+    finally:
+        mp.undo()
+    application.withdraw()
+    application.update()
+    yield application
+    application.destroy()
+
+
+def _build_app(gui, tmp_path):
+    vault_root = tmp_path / "vault"
+    entries = [
+        ("full-steam-20260101-000000", catalog.KIND_FULL, "2026-01-01T00:00:00", "Bravo", 3),
+        ("extract-steam-20260301-000000", catalog.KIND_EXTRACT, "2026-03-01T00:00:00", "alpha", 1),
+        ("inplace-20260201-000000", catalog.KIND_INPLACE, "2026-02-01T00:00:00", "Charlie", 2),
+    ]
+    payload = {"version": 1, "entries": []}
+    for eid, kind, created, label, nslots in entries:
+        payload["entries"].append({
+            "id": eid, "kind": kind, "label": label, "path": str(tmp_path / eid),
+            "created": created, "managed": kind != catalog.KIND_INPLACE, "note": "",
+            "slots": [{
+                "slot": i + 1, "occupied": True, "name": f"Save {i + 1}", "newest_label": "B",
+                "members": [
+                    {"label": "A", "present": True, "name": f"Save {i + 1}", "game_mode": 1,
+                     "difficulty": 2, "play_time": 3600, "timestamp": 1_700_000_000,
+                     "data_size": 1024 * 1024, "valid": True},
+                    {"label": "B", "present": True, "name": f"Save {i + 1}", "game_mode": 1,
+                     "difficulty": 3, "play_time": 3660, "timestamp": 1_700_000_600,
+                     "data_size": 1024 * 1024, "valid": True},
+                ],
+            } for i in range(nslots)],
+        })
+    vault_root.mkdir(parents=True)
+    (vault_root / "catalog.json").write_text(json.dumps(payload), "utf-8")
+    return gui.App(vault=vault_root)

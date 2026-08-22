@@ -12,6 +12,7 @@ import sys
 import threading
 import time
 import tkinter as tk
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
@@ -46,6 +47,131 @@ def _fmt_play(seconds: int) -> str:
         return ""
     h, rem = divmod(int(seconds), 3600)
     return f"{h}h{rem // 60:02d}"
+
+
+def _fmt_size(nbytes: int) -> str:
+    if not nbytes:
+        return "-"
+    mb = nbytes / (1024 * 1024)
+    return f"{mb:.1f} MB" if mb >= 1 else f"{nbytes / 1024:.0f} KB"
+
+
+def _fmt_created(iso: str) -> str:
+    """Catalog timestamps are ISO-8601; show them like every other date in the UI."""
+    try:
+        return datetime.fromisoformat(iso).strftime("%Y-%m-%d %H:%M")
+    except (TypeError, ValueError):
+        return iso or ""
+
+
+@dataclass(frozen=True)
+class Column:
+    key: str
+    title: str
+    width: int
+
+
+LIVE_COLUMNS = (
+    Column("name", "Save name", 230),
+    Column("mode", "Difficulty", 90),
+    Column("play", "Play Time", 90),
+    Column("saved", "Saved", 130),
+    Column("status", "Status", 170),
+)
+
+BACKUP_COLUMNS = (
+    Column("type", "Type", 90),
+    Column("slots", "Slots", 55),
+    Column("name", "Name / Label", 230),
+    Column("mode", "Difficulty", 90),
+    Column("play", "Play Time", 90),
+    Column("saved", "Saved", 130),
+)
+
+_SAVE_TYPE_HELP = {
+    "Auto-Save": "the game writes this one by itself, every few minutes",
+    "Restore-Point": "written when you leave your ship, or use a save point, save beacon,\n"
+                     "or point-of-interest save",
+}
+
+_KIND_HELP = {
+    catalog.KIND_FULL: "full — a complete snapshot of a save folder",
+    catalog.KIND_SNAPSHOT: "snapshot — taken automatically just before an operation",
+    catalog.KIND_EXTRACT: "extract — a single slot lifted aside",
+    catalog.KIND_IMPORTED: "imported — your own backup, copied into the vault",
+    catalog.KIND_INPLACE: "in place — catalogued where it already lives, not copied",
+}
+
+# Tooltip colours; the theme swaps these so hover text stays readable in dark mode.
+TOOLTIP_STYLE = {"background": "#ffffe0", "foreground": "#1a1a1a", "border": "#9a9a7a"}
+
+
+class Tooltip:
+    """Hover text for tree rows.
+
+    ``text_for(tree, row_id)`` supplies the text (''  to show nothing). The text is built
+    when the row is created, not on hover, so moving the mouse never re-scans anything.
+    """
+
+    DELAY_MS = 450
+
+    def __init__(self, tree, text_for):
+        self.tree = tree
+        self.text_for = text_for
+        self.window: tk.Toplevel | None = None
+        self.row: str | None = None
+        self._after: str | None = None
+        tree.bind("<Motion>", self._on_motion, add="+")
+        tree.bind("<Leave>", self.hide, add="+")
+        tree.bind("<Button>", self.hide, add="+")
+
+    def _on_motion(self, event) -> None:
+        row = self.tree.identify_row(event.y)
+        if row == self.row:
+            return
+        self.row = row
+        self._close()
+        self._cancel()
+        if row:
+            x, y = event.x_root, event.y_root
+            self._after = self.tree.after(self.DELAY_MS, lambda: self._show(row, x, y))
+
+    def _show(self, row: str, x: int, y: int) -> None:
+        self._after = None
+        text = self.text_for(self.tree, row)
+        if not text or row != self.row:
+            return
+        self.window = tk.Toplevel(self.tree)
+        self.window.wm_overrideredirect(True)  # no title bar / border
+        tk.Label(
+            self.window,
+            text=text,
+            justify="left",
+            relief="solid",
+            borderwidth=1,
+            background=TOOLTIP_STYLE["background"],
+            foreground=TOOLTIP_STYLE["foreground"],
+            highlightbackground=TOOLTIP_STYLE["border"],
+            padx=8,
+            pady=6,
+            font=("TkDefaultFont", 9),
+        ).pack()
+        self.window.wm_geometry(f"+{x + 16}+{y + 18}")
+
+    def hide(self, _event=None) -> None:
+        self.row = None
+        self._cancel()
+        self._close()
+
+    def _cancel(self) -> None:
+        if self._after is not None:
+            self.tree.after_cancel(self._after)
+            self._after = None
+
+    def _close(self) -> None:
+        if self.window is not None:
+            self.window.destroy()
+            self.window = None
 
 
 def _source_caption(source) -> str:
@@ -92,8 +218,6 @@ class RedactingTreeview(ttk.Treeview):
 
 
 class App(tk.Tk):
-    COLUMNS = ("name", "mode", "play", "saved", "status")
-
     def __init__(self, live: str | Path | None = None, vault: str | Path | None = None):
         super().__init__()
         self.title("NMS Save Vault")
@@ -214,42 +338,84 @@ class App(tk.Tk):
             side=tk.BOTTOM, fill=tk.X
         )
 
-        frame = ttk.Frame(self)
-        frame.pack(fill=tk.BOTH, expand=True, padx=6, pady=4)
-        self.tree = RedactingTreeview(frame, columns=self.COLUMNS, show="tree headings")
-        self.tree.heading("#0", text="Backup / Slot / Save")
-        self.tree.column("#0", width=320, anchor="w")
-        for col, label, width in [
-            ("name", "Save name", 230),
-            ("mode", "Difficulty", 80),
-            ("play", "Play Time", 80),
-            ("saved", "Saved", 130),
-            ("status", "Status", 170),
-        ]:
-            self.tree.heading(col, text=label)
-            self.tree.column(col, width=width, anchor="w")
-        vsb = ttk.Scrollbar(frame, orient="vertical", command=self.tree.yview)
-        self.tree.configure(yscrollcommand=vsb.set)
-        self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        vsb.pack(side=tk.RIGHT, fill=tk.Y)
-        self.tree.bind("<Button-3>", self._on_right_click)  # right-click context menu
+        # Two independent trees, one per pane: live saves are browsed, backups are
+        # searched and sorted, and mixing them in one tree made both worse.
+        panes = ttk.PanedWindow(self, orient=tk.VERTICAL)
+        panes.pack(fill=tk.BOTH, expand=True, padx=6, pady=4)
 
-        # Row styling: groups bold, active live emphasised, any read-only source amber, backups grey.
-        self.tree.tag_configure("group", font=("TkDefaultFont", 10, "bold"))
-        self.tree.tag_configure("live", foreground="#0a6b2f")
-        self.tree.tag_configure("active", foreground="#0a6b2f", font=("TkDefaultFont", 9, "bold"))
-        self.tree.tag_configure("readonly", foreground="#7a5b00")
-        self.tree.tag_configure("backup", foreground="#333333")
+        self.live_tree = self._make_pane(
+            panes,
+            "● LIVE SAVES",
+            LIVE_COLUMNS,
+            "Save folder / Slot / Save",
+            weight=3,
+        )
+        self.backup_tree = self._make_pane(
+            panes,
+            "■ BACKUPS",
+            BACKUP_COLUMNS,
+            "Backup / Slot / Save",
+            weight=2,
+            sortable=True,
+        )
+        # Which tree the toolbar acts on: whichever the user last selected in.
+        self._active_tree = self.live_tree
+        # Backups start newest-first; clicking a heading re-sorts.
+        self._sort_key: str = "saved"
+        self._sort_reverse: bool = True
+
+        for tree in (self.live_tree, self.backup_tree):
+            tree.bind("<Button-3>", self._on_right_click)
+            tree.bind("<<TreeviewSelect>>", self._on_tree_select)
+            Tooltip(tree, self._tip_for_row)
+            # Row styling: groups bold, active live emphasised, read-only amber, backups grey.
+            tree.tag_configure("group", font=("TkDefaultFont", 10, "bold"))
+            tree.tag_configure("live", foreground="#0a6b2f")
+            tree.tag_configure("active", foreground="#0a6b2f", font=("TkDefaultFont", 9, "bold"))
+            tree.tag_configure("readonly", foreground="#7a5b00")
+            tree.tag_configure("backup", foreground="#333333")
+
+    def _make_pane(self, panes, title, columns, tree_heading, *, weight, sortable=False):
+        """One titled pane holding a scrolled tree; returns the tree."""
+        frame = ttk.Frame(panes)
+        panes.add(frame, weight=weight)
+        ttk.Label(frame, text=title, font=("TkDefaultFont", 10, "bold"), anchor="w").pack(
+            side=tk.TOP, fill=tk.X, pady=(0, 2)
+        )
+        body = ttk.Frame(frame)
+        body.pack(fill=tk.BOTH, expand=True)
+        tree = RedactingTreeview(body, columns=[c.key for c in columns], show="tree headings")
+        tree.heading("#0", text=tree_heading)
+        tree.column("#0", width=300, anchor="w")
+        for col in columns:
+            if sortable:
+                tree.heading(col.key, text=col.title,
+                             command=lambda k=col.key: self._sort_backups(k))
+            else:
+                tree.heading(col.key, text=col.title)
+            tree.column(col.key, width=col.width, anchor="w")
+        vsb = ttk.Scrollbar(body, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=vsb.set)
+        tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        vsb.pack(side=tk.RIGHT, fill=tk.Y)
+        return tree
+
+    def _on_tree_select(self, event) -> None:
+        """Keep exactly one selection across both trees, so 'the selected row' is never
+        ambiguous when a toolbar button fires."""
+        self._active_tree = event.widget
+        other = self.backup_tree if event.widget is self.live_tree else self.live_tree
+        if other.selection():
+            other.selection_remove(*other.selection())
 
     # --- populate ------------------------------------------------------------
 
     def refresh(self) -> None:
-        self.tree.delete(*self.tree.get_children())
+        for tree in (self.live_tree, self.backup_tree):
+            tree.delete(*tree.get_children())
         self._meta.clear()
 
-        # --- LIVE SAVES group: every live source, grouped by account ----------
-        live_group = self.tree.insert("", "end", text="● LIVE SAVES", open=True, tags=("group",))
-        self._meta[live_group] = {"type": "group"}
+        # --- LIVE pane: every live source, one root row per account -----------
         sources = self.state.live_sources
         if not sources and self.live_dir and Path(self.live_dir).is_dir():
             # No state (e.g. explicit --live): fall back to the single folder.
@@ -261,23 +427,36 @@ class App(tk.Tk):
             active = s.id == self.active_source_id
             badge = " — read-only (Xbox)" if not s.writable else (" — ACTIVE" if active else "")
             tags = ("active",) if active else (("readonly",) if not s.writable else ("live",))
-            node = self.tree.insert(
-                live_group, "end", open=active,
+            view = savedir.scan_any(s.path)
+            node = self.live_tree.insert(
+                "", "end", open=active,
                 text=f"{_source_caption(s)}{badge}",
                 values=("", "", "", "", "writable" if s.writable else "read-only"),
                 tags=tags,
             )
-            self._meta[node] = {"type": "live", "dir": s.path, "writable": s.writable, "source_id": s.id}
-            self._add_view(node, savedir.scan_any(s.path), writable=s.writable)
+            self._meta[node] = {
+                "type": "live", "dir": s.path, "writable": s.writable, "source_id": s.id,
+                "tip": self._source_tip(s, view),
+            }
+            self._add_view(node, view, writable=s.writable)
 
-        # --- BACKUPS group: catalog entries -----------------------------------
-        backup_group = self.tree.insert("", "end", text="■ BACKUPS", open=True, tags=("group",))
-        self._meta[backup_group] = {"type": "group"}
-        for e in sorted(self.vault.entries, key=lambda e: e.id):
-            node = self.tree.insert(backup_group, "end", text=f"{e.id}  [{e.kind}]",
-                                    values=(e.label, "", "", "", ""), tags=("backup",))
-            self._meta[node] = {"type": "entry", "entry": e}
+        # --- BACKUPS pane: catalog entries, sortable by any column ------------
+        for e in self.vault.entries:
+            node = self.backup_tree.insert(
+                "", "end", text=e.id,
+                values=(
+                    e.kind,
+                    len(e.occupied_slots),
+                    e.label,
+                    "",
+                    "",
+                    _fmt_created(e.created),
+                ),
+                tags=("backup",),
+            )
+            self._meta[node] = {"type": "entry", "entry": e, "tip": self._entry_tip(e)}
             self._add_entry(node, e)
+        self._apply_backup_sort()
 
         self._refresh_source_combo()
         running = ops.safety.is_game_running()
@@ -297,7 +476,7 @@ class App(tk.Tk):
             if not sv.occupied:
                 continue
             n = sv.newest
-            node = self.tree.insert(
+            node = self.live_tree.insert(
                 parent,
                 "end",
                 text=f"Slot {slot}",
@@ -309,7 +488,10 @@ class App(tk.Tk):
                     "",
                 ),
             )
-            self._meta[node] = {"type": "slot", "dir": str(view.path), "slot": slot, "live": writable}
+            self._meta[node] = {
+                "type": "slot", "dir": str(view.path), "slot": slot, "live": writable,
+                "tip": self._slot_tip(sv, view),
+            }
             for m in sv.members:
                 if not m.exists:
                     continue
@@ -317,7 +499,7 @@ class App(tk.Tk):
                 status = ("valid" if m.valid else "INVALID") + (" / moved" if m.moved else "")
                 if m.cloud_status:
                     status += f" / cloud {m.cloud_status}"
-                mid = self.tree.insert(
+                mid = self.live_tree.insert(
                     node,
                     "end",
                     text=f"   {m.save_type_label}{star}",
@@ -333,8 +515,9 @@ class App(tk.Tk):
                     "type": "member",
                     "dir": str(view.path),
                     "slot": slot,
-                    "member": 0 if m.label == "A" else 1,
+                    "member": slotmap.member_index(m.label),
                     "live": writable,
+                    "tip": self._member_tip(m, sv),
                 }
 
     def _add_entry(self, parent: str, entry) -> None:
@@ -343,44 +526,188 @@ class App(tk.Tk):
                 continue
             ts = max((m.timestamp for m in s.members if m.present), default=0)
             newest = next((m for m in s.members if m.label == s.newest_label), None)
-            node = self.tree.insert(
+            node = self.backup_tree.insert(
                 parent,
                 "end",
                 text=f"Slot {s.slot}",
-                values=(s.name, newest.difficulty_label if newest else "", "", _fmt_ts(ts), ""),
+                values=("", "", s.name, newest.difficulty_label if newest else "", "", _fmt_ts(ts)),
             )
-            self._meta[node] = {"type": "slot", "dir": entry.path, "slot": s.slot, "live": False, "entry": entry}
+            self._meta[node] = {
+                "type": "slot", "dir": entry.path, "slot": s.slot, "live": False, "entry": entry,
+                "tip": self._backup_slot_tip(s, entry),
+            }
             for m in s.members:
                 if not m.present:
                     continue
                 star = " *" if m.label == s.newest_label else ""
-                self.tree.insert(
+                mid = self.backup_tree.insert(
                     node,
                     "end",
                     text=f"   {m.save_type_label}{star}",
                     values=(
+                        "",
+                        "",
                         m.name,
                         m.difficulty_label,
                         _fmt_play(m.play_time),
                         _fmt_ts(m.timestamp),
-                        ("valid" if m.valid else "INVALID") + (" / moved" if m.moved else ""),
                     ),
                 )
+                self._meta[mid] = {
+                    "type": "member",
+                    "dir": entry.path,
+                    "slot": s.slot,
+                    "member": slotmap.member_index(m.label),
+                    "live": False,
+                    "tip": self._backup_member_tip(m, s),
+                }
+
+    # --- sorting (backups pane) ----------------------------------------------
+
+    def _sort_backups(self, key: str) -> None:
+        """Clicking a heading sorts the backups; clicking the same one flips direction."""
+        if key == self._sort_key:
+            self._sort_reverse = not self._sort_reverse
+        else:
+            self._sort_key, self._sort_reverse = key, key == "saved"
+        self._apply_backup_sort()
+
+    def _apply_backup_sort(self) -> None:
+        """Reorder the top-level backup rows only; their slots/saves ride along."""
+        column = self.backup_tree["columns"].index(self._sort_key)
+
+        def sort_value(row: str):
+            entry = (self._meta.get(row) or {}).get("entry")
+            if self._sort_key == "saved" and entry is not None:
+                return entry.created  # ISO-8601: sorts correctly as text
+            if self._sort_key == "slots" and entry is not None:
+                return len(entry.occupied_slots)
+            return str(self.backup_tree.set(row, column)).lower()
+
+        rows = sorted(self.backup_tree.get_children(""), key=sort_value, reverse=self._sort_reverse)
+        for position, row in enumerate(rows):
+            self.backup_tree.move(row, "", position)
+        arrow = " ▼" if self._sort_reverse else " ▲"
+        for col in BACKUP_COLUMNS:
+            self.backup_tree.heading(
+                col.key, text=col.title + (arrow if col.key == self._sort_key else "")
+            )
+
+    # --- tooltips ------------------------------------------------------------
+
+    def _tip_for_row(self, tree, row_id: str) -> str:
+        meta = self._meta.get(row_id)
+        return meta.get("tip", "") if meta else ""
+
+    def _source_tip(self, source, view: savedir.SaveDirView) -> str:
+        lines = [
+            f"{aliases.redact(source.label)}",
+            f"Platform: {'Xbox / Game Pass' if source.platform == 'xbox' else 'Steam'}",
+            f"Folder:   {aliases.redact(source.path)}",
+            f"Writes:   {'allowed' if source.writable else 'read-only'}",
+            f"Slots in use: {len(view.occupied_slots)} of {len(view.slots)}",
+        ]
+        if view.steam_cloud:
+            lines.append("Steam Cloud: enabled for this folder (Steam syncs it as a whole,")
+            lines.append("             so there is no per-save cloud state to show)")
+        return "\n".join(lines)
+
+    def _slot_tip(self, sv, view: savedir.SaveDirView) -> str:
+        newest = sv.newest
+        lines = [f"Slot {sv.slot}: {sv.display_name}"]
+        if newest and newest.info:
+            lines.append(f"Difficulty: {newest.info.difficulty_label or 'unknown'}")
+            lines.append(f"Play time:  {_fmt_play(newest.info.total_play_time) or '-'}")
+            if newest.info.save_summary:
+                lines.append(f"Where:      {newest.info.save_summary}")
+        lines.append("")
+        for m in sv.members:
+            if not m.exists:
+                lines.append(f"{m.save_type_label:<14} (not present)")
+                continue
+            mark = "  <- the game loads this one" if newest and m.label == newest.label else ""
+            lines.append(f"{m.save_type_label:<14} {_fmt_ts(m.effective_timestamp)}{mark}")
+        return "\n".join(lines)
+
+    def _member_tip(self, m, sv) -> str:
+        newest = sv.newest
+        lines = [
+            f"{m.save_type_label} — {_SAVE_TYPE_HELP[m.save_type_label]}",
+            "",
+            f"Save name:  {m.save_name or '<unnamed>'}",
+        ]
+        if m.info:
+            lines.append(f"Difficulty: {m.info.difficulty_label or 'unknown'}")
+            lines.append(f"Play time:  {_fmt_play(m.info.total_play_time) or '-'}")
+            if m.info.save_summary:
+                lines.append(f"Where:      {m.info.save_summary}")
+        lines.append(f"Saved:      {_fmt_ts(m.effective_timestamp)}")
+        lines.append(f"Current:    {'yes — this is what the game loads' if newest and m.label == newest.label else 'no'}")
+        lines.append(f"File:       {m.ref.data_name}")
+        lines.append(f"Size:       {_fmt_size(m.data_size)}")
+        lines.append(f"Integrity:  {'valid' if m.valid else 'INVALID'}")
+        if m.cloud_status:
+            lines.append(f"Cloud:      {m.cloud_status}")
+        if m.note:
+            lines.append(f"Note:       {m.note}")
+        return "\n".join(lines)
+
+    def _entry_tip(self, entry) -> str:
+        return "\n".join([
+            f"{entry.id}",
+            f"Type:    {_KIND_HELP.get(entry.kind, entry.kind)}",
+            f"Created: {_fmt_created(entry.created)}",
+            f"Label:   {aliases.redact(entry.label) or '-'}",
+            f"Slots:   {len(entry.occupied_slots)} occupied",
+            f"Stored:  {'in the vault' if entry.managed else 'indexed where it already lives'}",
+            f"Folder:  {aliases.redact(entry.path)}",
+        ])
+
+    def _backup_slot_tip(self, s, entry) -> str:
+        lines = [f"Slot {s.slot}: {s.name}", f"In backup: {entry.id}", ""]
+        for m in s.members:
+            if not m.present:
+                lines.append(f"{m.save_type_label:<14} (not present)")
+                continue
+            mark = "  <- newest in this backup" if m.label == s.newest_label else ""
+            lines.append(f"{m.save_type_label:<14} {_fmt_ts(m.timestamp)}{mark}")
+        return "\n".join(lines)
+
+    def _backup_member_tip(self, m, s) -> str:
+        lines = [
+            f"{m.save_type_label} — {_SAVE_TYPE_HELP[m.save_type_label]}",
+            "",
+            f"Save name:  {m.name or '<unnamed>'}",
+            f"Difficulty: {m.difficulty_label or 'unknown'}",
+            f"Play time:  {_fmt_play(m.play_time) or '-'}",
+        ]
+        if m.summary:
+            lines.append(f"Where:      {m.summary}")
+        lines.append(f"Saved:      {_fmt_ts(m.timestamp)}")
+        lines.append(f"Newest:     {'yes' if m.label == s.newest_label else 'no'}")
+        lines.append(f"Size:       {_fmt_size(m.data_size)}")
+        lines.append(f"Integrity:  {'valid' if m.valid else 'INVALID'}")
+        if m.note:
+            lines.append(f"Note:       {m.note}")
+        return "\n".join(lines)
 
     # --- selection helpers ---------------------------------------------------
 
     def _selected(self) -> dict | None:
-        sel = self.tree.selection()
-        if not sel:
-            return None
-        return self._meta.get(sel[0])
+        """The row the toolbar acts on: the selection in whichever tree was last used."""
+        for tree in (self._active_tree, self.live_tree, self.backup_tree):
+            sel = tree.selection()
+            if sel:
+                return self._meta.get(sel[0])
+        return None
 
     def _on_right_click(self, event) -> None:
         """Build a context-sensitive menu for the right-clicked row."""
-        row = self.tree.identify_row(event.y)
+        tree = event.widget
+        row = tree.identify_row(event.y)
         if not row:
             return
-        self.tree.selection_set(row)
+        tree.selection_set(row)  # fires <<TreeviewSelect>>, which clears the other tree
         meta = self._meta.get(row)
         if not meta:
             return
@@ -781,14 +1108,23 @@ class AccountsDialog(tk.Toplevel):
 
 HELP_TEXT = """NMS Save Vault — Help
 
-The tree is split into two groups:
-  ● LIVE SAVES  -- every save folder found on this PC: each Steam account and each
+The window is split into two panes. Drag the divider to give either one more room.
+  ● LIVE SAVES (top)  -- every save folder found on this PC: each Steam account and each
      Xbox / Game Pass account. The ACTIVE one (green, bold) is the target of write
      actions; pick it from the "Active live" dropdown or right-click a folder to set it.
      Xbox folders are writable for same-platform actions (backup, restore, repopulate,
      promote within Xbox). Transferring a save between Steam and Xbox is not yet supported.
-  ■ BACKUPS  -- every backup in the catalog (full snapshots, extracts, imported and
-     auto-discovered copy-paste backups).
+  ■ BACKUPS (bottom)  -- every backup in the catalog (full snapshots, extracts, imported
+     and auto-discovered copy-paste backups). Click any column heading to sort by it --
+     Saved, Type, Slots, Name -- and click the same heading again to reverse the order.
+     Backups start newest-first.
+
+Selecting a row in one pane clears the selection in the other, so the toolbar buttons
+always act on the row you last clicked.
+
+Hover over any row for details: for a save, what it is, its difficulty, play time, where
+you were, its file, size and integrity; for a backup, its type, when it was made, whether
+it lives in the vault or was catalogued in place, and where it is.
 
 The Difficulty column is the save's difficulty preset (Normal, Creative, Custom, Relaxed,
 Survival, Permadeath). Saves made before the Waypoint update stored this as a game mode
