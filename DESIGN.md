@@ -73,8 +73,10 @@ src/nms_save_vault/
     operations.py backup/restore/extract/repopulate/promote
     safety.py     game-running check, atomic staged writes, auto-snapshot, op-log/undo
     aliases.py    account-id -> display-name filter (accounts.ini); display only
+  theme.py        light/dark/system palettes + ttk restyling (front-end)
+  updates.py      opt-in GitHub release check (the only network access)
   cli.py          argparse front end
-  gui.py          Tkinter app
+  gui.py          Tkinter app (two panes: live saves / backups)
 ```
 
 ## Storage model (hybrid)
