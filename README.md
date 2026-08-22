@@ -25,8 +25,8 @@ shortcuts? `install.bat` in the zip adds them. Full details under
 2. **Catalog + per-slot operations** — browse every backup and the saves inside it by
    name/mode/play-time/date; lift a single slot aside; and repopulate any live slot from
    any save in any cataloged backup (re-keying the meta when the slot number differs).
-   You can also inspect a slot's two saves (manual + auto restore-point) individually and
-   force the older one to become the newest.
+   You can also inspect a slot's two saves (the Auto-Save and the Restore-Point)
+   individually and force either one to become the newest.
 3. **Import** — register an existing manual backup folder into the catalog, or import an
    entire copied Save Vault folder: it compares that vault's entries with yours and offers
    to copy the new ones in or index them in place (idempotent — re-importing is harmless).
@@ -34,6 +34,10 @@ shortcuts? `install.bat` in the zip adds them. Full details under
    that instead of the real id everywhere, so a screenshot or a screen-share never exposes
    your `st_<steamid64>` or Xbox `<xuid>_<titleid>`. See
    [Account display names](#account-display-names).
+5. **Know what you are looking at** — each slot's two saves are named for what they are
+   (**Auto-Save** vs **Restore-Point**), the difficulty preset is shown by name, Xbox saves
+   report their cloud sync state, and hovering any row explains it. See
+   [The two saves in every slot](#the-two-saves-in-every-slot).
 
 ## Why it's safe
 
@@ -183,6 +187,51 @@ Clearing a name shows the real id again. This is **display only** — `state.jso
 saves are found or written changes. If `accounts.ini` cannot be parsed the app stops with an
 error rather than falling back to showing the ids you asked it to hide.
 
+## The two saves in every slot
+
+Every save slot holds **two** saves, and they are not interchangeable — the game keeps them
+apart so that neither overwrites the other:
+
+| | What writes it |
+|---|---|
+| **Auto-Save** | The game, by itself, every few minutes. |
+| **Restore-Point** | You: leaving your ship, or using a save point, a save beacon, or a point-of-interest save. |
+
+**Either can be the newer one.** Exit your ship a minute after an auto-save and the
+Restore-Point is ahead; play a long stretch in your ship and the Auto-Save is. The app marks
+the one the game will actually load with `*`, and **Promote** forces the other to be it.
+
+Which file is which is fixed by position, not guesswork: `save.hg`, `save3.hg`, `save5.hg` …
+are auto-saves and `save2.hg`, `save4.hg` … are restore points. The reference library
+`libNOM.io` derives it the same way (`SaveType = SaveTypeEnum(CollectionIndex % 2)`), which
+is why the Xbox containers are named `Slot<N>Auto` / `Slot<N>Manual` on disk.
+
+**Difficulty** is the save's difficulty preset — Normal, Creative, Custom, Relaxed, Survival,
+Permadeath. (Saves written before the Waypoint update stored this as a *game mode* instead,
+so for those the old value is shown. Waypoint made difficulty freely configurable and the
+game has written "Normal" into the old field for every save ever since, which is why it is no
+longer worth showing on its own.)
+
+**Cloud sync.** Xbox / Game Pass records a sync state per save (`Synced`, `Modified`,
+`Created`), shown in the Status column. Steam has no per-save equivalent — Steam Cloud syncs
+the whole folder, and `steam_autocloud.vdf` holds only an account id — so a Steam folder is
+reported as cloud-enabled at folder level and no per-save state is invented.
+
+## Appearance and updates
+
+**Theme.** The dropdown at the top right offers **Light**, **Dark**, or **System**, which
+follows your Windows light/dark setting. Your choice is remembered in `state.json`. (Light
+keeps the native Windows widget styling the app has always had; dark switches to a
+fully-colourable widget theme, because the native one ignores colour settings.)
+
+**Update checks are opt-in.** The first run asks whether the app may check for new versions.
+If you say yes, it asks GitHub **once a day, on startup**, whether a newer release exists and
+shows a bar at the top when there is one, with a button to open the download page. Nothing is
+downloaded or installed for you, and nothing about you or your saves is sent — this is the
+only thing the app uses the network for. Right-click anywhere → **Check for updates…** to
+check immediately, or to turn the daily check back on. The answer lives in `state.json` as
+`update_check` (`ask` / `on` / `off`).
+
 ## Usage
 
 Both front-ends share the same safety-checked core. The live folder and a vault folder
@@ -254,7 +303,7 @@ The vault lives outside `st_<id>`, so it is never scanned by the game or synced 
 ## Status
 
 Working. Core format/crypto and all operations are verified against the real save files and
-in a temp sandbox (101 tests). Xbox / Game Pass saves are supported for reading **and**
+in a temp sandbox (179 tests). Xbox / Game Pass saves are supported for reading **and**
 same-platform writing — verified against a real install (reads) and synthetic `wgs` fixtures
 (writes). A full file-copy safety backup of the live folder was made before development
 (`C:\Devel\NMS-SaveBackup-SAFETY-2026-06-24`).

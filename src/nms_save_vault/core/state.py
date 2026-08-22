@@ -69,6 +69,12 @@ class AppState:
     sources: list[Source] = field(default_factory=list)
     vault: str | None = None
     version: int = STATE_VERSION
+    # UI preferences. "system" follows the Windows light/dark setting.
+    theme: str = "system"
+    # Update checking: "ask" until the user answers, then "on" or "off". This is the only
+    # thing that makes the app contact the network, so it stays off until asked.
+    update_check: str = "ask"
+    update_last_check: str = ""  # ISO date of the last check; throttles to once a day
 
     # --- lookups -------------------------------------------------------------
 
@@ -92,6 +98,9 @@ class AppState:
         return {
             "version": self.version,
             "vault": self.vault,
+            "theme": self.theme,
+            "update_check": self.update_check,
+            "update_last_check": self.update_last_check,
             "sources": [asdict(s) for s in self.sources],
         }
 
@@ -101,6 +110,9 @@ class AppState:
             sources=[_source_from_dict(s) for s in d.get("sources", [])],
             vault=d.get("vault"),
             version=d.get("version", STATE_VERSION),
+            theme=d.get("theme", "system"),
+            update_check=d.get("update_check", "ask"),
+            update_last_check=d.get("update_last_check", ""),
         )
         _migrate(state)
         return state

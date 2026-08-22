@@ -137,7 +137,14 @@ def gui_app(tmp_path_factory):
     # tests, so undo them as soon as construction is done.
     mp = pytest.MonkeyPatch()
     mp.setattr(aliases, "_active", aliases.AliasMap())
-    mp.setattr(appstate, "load", lambda *a, **k: appstate.AppState(sources=[], vault=None))
+    # update_check="off" matters: the App schedules its startup check 300ms after
+    # construction, and the default "ask" would pop a modal dialog partway through the
+    # suite and hang it. Tests that exercise update checking set the flag themselves.
+    mp.setattr(
+        appstate,
+        "load",
+        lambda *a, **k: appstate.AppState(sources=[], vault=None, update_check="off"),
+    )
     # Keep the real machine's save folder out of the test: the App falls back to it when
     # the config lists no sources.
     mp.setattr(locations, "default_live_save_dir", lambda: None)

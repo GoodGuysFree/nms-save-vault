@@ -12,11 +12,13 @@ import sys
 import threading
 import time
 import tkinter as tk
+import webbrowser
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
+from . import __version__, theme, updates
 from .core import aliases, catalog, discover, locations, slotmap
 from .core import operations as ops
 from .core import savedir
@@ -222,6 +224,9 @@ class App(tk.Tk):
         super().__init__()
         self.title("NMS Save Vault")
         self.geometry("1000x640")
+        # Whatever ttk chose for this OS; light mode restores it so the app keeps the
+        # native look it has always had (see theme.apply).
+        self._native_ttk_theme = ttk.Style(self).theme_use()
         _ico = _icon_path()
         if _ico:
             try:
@@ -248,7 +253,9 @@ class App(tk.Tk):
 
         self._meta: dict[str, dict] = {}
         self._build_widgets()
+        self._apply_theme()
         self.refresh()
+        self.after(300, self._startup_update_check)  # after the window is on screen
 
     # --- state ---------------------------------------------------------------
 
@@ -325,23 +332,43 @@ class App(tk.Tk):
         ]:
             ttk.Button(bar, text=text, command=cmd).pack(side=tk.LEFT, padx=2)
 
+        controls = ttk.Frame(self)
+        controls.pack(side=tk.TOP, fill=tk.X, padx=6, pady=(0, 4))
+
         # Active live (write target) selector -- the writable accounts (Steam + Xbox).
         self._source_choices: dict[str, str] = {}  # label -> source id
         self.active_var = tk.StringVar(value="")
-        ttk.Label(bar, text="  Active live:").pack(side=tk.LEFT)
-        self.active_combo = ttk.Combobox(bar, textvariable=self.active_var, state="readonly", width=22)
-        self.active_combo.pack(side=tk.LEFT, padx=2)
+        ttk.Label(controls, text="Active live:").pack(side=tk.LEFT)
+        self.active_combo = ttk.Combobox(controls, textvariable=self.active_var, state="readonly", width=30)
+        self.active_combo.pack(side=tk.LEFT, padx=(4, 16))
         self.active_combo.bind("<<ComboboxSelected>>", self._on_active_changed)
 
-        self.status = tk.StringVar(value="")
-        ttk.Label(self, textvariable=self.status, anchor="w", relief="sunken").pack(
-            side=tk.BOTTOM, fill=tk.X
+        self.theme_var = tk.StringVar(value=theme.CHOICE_LABELS.get(self.state.theme, "System"))
+        self.theme_combo = ttk.Combobox(
+            controls, textvariable=self.theme_var, state="readonly", width=8,
+            values=[theme.CHOICE_LABELS[c] for c in theme.CHOICES],
         )
+        self.theme_combo.pack(side=tk.RIGHT)
+        self.theme_combo.bind("<<ComboboxSelected>>", self._on_theme_changed)
+        ttk.Label(controls, text="Theme:").pack(side=tk.RIGHT, padx=(0, 4))
+
+        self.status = tk.StringVar(value="")
+        ttk.Label(
+            self, textvariable=self.status, anchor="w", relief="sunken", style="Status.TLabel"
+        ).pack(side=tk.BOTTOM, fill=tk.X)
 
         # Two independent trees, one per pane: live saves are browsed, backups are
         # searched and sorted, and mixing them in one tree made both worse.
+        # Shown only when a newer release is found; packed above the panes at that point.
+        self.banner = ttk.Frame(self, style="Banner.TFrame", padding=(8, 6))
+        self.banner_var = tk.StringVar(value="")
+        ttk.Label(self.banner, textvariable=self.banner_var, style="Banner.TLabel").pack(side=tk.LEFT)
+        ttk.Button(self.banner, text="Dismiss", command=self._hide_banner).pack(side=tk.RIGHT, padx=(6, 0))
+        ttk.Button(self.banner, text="Open download page", command=self._open_releases).pack(side=tk.RIGHT)
+
         panes = ttk.PanedWindow(self, orient=tk.VERTICAL)
         panes.pack(fill=tk.BOTH, expand=True, padx=6, pady=4)
+        self._panes = panes
 
         self.live_tree = self._make_pane(
             panes,
@@ -368,12 +395,128 @@ class App(tk.Tk):
             tree.bind("<Button-3>", self._on_right_click)
             tree.bind("<<TreeviewSelect>>", self._on_tree_select)
             Tooltip(tree, self._tip_for_row)
-            # Row styling: groups bold, active live emphasised, read-only amber, backups grey.
+
+    # --- theme ---------------------------------------------------------------
+
+    def _apply_theme(self, *, persist: bool = False) -> None:
+        """Restyle everything for the current choice and re-colour the row tags.
+
+        Tag colours cannot live in the ttk style, so they are re-applied here: the
+        light-mode green and amber are unreadable on a dark tree background.
+        """
+        name = theme.apply(self, self.state.theme, self._native_ttk_theme)
+        p = theme.PALETTES[name]
+        for tree in (self.live_tree, self.backup_tree):
             tree.tag_configure("group", font=("TkDefaultFont", 10, "bold"))
-            tree.tag_configure("live", foreground="#0a6b2f")
-            tree.tag_configure("active", foreground="#0a6b2f", font=("TkDefaultFont", 9, "bold"))
-            tree.tag_configure("readonly", foreground="#7a5b00")
-            tree.tag_configure("backup", foreground="#333333")
+            tree.tag_configure("live", foreground=p["live"])
+            tree.tag_configure("active", foreground=p["active"], font=("TkDefaultFont", 9, "bold"))
+            tree.tag_configure("readonly", foreground=p["readonly"])
+            tree.tag_configure("backup", foreground=p["backup"])
+        TOOLTIP_STYLE.update(
+            background=p["tip_bg"], foreground=p["tip_fg"], border=p["tip_border"]
+        )
+        if persist:
+            try:
+                appstate.save(self.state)
+            except OSError as exc:
+                _showwarning("Theme", f"Could not save your theme choice:\n{exc}")
+
+    # --- update checking -----------------------------------------------------
+
+    def _save_state_quietly(self) -> None:
+        """Persist preferences. A read-only install dir is not worth a modal at startup;
+        the setting simply will not stick, and the user is told if they try to change it
+        from the theme dropdown (which reports the same failure loudly)."""
+        try:
+            appstate.save(self.state)
+        except OSError:
+            pass
+
+    def _startup_update_check(self) -> None:
+        """Ask once, then check quietly at most once a day."""
+        if self.state.update_check == updates.ASK:
+            self._ask_about_update_checks()
+        if self.state.update_check != updates.ON:
+            return
+        if updates.due(self.state.update_last_check):
+            self._check_for_updates(quiet=True)
+
+    def _ask_about_update_checks(self) -> None:
+        wants = _askyesno(
+            "Check for updates?",
+            "Would you like NMS Save Vault to check for new versions?\n\n"
+            "If you say yes it asks api.github.com once a day, on startup, whether a newer "
+            "release exists, and shows a bar at the top when there is one. Nothing is "
+            "downloaded or installed, and nothing about you or your saves is sent.\n\n"
+            "This is the only thing the app uses the network for. You can change this "
+            "later from any right-click menu.",
+        )
+        self.state.update_check = updates.ON if wants else updates.OFF
+        self._save_state_quietly()
+
+    def on_check_updates(self) -> None:
+        """Check now, regardless of the daily throttle."""
+        if self.state.update_check != updates.ON:
+            if not _askyesno(
+                "Check for updates?",
+                "This asks api.github.com whether a newer release exists, and turns on the "
+                "daily check on startup.\n\nContact GitHub now?",
+            ):
+                return
+            self.state.update_check = updates.ON
+            self._save_state_quietly()
+        self._check_for_updates(quiet=False)
+
+    def _check_for_updates(self, *, quiet: bool) -> None:
+        """Run the check off the Tk thread so a slow network never freezes the window."""
+
+        def worker() -> None:
+            try:
+                outcome = updates.check()
+            except updates.UpdateCheckError as exc:
+                outcome = exc
+            try:
+                self.after(0, lambda: self._update_check_done(outcome, quiet))
+            except (tk.TclError, RuntimeError):
+                pass  # window closed while the check was still in flight
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _update_check_done(self, outcome, quiet: bool) -> None:
+        self.state.update_last_check = date.today().isoformat()
+        self._save_state_quietly()
+        if isinstance(outcome, Exception):
+            if not quiet:  # a startup check failing offline should say nothing
+                _showwarning("Check for updates", f"Could not check for updates:\n{outcome}")
+            return
+        if outcome is None:
+            if not quiet:
+                _showinfo("Check for updates", f"You are up to date (version {__version__}).")
+            return
+        self._show_update_banner(outcome)
+
+    def _show_update_banner(self, release) -> None:
+        self._release_url = release.page_url
+        self.banner_var.set(
+            f"Version {release.version} is available — you have {__version__}."
+        )
+        self.banner.pack(side=tk.TOP, fill=tk.X, padx=6, pady=(0, 4), before=self._panes)
+
+    def _hide_banner(self) -> None:
+        self.banner.pack_forget()
+
+    def _open_releases(self) -> None:
+        webbrowser.open(getattr(self, "_release_url", updates.RELEASES_PAGE))
+
+    def _on_theme_changed(self, _event=None) -> None:
+        label = self.theme_var.get()
+        choice = next(
+            (c for c, text in theme.CHOICE_LABELS.items() if text == label), theme.SYSTEM
+        )
+        if choice == self.state.theme:
+            return
+        self.state.theme = choice
+        self._apply_theme(persist=True)
 
     def _make_pane(self, panes, title, columns, tree_heading, *, weight, sortable=False):
         """One titled pane holding a scrolled tree; returns the tree."""
@@ -742,6 +885,7 @@ class App(tk.Tk):
         menu.add_separator()
         menu.add_command(label="Refresh", command=self.refresh)
         menu.add_command(label="Account display names…", command=self.on_accounts)
+        menu.add_command(label="Check for updates…", command=self.on_check_updates)
         menu.add_command(label="Help", command=self.on_help)
         try:
             menu.tk_popup(event.x_root, event.y_root)
@@ -1022,7 +1166,13 @@ class App(tk.Tk):
         ttk.Button(win, text="Close", command=win.destroy).pack(side=tk.BOTTOM, pady=6)
         vsb = ttk.Scrollbar(win, orient="vertical")
         vsb.pack(side=tk.RIGHT, fill=tk.Y)
-        txt = tk.Text(win, wrap="word", padx=10, pady=10, yscrollcommand=vsb.set)
+        p = theme.palette(self.state.theme)  # tk.Text is a classic widget: no ttk style
+        win.configure(background=p["bg"])
+        txt = tk.Text(
+            win, wrap="word", padx=10, pady=10, yscrollcommand=vsb.set,
+            background=p["field"], foreground=p["fg"], insertbackground=p["fg"],
+            relief="flat",
+        )
         txt.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         vsb.config(command=txt.yview)
         txt.insert("1.0", HELP_TEXT)
@@ -1168,6 +1318,8 @@ BUTTONS
 - Discover: Scan the NMS folder for existing backups and add any new ones found.
 - Undo: Restore the auto-snapshot taken just before the last operation.
 - Refresh: Re-scan the live folder and the catalog.
+- Theme (top right): Light, Dark, or System, which follows your Windows light/dark
+  setting. Your choice is remembered in the config.
 - Accounts: Give each account a display name to show instead of its real id (the Steam
   st_<steamid64> folder, the Xbox <xuid>_<titleid> folder). Once a name is set, the app
   shows only that name everywhere -- folder names, paths, labels, messages -- and that
@@ -1185,6 +1337,14 @@ WORKFLOWS
 - Roll back within a slot: expand the live slot, right-click the save you want (usually
   the older one, or the Restore-Point), Promote it.
 - Bring in an outside save: Import the folder, then Repopulate the slot you want.
+
+UPDATES
+The first time you run it, the app asks whether it may check for new versions. If you
+say yes it asks GitHub once a day, on startup, whether a newer release exists, and shows
+a bar at the top when there is one -- with a button to open the download page. Nothing is
+downloaded or installed for you, and nothing about you or your saves is ever sent. This
+is the only thing the app uses the network for. Right-click anywhere and choose "Check
+for updates..." to check straight away, or to turn the daily check back on.
 
 SAFETY
 - Writes are blocked while No Man's Sky is running -- close the game first.
