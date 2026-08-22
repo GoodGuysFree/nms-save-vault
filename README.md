@@ -8,7 +8,7 @@ unlimited save slots beyond the game's 15. See [Platform support](#platform-supp
 
 **Just want to run it? No Python needed.** Download the ready-to-use Windows kit from the
 [**latest release**](https://github.com/GoodGuysFree/nms-save-vault/releases/latest) — grab
-`NMSSaveVault-Setup-v0.0.7.zip` under **Assets**.
+`NMSSaveVault-Setup-v0.0.8.zip` under **Assets**.
 
 Extract the zip, open the `NMSSaveVault` folder and run **`NMSSaveVault.exe`**. That is the
 whole thing — Python and Tkinter are bundled, nothing is installed, and because the app
@@ -72,11 +72,11 @@ volunteers are very welcome.
 
 ## Run it (Windows, no Python needed)
 
-Download **`NMSSaveVault-Setup-v0.0.7.zip`** from the
+Download **`NMSSaveVault-Setup-v0.0.8.zip`** from the
 [**Releases**](https://github.com/GoodGuysFree/nms-save-vault/releases) page (under the
 release's **Assets**) and extract it. Open the `NMSSaveVault` folder and run
 **`NMSSaveVault.exe`** — that is all. Everything (Python + Tkinter) is bundled, nothing is
-installed, and the config (`state.json`) is written beside the program, so the folder is
+installed, and the config (`state.json`, `accounts.ini`) is written beside the program, so the folder is
 self-contained: move it, put it on a USB stick, delete it to be rid of it. Beside the GUI
 launcher sits `nmsvault.exe`, the same tool on the command line (see [Usage](#usage)).
 
@@ -263,6 +263,7 @@ same-platform writing — verified against a real install (reads) and synthetic 
 
 | Version | Date | Highlights |
 |---|---|---|
+| **0.0.8** | 2026-08-22 | **Account display names — hide your Steam / Xbox account id.** Save folders are named after the account that owns them, so `st_<steamid64>` and the Xbox `<xuid>_<titleid>` used to show up in folder names, paths, source labels and operation messages all over both front-ends — awkward for a screenshot, a bug report or a screen-share. Map each account to a name of your choosing (**Accounts…** in the GUI, `nmsvault accounts --set` in the CLI) and the app shows only that name, everywhere. Those two screens are the only ones that still show the real ids, since you cannot name an id you cannot see. The mapping is a plain `accounts.ini` beside `state.json`, safe to edit by hand; clearing a name shows the real id again. Display only — `state.json`, `catalog.json` and every path the app opens keep the real identifiers, so nothing about how saves are found or written changes. Upgrading keeps your config. |
 | **0.0.7** | 2026-08-21 | **No more "unknown publisher" warning, and no installation needed.** The distributable is no longer a one-file PyInstaller build. It ships as a folder whose launcher is a verbatim renamed copy of the Authenticode-signed `pythonw.exe` published by the Python Software Foundation, so Windows starts a binary it already trusts instead of an unsigned custom `.exe` (renaming does not affect a signature — check it yourself with `Get-AuthenticodeSignature`). Extract the zip and run `NMSSaveVault.exe`; `install.bat` is now optional, for Desktop / Start Menu shortcuts. The command-line `nmsvault.exe` ships alongside it, so installed users get the CLI too. The build downloads the official runtime from python.org and refuses to package anything not validly signed, so there is no build dependency left at all. No change to what the app does; upgrading keeps your config. |
 | **0.0.6** | 2026-07-01 | **Fix: extract a single slot from Xbox / Game Pass saves.** `extract_slot` only understood Steam filenames, so extracting a slot from a `wgs` folder always failed with "slot N has no saves to extract"; it now has an Xbox variant that copies the slot's blobs into a self-contained mini-`wgs` folder in the vault, so it catalogs and repopulates like any Xbox source. (Extract was the only operation missing an Xbox code path.) |
 | **0.0.5** | 2026-07-01 | **Import a whole Save Vault directory.** Point Import at a copied `_SaveVault` folder and it compares that vault's entries with yours (by entry id) and offers to copy the new ones into your vault (self-contained) or index them in place (referencing that folder) — idempotent, so re-importing is harmless. In-place-imported entries are unmanaged, and snapshot pruning now only touches snapshots this vault owns, so importing another vault in place can never delete its files. Works in the GUI (Import shows new/existing counts, then copy vs in-place) and the CLI (`nmsvault import <vault-dir> [--copy]`). |
