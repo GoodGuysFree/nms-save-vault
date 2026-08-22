@@ -69,9 +69,10 @@ def _fmt_ts(unix: int) -> str:
 
 
 def _print_view(view: savedir.SaveDirView) -> None:
-    print(f"Save folder: {view.path}   (account data: {'yes' if view.account_present else 'no'})")
-    print(f"{'Slot':<5}{'Name':<28}{'Mode':<5}{'Play':<8}{'Newest':<7}{'Saved':<18}Notes")
-    print("-" * 88)
+    cloud = "   (Steam Cloud: on)" if view.steam_cloud else ""
+    print(f"Save folder: {view.path}   (account data: {'yes' if view.account_present else 'no'}){cloud}")
+    print(f"{'Slot':<5}{'Name':<28}{'Difficulty':<11}{'Play Time':<10}{'Newest':<15}{'Saved':<18}Notes")
+    print("-" * 100)
     for slot in sorted(view.slots):
         sv = view.slots[slot]
         if not sv.occupied:
@@ -81,21 +82,24 @@ def _print_view(view: savedir.SaveDirView) -> None:
         notes = []
         for m in sv.members:
             if m.exists and m.note:
-                notes.append(f"{m.label}:{m.note}")
+                notes.append(f"{m.save_type_label}:{m.note}")
         name = sv.display_name
-        mode = n.info.game_mode if (n and n.info) else ""
+        difficulty = n.info.difficulty_label if (n and n.info) else ""
         play = n.info.total_play_time if (n and n.info) else 0
         print(
-            f"{slot:<5}{name[:27]:<28}{str(mode):<5}{_fmt_playtime(play):<8}"
-            f"{(n.label if n else '?'):<7}{_fmt_ts(n.effective_timestamp if n else 0):<18}{'; '.join(notes)}"
+            f"{slot:<5}{name[:27]:<28}{difficulty:<11}{_fmt_playtime(play):<10}"
+            f"{(n.save_type_label if n else '?'):<15}"
+            f"{_fmt_ts(n.effective_timestamp if n else 0):<18}{'; '.join(notes)}"
         )
         # show both members
         for m in sv.members:
             if m.exists:
                 tag = "*" if (n and m.label == n.label) else " "
+                sync = f"  [cloud: {m.cloud_status}]" if m.cloud_status else ""
                 print(
-                    f"    {tag}{m.label}  {m.save_name[:24]:<25} {('valid' if m.valid else 'INVALID'):<8} "
-                    f"{_fmt_ts(m.effective_timestamp)}  {m.info.save_summary if m.info else ''}"
+                    f"    {tag}{m.save_type_label:<14}{m.save_name[:24]:<25} "
+                    f"{('valid' if m.valid else 'INVALID'):<8} "
+                    f"{_fmt_ts(m.effective_timestamp)}{sync}  {m.info.save_summary if m.info else ''}"
                 )
 
 
@@ -174,12 +178,13 @@ def cmd_show(args) -> int:
         return 0
     print(f"{entry.id}  [{entry.kind}]  {entry.label}")
     print(f"path: {entry.path}")
-    print(f"{'Slot':<5}{'Name':<28}{'Newest':<7}{'Saved'}")
+    print(f"{'Slot':<5}{'Name':<28}{'Newest':<15}{'Saved'}")
     print("-" * 70)
     for s in entry.slots:
         if s.occupied:
             ts = max((m.timestamp for m in s.members if m.present), default=0)
-            print(f"{s.slot:<5}{s.name[:27]:<28}{(s.newest_label or '?'):<7}{_fmt_ts(ts)}")
+            newest = slotmap.save_type_label_of(s.newest_label or "") or "?"
+            print(f"{s.slot:<5}{s.name[:27]:<28}{newest:<15}{_fmt_ts(ts)}")
     return 0
 
 
@@ -277,12 +282,17 @@ def cmd_verify(args) -> int:
         vault = _resolve_vault(args)
         path = _resolve_source(vault, target)
     view = savedir.scan_any(path)
-    bad = [(sv.slot, m.label, m.note) for sv in view.slots.values() for m in sv.present_members if not m.valid]
+    bad = [
+        (sv.slot, m.save_type_label, m.note)
+        for sv in view.slots.values()
+        for m in sv.present_members
+        if not m.valid
+    ]
     _print_view(view)
     if bad:
-        print("\nINVALID members:")
+        print("\nINVALID saves:")
         for slot, label, note in bad:
-            print(f"  slot {slot}{label}: {note}")
+            print(f"  slot {slot} {label}: {note}")
         return 1
     print("\nall present saves valid.")
     return 0

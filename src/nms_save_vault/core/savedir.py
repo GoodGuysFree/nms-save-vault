@@ -60,6 +60,21 @@ class MemberView:
         return self.ordinal_used is not None and self.ordinal_used != self.ref.storage_ordinal
 
     @property
+    def save_type_label(self) -> str:
+        """'Auto-Save' or 'Restore-Point' -- what the game uses this member for."""
+        return self.ref.save_type_label
+
+    @property
+    def cloud_status(self) -> str:
+        """Xbox only: this save's cloud sync state, or '' when not knowable.
+
+        Steam is deliberately blank: ``steam_autocloud.vdf`` carries only an account id and
+        Steam Cloud syncs the folder as a unit, so there is no per-save state to report.
+        """
+        state = getattr(self.xbox, "sync_state", None)
+        return formats.MS_SYNC_STATE_NAMES.get(state, "") if state is not None else ""
+
+    @property
     def save_name(self) -> str:
         return self.info.save_name if self.info else ""
 
@@ -113,6 +128,9 @@ class SaveDirView:
     path: Path
     slots: dict[int, SlotView]
     account_present: bool
+    # Steam only: the folder carries steam_autocloud.vdf, so Steam Cloud is syncing it.
+    # Folder-level by nature -- Steam records no per-save state anywhere on disk.
+    steam_cloud: bool = False
     stray_files: list[str] = field(default_factory=list)
     # Xbox/Microsoft only: containers.index header identity (msstore.XboxIndexInfo). None
     # for Steam folders.
@@ -162,7 +180,12 @@ def scan(path: str | Path) -> SaveDirView:
         fa, fb = slot_file_numbers(slot)
         slots[slot] = SlotView(slot=slot, a=_load_member(folder, fa), b=_load_member(folder, fb))
     account = (folder / ACCOUNT_DATA_NAME).is_file() and (folder / ACCOUNT_META_NAME).is_file()
-    return SaveDirView(path=folder, slots=slots, account_present=account)
+    return SaveDirView(
+        path=folder,
+        slots=slots,
+        account_present=account,
+        steam_cloud=(folder / formats.STEAM_AUTOCLOUD).is_file(),
+    )
 
 
 def looks_like_save_dir(path: str | Path) -> bool:

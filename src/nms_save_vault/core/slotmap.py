@@ -66,6 +66,27 @@ def member_label(member: int) -> str:
     return MEMBER_LABELS[member]
 
 
+def member_index(label: str) -> int:
+    """'A'/'B' -> 0/1. The catalog stores the letter, so this reads it back."""
+    return MEMBER_LABELS.index(label.upper())
+
+
+def save_type_label(member: int) -> str:
+    """What the game calls this member: 0 -> 'Auto-Save', 1 -> 'Restore-Point'.
+
+    See ``formats.SAVE_TYPE_LABELS`` for why the roles are fixed by position.
+    """
+    return formats.SAVE_TYPE_LABELS[member]
+
+
+def save_type_label_of(label: str) -> str:
+    """Same, from the stored 'A'/'B' letter; '' if the letter is not one of them."""
+    try:
+        return save_type_label(member_index(label))
+    except ValueError:
+        return ""
+
+
 def parse_data_filename(name: str) -> int | None:
     """'saveN.hg' -> file number, or None if not a save data file."""
     m = _DATA_RE.match(name)
@@ -109,6 +130,11 @@ class SaveFileRef:
     @property
     def member_label(self) -> str:
         return member_label(self.member)
+
+    @property
+    def save_type_label(self) -> str:
+        """'Auto-Save' or 'Restore-Point' -- the game's own roles for the two members."""
+        return save_type_label(self.member)
 
     @property
     def storage_ordinal(self) -> int:

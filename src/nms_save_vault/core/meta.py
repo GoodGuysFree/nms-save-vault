@@ -187,6 +187,11 @@ class MetaInfo:
     def valid(self) -> bool:
         return self.header == formats.META_HEADER
 
+    @property
+    def difficulty_label(self) -> str:
+        """The save's difficulty preset by name (see ``formats.difficulty_label``)."""
+        return formats.difficulty_label(self.difficulty, self.game_mode)
+
 
 def parse(plain: bytes, ordinal: int) -> MetaInfo:
     """Parse a *decrypted* meta into a :class:`MetaInfo` (tolerant of shorter formats)."""

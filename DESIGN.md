@@ -17,8 +17,14 @@ decompressing the user's actual files.
 * File number `f` (bare `save.hg` = 1 … `save30.hg` = 30).
 * **Slot k** (1-based) = files `f = 2k-1` (member A) and `2k` (member B).
 * **Storage ordinal** (XXTEA key input) = `f + 1` (`save.hg`→2 … `save30.hg`→31).
-* 15 slots × 2 saves = 30 files. The two members are the manual save + the auto
-  restore-point; the game treats the one with the **newer meta timestamp** as current.
+* 15 slots × 2 saves = 30 files. The two members have **fixed, non-interchangeable roles**:
+  member A (`f = 2k-1`) is the periodic **auto-save**, member B (`f = 2k`) is the
+  **restore point** the game writes when you leave your ship or use a save point / beacon /
+  POI save. Hello Games separated them so neither overwrites the other, so **either can be
+  the newer one**. libNOM.io derives the same thing positionally —
+  `SaveType = (SaveTypeEnum)(CollectionIndex % 2)`, `Identifier = $"Slot{n}{SaveType}"` —
+  which is why the Xbox containers are literally named `Slot<N>Auto` / `Slot<N>Manual`.
+  The game treats whichever has the **newer meta timestamp** as current.
 
 ### Meta (decrypted) layout — Steam, Worlds
 | Offset | Field |

@@ -12,7 +12,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-from . import savedir
+from . import formats, savedir, slotmap
 from .savedir import SaveDirView
 
 CATALOG_VERSION = 1
@@ -40,6 +40,18 @@ class MemberSummary:
     valid: bool = False
     moved: bool = False
     note: str = ""
+    # Added after the first catalogs were written; entries cached before that default to 0
+    # and fall back to game_mode, so an old catalog still shows something sensible.
+    difficulty: int = 0
+
+    @property
+    def save_type_label(self) -> str:
+        """'Auto-Save' / 'Restore-Point' from the stored 'A'/'B' letter."""
+        return slotmap.save_type_label_of(self.label)
+
+    @property
+    def difficulty_label(self) -> str:
+        return formats.difficulty_label(self.difficulty, self.game_mode)
 
 
 @dataclass
@@ -88,6 +100,7 @@ def _member_summary(mv) -> MemberSummary:
         ms.play_time = mv.info.total_play_time
         ms.timestamp = mv.effective_timestamp  # falls back to mtime for Xbox saves
         ms.base_version = mv.info.base_version
+        ms.difficulty = mv.info.difficulty
     return ms
 
 

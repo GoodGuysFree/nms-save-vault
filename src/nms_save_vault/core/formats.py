@@ -70,11 +70,60 @@ OFF_META_FORMAT_TAIL = 0x168   # u32  meta format, repeated
 NAME_FIELD_LENGTH = 0x80  # 128
 SUMMARY_FIELD_LENGTH = 0x80  # 128
 
+# --- Difficulty / game mode --------------------------------------------------
+
+# libNOM.io DifficultyPresetTypeEnum (meta OFF_DIFFICULTY). This is the field the game
+# actually uses: since Waypoint made difficulty freely configurable, OFF_GAME_MODE below
+# is written as Normal for every save and carries no information.
+DIFFICULTY_INVALID = 0
+DIFFICULTY_NAMES = {
+    0: "",  # Invalid: written by pre-Waypoint saves, which used the game mode instead
+    1: "Custom",
+    2: "Normal",
+    3: "Creative",
+    4: "Relaxed",
+    5: "Survival",
+    6: "Permadeath",
+}
+
+# libNOM.io PresetGameModeEnum (meta OFF_GAME_MODE). Legacy -- before Waypoint this *was*
+# the difficulty, so it is the right fallback when DIFFICULTY_NAMES yields nothing.
+GAME_MODE_NAMES = {
+    0: "",  # Unspecified
+    1: "Normal",
+    2: "Creative",
+    3: "Survival",
+    4: "Ambient",
+    5: "Permadeath",
+    6: "Seasonal",
+}
+
+
+def difficulty_label(difficulty: int, game_mode: int) -> str:
+    """The save's difficulty preset by name, '' if neither field says anything.
+
+    ``difficulty`` is the live field. ``game_mode`` is consulted only when difficulty is
+    Invalid, which means a pre-Waypoint save -- back then the game mode *was* the
+    difficulty. Post-Waypoint saves all report game mode Normal, so on its own it is never
+    a useful display value.
+    """
+    return DIFFICULTY_NAMES.get(difficulty, "") or GAME_MODE_NAMES.get(game_mode, "")
+
+
 # --- Save-slot model ---------------------------------------------------------
 
 MAX_SAVE_SLOTS = 15
 MAX_SAVE_PER_SLOT = 2
 MAX_SAVE_FILES = MAX_SAVE_SLOTS * MAX_SAVE_PER_SLOT  # 30
+
+# The two saves a slot holds are not interchangeable: the game keeps a periodic autosave
+# and a separate restore point (written when you leave your ship, or use a save point /
+# beacon / POI save), so that neither overwrites the other. Which is which is positional --
+# libNOM.io derives it as SaveTypeEnum(CollectionIndex % 2) and names the Xbox containers
+# "Slot<N>Auto" / "Slot<N>Manual" from it. Member 0 (save.hg, save3.hg, ...) is the
+# autosave; member 1 (save2.hg, save4.hg, ...) is the restore point. Either can be the
+# newer of the two.
+SAVE_TYPE_LABELS = ("Auto-Save", "Restore-Point")
 
 # Account-level files (not a slot).
 ACCOUNT_DATA_NAME = "accountdata.hg"
@@ -84,3 +133,15 @@ ACCOUNT_STORAGE_ORDINAL = 1  # cTkStoragePersistent::Slot.AccountData
 # Other files that belong to a save folder.
 STEAM_AUTOCLOUD = "steam_autocloud.vdf"
 CACHE_DIR = "cache"
+
+# libNOM.io MicrosoftBlobSyncStateEnum: the per-save cloud state recorded in the Xbox
+# containers.index. Steam has no equivalent -- steam_autocloud.vdf holds only an account
+# id, and Steam Cloud syncs the folder as a unit, so Steam cloud state is folder-level only.
+MS_SYNC_STATE_NAMES = {
+    0: "",
+    1: "Synced",
+    2: "Modified",  # changed locally, not yet uploaded
+    3: "Deleted",
+    4: "",
+    5: "Created",  # new locally, not yet uploaded
+}

@@ -1,9 +1,10 @@
 """Tkinter desktop UI for NMS Save Vault.
 
 A single tree shows the LIVE folder and every catalog backup; each entry expands to its
-occupied slots, and each slot to its two members (manual save + auto restore-point) with
-the game-current one marked '*'. Toolbar actions cover all three features plus promote
-and undo. Every write goes through the safety-wrapped core (auto-snapshot + validate).
+occupied slots, and each slot to its two saves -- the periodic Auto-Save and the
+Restore-Point -- with the game-current one marked '*'. Toolbar actions cover all three
+features plus promote and undo. Every write goes through the safety-wrapped core
+(auto-snapshot + validate).
 """
 from __future__ import annotations
 
@@ -15,7 +16,7 @@ from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
-from .core import aliases, catalog, discover, locations
+from .core import aliases, catalog, discover, locations, slotmap
 from .core import operations as ops
 from .core import savedir
 from .core import state as appstate
@@ -220,10 +221,10 @@ class App(tk.Tk):
         self.tree.column("#0", width=320, anchor="w")
         for col, label, width in [
             ("name", "Save name", 230),
-            ("mode", "Mode", 50),
-            ("play", "Play", 70),
+            ("mode", "Difficulty", 80),
+            ("play", "Play Time", 80),
             ("saved", "Saved", 130),
-            ("status", "Status", 150),
+            ("status", "Status", 170),
         ]:
             self.tree.heading(col, text=label)
             self.tree.column(col, width=width, anchor="w")
@@ -302,7 +303,7 @@ class App(tk.Tk):
                 text=f"Slot {slot}",
                 values=(
                     sv.display_name,
-                    (n.info.game_mode if n and n.info else ""),
+                    (n.info.difficulty_label if n and n.info else ""),
                     _fmt_play(n.info.total_play_time if n and n.info else 0),
                     _fmt_ts(n.effective_timestamp if n else 0),
                     "",
@@ -313,16 +314,19 @@ class App(tk.Tk):
                 if not m.exists:
                     continue
                 star = " *" if (n and m.label == n.label) else ""
+                status = ("valid" if m.valid else "INVALID") + (" / moved" if m.moved else "")
+                if m.cloud_status:
+                    status += f" / cloud {m.cloud_status}"
                 mid = self.tree.insert(
                     node,
                     "end",
-                    text=f"   {m.label}{star}",
+                    text=f"   {m.save_type_label}{star}",
                     values=(
                         m.save_name,
-                        (m.info.game_mode if m.info else ""),
+                        (m.info.difficulty_label if m.info else ""),
                         _fmt_play(m.info.total_play_time if m.info else 0),
                         _fmt_ts(m.effective_timestamp),
-                        ("valid" if m.valid else "INVALID") + (" / moved" if m.moved else ""),
+                        status,
                     ),
                 )
                 self._meta[mid] = {
@@ -338,8 +342,12 @@ class App(tk.Tk):
             if not s.occupied:
                 continue
             ts = max((m.timestamp for m in s.members if m.present), default=0)
+            newest = next((m for m in s.members if m.label == s.newest_label), None)
             node = self.tree.insert(
-                parent, "end", text=f"Slot {s.slot}", values=(s.name, "", "", _fmt_ts(ts), "")
+                parent,
+                "end",
+                text=f"Slot {s.slot}",
+                values=(s.name, newest.difficulty_label if newest else "", "", _fmt_ts(ts), ""),
             )
             self._meta[node] = {"type": "slot", "dir": entry.path, "slot": s.slot, "live": False, "entry": entry}
             for m in s.members:
@@ -349,10 +357,10 @@ class App(tk.Tk):
                 self.tree.insert(
                     node,
                     "end",
-                    text=f"   {m.label}{star}",
+                    text=f"   {m.save_type_label}{star}",
                     values=(
                         m.name,
-                        m.game_mode,
+                        m.difficulty_label,
                         _fmt_play(m.play_time),
                         _fmt_ts(m.timestamp),
                         ("valid" if m.valid else "INVALID") + (" / moved" if m.moved else ""),
@@ -402,8 +410,8 @@ class App(tk.Tk):
             menu.add_command(label=f"Repopulate a live slot from slot {slot}…", command=lambda: self.on_repopulate(target))
             if meta.get("live"):
                 menu.add_separator()
-                label = "A" if meta["member"] == 0 else "B"
-                menu.add_command(label=f"Make save {label} the newest (promote)", command=lambda: self.on_promote(meta))
+                label = slotmap.save_type_label(meta["member"])
+                menu.add_command(label=f"Make the {label} the newest (promote)", command=lambda: self.on_promote(meta))
         menu.add_separator()
         menu.add_command(label="Refresh", command=self.refresh)
         menu.add_command(label="Account display names…", command=self.on_accounts)
@@ -565,7 +573,7 @@ class App(tk.Tk):
     def on_promote(self, target: dict | None = None) -> None:
         sel = target or self._selected()
         if not sel or sel.get("type") != "member" or not sel.get("live"):
-            _showinfo("Select a live save", "Select a save (A or B) under a LIVE slot to make it the newest.")
+            _showinfo("Select a live save", "Select the Auto-Save or Restore-Point under a LIVE slot to make it the newest.")
             return
         self._run(
             lambda force: ops.promote_member(self.vault, self.live_dir, sel["slot"], sel["member"], allow_game_running=force),
@@ -781,8 +789,20 @@ The tree is split into two groups:
      promote within Xbox). Transferring a save between Steam and Xbox is not yet supported.
   ■ BACKUPS  -- every backup in the catalog (full snapshots, extracts, imported and
      auto-discovered copy-paste backups).
+
+The Difficulty column is the save's difficulty preset (Normal, Creative, Custom, Relaxed,
+Survival, Permadeath). Saves made before the Waypoint update stored this as a game mode
+instead, so for those the old value is shown.
+
+Cloud: Xbox / Game Pass records a sync state per save, shown in the Status column. Steam
+gives no per-save state -- it syncs the whole folder -- so a Steam folder is only marked
+as Steam Cloud enabled.
 Expand a folder to see its slots; expand a slot to see its two saves:
-  - A and B are the slot's two saves: your manual save and the auto "restore point".
+  - Auto-Save -- the one the game writes by itself every few minutes.
+  - Restore-Point -- the one written when you leave your ship, or use a save point, a
+    save beacon, or a point-of-interest save.
+    The game keeps these two separate so neither overwrites the other, so EITHER can be
+    the newer one: exit your ship just after an auto-save and the Restore-Point is newer.
   - The one marked * is the NEWEST -- the one the game loads for that slot.
 Right-click any row to get the same actions as the buttons, in context.
 
@@ -800,8 +820,9 @@ BUTTONS
 - Repopulate -> live: Select a SOURCE slot (in any backup or LIVE), then choose a
   destination live slot (1-15). The save data is copied exactly and the small meta is
   re-keyed for the new slot. This loads an archived save back into the game, in any slot.
-- Promote: Select one of a live slot's two saves (A or B) to force it to be the newest,
-  so the game loads it instead of the other -- e.g. to roll back to the restore point.
+- Promote: Select one of a live slot's two saves (Auto-Save or Restore-Point) to force it
+  to be the newest, so the game loads it instead of the other -- e.g. to roll back to the
+  Restore-Point.
 - Import: Register an existing save folder you made yourself (or an Xbox / Game Pass
   save) into the catalog -- either in place or copied into the vault. You can also point
   Import at a whole copied Save Vault folder: it compares that vault's entries with yours
@@ -825,7 +846,8 @@ WORKFLOWS
 - Safe experimenting: Backup live (or Extract the slot), make changes in-game, then
   Restore / Repopulate / Undo if you do not like the result.
 - Move a save to another slot: Repopulate -- pick the source slot and the destination.
-- Roll back within a slot: expand the live slot, right-click the older save, Promote it.
+- Roll back within a slot: expand the live slot, right-click the save you want (usually
+  the older one, or the Restore-Point), Promote it.
 - Bring in an outside save: Import the folder, then Repopulate the slot you want.
 
 SAFETY
