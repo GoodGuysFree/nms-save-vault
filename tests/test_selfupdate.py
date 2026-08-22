@@ -190,14 +190,19 @@ def test_staged_version_of_a_tree_without_one_is_blank(tmp_path):
 # --- signature verification ---------------------------------------------------
 
 
-def _powershell_says(monkeypatch, stdout: str):
+def _powershell_says(monkeypatch, stdout: str, stderr: str = "", capture: dict | None = None):
     class Done:
         def __init__(self):
             self.stdout = stdout
-            self.stderr = ""
+            self.stderr = stderr
             self.returncode = 0
 
-    monkeypatch.setattr(updates.subprocess, "run", lambda *a, **k: Done())
+    def run(cmd, *a, **k):
+        if capture is not None:
+            capture["cmd"] = cmd
+        return Done()
+
+    monkeypatch.setattr(updates.subprocess, "run", run)
 
 
 def test_a_psf_signed_launcher_passes(monkeypatch, tmp_path):
@@ -205,9 +210,44 @@ def test_a_psf_signed_launcher_passes(monkeypatch, tmp_path):
     updates.verify_signature(tmp_path / "x.exe")  # must not raise
 
 
+def test_the_check_does_not_inherit_another_powershells_variables(monkeypatch, tmp_path):
+    """Regression: started from a PowerShell 7 session, the PS7 variables reached Windows
+    PowerShell 5.1, which then could not load the module Get-AuthenticodeSignature lives in
+    and returned nothing -- refusing every genuine release. Verified by hand: with those
+    variables the check fails, without them it accepts the real signed launcher."""
+    monkeypatch.setenv("PSModulePath", r"C:\Program Files\PowerShell\7\Modules")
+    monkeypatch.setenv("PSExecutionPolicyPreference", "Bypass")
+    monkeypatch.setenv("POWERSHELL_DISTRIBUTION_CHANNEL", "MSI")
+    monkeypatch.setenv("PATH", "kept")
+
+    env = updates._verify_env(tmp_path / "x.exe")
+
+    assert not [k for k in env if k.upper().startswith("PS") or "POWERSHELL" in k.upper()]
+    assert env["PATH"] == "kept"  # everything else is passed through
+    assert env["NMSVAULT_VERIFY_PATH"] == str(tmp_path / "x.exe")
+
+
+def test_the_check_bypasses_the_execution_policy(monkeypatch, tmp_path):
+    """Regression: without this, PowerShell cannot autoload Microsoft.PowerShell.Security
+    under the default Restricted policy, Get-AuthenticodeSignature is not found, and every
+    single update is refused. It failed closed, but it failed on every genuine release."""
+    seen: dict = {}
+    _powershell_says(monkeypatch, "Valid\nCN=Python Software Foundation\n", capture=seen)
+    updates.verify_signature(tmp_path / "x.exe")
+    assert "-ExecutionPolicy" in seen["cmd"]
+    assert seen["cmd"][seen["cmd"].index("-ExecutionPolicy") + 1] == "Bypass"
+
+
 def test_an_unsigned_launcher_is_refused(monkeypatch, tmp_path):
     _powershell_says(monkeypatch, "NotSigned\n\n")
     with pytest.raises(updates.UpdateInstallError, match="not validly signed"):
+        updates.verify_signature(tmp_path / "x.exe")
+
+
+def test_a_check_that_could_not_run_says_so_rather_than_judging_the_file(monkeypatch, tmp_path):
+    """"unknown signature" reads like a verdict on the download; it is not."""
+    _powershell_says(monkeypatch, "", stderr="the module could not be loaded")
+    with pytest.raises(updates.UpdateInstallError, match="could not be checked"):
         updates.verify_signature(tmp_path / "x.exe")
 
 

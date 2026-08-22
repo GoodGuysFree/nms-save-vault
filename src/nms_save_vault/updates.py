@@ -309,6 +309,32 @@ def staged_version(app_dir: Path) -> str:
     return match.group(1) if match else ""
 
 
+def _powershell() -> str:
+    """Windows PowerShell by full path, so PATH cannot decide which one runs."""
+    system32 = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32"
+    built_in = system32 / "WindowsPowerShell" / "v1.0" / "powershell.exe"
+    return str(built_in) if built_in.is_file() else "powershell"
+
+
+def _verify_env(exe: Path) -> dict:
+    """The environment for the signature check, with PowerShell's own variables removed.
+
+    They are dropped rather than inherited because they may have been set by a *different*
+    PowerShell: when the app is started from a PowerShell 7 session, the PS7 variables get
+    passed down to Windows PowerShell 5.1, which then fails to load the module
+    ``Get-AuthenticodeSignature`` lives in ("the member AuditToString is already present")
+    and reports nothing at all. That is a refusal to install every genuine release, so the
+    check is given a clean environment instead of a borrowed one.
+    """
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.upper().startswith("PS") and "POWERSHELL" not in key.upper()
+    }
+    env["NMSVAULT_VERIFY_PATH"] = str(exe)
+    return env
+
+
 def verify_signature(exe: Path) -> None:
     """Refuse a launcher that is not a validly signed Python Software Foundation binary.
 
@@ -326,16 +352,21 @@ def verify_signature(exe: Path) -> None:
         "Write-Output $s.Status; "
         "Write-Output $s.SignerCertificate.Subject"
     )
-    env = dict(os.environ, NMSVAULT_VERIFY_PATH=str(exe))
     try:
+        # -ExecutionPolicy Bypass applies to this one process and changes nothing on the
+        # machine; without it the default Restricted policy can stop PowerShell loading
+        # the module Get-AuthenticodeSignature lives in.
         proc = subprocess.run(
-            ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+            [
+                _powershell(), "-NoProfile", "-NonInteractive",
+                "-ExecutionPolicy", "Bypass", "-Command", script,
+            ],
             capture_output=True,
             text=True,
             encoding="utf-8",
             errors="replace",
             timeout=120,
-            env=env,
+            env=_verify_env(exe),
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
     except (OSError, subprocess.SubprocessError) as exc:
@@ -346,9 +377,17 @@ def verify_signature(exe: Path) -> None:
     lines = [line.strip() for line in (proc.stdout or "").splitlines() if line.strip()]
     status = lines[0] if lines else ""
     subject = lines[1] if len(lines) > 1 else ""
+    if not status:
+        # No answer at all means the check did not run. Say why rather than reporting an
+        # "unknown" signature, which reads like a verdict on the file.
+        detail = " ".join((proc.stderr or "").split())[:300] or "no output"
+        raise UpdateInstallError(
+            f"the signature of the downloaded {LAUNCHER} could not be checked ({detail}). "
+            "Nothing was installed."
+        )
     if status != "Valid":
         raise UpdateInstallError(
-            f"the downloaded {LAUNCHER} is not validly signed (status: {status or 'unknown'}). "
+            f"the downloaded {LAUNCHER} is not validly signed (status: {status}). "
             "Nothing was installed."
         )
     if "Python Software Foundation" not in subject:
