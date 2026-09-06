@@ -420,6 +420,15 @@ rem loop below learns the app has really gone, so it has to be possible to put b
 rem later step fails. Copying a running executable is allowed; deleting one is not.
 copy /y "%DST%\%EXE%" "%BACKUP%" >nul 2>&1
 
+rem If that copy did not work there is nothing to restore, and the gate below would
+rem delete the only launcher on the machine. Stop here instead: not a file has been
+rem touched yet, so the existing install is still whole.
+if not exist "%BACKUP%" (
+    >>"%LOG%" echo ERROR: could not take a backup of the launcher; nothing was attempted
+    call :say "The update could not be prepared, so nothing was changed. Your existing version is intact -- please start NMS Save Vault again."
+    goto cleanup
+)
+
 rem Wait for the app to exit. Windows refuses to delete the image of a running process,
 rem so a delete that fails means it is still up -- the same test install.bat uses. It is
 rem checked this way rather than by asking about the process id because this can only
@@ -452,7 +461,7 @@ if exist "%DST%\_runtime" (
     goto cleanup
 )
 
-xcopy "%SRC%" "%DST%" /e /i /y /q >>"%LOG%" 2>&1
+xcopy "%SRC%" "%DST%" /e /i /y /q /r >>"%LOG%" 2>&1
 if errorlevel 1 goto rollback
 
 >>"%LOG%" echo Installed.
@@ -478,6 +487,29 @@ set "MSG=%~1"
 powershell -NoProfile -NonInteractive -Command "Add-Type -AssemblyName System.Windows.Forms; [void][System.Windows.Forms.MessageBox]::Show($env:MSG, 'NMS Save Vault', 'OK', 'Warning')"
 exit /b 0
 """
+
+
+#: cmd.exe reads a batch file in the machine's OEM code page, not UTF-8. Writing the
+#: script as UTF-8 mangles every non-ASCII character in the paths baked into it -- and a
+#: user whose account is "Amelie" with an accent has exactly that in %TEMP%. A mangled
+#: %BACKUP% is the worst case: the launcher gets deleted as the gate, the copy back finds
+#: nothing, and the install is left with no program at all. So the script is encoded the
+#: way cmd will read it.
+_SCRIPT_ENCODING = "oem" if os.name == "nt" else "utf-8"
+
+
+def _write_script(path: Path, text: str) -> None:
+    """Write the updater batch in the encoding cmd.exe will read it back in."""
+    try:
+        path.write_text(text, encoding=_SCRIPT_ENCODING)
+    except (UnicodeEncodeError, LookupError):
+        # Characters the OEM code page has no room for (a Cyrillic user name on a
+        # Western install, say). Refusing is the safe answer: nothing has been touched.
+        raise UpdateInstallError(
+            "the install or temporary folder contains characters the updater script "
+            "cannot represent, so the update was not installed. Download the release "
+            "from the releases page and unzip it over the install folder instead."
+        ) from None
 
 
 def updater_script(*, pid: int, src: Path, dst: Path, work: Path, log: Path) -> str:
@@ -536,10 +568,7 @@ def prepare(
 
     log = work.parent / f"{TEMP_PREFIX}{pid}.log"
     script = work.parent / f"{TEMP_PREFIX}{pid}.cmd"
-    script.write_text(
-        updater_script(pid=pid, src=app_dir, dst=install_dir, work=work, log=log),
-        encoding="utf-8",
-    )
+    _write_script(script, updater_script(pid=pid, src=app_dir, dst=install_dir, work=work, log=log))
     return StagedUpdate(
         version=found or release.version,
         script=script,
@@ -553,6 +582,19 @@ def _same_version(a: str, b: str) -> bool:
     return parse_version(a) == parse_version(b)
 
 
+def _cmd_exe() -> str:
+    """The system's own cmd.exe, by full path.
+
+    The same reasoning as :func:`_powershell`: the working directory handed to the updater
+    is a world-writable temp folder, and Windows searches directories before the system
+    one, so letting PATH pick the interpreter would let anything named ``cmd.exe`` run in
+    its place.
+    """
+    system32 = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32"
+    built_in = system32 / "cmd.exe"
+    return str(built_in) if built_in.is_file() else "cmd"
+
+
 def launch(staged: StagedUpdate) -> None:
     """Start the updater and return. The caller must then exit promptly -- the script is
     already waiting for this process to release its files."""
@@ -561,7 +603,7 @@ def launch(staged: StagedUpdate) -> None:
     )
     try:
         subprocess.Popen(  # noqa: S603 - a script this module just wrote, in our temp dir
-            ["cmd", "/c", str(staged.script)],
+            [_cmd_exe(), "/c", str(staged.script)],
             cwd=str(staged.script.parent),
             creationflags=flags,
             close_fds=True,
@@ -588,8 +630,11 @@ def clean_temp(pid: int | None = None, keep_logs_for: float = LOG_RETENTION_SECO
     except OSError:
         return
     now = time.time()
+    # Matched on the whole pid, not as a prefix: pid 999 must not claim (or spare) the
+    # files of pid 9991, which may belong to another instance mid-update.
+    ours = f"{TEMP_PREFIX}{mine}"
     for entry in entries:
-        if entry.name.startswith(f"{TEMP_PREFIX}{mine}"):
+        if entry.name == ours or entry.name.startswith(f"{ours}."):
             continue  # never delete what this run is using
         try:
             if entry.suffix.lower() == ".log" and now - entry.stat().st_mtime < keep_logs_for:

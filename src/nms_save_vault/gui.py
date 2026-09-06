@@ -638,9 +638,17 @@ class App(tk.Tk):
                     )
                 self.update()
                 time.sleep(0.05)
+        except tk.TclError:
+            # self.update() runs the event loop reentrantly, so the window manager can
+            # close the app underneath this loop. Nothing has been installed at this
+            # point; there is simply no longer a window to report to.
+            return None
         finally:
-            win.grab_release()
-            win.destroy()
+            try:
+                win.grab_release()
+                win.destroy()
+            except tk.TclError:
+                pass
 
         if "error" in holder:
             _showerror("Install update", f"{holder['error']}\n\nNothing was changed.")
