@@ -18,6 +18,8 @@ import os
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+from . import platform
+
 STATE_VERSION = 2  # v2: Xbox sources are writable (same-platform). See _migrate().
 
 ROLE_LIVE = "live"
@@ -145,9 +147,7 @@ def install_dir() -> Path:
     portable_root = os.environ.get("NMSVAULT_PORTABLE_ROOT")
     if portable_root:
         return Path(portable_root)
-    local = os.environ.get("LOCALAPPDATA")
-    base = Path(local) if local else Path.home()
-    return base / "NMSSaveVault"
+    return platform.user_config_dir()
 
 
 def default_state_path() -> Path:

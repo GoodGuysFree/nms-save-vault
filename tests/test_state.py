@@ -32,3 +32,26 @@ def test_current_version_preserves_explicit_writable(tmp_path):
     )
     st = state.load(p)
     assert st.get("xbox-acc").writable is False
+
+
+# --- where the config lives (D2/D7: per-OS, with the portable override winning) ---------
+
+
+def test_install_dir_prefers_the_portable_root(tmp_path, monkeypatch):
+    """A packaged kit keeps its config beside the program, on every platform."""
+    monkeypatch.setenv("NMSVAULT_PORTABLE_ROOT", str(tmp_path / "kit"))
+    assert state.install_dir() == tmp_path / "kit"
+
+
+def test_install_dir_falls_back_to_the_os_config_dir(tmp_path, monkeypatch):
+    from nms_save_vault.core import platform as host_platform
+
+    monkeypatch.delenv("NMSVAULT_PORTABLE_ROOT", raising=False)
+    for system, expected in (
+        (host_platform.LINUX, tmp_path / ".config" / "NMSSaveVault"),
+        (host_platform.MACOS, tmp_path / "Library" / "Application Support" / "NMSSaveVault"),
+        (host_platform.WINDOWS, tmp_path / "Local" / "NMSSaveVault"),
+    ):
+        host = host_platform.Host(system, tmp_path, {"LOCALAPPDATA": str(tmp_path / "Local")})
+        monkeypatch.setattr(host_platform.Host, "current", classmethod(lambda cls, h=host: h))
+        assert state.install_dir() == expected
