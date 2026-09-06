@@ -32,6 +32,21 @@ uv run pytest          # or: & .venv\Scripts\python.exe -m pytest -q
 Python runtime is downloaded from python.org and cached under `build\runtime-cache\`, and the
 build fails if any part of it is not validly signed by the Python Software Foundation.
 
+## 3b. Build the Linux and macOS kits
+
+```pwsh
+python packaging\build_posix_kit.py all   # -> build\kits\NMSSaveVault-X.Y.Z-<os>-<arch>.tar.gz
+```
+
+Runs anywhere, Windows included: the bundled interpreter is repacked archive-to-archive, so
+POSIX permissions and symlinks survive a build on a machine that has neither. The runtime is
+downloaded from python-build-standalone, checked against the release's published `SHA256SUMS`,
+and the build fails if it does not contain a usable Tcl/Tk **8.6** — the same Tk the Windows
+kit ships, so a tester's GUI report is about the port and not about a Tk major version the app
+has never run on.
+
+Both kits are untested on real hardware; say so in the release notes until that changes.
+
 Stage a versioned copy (the `releases/` folder is gitignored — local staging only):
 
 ```pwsh

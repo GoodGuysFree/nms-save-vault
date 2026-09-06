@@ -57,8 +57,8 @@ See [DESIGN.md](DESIGN.md) for the architecture and the verified save-format det
 | **GOG.com** (Windows) | **Should work — untested.** GOG uses the *identical* Steam save format, just in a `DefaultUser` folder instead of `st_<steamid>`. |
 | **Epic Games Store** (Windows) | **Should work — untested.** Same as GOG: Epic and GOG share the exact same `DefaultUser` folder and save format. |
 | **Microsoft Store / Xbox Game Pass** (Windows) | **Supported** — read *and* same-platform write; see [Xbox / Game Pass](#xbox--game-pass-read-and-write). |
-| **Steam Deck / Linux** (Proton) | **Not yet supported.** The save format is the same, but this is a Windows desktop app and the saves live inside a Proton prefix. |
-| **macOS** (native or via Steam) | **Not yet supported.** Different OS; the Windows app can't reach `~/Library/Application Support/HelloGames/NMS`. |
+| **Steam Deck / Linux** (Proton) | **Should work — untested.** A portable Linux kit now builds, and auto-discovery finds the Proton prefix in every Steam library (including Flatpak, Snap and a Deck's SD card). Nobody has run it on real hardware yet. |
+| **macOS** (native, Apple Silicon) | **Should work — untested.** A portable `.app` kit now builds, and auto-discovery finds `~/Library/Application Support/HelloGames/NMS`. Nobody has run it on a real Mac yet. |
 
 **GOG & Epic — testers wanted.** The on-disk files are byte-for-byte the same Steam format
 this tool already reads and writes, so everything *should* just work. But nobody has confirmed
@@ -69,10 +69,30 @@ we'd love your help:** try it against a *copy* of your save first, then
 [open an issue or discussion](https://github.com/GoodGuysFree/nms-save-vault/issues) with how it
 went. Both success testimonials and bug reports move these from "untested" to officially supported.
 
-**Linux / Steam Deck and macOS are not supported yet, and help is welcome.** If you'd like to
-work on a Proton-aware path finder, a Linux/macOS build, or just test on those platforms, please
-[open an issue](https://github.com/GoodGuysFree/nms-save-vault/issues) — contributions and
-volunteers are very welcome.
+**Linux / Steam Deck and macOS — testers wanted.** The save files are byte-for-byte the same
+format on all three platforms, so the parts that carry the risk needed no changes at all; what
+was missing was knowing where to look, and something to download. Both now exist. Build the
+kits with:
+
+```
+python packaging/build_posix_kit.py all      # -> build/kits/
+```
+
+This runs on any OS, including Windows — the bundled interpreter is repacked archive-to-archive
+so POSIX permissions and symlinks survive. Each kit is self-contained: Python and Tk are inside
+it, nothing is installed, and nothing outside the folder is written unless you ask. Extract it
+and run `./NMSSaveVault` (Linux) or open `NMSSaveVault.app` (macOS — right-click → Open the
+first time, since it is not signed by a registered Apple developer).
+
+**Neither kit has been run on real hardware yet.** If you try one, the single most useful thing
+you can report is the output of:
+
+```
+./_runtime/python/bin/python3 -c "import tkinter; print(tkinter.TkVersion); tkinter.Tk()"
+```
+
+Please try it against a *copy* of your saves first, then
+[open an issue](https://github.com/GoodGuysFree/nms-save-vault/issues) with how it went.
 
 ## Run it (Windows, no Python needed)
 
@@ -342,7 +362,7 @@ The vault lives outside `st_<id>`, so it is never scanned by the game or synced 
 ## Status
 
 Working. Core format/crypto and all operations are verified against the real save files and
-in a temp sandbox (266 tests). Xbox / Game Pass saves are supported for reading **and**
+in a temp sandbox (289 tests). Xbox / Game Pass saves are supported for reading **and**
 same-platform writing — verified against a real install (reads) and synthetic `wgs` fixtures
 (writes). A full file-copy safety backup of the live folder was made before development
 (`C:\Devel\NMS-SaveBackup-SAFETY-2026-06-24`).
