@@ -66,6 +66,10 @@ MS_OFF_META_FORMAT = 0x124   # 292, u32 (Worlds)
 
 
 def microsoft_root() -> Path | None:
+    # The wgs store is a Windows package layout with no Linux or macOS equivalent, so this
+    # is gated on the OS rather than on LOCALAPPDATA happening to be unset there (D3).
+    if os.name != "nt":
+        return None
     local = os.environ.get("LOCALAPPDATA")
     if not local:
         return None
