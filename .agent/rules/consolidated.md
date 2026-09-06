@@ -8,7 +8,7 @@ trigger: always_on
   This is the single source of truth for how agents work in this project.
 -->
 
-NMS Save Vault (`nms-save-vault`) is a Python 3.10+ Windows desktop utility that safely
+NMS Save Vault (`nms-save-vault`) is a Python 3.10+ desktop utility that safely
 backs up, catalogs, and manages No Man's Sky save files (Steam and Xbox / Game Pass), giving
 effectively unlimited save slots. It ships two front-ends over one safety-checked core: an
 `nmsvault` argparse CLI and a Tkinter GUI. The runtime is **standard-library only** (no
@@ -16,6 +16,12 @@ third-party runtime dependencies); `pytest` is dev-only, and the distributable h
 dependency at all — it is the official signed CPython runtime with the app laid out beside it.
 Environment and builds are managed with `uv`. The code is GPL-3.0 (parts are a Python port
 of the GPL-licensed libNOM.io / NomNom work — see README Credits).
+
+**Windows is what ships today; Linux and macOS support is decided and in progress.** The
+save format is identical on all three, so the work is discovery, game-detection, packaging
+and docs — not format code. `DESIGN.md` holds the binding decisions (D1–D13), the per-platform
+save roots, and the verification ladder; read that section before touching anything
+platform-shaped.
 
 ## CRITICAL MANDATES (NON-NEGOTIABLE)
 
@@ -27,11 +33,15 @@ of the GPL-licensed libNOM.io / NomNom work — see README Credits).
   description.
 - **Work on a clean tree:** before a non-trivial edit, ensure the working tree is clean or
   the user explicitly asked you to layer onto existing changes.
-- **Never touch real save data:** the user's live save folders (`%APPDATA%\HelloGames\NMS\
-  st_<steamid>\` and the Xbox `wgs` folders) and the manual safety backup
-  (`C:\Devel\NMS-SaveBackup-SAFETY-2026-06-24\`) are sacred. The agent may read them only
-  for read-only inspection and must NEVER write, move, or delete anything in them. All write
-  paths are exercised only against temp/sandbox copies (see Testing).
+- **Never touch real save data:** the user's live save folders and the manual safety backup
+  (`C:\Devel\NMS-SaveBackup-SAFETY-2026-06-24\`) are sacred. This covers every platform's
+  live roots — `%APPDATA%\HelloGames\NMS\st_<steamid>\` and the Xbox `wgs` folders on
+  Windows, `~/Library/Application Support/HelloGames/NMS/` on macOS, and anything under a
+  Proton prefix's `…/compatdata/275850/pfx/…/HelloGames/NMS/` on Linux. The agent may read
+  them only for read-only inspection and must NEVER write, move, or delete anything in them.
+  All write paths are exercised only against temp/sandbox copies (see Testing). A Linux or
+  macOS test machine gets its own verified safety backup before any write path runs against
+  it, exactly as Windows did.
 
 ## General Principles
 
@@ -102,8 +112,22 @@ of the GPL-licensed libNOM.io / NomNom work — see README Credits).
   `pyproject.toml` without clear need and user sign-off — "no runtime dependencies" is a
   design guarantee. Dev tooling goes under `[project.optional-dependencies] dev`; build
   tooling under `build`.
-- This is a Windows-targeted desktop app; prefer PowerShell for shell operations and account
-  for Windows path/behavior (`os.replace` atomicity, `tasklist`).
+- **Distribution is GitHub Releases only (D13) — there is no PyPI package.** So the
+  self-contained kit is the only way a user gets the app, and a source checkout is the
+  interim on Linux and macOS. Per D4, keep the POSIX kits the same *shape* as the Windows
+  one (launcher + `_runtime/app` beside it, `NMSVAULT_PORTABLE_ROOT` exported) so a future
+  cross-platform self-updater is a small job rather than a redesign.
+- **Write portable code; keep platform specifics at the edges.** Only `locations`,
+  `msstore`, `safety`, `state`, `theme`, `gui`, `updates` and `packaging/` may branch on the OS —
+  everything else stays platform-neutral. Use `pathlib` and `os.replace` (atomic on both
+  Windows and POSIX), never string path joins, and never assume case-insensitive filenames.
+- **Per D7, resolvers take their environment as an argument.** No function that resolves a
+  path reads `os.environ` or `Path.home()` at the point of use; both arrive as parameters
+  with real defaults. This is what makes Linux and macOS path logic testable from Windows,
+  and it is much cheaper to keep than to retrofit.
+- On this machine prefer PowerShell for shell operations; the Bash tool is also available and
+  takes POSIX syntax. Do not assume either on a target machine — shipped code shells out only
+  through the narrow, per-OS helpers in `core/safety.py`.
 
 ## Development Workflow
 
