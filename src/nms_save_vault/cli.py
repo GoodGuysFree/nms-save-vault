@@ -253,10 +253,16 @@ def cmd_import(args) -> int:
 def cmd_discover(args) -> int:
     vault = _resolve_vault(args)
     found: list = []
-    root = locations.nms_root()
-    if root and root.is_dir():
+    roots = locations.nms_roots()  # several on Linux, one (or none) elsewhere
+    if roots:
         live_dirs = {p.resolve() for p in locations.find_live_save_dirs()}
-        found += ops_discover(root, list(live_dirs) + [vault.root])
+        seen: set[Path] = set()
+        for root in roots:
+            for d in ops_discover(root, list(live_dirs) + [vault.root]):
+                rd = d.resolve()
+                if rd not in seen:
+                    seen.add(rd)
+                    found.append(d)
     found += locations.find_microsoft_save_dirs()  # Xbox / Game Pass
     if not found:
         print("(no backups found under the Steam NMS root or the Xbox wgs folder)")

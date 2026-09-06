@@ -66,24 +66,52 @@ def _xbox_label(account: str, index: int) -> str:
     return f"Xbox / Game Pass{suffix}"
 
 
+def _search_roots(nms_root: str | Path | None) -> list[Path]:
+    """The NMS roots to scan: the one asked for, or every root this OS has.
+
+    There is no single root on Linux -- the saves live inside whichever Steam library
+    holds the Proton prefix, and there can be several -- so an unqualified search has to
+    go through :func:`locations.nms_roots`, not the (``None`` there) canonical one.
+    """
+    if nms_root:
+        return [Path(nms_root)]
+    return locations.nms_roots()
+
+
 def discover_live_sources(
     nms_root: str | Path | None = None,
     ms_dirs: list[Path] | None = None,
 ) -> list[Source]:
     """Build the list of live sources currently on disk (Steam + Xbox)."""
-    root = Path(nms_root) if nms_root else locations.nms_root()
     sources: list[Source] = []
 
     steam_dirs: list[Path] = []
-    if root and root.is_dir():
+    seen: set[Path] = set()
+    for root in _search_roots(nms_root):
+        if not root.is_dir():
+            continue
         for child in sorted(root.glob("st_*")):
-            if child.is_dir() and is_canonical_steam_live(child, root):
+            if not (child.is_dir() and is_canonical_steam_live(child, root)):
+                continue
+            try:
+                key = child.resolve()
+            except OSError:
+                continue
+            if key not in seen:
+                seen.add(key)
                 steam_dirs.append(child)
+    used_ids: set[str] = set()
     for i, d in enumerate(steam_dirs):
         account = steam_account_id(d) or ""
+        # Two Proton prefixes can hold the same account, so the id needs the same
+        # disambiguation the label already gets.
+        source_id = f"{PLATFORM_STEAM}-{account or d.name}"
+        if source_id in used_ids:
+            source_id = f"{source_id}-{i}"
+        used_ids.add(source_id)
         sources.append(
             Source(
-                id=f"{PLATFORM_STEAM}-{account or d.name}",
+                id=source_id,
                 platform=PLATFORM_STEAM,
                 account=account,
                 path=str(d),
@@ -117,19 +145,20 @@ def discover_inplace_backups(
     *,
     exclude: list[str | Path] = (),
 ) -> list[Path]:
-    """Save folders under the NMS root that are *not* live targets -- i.e. backups."""
-    root = Path(nms_root) if nms_root else locations.nms_root()
-    if not root or not root.is_dir():
-        return []
+    """Save folders under the NMS root(s) that are *not* live targets -- i.e. backups."""
     excluded = list(exclude)
-    found = catalog.discover_save_dirs(root, exclude=excluded)
     live = {Path(p).resolve() for p in excluded}
     out: list[Path] = []
-    for d in found:
-        rd = d.resolve()
-        if rd in live or is_canonical_steam_live(d, root):
+    seen: set[Path] = set()
+    for root in _search_roots(nms_root):
+        if not root.is_dir():
             continue
-        out.append(d)
+        for d in catalog.discover_save_dirs(root, exclude=excluded):
+            rd = d.resolve()
+            if rd in live or rd in seen or is_canonical_steam_live(d, root):
+                continue
+            seen.add(rd)
+            out.append(d)
     return out
 
 
