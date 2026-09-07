@@ -135,7 +135,7 @@ def test_a_backup_slot_offers_a_direct_copy_and_a_chosen_one(app):
     labels = _menu_labels(app, app._menu_for_slot, meta)
     slot = meta["slot"]
     assert f"Copy slot {slot} into live slot {slot}" in labels
-    assert f"Copy slot {slot} into a live slot…" in labels
+    assert f"Copy slot {slot} into a live slot..." in labels
     assert not any("promote" in x.lower() for x in labels), "a backup save is not live"
 
 
@@ -150,8 +150,8 @@ def test_a_live_slot_can_be_a_destination_as_well_as_a_source(app):
     way to say "fill THIS slot"."""
     meta = {"type": "slot", "dir": "X", "slot": 4, "live": True}
     labels = _menu_labels(app, app._menu_for_slot, meta)
-    assert "Replace live slot 4 with a save from anywhere…" in labels
-    assert "Copy live slot 4 into another live slot…" in labels
+    assert "Replace live slot 4 with a save from anywhere..." in labels
+    assert "Copy live slot 4 into another live slot..." in labels
     assert "Extract live slot 4 to the vault" in labels
 
 
@@ -171,8 +171,8 @@ def test_a_live_save_adds_promote_on_top_of_its_slot_actions(app):
 def test_a_live_folder_offers_backup_copy_in_and_undo(app):
     meta = {"type": "live", "dir": "X", "writable": True, "source_id": "s1"}
     labels = _menu_labels(app, app._menu_for_live_folder, meta)
-    assert "Back up this folder now…" in labels
-    assert "Copy a save into one of its slots…" in labels
+    assert "Back up this folder now..." in labels
+    assert "Copy a save into one of its slots..." in labels
     assert "Undo the last change to live saves" in labels
 
 

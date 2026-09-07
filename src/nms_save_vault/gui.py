@@ -27,7 +27,7 @@ from .core.catalog import Vault
 
 
 def _icon_path() -> Path | None:
-    """Locate nmsvault.ico — beside the packaged launcher, or in the repo's packaging/."""
+    """Locate nmsvault.ico - beside the packaged launcher, or in the repo's packaging/."""
     candidates = [
         Path(sys.executable).resolve().parent / "nmsvault.ico",
         Path(__file__).resolve().parents[2] / "packaging" / "nmsvault.ico",
@@ -115,11 +115,11 @@ _SAVE_TYPE_HELP = {
 }
 
 _KIND_HELP = {
-    catalog.KIND_FULL: "full — a complete snapshot of a save folder",
-    catalog.KIND_SNAPSHOT: "snapshot — taken automatically just before an operation",
-    catalog.KIND_EXTRACT: "extract — a single slot lifted aside",
-    catalog.KIND_IMPORTED: "imported — your own backup, copied into the vault",
-    catalog.KIND_INPLACE: "in place — catalogued where it already lives, not copied",
+    catalog.KIND_FULL: "full - a complete snapshot of a save folder",
+    catalog.KIND_SNAPSHOT: "snapshot - taken automatically just before an operation",
+    catalog.KIND_EXTRACT: "extract - a single slot lifted aside",
+    catalog.KIND_IMPORTED: "imported - your own backup, copied into the vault",
+    catalog.KIND_INPLACE: "in place - catalogued where it already lives, not copied",
 }
 
 # Tooltip colours; the theme swaps these so hover text stays readable in dark mode.
@@ -358,14 +358,14 @@ class App(tk.Tk):
             ("Backup live", self.on_backup),
             ("Restore", self.on_restore),
             ("Extract slot", self.on_extract),
-            ("Copy into live slot…", self.on_copy_slot),
+            ("Copy into live slot...", self.on_copy_slot),
             ("Promote", self.on_promote),
-            ("Import…", self.on_import),
+            ("Import...", self.on_import),
             ("Rescan", self.on_rescan),
             ("Discover", self.on_discover),
             ("Undo", self.on_undo),
             ("Refresh", self.refresh),
-            ("Accounts…", self.on_accounts),
+            ("Accounts...", self.on_accounts),
             ("Help", self.on_help),
         ]:
             ttk.Button(bar, text=text, command=cmd).pack(side=tk.LEFT, padx=2)
@@ -414,14 +414,14 @@ class App(tk.Tk):
 
         self.live_tree = self._make_pane(
             panes,
-            "● LIVE SAVES",
+            "* LIVE SAVES",
             LIVE_COLUMNS,
             "Save folder / Slot / Save",
             weight=3,
         )
         self.backup_tree = self._make_pane(
             panes,
-            "■ BACKUPS",
+            "# BACKUPS",
             BACKUP_COLUMNS,
             "Backup / Slot / Save",
             weight=2,
@@ -542,7 +542,7 @@ class App(tk.Tk):
         self._release = release
         self._release_url = release.page_url
         self.banner_var.set(
-            f"Version {release.version} is available — you have {__version__}."
+            f"Version {release.version} is available - you have {__version__}."
         )
         # "Install update" only appears when it would actually work: the packaged app, on
         # Windows, and a release with a zip attached. Offering a button that can only
@@ -628,12 +628,12 @@ class App(tk.Tk):
                         measured = True
                     bar.configure(maximum=total, value=done)
                     label.configure(
-                        text=f"Downloading version {release.version} — "
+                        text=f"Downloading version {release.version} - "
                         f"{done / 1_048_576:.1f} of {total / 1_048_576:.1f} MB"
                     )
                 elif done:
                     label.configure(
-                        text=f"Downloading version {release.version} — "
+                        text=f"Downloading version {release.version} - "
                         f"{done / 1_048_576:.1f} MB"
                     )
                 self.update()
@@ -661,7 +661,7 @@ class App(tk.Tk):
         win.title("Installing update")
         win.transient(self)
         win.resizable(False, False)
-        label = ttk.Label(win, text=f"Contacting GitHub for version {version}…", padding=(24, 18, 24, 8))
+        label = ttk.Label(win, text=f"Contacting GitHub for version {version}...", padding=(24, 18, 24, 8))
         label.pack()
         bar = ttk.Progressbar(win, mode="indeterminate", length=320)
         bar.pack(padx=24, pady=(0, 20))
@@ -747,7 +747,7 @@ class App(tk.Tk):
             if not Path(s.path).is_dir():
                 continue
             active = s.id == self.active_source_id
-            badge = " — read-only (Xbox)" if not s.writable else (" — ACTIVE" if active else "")
+            badge = " - read-only (Xbox)" if not s.writable else (" - ACTIVE" if active else "")
             tags = ("active",) if active else (("readonly",) if not s.writable else ("live",))
             view = savedir.scan_any(s.path)
             node = self.live_tree.insert(
@@ -910,7 +910,7 @@ class App(tk.Tk):
         rows = sorted(self.backup_tree.get_children(""), key=sort_value, reverse=self._sort_reverse)
         for position, row in enumerate(rows):
             self.backup_tree.move(row, "", position)
-        arrow = " ▼" if self._sort_reverse else " ▲"
+        arrow = " v" if self._sort_reverse else " ^"
         for col in BACKUP_COLUMNS:
             self.backup_tree.heading(
                 col.key, text=col.title + (arrow if col.key == self._sort_key else "")
@@ -955,7 +955,7 @@ class App(tk.Tk):
     def _member_tip(self, m, sv) -> str:
         newest = sv.newest
         lines = [
-            f"{m.save_type_label} — {_SAVE_TYPE_HELP[m.save_type_label]}",
+            f"{m.save_type_label} - {_SAVE_TYPE_HELP[m.save_type_label]}",
             "",
             f"Save name:  {m.save_name or '<unnamed>'}",
         ]
@@ -965,7 +965,7 @@ class App(tk.Tk):
             if m.info.save_summary:
                 lines.append(f"Where:      {m.info.save_summary}")
         lines.append(f"Saved:      {_fmt_ts(m.effective_timestamp)}")
-        lines.append(f"Current:    {'yes — this is what the game loads' if newest and m.label == newest.label else 'no'}")
+        lines.append(f"Current:    {'yes - this is what the game loads' if newest and m.label == newest.label else 'no'}")
         lines.append(f"File:       {m.ref.data_name}")
         lines.append(f"Size:       {_fmt_size(m.data_size)}")
         lines.append(f"Integrity:  {'valid' if m.valid else 'INVALID'}")
@@ -998,7 +998,7 @@ class App(tk.Tk):
 
     def _backup_member_tip(self, m, s) -> str:
         lines = [
-            f"{m.save_type_label} — {_SAVE_TYPE_HELP[m.save_type_label]}",
+            f"{m.save_type_label} - {_SAVE_TYPE_HELP[m.save_type_label]}",
             "",
             f"Save name:  {m.name or '<unnamed>'}",
             f"Difficulty: {m.difficulty_label or 'unknown'}",
@@ -1063,8 +1063,8 @@ class App(tk.Tk):
 
         menu.add_separator()
         menu.add_command(label="Refresh", command=self.refresh)
-        menu.add_command(label="Account display names…", command=self.on_accounts)
-        menu.add_command(label="Check for updates…", command=self.on_check_updates)
+        menu.add_command(label="Account display names...", command=self.on_accounts)
+        menu.add_command(label="Check for updates...", command=self.on_check_updates)
         menu.add_command(label="Help", command=self.on_help)
         try:
             menu.tk_popup(event.x_root, event.y_root)
@@ -1079,9 +1079,9 @@ class App(tk.Tk):
             menu.add_command(label="Set as active live target", command=lambda: self._set_active(sid))
             menu.add_separator()
         if writable:
-            menu.add_command(label="Back up this folder now…", command=lambda: self._backup_dir(meta["dir"]))
+            menu.add_command(label="Back up this folder now...", command=lambda: self._backup_dir(meta["dir"]))
             menu.add_command(
-                label="Copy a save into one of its slots…",
+                label="Copy a save into one of its slots...",
                 command=lambda: self.on_copy_slot(dest_dir=meta["dir"]),
             )
             menu.add_separator()
@@ -1101,7 +1101,7 @@ class App(tk.Tk):
             # An extract is one slot: it can go back where it came from (above), or into
             # any slot you choose. Only offering the former was too narrow.
             menu.add_command(
-                label=f"Copy slot {slot} into a different live slot…",
+                label=f"Copy slot {slot} into a different live slot...",
                 command=lambda: self.on_copy_slot(source=self._source_from(meta)),
             )
 
@@ -1122,11 +1122,11 @@ class App(tk.Tk):
 
         if live:
             menu.add_command(
-                label=f"Replace live slot {slot} with a save from anywhere…",
+                label=f"Replace live slot {slot} with a save from anywhere...",
                 command=lambda: self.on_copy_slot(dest_dir=meta["dir"], dest_slot=slot),
             )
             menu.add_command(
-                label=f"Copy live slot {slot} into another live slot…",
+                label=f"Copy live slot {slot} into another live slot...",
                 command=lambda: self.on_copy_slot(source=source),
             )
             menu.add_separator()
@@ -1140,7 +1140,7 @@ class App(tk.Tk):
                 command=lambda: self.on_copy_slot(source=source, dest_slot=slot, ask=False),
             )
             menu.add_command(
-                label=f"Copy slot {slot} into a live slot…",
+                label=f"Copy slot {slot} into a live slot...",
                 command=lambda: self.on_copy_slot(source=source),
             )
             menu.add_separator()
@@ -1151,7 +1151,7 @@ class App(tk.Tk):
 
     # --- actions -------------------------------------------------------------
 
-    def _run(self, fn, *, success: str, message: str = "Working — please wait…") -> None:
+    def _run(self, fn, *, success: str, message: str = "Working - please wait...") -> None:
         """Run a core operation on a worker thread behind a modal wait dialog, prompting to
         override the game-running guard if the op reports the game is open."""
         holder = self._run_worker(fn, False, message)
@@ -1247,7 +1247,7 @@ class App(tk.Tk):
         self._run(
             lambda _force: ops.create_full_backup(self.vault, Path(directory), label=label),
             success="Backup created.",
-            message="Creating backup — please wait…",
+            message="Creating backup - please wait...",
         )
 
     def on_restore(self, target: dict | None = None) -> None:
@@ -1255,7 +1255,7 @@ class App(tk.Tk):
         if not sel or sel.get("type") != "entry":
             _showinfo(
                 "Select a backup",
-                "Select a backup — one of the top-level rows in the BACKUPS pane. To put "
+                "Select a backup - one of the top-level rows in the BACKUPS pane. To put "
                 "back a single slot instead, select that slot and use Copy into live slot.",
             )
             return
@@ -1268,7 +1268,7 @@ class App(tk.Tk):
             # it came from, and nothing else in the live folder is touched.
             question = (
                 f"Put slot {slots[0]} back into live slot {slots[0]}, from '{entry.id}'?\n\n"
-                f"Only slot {slots[0]} is overwritten — every other save is left alone.\n"
+                f"Only slot {slots[0]} is overwritten - every other save is left alone.\n"
                 "The current state is auto-snapshotted first."
             )
         else:
@@ -1283,7 +1283,7 @@ class App(tk.Tk):
         self._run(
             lambda force: ops.restore_entry(self.vault, entry, self.live_dir, allow_game_running=force),
             success="Restored.",
-            message="Restoring — please wait…",
+            message="Restoring - please wait...",
         )
 
     def on_extract(self, target: dict | None = None) -> None:
@@ -1292,14 +1292,14 @@ class App(tk.Tk):
         if not sel or sel.get("type") not in ("slot", "member"):
             _showinfo(
                 "Select a slot",
-                "Select a slot — or either of the two saves inside it — in the LIVE SAVES "
+                "Select a slot - or either of the two saves inside it - in the LIVE SAVES "
                 "pane or inside a backup, then press Extract slot.",
             )
             return
         self._run(
             lambda _force: ops.extract_slot(self.vault, Path(sel["dir"]), sel["slot"], label=""),
             success=f"Extracted slot {sel['slot']}.",
-            message=f"Extracting slot {sel['slot']} — please wait…",
+            message=f"Extracting slot {sel['slot']} - please wait...",
         )
 
     def on_copy_slot(self, source=None, dest_dir=None, dest_slot=None, ask: bool = True) -> None:
@@ -1349,7 +1349,7 @@ class App(tk.Tk):
                 self.vault, src_folder, source.slot, dest_folder, slot, allow_game_running=force
             ),
             success=f"Copied into live slot {slot}.",
-            message=f"Writing live slot {slot} — please wait…",
+            message=f"Writing live slot {slot} - please wait...",
         )
 
     def on_promote(self, target: dict | None = None) -> None:
@@ -1365,7 +1365,7 @@ class App(tk.Tk):
         self._run(
             lambda force: ops.promote_member(self.vault, self.live_dir, sel["slot"], sel["member"], allow_game_running=force),
             success="Promoted.",
-            message="Promoting — please wait…",
+            message="Promoting - please wait...",
         )
 
     def on_import(self) -> None:
@@ -1382,7 +1382,7 @@ class App(tk.Tk):
         self._run(
             lambda _force: ops.import_backup(self.vault, directory, copy_into_vault=copy),
             success="Imported.",
-            message="Importing — please wait…",
+            message="Importing - please wait...",
         )
 
     def _import_vault_dir(self, directory: Path) -> None:
@@ -1417,7 +1417,7 @@ class App(tk.Tk):
         self._run(
             lambda _force: ops.import_vault(self.vault, directory, copy_into_vault=bool(ans)),
             success="Vault imported.",
-            message="Importing vault — please wait…",
+            message="Importing vault - please wait...",
         )
 
     def on_rescan(self) -> None:
@@ -1463,7 +1463,7 @@ class App(tk.Tk):
         self._run(
             lambda force: ops.undo_last(self.vault, self.live_dir, allow_game_running=force),
             success="Undone.",
-            message="Undoing — please wait…",
+            message="Undoing - please wait...",
         )
 
     def on_accounts(self) -> None:
@@ -1477,7 +1477,7 @@ class App(tk.Tk):
 
     def on_help(self) -> None:
         win = tk.Toplevel(self)
-        win.title("NMS Save Vault — Help")
+        win.title("NMS Save Vault - Help")
         win.geometry("760x620")
         ttk.Button(win, text="Close", command=win.destroy).pack(side=tk.BOTTOM, pady=6)
         vsb = ttk.Scrollbar(win, orient="vertical")
@@ -1682,7 +1682,7 @@ class CopySlotDialog(tk.Toplevel):
         ttk.Label(frame, textvariable=self.source_var, anchor="w").pack(
             side=tk.LEFT, fill=tk.X, expand=True
         )
-        ttk.Button(frame, text="Change…", command=self._choose_source).pack(side=tk.RIGHT)
+        ttk.Button(frame, text="Change...", command=self._choose_source).pack(side=tk.RIGHT)
 
         frame = ttk.LabelFrame(self, text=" Into this live slot ", padding=(12, 8))
         frame.pack(fill=tk.BOTH, expand=True, padx=14, pady=6)
@@ -1720,7 +1720,7 @@ class CopySlotDialog(tk.Toplevel):
         ttk.Label(
             self, padding=(14, 0, 14, 6), justify="left",
             text="Both saves in the slot are copied. Whatever is in the destination slot is\n"
-                 "replaced — the live folder is auto-snapshotted first, so Undo puts it back.",
+                 "replaced - the live folder is auto-snapshotted first, so Undo puts it back.",
         ).pack(anchor="w")
 
         buttons = ttk.Frame(self, padding=(14, 0, 14, 12))
@@ -1742,7 +1742,7 @@ class CopySlotDialog(tk.Toplevel):
     def _show_source(self) -> None:
         self.source_var.set(
             aliases.redact(self.source.caption) if self.source
-            else "(nothing chosen yet — press Change…)"
+            else "(nothing chosen yet - press Change...)"
         )
 
     def _choose_source(self) -> None:
@@ -1778,7 +1778,7 @@ class CopySlotDialog(tk.Toplevel):
 
     def _accept(self) -> None:
         if self.source is None:
-            _showinfo("Choose a source", "Press Change… and pick the slot you want to copy.")
+            _showinfo("Choose a source", "Press Change... and pick the slot you want to copy.")
             return
         slot = self._selected_slot()
         if slot is None:
@@ -1788,15 +1788,15 @@ class CopySlotDialog(tk.Toplevel):
         self.destroy()
 
 
-HELP_TEXT = """NMS Save Vault — Help
+HELP_TEXT = """NMS Save Vault - Help
 
 The window is split into two panes. Drag the divider to give either one more room.
-  ● LIVE SAVES (top)  -- every save folder found on this PC: each Steam account and each
+  * LIVE SAVES (top)  -- every save folder found on this PC: each Steam account and each
      Xbox / Game Pass account. The ACTIVE one (green, bold) is the target of write
      actions; pick it from the "Active live" dropdown or right-click a folder to set it.
      Xbox folders are writable for same-platform actions (backup, restore, repopulate,
      promote within Xbox). Transferring a save between Steam and Xbox is not yet supported.
-  ■ BACKUPS (bottom)  -- every backup in the catalog (full snapshots, extracts, imported
+  # BACKUPS (bottom)  -- every backup in the catalog (full snapshots, extracts, imported
      and auto-discovered copy-paste backups). Click any column heading to sort by it --
      Saved, Type, Slots, Name -- and click the same heading again to reverse the order.
      Backups start newest-first.

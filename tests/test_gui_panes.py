@@ -97,9 +97,9 @@ def test_sorting_by_name_is_case_insensitive(app):
 
 def test_sorted_heading_shows_a_direction_arrow(app):
     app._sort_backups("type")
-    assert app.backup_tree.heading("type", "text").endswith("▲")
+    assert app.backup_tree.heading("type", "text").endswith("^")
     app._sort_backups("type")
-    assert app.backup_tree.heading("type", "text").endswith("▼")
+    assert app.backup_tree.heading("type", "text").endswith("v")
     # Only the active column is marked.
     assert app.backup_tree.heading("name", "text") == "Name / Label"
 
@@ -127,7 +127,7 @@ def test_every_backup_row_has_a_tooltip(app):
 def test_backup_tooltip_explains_the_entry(app):
     row = app.backup_tree.get_children("")[0]
     tip = app._tip_for_row(app.backup_tree, row)
-    assert "extract — a single slot lifted aside" in tip
+    assert "extract - a single slot lifted aside" in tip
     assert "2026-03-01" in tip
 
 

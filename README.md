@@ -57,7 +57,7 @@ See [DESIGN.md](DESIGN.md) for the architecture and the verified save-format det
 | **GOG.com** (Windows) | **Should work — untested.** GOG uses the *identical* Steam save format, just in a `DefaultUser` folder instead of `st_<steamid>`. |
 | **Epic Games Store** (Windows) | **Should work — untested.** Same as GOG: Epic and GOG share the exact same `DefaultUser` folder and save format. |
 | **Microsoft Store / Xbox Game Pass** (Windows) | **Supported** — read *and* same-platform write; see [Xbox / Game Pass](#xbox--game-pass-read-and-write). |
-| **Steam Deck / Linux** (Proton) | **Should work — untested.** A portable Linux kit now builds, and auto-discovery finds the Proton prefix in every Steam library (including Flatpak, Snap and a Deck's SD card). Nobody has run it on real hardware yet. |
+| **Steam Deck / Linux** (Proton) | **Runs on real hardware.** The portable Linux kit has been launched on a Linux desktop and finds the Proton prefix in every Steam library (Flatpak, Snap and a Deck's SD card included). Not yet exercised across the full backup / restore round-trip by anyone but the author. |
 | **macOS** (native, Apple Silicon) | **Should work — untested.** A portable `.app` kit now builds, and auto-discovery finds `~/Library/Application Support/HelloGames/NMS`. Nobody has run it on a real Mac yet. |
 
 **GOG & Epic — testers wanted.** The on-disk files are byte-for-byte the same Steam format
@@ -84,8 +84,8 @@ it, nothing is installed, and nothing outside the folder is written unless you a
 and run `./NMSSaveVault` (Linux) or open `NMSSaveVault.app` (macOS — right-click → Open the
 first time, since it is not signed by a registered Apple developer).
 
-**Neither kit has been run on real hardware yet.** If you try one, the single most useful thing
-you can report is the output of:
+**The Linux kit has been launched on a real desktop; the macOS one has not been run at all.**
+If you try either, the single most useful thing you can report is the output of:
 
 ```
 ./_runtime/python/bin/python3 -c "import tkinter; print(tkinter.TkVersion); tkinter.Tk()"
@@ -93,6 +93,10 @@ you can report is the output of:
 
 Please try it against a *copy* of your saves first, then
 [open an issue](https://github.com/GoodGuysFree/nms-save-vault/issues) with how it went.
+
+One known constraint, in case you are packaging this yourself: the bundled Tk is built without
+Xft, so it falls back to X11 core fonts and can only draw ISO8859-1. Every string the app
+displays is therefore plain ASCII, and `tests/test_ui_text.py` keeps it that way.
 
 ## Run it (Windows, no Python needed)
 
@@ -362,7 +366,7 @@ The vault lives outside `st_<id>`, so it is never scanned by the game or synced 
 ## Status
 
 Working. Core format/crypto and all operations are verified against the real save files and
-in a temp sandbox (289 tests). Xbox / Game Pass saves are supported for reading **and**
+in a temp sandbox (311 tests). Xbox / Game Pass saves are supported for reading **and**
 same-platform writing — verified against a real install (reads) and synthetic `wgs` fixtures
 (writes). A full file-copy safety backup of the live folder was made before development
 (`C:\Devel\NMS-SaveBackup-SAFETY-2026-06-24`).

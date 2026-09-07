@@ -181,6 +181,24 @@ Push every check as far down this ladder as it will go; only the last two need t
 T4 collapses to zero trips if the box has `sshd`, auto-login, and an **X11** (not Wayland)
 session — `DISPLAY=:0` over SSH then reaches the real desktop.
 
+### The UI is ASCII-only
+
+The Linux kit bundles python-build-standalone's Tcl/Tk, which is built **without Xft,
+fontconfig or Xrender** — `libtk8.6.so` references none of them and falls back to legacy
+X11 core fonts advertising ISO8859-1. Those fonts cannot draw anything outside that
+charset, so em dashes, ellipses and the `●` / `■` pane markers came out as garbage on a
+real Linux desktop (reported against v0.1.2 as
+`(nothing chosen yet <garbage> press Change<garbage>)`).
+
+So every string the app can draw is plain ASCII: `-` for dashes, `...` for ellipses, `*`
+and `#` for the pane markers, `^` / `v` for sort arrows. `tests/test_ui_text.py` enforces
+it across `src/`; docstrings and comments are exempt because they are never drawn. That
+test parses with `ast` rather than `tokenize` on purpose — since PEP 701 an f-string is no
+longer a single `STRING` token, so a token-level scan silently misses every f-string.
+
+A Tk with Xft would render the original characters correctly, but the kit cannot rely on
+one being present, and ASCII costs almost nothing.
+
 ### Deliberately unchanged
 
 Xbox / Game Pass (no `wgs` store exists off Windows) and in-place self-update (see D4).
