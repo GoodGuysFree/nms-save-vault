@@ -8,7 +8,7 @@ unlimited save slots beyond the game's 15. See [Platform support](#platform-supp
 
 **Just want to run it? No Python needed.** Download the ready-to-use Windows kit from the
 [**latest release**](https://github.com/GoodGuysFree/nms-save-vault/releases/latest) — grab
-`NMSSaveVault-Setup-v0.2.0.zip` under **Assets**.
+`NMSSaveVault-Setup-v0.2.1.zip` under **Assets**.
 
 Extract the zip, open the `NMSSaveVault` folder and run **`NMSSaveVault.exe`**. That is the
 whole thing — Python and Tkinter are bundled, nothing is installed, and because the app
@@ -76,8 +76,8 @@ Both platforms have a portable kit on the
 
 | Platform | Asset |
 |---|---|
-| Linux / Steam Deck (x86_64) | `NMSSaveVault-v0.2.0-linux-x86_64.tar.gz` |
-| macOS (Apple Silicon) | `NMSSaveVault-v0.2.0-macos-arm64.tar.gz` |
+| Linux / Steam Deck (x86_64) | `NMSSaveVault-v0.2.1-linux-x86_64.tar.gz` |
+| macOS (Apple Silicon) | `NMSSaveVault-v0.2.1-macos-arm64.tar.gz` |
 
 ### Read this first: back up your saves by hand
 
@@ -109,7 +109,7 @@ saw last. It is not a substitute for the copy above.
 ### Then run it
 
 ```sh
-tar -xzf NMSSaveVault-v0.2.0-linux-x86_64.tar.gz
+tar -xzf NMSSaveVault-v0.2.1-linux-x86_64.tar.gz
 cd NMSSaveVault
 ./NMSSaveVault          # the app;  ./nmsvault status  for the command line
 ```
@@ -138,7 +138,7 @@ and can only draw ISO8859-1. Every string the app displays is therefore plain AS
 
 ## Run it (Windows, no Python needed)
 
-Download **`NMSSaveVault-Setup-v0.2.0.zip`** from the
+Download **`NMSSaveVault-Setup-v0.2.1.zip`** from the
 [**Releases**](https://github.com/GoodGuysFree/nms-save-vault/releases) page (under the
 release's **Assets**) and extract it. Open the `NMSSaveVault` folder and run
 **`NMSSaveVault.exe`** — that is all. Everything (Python + Tkinter) is bundled, nothing is
@@ -404,7 +404,7 @@ The vault lives outside `st_<id>`, so it is never scanned by the game or synced 
 ## Status
 
 Working. Core format/crypto and all operations are verified against the real save files and
-in a temp sandbox (311 tests). Xbox / Game Pass saves are supported for reading **and**
+in a temp sandbox (351 tests). Xbox / Game Pass saves are supported for reading **and**
 same-platform writing — verified against a real install (reads) and synthetic `wgs` fixtures
 (writes). A full file-copy safety backup of the live folder was made before development
 (`C:\Devel\NMS-SaveBackup-SAFETY-2026-06-24`).
@@ -413,6 +413,7 @@ same-platform writing — verified against a real install (reads) and synthetic 
 
 | Version | Date | Highlights |
 |---|---|---|
+| **0.2.1** | 2026-09-07 | **The themes actually theme now.** Reported from Linux: "the dark theme isn't great, the buttons don't highlight properly". They did not. A ttk widget picks its colours per *state* — active, pressed, disabled, focus, readonly — and the app only ever set the base colour, so everything else kept `clam`'s own defaults, which were chosen for a light grey theme. Buttons were inert under the pointer, a disabled button's label vanished into its background, and the readonly **Active live** and **Theme** pickers drew dark text on a dark field with the value stuck in a permanent selection highlight. Every interactive widget is now mapped for every state, and buttons, entries, scrollbars, checkboxes and the progress bar are flat rather than bevelled. Light mode on Linux also stops using Tk's `default` theme — X11 has no native ttk theme, and that fallback is a Motif-era look that ignores much of what is set on it — so both palettes use `clam` there. Windows and macOS keep their native look in light mode, unchanged. Tree rows gained a little height, derived from the font so it survives any DPI. The palettes now carry explicit hover / pressed / disabled / accent colours, and `tests/test_theme.py` checks every text pair against WCAG 2.1 contrast rather than trusting an eyeball. |
 | **0.2.0** | 2026-09-07 | **Linux and macOS.** The save format is identical on all three platforms, so nothing about how saves are read or written changed — what was missing was knowing where to look, and something to download. Discovery now returns *several* save roots instead of one, because Linux has no native build: the game runs under Proton and its saves sit inside whichever Steam library holds the install, so the app probes the five places Steam installs itself (Flatpak and Snap included), parses each `libraryfolders.vdf` for libraries on other drives and a Steam Deck's SD card, and deduplicates by real path since those roots are largely symlinks to each other. macOS reads `~/Library/Application Support/HelloGames/NMS` plus any App Store container. Config now lands where each OS expects it (`~/.config`, `~/Library/Application Support`, `%LOCALAPPDATA%`) and a vault never defaults into a Proton prefix, which Steam can delete and recreate. **Portable kits for both**, built by `packaging/build_posix_kit.py` from a checksum-verified python-build-standalone runtime, with a double-clickable `.app` on macOS. **The UI is now ASCII**: the bundled Tk is built without Xft, so it falls back to X11 core fonts and rendered every em dash and ellipsis as garbage on a real Linux desktop. Xbox / Game Pass stays Windows-only, and self-updating stays Windows-only for now. Windows behaviour is unchanged throughout. |
 | **0.1.2** | 2026-08-22 | **Updates install themselves.** The update bar's new **Install update** button downloads the release from GitHub, verifies it, then closes the app, swaps the files and reopens on the new version - no browser, no zip, no install.bat. The download URL is pinned to GitHub hosts (including across the redirect), the extracted launcher must be a validly signed Python Software Foundation binary and must declare the version that was promised, and the zip is rejected if any entry would write outside the folder it is unpacked into. Because a running program cannot overwrite itself, the swap is handed to a script that waits until the launcher can actually be deleted - the only reliable proof the app has exited - keeps the old `_runtime` aside until the copy succeeds, and restores everything if it does not. Your config, vault and saves are untouched. **The window title now shows the version.** |
 | **0.1.1** | 2026-08-22 | **Fix: the two panes shared row identity.** Tk numbers rows per widget, so both panes emit `I001`, `I002`, … and the row-metadata map was keyed by that id alone — the backups pane, populated second, overwrote the live pane's. Right-clicking a live folder built a menu for a *backup*, and its tooltip showed the backup's text. Metadata is now keyed per pane. **The action model was rebuilt around what you selected.** Copying a slot has a source and a destination, but the UI only ever asked "Destination live slot (1-15):" with the source implied — so an extract could only go back to its own slot, selecting a save inside a backup answered "Select a source slot" (a save *is* a source — it resolves to its slot), and selecting a live slot only offered to copy it away, never to fill it. Copying now opens a window naming **both ends**, either changeable, listing every live slot with what is currently in it so you can see what you are about to replace; the source picker offers every occupied slot in every live folder and backup. Right-click menus now offer exactly what each row supports — see [What each row can do](#what-each-row-can-do). |
