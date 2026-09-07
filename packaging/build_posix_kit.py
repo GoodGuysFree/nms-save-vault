@@ -181,6 +181,28 @@ INFO_PLIST = """\
 """
 
 
+#: The one command that makes this kit safe to try. Kept per-platform and copy-pasteable,
+#: because "back up first" that the reader has to translate is advice nobody follows.
+BACKUP_COMMAND = {
+    "linux": """\
+    # If the game is on a second drive or an SD card this path differs. Run
+    #     ./nmsvault status
+    # first -- it prints the folder it found -- and copy that one instead.
+    cp -a ~/.local/share/Steam/steamapps/compatdata/275850/pfx/drive_c/users/steamuser/\\
+AppData/Roaming/HelloGames/NMS  ~/nms-save-backup-$(date +%F)
+""",
+    "macos": """\
+    cp -a ~/Library/Application\\ Support/HelloGames/NMS  ~/nms-save-backup-$(date +%F)
+""",
+}
+
+#: How much this kit has actually been run, stated plainly rather than implied.
+MATURITY = {
+    "linux": "has been launched a handful of times on one Linux desktop",
+    "macos": "has never been run on a Mac at all -- you may well be the first",
+}
+
+
 def readme(target: Target, version: str) -> str:
     if target.bundle:
         start = (
@@ -206,6 +228,38 @@ NMS Save Vault {version} -- portable kit for {target.key} ({target.arch})
 Safe backup, catalog and slot management for No Man's Sky save files.
 https://github.com/GoodGuysFree/nms-save-vault
 
+
+  ##########################################################################
+  #                                                                        #
+  #   STOP -- COPY YOUR SAVE FOLDER BEFORE YOU RUN THIS PROGRAM.           #
+  #                                                                        #
+  ##########################################################################
+
+  On Windows this tool has months of real use behind it. This build
+  {MATURITY[target.key]}.
+
+  The safety machinery is the same on every platform: it refuses to write
+  while the game is running, snapshots your live folder before every
+  destructive operation, writes atomically, and verifies every copy by hash.
+  But none of that has been PROVEN on {target.key} yet, and your save folder is
+  not the place to find out.
+
+  Make your own copy first. One command:
+
+{BACKUP_COMMAND[target.key]}
+  Then check it is not empty:
+
+    ls ~/nms-save-backup-*/st_*/
+
+  You should see save*.hg and mf_save*.hg files in there. Keep that copy
+  until you are satisfied nothing has gone wrong.
+
+  To roll back: close the game, empty the live folder, copy your backup back.
+
+  Steam Cloud is a sync, not a backup -- it will happily replace a good save
+  with whatever it saw last. It is not a substitute for the copy above.
+
+
 Python {PYTHON_VERSION} and Tk are bundled. Nothing is installed and nothing is
 written outside this folder unless you ask for it.
 
@@ -224,8 +278,6 @@ Where your saves are expected to be
 
 The app finds these itself. If it does not, point it at the folder by hand:
     ./nmsvault status --live /path/to/st_<your steam id>
-
-Please back up that folder yourself before letting any tool write to it.
 
 If the graphical app does not start
 -----------------------------------
@@ -290,7 +342,7 @@ def build(target: Target) -> Path:
     source = runtime_tarball(target)
 
     OUTDIR.mkdir(parents=True, exist_ok=True)
-    out = OUTDIR / f"{KIT_NAME}-{version}-{target.key}-{target.arch}.tar.gz"
+    out = OUTDIR / f"{KIT_NAME}-v{version}-{target.key}-{target.arch}.tar.gz"
     with tarfile.open(out, "w:gz") as tar:
         names = copy_runtime(tar, source, f"{KIT_NAME}/_runtime")
         assert_has_tk(names)

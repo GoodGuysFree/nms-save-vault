@@ -8,7 +8,7 @@ unlimited save slots beyond the game's 15. See [Platform support](#platform-supp
 
 **Just want to run it? No Python needed.** Download the ready-to-use Windows kit from the
 [**latest release**](https://github.com/GoodGuysFree/nms-save-vault/releases/latest) — grab
-`NMSSaveVault-Setup-v0.1.2.zip` under **Assets**.
+`NMSSaveVault-Setup-v0.2.0.zip` under **Assets**.
 
 Extract the zip, open the `NMSSaveVault` folder and run **`NMSSaveVault.exe`**. That is the
 whole thing — Python and Tkinter are bundled, nothing is installed, and because the app
@@ -69,38 +69,76 @@ we'd love your help:** try it against a *copy* of your save first, then
 [open an issue or discussion](https://github.com/GoodGuysFree/nms-save-vault/issues) with how it
 went. Both success testimonials and bug reports move these from "untested" to officially supported.
 
-**Linux / Steam Deck and macOS — testers wanted.** The save files are byte-for-byte the same
-format on all three platforms, so the parts that carry the risk needed no changes at all; what
-was missing was knowing where to look, and something to download. Both now exist. Build the
-kits with:
+## Run it on Linux, Steam Deck or macOS
 
+Both platforms have a portable kit on the
+[latest release](https://github.com/GoodGuysFree/nms-save-vault/releases/latest):
+
+| Platform | Asset |
+|---|---|
+| Linux / Steam Deck (x86_64) | `NMSSaveVault-v0.2.0-linux-x86_64.tar.gz` |
+| macOS (Apple Silicon) | `NMSSaveVault-v0.2.0-macos-arm64.tar.gz` |
+
+### Read this first: back up your saves by hand
+
+**Copy your save folder somewhere safe before you run this program for the first time.** Not
+"probably should" — *do it*. On Windows this tool has months of real use behind it. On Linux it
+has been launched a handful of times, and **on macOS it has never been run at all**. The safety
+machinery is identical on every platform — it refuses to write while the game is running,
+snapshots the live folder before every destructive operation, writes atomically and verifies by
+hash — but none of that has been *proven* on your platform yet, and your save folder is not the
+place to find out.
+
+```sh
+# Linux (Proton). If the game is on a second drive or an SD card the path differs -- run
+# ./nmsvault status first, it prints the folder it found, and copy that one.
+cp -a ~/.local/share/Steam/steamapps/compatdata/275850/pfx/drive_c/users/steamuser/AppData/Roaming/HelloGames/NMS \
+      ~/nms-save-backup-$(date +%F)
+
+# macOS
+cp -a ~/Library/Application\ Support/HelloGames/NMS ~/nms-save-backup-$(date +%F)
 ```
-python packaging/build_posix_kit.py all      # -> build/kits/
+
+Then check the copy is not empty — `ls ~/nms-save-backup-*/st_*/` should list `save*.hg` and
+`mf_save*.hg` files — and keep it until you are satisfied nothing is wrong. To roll back: close
+the game, delete the live folder's contents, and copy your backup back over it.
+
+Steam Cloud is a *sync*, not a backup: it will happily replace a good save with whatever it
+saw last. It is not a substitute for the copy above.
+
+### Then run it
+
+```sh
+tar -xzf NMSSaveVault-v0.2.0-linux-x86_64.tar.gz
+cd NMSSaveVault
+./NMSSaveVault          # the app;  ./nmsvault status  for the command line
 ```
 
-This runs on any OS, including Windows — the bundled interpreter is repacked archive-to-archive
-so POSIX permissions and symlinks survive. Each kit is self-contained: Python and Tk are inside
-it, nothing is installed, and nothing outside the folder is written unless you ask. Extract it
-and run `./NMSSaveVault` (Linux) or open `NMSSaveVault.app` (macOS — right-click → Open the
-first time, since it is not signed by a registered Apple developer).
+On macOS, open `NMSSaveVault.app` — **right-click it and choose Open the first time**, because
+it is not signed by a registered Apple developer. Keep it inside the folder it arrived in; it
+uses the `_runtime` folder beside it.
 
-**The Linux kit has been launched on a real desktop; the macOS one has not been run at all.**
-If you try either, the single most useful thing you can report is the output of:
+Each kit is self-contained: Python and Tk are bundled, nothing is installed, and nothing
+outside the folder it unpacks into is written unless you ask. Config goes to
+`~/.config/NMSSaveVault` on Linux and `~/Library/Application Support/NMSSaveVault` on macOS.
+Delete the folder to be rid of it. You can also build the kits yourself with
+`python packaging/build_posix_kit.py all` — that runs on any OS, Windows included.
 
-```
+**Please report how it went**, working or not —
+[open an issue](https://github.com/GoodGuysFree/nms-save-vault/issues). The single most useful
+line to include is the output of:
+
+```sh
 ./_runtime/python/bin/python3 -c "import tkinter; print(tkinter.TkVersion); tkinter.Tk()"
 ```
 
-Please try it against a *copy* of your saves first, then
-[open an issue](https://github.com/GoodGuysFree/nms-save-vault/issues) with how it went.
-
-One known constraint, in case you are packaging this yourself: the bundled Tk is built without
-Xft, so it falls back to X11 core fonts and can only draw ISO8859-1. Every string the app
-displays is therefore plain ASCII, and `tests/test_ui_text.py` keeps it that way.
+One known constraint: the bundled Tk is built without Xft, so it falls back to X11 core fonts
+and can only draw ISO8859-1. Every string the app displays is therefore plain ASCII, and
+`tests/test_ui_text.py` keeps it that way.
 
 ## Run it (Windows, no Python needed)
 
-Download **`NMSSaveVault-Setup-v0.1.2.zip`** from the
+Download **`NMSSaveVault-Setup-v0.2.0.zip`** from the
 [**Releases**](https://github.com/GoodGuysFree/nms-save-vault/releases) page (under the
 release's **Assets**) and extract it. Open the `NMSSaveVault` folder and run
 **`NMSSaveVault.exe`** — that is all. Everything (Python + Tkinter) is bundled, nothing is
@@ -375,6 +413,7 @@ same-platform writing — verified against a real install (reads) and synthetic 
 
 | Version | Date | Highlights |
 |---|---|---|
+| **0.2.0** | 2026-09-07 | **Linux and macOS.** The save format is identical on all three platforms, so nothing about how saves are read or written changed — what was missing was knowing where to look, and something to download. Discovery now returns *several* save roots instead of one, because Linux has no native build: the game runs under Proton and its saves sit inside whichever Steam library holds the install, so the app probes the five places Steam installs itself (Flatpak and Snap included), parses each `libraryfolders.vdf` for libraries on other drives and a Steam Deck's SD card, and deduplicates by real path since those roots are largely symlinks to each other. macOS reads `~/Library/Application Support/HelloGames/NMS` plus any App Store container. Config now lands where each OS expects it (`~/.config`, `~/Library/Application Support`, `%LOCALAPPDATA%`) and a vault never defaults into a Proton prefix, which Steam can delete and recreate. **Portable kits for both**, built by `packaging/build_posix_kit.py` from a checksum-verified python-build-standalone runtime, with a double-clickable `.app` on macOS. **The UI is now ASCII**: the bundled Tk is built without Xft, so it falls back to X11 core fonts and rendered every em dash and ellipsis as garbage on a real Linux desktop. Xbox / Game Pass stays Windows-only, and self-updating stays Windows-only for now. Windows behaviour is unchanged throughout. |
 | **0.1.2** | 2026-08-22 | **Updates install themselves.** The update bar's new **Install update** button downloads the release from GitHub, verifies it, then closes the app, swaps the files and reopens on the new version - no browser, no zip, no install.bat. The download URL is pinned to GitHub hosts (including across the redirect), the extracted launcher must be a validly signed Python Software Foundation binary and must declare the version that was promised, and the zip is rejected if any entry would write outside the folder it is unpacked into. Because a running program cannot overwrite itself, the swap is handed to a script that waits until the launcher can actually be deleted - the only reliable proof the app has exited - keeps the old `_runtime` aside until the copy succeeds, and restores everything if it does not. Your config, vault and saves are untouched. **The window title now shows the version.** |
 | **0.1.1** | 2026-08-22 | **Fix: the two panes shared row identity.** Tk numbers rows per widget, so both panes emit `I001`, `I002`, … and the row-metadata map was keyed by that id alone — the backups pane, populated second, overwrote the live pane's. Right-clicking a live folder built a menu for a *backup*, and its tooltip showed the backup's text. Metadata is now keyed per pane. **The action model was rebuilt around what you selected.** Copying a slot has a source and a destination, but the UI only ever asked "Destination live slot (1-15):" with the source implied — so an extract could only go back to its own slot, selecting a save inside a backup answered "Select a source slot" (a save *is* a source — it resolves to its slot), and selecting a live slot only offered to copy it away, never to fill it. Copying now opens a window naming **both ends**, either changeable, listing every live slot with what is currently in it so you can see what you are about to replace; the source picker offers every occupied slot in every live folder and backup. Right-click menus now offer exactly what each row supports — see [What each row can do](#what-each-row-can-do). |
 | **0.1.0** | 2026-08-22 | **First milestone release.** Identical code to 0.0.10 — this is the 0.0.x line promoted to a round number now that the app knows what it is showing you and the last data-losing edge has been closed. Rolling up everything since 0.0.7: **account display names** (0.0.8) so a screenshot never exposes your `st_<steamid64>` or Xbox `<xuid>_<titleid>`; the two saves in each slot **named for what they are** — Auto-Save vs Restore-Point — plus a real **Difficulty** column, per-save **Xbox cloud sync state**, and hover tooltips throughout; **live saves and backups split into two panes** with sortable backup columns; a **Light / Dark / System theme**; an **opt-in update check** (0.0.9); and the fix for **restoring a single-slot extract deleting every other save** (0.0.10). |
