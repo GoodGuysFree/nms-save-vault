@@ -223,6 +223,26 @@ def _restore_menu_label(entry) -> str:
     return f"Restore all of '{entry.id}' into live (replaces other slots)"
 
 
+def _clear_question(plan, directory) -> str:
+    """The confirmation text for clearing a slot: what goes, what the vault still has,
+    and - when clearing would cost progress - the warning that earns the "are you sure"."""
+    lines = [
+        f"Delete both saves in live slot {plan.slot} of {Path(directory).name}?",
+        "",
+        f"Slot {plan.slot} holds: {plan.live_name}"
+        f"   ({ops.format_duration(plan.live_play_time)} play time)",
+    ]
+    if plan.backed_up:
+        lines.append(
+            f"Newest copy in the vault: {plan.entry_id}"
+            f"   ({ops.format_duration(plan.backup_play_time)} play time)"
+        )
+    if plan.warning:
+        lines += ["", "WARNING: " + plan.warning]
+    lines += ["", "The current state is auto-snapshotted first, so Undo can put it back."]
+    return "\n".join(lines)
+
+
 def _filtered(dialog):
     """Wrap a messagebox call so its message passes through the account-alias filter."""
 
@@ -358,6 +378,7 @@ class App(tk.Tk):
             ("Backup live", self.on_backup),
             ("Restore", self.on_restore),
             ("Extract slot", self.on_extract),
+            ("Clear slot...", self.on_clear),
             ("Copy into live slot...", self.on_copy_slot),
             ("Promote", self.on_promote),
             ("Import...", self.on_import),
@@ -1134,6 +1155,10 @@ class App(tk.Tk):
                 label=f"Extract live slot {slot} to the vault",
                 command=lambda: self.on_extract(target),
             )
+            menu.add_command(
+                label=f"Clear live slot {slot} (delete its saves)...",
+                command=lambda: self.on_clear(target),
+            )
         else:
             menu.add_command(
                 label=f"Copy slot {slot} into live slot {slot}",
@@ -1300,6 +1325,29 @@ class App(tk.Tk):
             lambda _force: ops.extract_slot(self.vault, Path(sel["dir"]), sel["slot"], label=""),
             success=f"Extracted slot {sel['slot']}.",
             message=f"Extracting slot {sel['slot']} - please wait...",
+        )
+
+    def on_clear(self, target: dict | None = None) -> None:
+        """Empty a live slot, after showing what the vault does (or does not) still hold."""
+        sel = target or self._selected()
+        if not sel or sel.get("type") not in ("slot", "member") or not sel.get("live"):
+            _showinfo(
+                "Select a live slot",
+                "Clear empties one of your LIVE slots, so it needs a live one: select a "
+                "slot - or either of the two saves inside it - in the LIVE SAVES pane.",
+            )
+            return
+        directory, slot = Path(sel["dir"]), sel["slot"]
+        plan = ops.plan_clear_slot(self.vault, directory, slot)
+        if not plan.occupied:
+            _showinfo("Already empty", f"Live slot {slot} holds no saves.")
+            return
+        if not _askyesno("Clear slot", _clear_question(plan, directory)):
+            return
+        self._run(
+            lambda force: ops.clear_slot(self.vault, directory, slot, allow_game_running=force),
+            success=f"Cleared slot {slot}.",
+            message=f"Clearing slot {slot} - please wait...",
         )
 
     def on_copy_slot(self, source=None, dest_dir=None, dest_slot=None, ask: bool = True) -> None:
@@ -1840,6 +1888,11 @@ BUTTONS
 - Extract slot: Select a slot -- or either of the two saves inside it -- under LIVE or a
   backup, to copy just that one slot aside into the vault. You can free the slot now and
   bring it back later.
+- Clear slot: Empties a live slot by deleting both of its saves. Before it does, it
+  shows the slot's play time next to the play time of the newest copy of that slot in
+  the vault, and if the live save is further on - or if the vault has no copy at all -
+  it says so and asks again, because that progress is what you would lose. The live
+  state is auto-snapshotted first, so Undo brings the slot back.
 - Copy into live slot: Copies one slot's saves into a live slot. It opens a window
   showing BOTH ends: what is being copied, and every live slot with what is currently in
   it, so you can see what you are about to replace. Either end can be changed there, so
@@ -1874,8 +1927,8 @@ RIGHT-CLICK
 Every row offers exactly what makes sense for it:
 - a live save folder: back it up, make it the active write target, copy a save into one
   of its slots, or undo the last change;
-- a live slot: replace it with a save from anywhere, copy it to another live slot, or
-  extract it to the vault;
+- a live slot: replace it with a save from anywhere, copy it to another live slot,
+  extract it to the vault, or clear it;
 - one of the two saves in a live slot: the same, plus Promote to make that one the save
   the game loads;
 - a backup: restore all of it (which replaces the live folder), and for a single-slot
@@ -1884,9 +1937,9 @@ Every row offers exactly what makes sense for it:
   live slot, copy it into a live slot you choose, or extract it to the vault.
 
 WORKFLOWS
-- More than 15 slots: Extract the slots you are not using into the vault, then copy them
-  back into a live slot whenever you want to play them again. Your library is unlimited;
-  only 15 are live at a time.
+- More than 15 slots: Extract the slots you are not using into the vault, Clear them to
+  free the live slot, then copy them back into a live slot whenever you want to play them
+  again. Your library is unlimited; only 15 are live at a time.
 - Safe experimenting: Backup live (or Extract the slot), make changes in-game, then
   Restore / copy back / Undo if you do not like the result.
 - Move a save to another slot: right-click it and Copy into a live slot.

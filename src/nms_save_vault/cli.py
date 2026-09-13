@@ -7,6 +7,7 @@ Examples:
     nmsvault backup --label "before X"
     nmsvault restore <entry-id>
     nmsvault extract 9 --label "main"
+    nmsvault clear 9 [--yes]
     nmsvault repopulate --from <entry-id|path> --src-slot 9 --to-slot 3
     nmsvault promote --slot 9 --member A
     nmsvault import "D:\\some\\st_backup" [--copy]
@@ -218,6 +219,44 @@ def cmd_extract(args) -> int:
     entry = ops.extract_slot(vault, source, args.slot, label=args.label or "")
     print(f"extracted slot {args.slot} -> '{entry.id}' at {entry.path}")
     return 0
+
+
+def cmd_clear(args) -> int:
+    live = _resolve_live(args)
+    vault = _resolve_vault(args)
+    plan = ops.plan_clear_slot(vault, live, args.slot)
+    if not plan.occupied:
+        print(f"slot {args.slot} is already empty; nothing to do")
+        return 0
+
+    print(f"Clearing live slot {plan.slot} of {Path(live).name} would delete:")
+    print(f"  {plan.live_name}   ({ops.format_duration(plan.live_play_time)} play time)")
+    if plan.backed_up:
+        print(
+            f"Newest copy in the vault: {plan.entry_id} [{plan.entry_kind}] "
+            f"made {plan.entry_created}, {ops.format_duration(plan.backup_play_time)} play time"
+        )
+    if plan.warning:
+        print(f"\nWARNING: {plan.warning}")
+    if not args.yes and not _confirm(f"Clear slot {plan.slot}?"):
+        print("cancelled")
+        return 0
+
+    res = ops.clear_slot(vault, live, args.slot, allow_game_running=args.force)
+    _report(res)
+    return 0
+
+
+def _confirm(question: str) -> bool:
+    """Ask on the terminal. A non-interactive run must pass --yes rather than be assumed
+    to have agreed, so every way stdin can fail to produce an answer -- redirected from
+    nowhere (EOFError), closed (ValueError), detached (OSError), interrupted -- answers no.
+    """
+    try:
+        answer = input(f"{question} [y/N] ")
+    except (EOFError, KeyboardInterrupt, ValueError, OSError):
+        return False
+    return answer.strip().lower() in ("y", "yes")
 
 
 def cmd_repopulate(args) -> int:
@@ -432,6 +471,12 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--from", dest="source", help="source entry id or folder (default: live)")
     s.add_argument("--label", default="")
     s.set_defaults(func=cmd_extract)
+
+    s = sub.add_parser("clear", help="empty a live slot (deletes both of its saves)")
+    s.add_argument("slot", type=int)
+    s.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
+    s.add_argument("--force", action="store_true", help="proceed even if the game seems to be running")
+    s.set_defaults(func=cmd_clear)
 
     s = sub.add_parser("repopulate", help="write a slot from a backup into a live slot")
     s.add_argument("--from", dest="source", help="source entry id or folder (default: live)")

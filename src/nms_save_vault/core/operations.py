@@ -22,6 +22,7 @@ from .catalog import (
     KIND_INPLACE,
     KIND_SNAPSHOT,
     CatalogEntry,
+    SlotSummary,
     Vault,
     looks_like_vault_dir,
 )
@@ -532,6 +533,184 @@ def _restore_full_xbox(vault: Vault, entry: CatalogEntry, src: Path, live_dir: P
     _validate_xbox_dir(live_dir, warnings)
     vault.append_oplog(_oplog("restore_full", entry_id=entry.id, snapshot_id=snap.id, changed=changed))
     return OpResult(True, "restore_full", f"restored {entry.id}", snapshot_id=snap.id, changed=changed, warnings=warnings)
+
+
+# --- feature 2b: clear a slot ------------------------------------------------
+#
+# Emptying a live slot is the one operation whose whole point is to destroy a save, so it
+# is planned before it is done: plan_clear_slot() reports what the slot holds, the most
+# recent copy of it in the vault, and how much play time the live save has gained since --
+# i.e. exactly what would be lost. The front ends turn a non-empty ClearPlan.warning into
+# an "are you sure?".
+
+
+@dataclass
+class ClearPlan:
+    """What clearing one live slot would destroy, measured against the vault."""
+
+    slot: int
+    occupied: bool
+    live_name: str = ""
+    live_play_time: int = 0
+    entry_id: str | None = None
+    entry_label: str = ""
+    entry_kind: str = ""
+    entry_created: str = ""
+    backup_name: str = ""
+    backup_play_time: int = 0
+
+    @property
+    def backed_up(self) -> bool:
+        return self.entry_id is not None
+
+    @property
+    def progress_at_risk(self) -> int:
+        """Play-time seconds the live save has that the newest vault copy does not."""
+        if not self.backed_up:
+            return self.live_play_time
+        return max(0, self.live_play_time - self.backup_play_time)
+
+    @property
+    def warning(self) -> str:
+        """One sentence on what would be lost, or '' when the vault already has this save.
+
+        An unbacked slot warns even at zero play time: "nothing in the vault" is the fact
+        that matters there, not how far the save had got.
+        """
+        if not self.occupied:
+            return ""
+        if not self.backed_up:
+            return f"No copy of slot {self.slot} was found in the vault."
+        if self.progress_at_risk > 0:
+            return (
+                f"The live save has {format_duration(self.progress_at_risk)} more play time "
+                f"than the newest copy in the vault ('{self.entry_id}'), so that progress "
+                "would be lost."
+            )
+        return ""
+
+
+def format_duration(seconds: int) -> str:
+    """Play time as 'Nh MMm' (or 'Nm' under an hour), for the clear-slot messages."""
+    h, m = divmod(max(0, int(seconds)) // 60, 60)
+    return f"{h}h{m:02d}m" if h else f"{m}m"
+
+
+def _slot_play_time(summary: SlotSummary) -> int:
+    return max((m.play_time for m in summary.members if m.present), default=0)
+
+
+def _latest_vault_copy(
+    vault: Vault, live_dir: Path, slot: int
+) -> tuple[CatalogEntry, SlotSummary] | None:
+    """The most recently created catalog entry holding ``slot``, with that slot's summary.
+
+    The live folder itself is skipped even when it is catalogued: an in-place import of
+    the live folder would otherwise always answer "backed up" by pointing at the very save
+    about to be deleted. Entries whose folder has since gone away are skipped too.
+    """
+    live_resolved = Path(live_dir).resolve()
+    candidates: list[tuple[str, CatalogEntry, SlotSummary]] = []
+    for entry in vault.entries:
+        folder = Path(entry.path)
+        if not folder.is_dir() or folder.resolve() == live_resolved:
+            continue
+        summary = next((s for s in entry.slots if s.slot == slot and s.occupied), None)
+        if summary is not None:
+            candidates.append((entry.created, entry, summary))
+    if not candidates:
+        return None
+    _created, entry, summary = max(candidates, key=lambda c: c[0])
+    return entry, summary
+
+
+def plan_clear_slot(vault: Vault, live_dir: Path, slot: int) -> ClearPlan:
+    """Describe, without changing anything, what clearing ``slot`` would cost."""
+    _check_slot(slot)
+    live_dir = Path(live_dir)
+    sv = savedir.scan_any(live_dir).slots.get(slot)
+    if sv is None or not sv.occupied:
+        return ClearPlan(slot=slot, occupied=False)
+
+    plan = ClearPlan(
+        slot=slot,
+        occupied=True,
+        live_name=sv.display_name,
+        live_play_time=max(
+            (m.info.total_play_time for m in sv.present_members if m.info is not None), default=0
+        ),
+    )
+    found = _latest_vault_copy(vault, live_dir, slot)
+    if found is not None:
+        entry, summary = found
+        plan.entry_id = entry.id
+        plan.entry_label = entry.label
+        plan.entry_kind = entry.kind
+        plan.entry_created = entry.created
+        plan.backup_name = summary.name
+        plan.backup_play_time = _slot_play_time(summary)
+    return plan
+
+
+def clear_slot(
+    vault: Vault, live_dir: Path, slot: int, allow_game_running: bool = False
+) -> OpResult:
+    """Empty a live slot: delete both of its saves after snapshotting the live folder.
+
+    Destructive by design, so it is snapshot-backed like every other write and reversible
+    with ``undo``. Callers are expected to have shown :func:`plan_clear_slot` first; this
+    function does not ask, it only refuses to run on a slot that is already empty.
+    """
+    warnings: list[str] = []
+    live_dir = Path(live_dir)
+    _check_slot(slot)
+    if _is_xbox(live_dir):
+        return _clear_slot_xbox(vault, live_dir, slot, allow_game_running)
+    _guard_game(allow_game_running, warnings)
+
+    # Driven by what is on disk rather than by SlotView.occupied, so a half-present slot
+    # (a meta whose data file is gone) is cleared out too instead of being called empty.
+    doomed = [p for fno in slot_file_numbers(slot) for p in _member_paths(live_dir, fno) if p.is_file()]
+    if not doomed:
+        raise OperationError(f"slot {slot} is already empty")
+
+    snap = snapshot_live(vault, live_dir, reason=f"pre-clear slot {slot}")
+    changed: list[str] = []
+    for p in doomed:
+        p.unlink()
+        changed.append(f"-{p.name}")
+
+    if savedir.scan(live_dir).slots[slot].occupied:
+        raise ValidationError(f"slot {slot} still holds a save after clearing it")
+    vault.append_oplog(_oplog("clear_slot", snapshot_id=snap.id, detail=f"slot {slot}", changed=changed))
+    return OpResult(
+        True, "clear_slot", f"cleared slot {slot}", snapshot_id=snap.id, changed=changed, warnings=warnings
+    )
+
+
+def _clear_slot_xbox(vault: Vault, live_dir: Path, slot: int, allow_game_running: bool) -> OpResult:
+    warnings: list[str] = []
+    _guard_game(allow_game_running, warnings)
+    sv = savedir.scan_any(live_dir).slots.get(slot)
+    if sv is None or not sv.occupied:
+        raise OperationError(f"slot {slot} is already empty")
+
+    snap = snapshot_live(vault, live_dir, reason=f"pre-clear slot {slot}")
+    when = _now()
+    changed: list[str] = []
+    for member in (0, 1):
+        identifier = _ms_identifier(slot, member)
+        if msstore.delete_save(live_dir, identifier, when):
+            changed.append(f"-{identifier}")
+
+    if savedir.scan_any(live_dir).slots[slot].occupied:
+        raise ValidationError(f"slot {slot} still holds a save after clearing it")
+    vault.append_oplog(
+        _oplog("clear_slot", snapshot_id=snap.id, detail=f"xbox slot {slot}", changed=changed)
+    )
+    return OpResult(
+        True, "clear_slot", f"cleared slot {slot}", snapshot_id=snap.id, changed=changed, warnings=warnings
+    )
 
 
 # --- feature 3: import -------------------------------------------------------

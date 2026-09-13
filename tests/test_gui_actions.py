@@ -155,6 +155,15 @@ def test_a_live_slot_can_be_a_destination_as_well_as_a_source(app):
     assert "Extract live slot 4 to the vault" in labels
 
 
+def test_a_live_slot_can_be_cleared_but_a_backup_slot_cannot(app):
+    """Clear deletes live saves, so it belongs only on a live row -- a slot inside a
+    backup has nothing live to empty."""
+    live = _menu_labels(app, app._menu_for_slot, {"type": "slot", "dir": "X", "slot": 4, "live": True})
+    backup = _menu_labels(app, app._menu_for_slot, {"type": "slot", "dir": "X", "slot": 4, "live": False})
+    assert "Clear live slot 4 (delete its saves)..." in live
+    assert not [x for x in backup if x.startswith("Clear")]
+
+
 def test_a_live_save_adds_promote_on_top_of_its_slot_actions(app):
     slot_labels = _menu_labels(
         app, app._menu_for_slot, {"type": "slot", "dir": "X", "slot": 4, "live": True}
@@ -259,6 +268,73 @@ def test_declining_the_confirmation_writes_nothing(app, live_target, monkeypatch
     calls = _capture_run(app, monkeypatch)
     app.on_copy_slot(source=gui.SlotSource("B:/x", 3, "b"), dest_slot=3, ask=False)
     assert calls == {}
+
+
+def test_clearing_shows_the_play_time_gap_and_then_clears(app, live_target, monkeypatch):
+    from nms_save_vault import gui
+    from nms_save_vault.core import operations as ops
+
+    plan = ops.ClearPlan(
+        slot=4, occupied=True, live_name="Expedition", live_play_time=12600,
+        entry_id="full-steam-20260101-000000", entry_kind="full",
+        entry_created="2026-01-01T00:00:00", backup_name="Expedition", backup_play_time=3600,
+    )
+    monkeypatch.setattr(ops, "plan_clear_slot", lambda vault, directory, slot: plan)
+    asked = {}
+    monkeypatch.setattr(gui, "_askyesno", lambda title, msg: asked.setdefault("msg", msg) or True)
+    recorded = {}
+    monkeypatch.setattr(
+        ops, "clear_slot",
+        lambda vault, directory, slot, **kw: recorded.update(directory=str(directory), slot=slot),
+    )
+    calls = _capture_run(app, monkeypatch)
+
+    app.on_clear({"type": "slot", "dir": str(live_target), "slot": 4, "live": True})
+
+    assert recorded == {"directory": str(live_target), "slot": 4}
+    assert "2h30m more play time" in asked["msg"], "the user must see what clearing costs"
+    assert "full-steam-20260101-000000" in asked["msg"]
+    assert "Undo" in asked["msg"]
+    assert "slot 4" in calls["success"]
+
+
+def test_declining_the_clear_deletes_nothing(app, live_target, monkeypatch):
+    from nms_save_vault import gui
+    from nms_save_vault.core import operations as ops
+
+    monkeypatch.setattr(
+        ops, "plan_clear_slot", lambda *a, **k: ops.ClearPlan(slot=4, occupied=True, live_name="X")
+    )
+    monkeypatch.setattr(gui, "_askyesno", lambda *a, **k: False)
+    monkeypatch.setattr(ops, "clear_slot", lambda *a, **k: pytest.fail("must not run"))
+    calls = _capture_run(app, monkeypatch)
+    app.on_clear({"type": "slot", "dir": str(live_target), "slot": 4, "live": True})
+    assert calls == {}
+
+
+def test_clearing_an_already_empty_slot_says_so_and_stops(app, live_target, monkeypatch):
+    from nms_save_vault import gui
+    from nms_save_vault.core import operations as ops
+
+    monkeypatch.setattr(ops, "plan_clear_slot", lambda *a, **k: ops.ClearPlan(slot=4, occupied=False))
+    shown = []
+    monkeypatch.setattr(gui, "_showinfo", lambda *a, **k: shown.append(a))
+    monkeypatch.setattr(gui, "_askyesno", lambda *a, **k: pytest.fail("must not ask"))
+    calls = _capture_run(app, monkeypatch)
+    app.on_clear({"type": "slot", "dir": str(live_target), "slot": 4, "live": True})
+    assert shown and calls == {}
+
+
+def test_clearing_needs_a_live_row(app, monkeypatch):
+    from nms_save_vault import gui
+    from nms_save_vault.core import operations as ops
+
+    shown = []
+    monkeypatch.setattr(gui, "_showinfo", lambda *a, **k: shown.append(a))
+    monkeypatch.setattr(ops, "plan_clear_slot", lambda *a, **k: pytest.fail("must not plan"))
+    calls = _capture_run(app, monkeypatch)
+    app.on_clear({"type": "slot", "dir": "X", "slot": 4, "live": False})
+    assert shown and calls == {}
 
 
 def test_copy_refuses_when_there_is_nowhere_writable(app, monkeypatch):

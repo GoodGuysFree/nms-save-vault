@@ -26,7 +26,9 @@ shortcuts? `install.bat` in the zip adds them. Full details under
    name/mode/play-time/date; lift a single slot aside; and repopulate any live slot from
    any save in any cataloged backup (re-keying the meta when the slot number differs).
    You can also inspect a slot's two saves (the Auto-Save and the Restore-Point)
-   individually and force either one to become the newest.
+   individually and force either one to become the newest, and **clear** a live slot to
+   free it - which first compares that slot's play time with the newest copy of it in the
+   vault and warns you if clearing would lose progress.
 3. **Import** — register an existing manual backup folder into the catalog, or import an
    entire copied Save Vault folder: it compares that vault's entries with yours and offers
    to copy the new ones in or index them in place (idempotent — re-importing is harmless).
@@ -287,7 +289,7 @@ offered that cannot work, and nothing sensible is missing.
 | You right-clicked | You can |
 |---|---|
 | **A live save folder** | Back it up · make it the active write target · copy a save into one of its slots · undo the last change |
-| **A live slot** | **Replace it with a save from anywhere** · copy it into another live slot · extract it to the vault |
+| **A live slot** | **Replace it with a save from anywhere** · copy it into another live slot · extract it to the vault · **clear it** (deletes both its saves, after warning if the vault has no copy this far on) |
 | **One of the two saves in a live slot** | All of the above, plus **Promote** — make *that* save the one the game loads |
 | **A backup** (full / snapshot / imported / in-place) | Restore all of it, which **replaces** the live folder |
 | **A single-slot extract** | Put it back in its own slot · **or** copy it into any live slot you choose |
@@ -354,6 +356,7 @@ nmsvault list                            # catalog entries
 nmsvault discover --add                  # find existing backups, add them in place
 nmsvault backup --label "before update"  # full snapshot into the vault
 nmsvault extract 9 --label "main"        # lift slot 9 aside
+nmsvault clear 9 [--yes]                 # empty live slot 9; warns if that loses progress
 nmsvault repopulate --from <id|folder> --src-slot 9 --to-slot 3   # re-keys the meta
 nmsvault promote --slot 9 --member B     # force B (the restore-point) to be newest
 nmsvault restore <entry-id>              # mirror the live folder to a backup
@@ -404,7 +407,7 @@ The vault lives outside `st_<id>`, so it is never scanned by the game or synced 
 ## Status
 
 Working. Core format/crypto and all operations are verified against the real save files and
-in a temp sandbox (351 tests). Xbox / Game Pass saves are supported for reading **and**
+in a temp sandbox (370 tests). Xbox / Game Pass saves are supported for reading **and**
 same-platform writing — verified against a real install (reads) and synthetic `wgs` fixtures
 (writes). A full file-copy safety backup of the live folder was made before development
 (`C:\Devel\NMS-SaveBackup-SAFETY-2026-06-24`).

@@ -25,6 +25,7 @@ https://github.com/zencq/libNOM.io, licensed GPL-3.0. See LICENSE and README.md 
 from __future__ import annotations
 
 import os
+import shutil
 import struct
 import uuid
 from dataclasses import dataclass, field
@@ -612,6 +613,38 @@ def write_save(
             p.unlink()
         except OSError:
             pass
+
+
+def delete_save(folder: str | Path, identifier: str, when: float) -> bool:
+    """Remove the save named ``identifier`` (e.g. ``"Slot3Manual"``) from a wgs account
+    ``folder``. Returns False if there is no such live save.
+
+    Mirrors what the Xbox app itself does: the ``containers.index`` record is KEPT and
+    flagged ``Deleted`` -- dropping the record outright would leave the cloud copy with no
+    instruction to remove it -- and only then are the blob files discarded. Index first, so
+    a crash mid-delete leaves an index that no longer claims blobs that are already gone.
+    ``write_save`` un-deletes such a record, so the slot can be refilled later.
+    """
+    folder = Path(folder)
+    info, containers = parse_containers_index(folder)
+    target = next((c for c in containers if c.identifier == identifier), None)
+    if target is None or target.sync_state == SYNC_STATE_DELETED:
+        return False
+
+    blob_dir = target.directory
+    target.sync_state = SYNC_STATE_DELETED
+    target.last_write = when
+    target.size_disk = 0
+    target.data_file = target.meta_file = target.blob_container_file = None
+    target.data_local_guid = target.meta_local_guid = None
+    info.sync_state = INDEX_SYNC_MODIFIED
+    info.last_write = when
+    _write_containers_index_file(folder, info, containers)
+
+    # Only ever a GUID-named child of the account folder; never recurse anywhere else.
+    if blob_dir.is_dir() and blob_dir.parent == folder:
+        shutil.rmtree(blob_dir, ignore_errors=True)
+    return True
 
 
 def mark_modified(folder: str | Path) -> None:
