@@ -8,7 +8,7 @@ unlimited save slots beyond the game's 15. See [Platform support](#platform-supp
 
 **Just want to run it? No Python needed.** Download the ready-to-use Windows kit from the
 [**latest release**](https://github.com/GoodGuysFree/nms-save-vault/releases/latest) — grab
-`NMSSaveVault-Setup-v0.2.1.zip` under **Assets**.
+`NMSSaveVault-Setup-v0.2.2.zip` under **Assets**.
 
 Extract the zip, open the `NMSSaveVault` folder and run **`NMSSaveVault.exe`**. That is the
 whole thing — Python and Tkinter are bundled, nothing is installed, and because the app
@@ -78,8 +78,8 @@ Both platforms have a portable kit on the
 
 | Platform | Asset |
 |---|---|
-| Linux / Steam Deck (x86_64) | `NMSSaveVault-v0.2.1-linux-x86_64.tar.gz` |
-| macOS (Apple Silicon) | `NMSSaveVault-v0.2.1-macos-arm64.tar.gz` |
+| Linux / Steam Deck (x86_64) | `NMSSaveVault-v0.2.2-linux-x86_64.tar.gz` |
+| macOS (Apple Silicon) | `NMSSaveVault-v0.2.2-macos-arm64.tar.gz` |
 
 ### Read this first: back up your saves by hand
 
@@ -111,7 +111,7 @@ saw last. It is not a substitute for the copy above.
 ### Then run it
 
 ```sh
-tar -xzf NMSSaveVault-v0.2.1-linux-x86_64.tar.gz
+tar -xzf NMSSaveVault-v0.2.2-linux-x86_64.tar.gz
 cd NMSSaveVault
 ./NMSSaveVault          # the app;  ./nmsvault status  for the command line
 ```
@@ -140,7 +140,7 @@ and can only draw ISO8859-1. Every string the app displays is therefore plain AS
 
 ## Run it (Windows, no Python needed)
 
-Download **`NMSSaveVault-Setup-v0.2.1.zip`** from the
+Download **`NMSSaveVault-Setup-v0.2.2.zip`** from the
 [**Releases**](https://github.com/GoodGuysFree/nms-save-vault/releases) page (under the
 release's **Assets**) and extract it. Open the `NMSSaveVault` folder and run
 **`NMSSaveVault.exe`** — that is all. Everything (Python + Tkinter) is bundled, nothing is
@@ -416,6 +416,7 @@ same-platform writing — verified against a real install (reads) and synthetic 
 
 | Version | Date | Highlights |
 |---|---|---|
+| **0.2.2** | 2026-09-13 | **Clear a slot.** Freeing a live slot meant extracting it and then deleting the files by hand, which is exactly the moment to delete the wrong one. **Clear slot** does it from the app - toolbar, or right-click any live slot - and before it does, it goes looking for the most recently made copy of *that slot* in the vault and compares its play time with the live save's. If the live save is further on, or if the vault has no copy of the slot at all, it says so in the confirmation and asks again, because that gap is precisely what clearing would cost you. The live folder never counts as its own backup, even when it is catalogued in place - that would answer "backed up" by pointing at the very save about to be deleted. Like every other write, the live state is auto-snapshotted first, so **Undo** brings the slot straight back. Xbox / Game Pass clears the same way: the `containers.index` record is kept and flagged `Deleted`, as the Xbox app itself does, so the cloud copy is told to go rather than being re-synced back down - and writing into the slot again un-deletes it. On the CLI: `nmsvault clear <slot> [--yes]`. |
 | **0.2.1** | 2026-09-07 | **The themes actually theme now.** Reported from Linux: "the dark theme isn't great, the buttons don't highlight properly". They did not. A ttk widget picks its colours per *state* — active, pressed, disabled, focus, readonly — and the app only ever set the base colour, so everything else kept `clam`'s own defaults, which were chosen for a light grey theme. Buttons were inert under the pointer, a disabled button's label vanished into its background, and the readonly **Active live** and **Theme** pickers drew dark text on a dark field with the value stuck in a permanent selection highlight. Every interactive widget is now mapped for every state, and buttons, entries, scrollbars, checkboxes and the progress bar are flat rather than bevelled. Light mode on Linux also stops using Tk's `default` theme — X11 has no native ttk theme, and that fallback is a Motif-era look that ignores much of what is set on it — so both palettes use `clam` there. Windows and macOS keep their native look in light mode, unchanged. Tree rows gained a little height, derived from the font so it survives any DPI. The palettes now carry explicit hover / pressed / disabled / accent colours, and `tests/test_theme.py` checks every text pair against WCAG 2.1 contrast rather than trusting an eyeball. |
 | **0.2.0** | 2026-09-07 | **Linux and macOS.** The save format is identical on all three platforms, so nothing about how saves are read or written changed — what was missing was knowing where to look, and something to download. Discovery now returns *several* save roots instead of one, because Linux has no native build: the game runs under Proton and its saves sit inside whichever Steam library holds the install, so the app probes the five places Steam installs itself (Flatpak and Snap included), parses each `libraryfolders.vdf` for libraries on other drives and a Steam Deck's SD card, and deduplicates by real path since those roots are largely symlinks to each other. macOS reads `~/Library/Application Support/HelloGames/NMS` plus any App Store container. Config now lands where each OS expects it (`~/.config`, `~/Library/Application Support`, `%LOCALAPPDATA%`) and a vault never defaults into a Proton prefix, which Steam can delete and recreate. **Portable kits for both**, built by `packaging/build_posix_kit.py` from a checksum-verified python-build-standalone runtime, with a double-clickable `.app` on macOS. **The UI is now ASCII**: the bundled Tk is built without Xft, so it falls back to X11 core fonts and rendered every em dash and ellipsis as garbage on a real Linux desktop. Xbox / Game Pass stays Windows-only, and self-updating stays Windows-only for now. Windows behaviour is unchanged throughout. |
 | **0.1.2** | 2026-08-22 | **Updates install themselves.** The update bar's new **Install update** button downloads the release from GitHub, verifies it, then closes the app, swaps the files and reopens on the new version - no browser, no zip, no install.bat. The download URL is pinned to GitHub hosts (including across the redirect), the extracted launcher must be a validly signed Python Software Foundation binary and must declare the version that was promised, and the zip is rejected if any entry would write outside the folder it is unpacked into. Because a running program cannot overwrite itself, the swap is handed to a script that waits until the launcher can actually be deleted - the only reliable proof the app has exited - keeps the old `_runtime` aside until the copy succeeds, and restores everything if it does not. Your config, vault and saves are untouched. **The window title now shows the version.** |
