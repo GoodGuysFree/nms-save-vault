@@ -37,6 +37,23 @@ def _menu_labels(app, builder, meta):
     return out
 
 
+def _invoke_menu_entry(app, builder, meta, label_starts_with):
+    """Build the context menu for a row and INVOKE the matching entry, the way a click on
+    it does. Reading the labels only proves the entry is offered -- it is what the entry
+    passes to the handler that decides whether clicking it does anything."""
+    menu = tk.Menu(app, tearoff=0)
+    builder(menu, meta)
+    last = menu.index("end")
+    for i in range(0 if last is None else last + 1):
+        try:
+            if menu.entrycget(i, "label").startswith(label_starts_with):
+                menu.invoke(i)
+                return True
+        except tk.TclError:
+            continue
+    return False
+
+
 def _find(app, tree, kind, predicate=None):
     def walk(node=""):
         for child in tree.get_children(node):
@@ -323,6 +340,36 @@ def test_clearing_an_already_empty_slot_says_so_and_stops(app, live_target, monk
     calls = _capture_run(app, monkeypatch)
     app.on_clear({"type": "slot", "dir": str(live_target), "slot": 4, "live": True})
     assert shown and calls == {}
+
+
+@pytest.mark.parametrize(
+    "meta",
+    [
+        {"type": "slot", "dir": "X", "slot": 4, "live": True},
+        {"type": "member", "dir": "X", "slot": 4, "live": True, "member": 1},
+    ],
+    ids=["slot", "save-inside-it"],
+)
+def test_clear_from_the_right_click_menu_actually_clears(app, live_target, monkeypatch, meta):
+    """Regression: the menu narrowed a member row to its slot with a hand-built dict that
+    dropped the "live" flag, so Clear -- which needs a LIVE slot -- refused every row the
+    menu offered it to, on a slot and on either save inside it alike. Reported as "no
+    matter what I try, I get this error"."""
+    from nms_save_vault import gui
+    from nms_save_vault.core import operations as ops
+
+    meta = dict(meta, dir=str(live_target))
+    monkeypatch.setattr(
+        ops, "plan_clear_slot", lambda *a, **k: ops.ClearPlan(slot=4, occupied=True, live_name="X")
+    )
+    monkeypatch.setattr(gui, "_askyesno", lambda *a, **k: True)
+    monkeypatch.setattr(gui, "_showinfo", lambda *a, **k: pytest.fail("must not report a bad row"))
+    recorded = {}
+    monkeypatch.setattr(ops, "clear_slot", lambda vault, d, slot, **k: recorded.update(slot=slot))
+    _capture_run(app, monkeypatch)
+
+    assert _invoke_menu_entry(app, app._menu_for_slot, meta, "Clear live slot 4")
+    assert recorded == {"slot": 4}
 
 
 def test_clearing_needs_a_live_row(app, monkeypatch):

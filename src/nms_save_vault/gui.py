@@ -1131,7 +1131,10 @@ class App(tk.Tk):
         slot = meta["slot"]
         live = meta.get("live")
         source = self._source_from(meta)
-        target = {"type": "slot", "dir": meta["dir"], "slot": slot}
+        # A member row's actions act on its whole slot, so the target is narrowed to the
+        # slot -- but it must still say whether that slot is live, or an action that only
+        # makes sense on live saves (Clear) cannot tell and refuses its own menu entry.
+        target = {"type": "slot", "dir": meta["dir"], "slot": slot, "live": live}
 
         if meta.get("type") == "member" and live:
             label = slotmap.save_type_label(meta["member"])
