@@ -35,6 +35,104 @@ CHOICES = (SYSTEM, LIGHT, DARK)
 # What the dropdown shows, in order.
 CHOICE_LABELS = {SYSTEM: "System", LIGHT: "Light", DARK: "Dark"}
 
+# --- font scaling -------------------------------------------------------------
+#
+# Ctrl+/Ctrl- zoom works by resizing Tk's *named* fonts. Every ttk widget here draws with
+# one of them (no style sets a font of its own), so resizing them zooms the whole UI in
+# one go, and the Treeview row height follows because it is derived from the font metrics.
+
+MIN_FONT_SCALE = 0.7
+MAX_FONT_SCALE = 2.0
+FONT_SCALE_STEP = 0.1
+
+#: The Tk named fonts widgets draw with. Not every Tk build defines all of them.
+_NAMED_FONTS = (
+    "TkDefaultFont",
+    "TkTextFont",
+    "TkMenuFont",
+    "TkHeadingFont",
+    "TkFixedFont",
+    "TkTooltipFont",
+    "TkIconFont",
+    "TkSmallCaptionFont",
+    "TkCaptionFont",
+)
+
+#: Fonts the app defines for itself, so widgets can name one instead of hardcoding a
+#: size that would not zoom. Values are (points relative to TkDefaultFont, weight).
+BOLD_FONT = "NmsVaultBold"
+HEADING_FONT = "NmsVaultHeading"
+TIP_FONT = "NmsVaultTip"
+_APP_FONTS = {
+    BOLD_FONT: (0, "bold"),
+    HEADING_FONT: (1, "bold"),
+    TIP_FONT: (0, "normal"),
+}
+
+#: Unscaled size of every font above, captured once before anything is resized.
+_base_sizes: dict[str, int] = {}
+
+
+def clamp_font_scale(scale: float) -> float:
+    """Snap a zoom factor to a whole step and hold it inside the supported range."""
+    try:
+        wanted = float(scale)
+    except (TypeError, ValueError):
+        wanted = 1.0
+    stepped = round(round(wanted / FONT_SCALE_STEP) * FONT_SCALE_STEP, 2)
+    return min(MAX_FONT_SCALE, max(MIN_FONT_SCALE, stepped))
+
+
+def _scaled_size(base: int, scale: float) -> int:
+    """Tk font sizes are points when positive and pixels when negative; keep the sign."""
+    size = max(6, int(round(abs(base) * scale)))
+    return -size if base < 0 else size
+
+
+def init_fonts(root: tk.Misc) -> None:
+    """Capture the baseline font sizes and create the app's own named fonts.
+
+    Idempotent, and it must run before the first zoom: every scale is computed from the
+    baseline, so the baseline has to be read while the fonts are still at native size.
+    """
+    if _base_sizes:
+        return
+    for name in _NAMED_FONTS:
+        try:
+            _base_sizes[name] = int(tkfont.nametofont(name, root).cget("size"))
+        except tk.TclError:
+            continue
+    try:
+        default = tkfont.nametofont("TkDefaultFont", root)
+        family = default.cget("family")
+    except tk.TclError:
+        return
+    base = _base_sizes.get("TkDefaultFont", 9)
+    for name, (delta, weight) in _APP_FONTS.items():
+        size = base + (delta if base > 0 else -delta)
+        spec = ("-family", family, "-size", size, "-weight", weight)
+        # Created through Tcl rather than tkfont.Font: a Font object owns the font it
+        # creates and deletes it again when it is garbage-collected, and nothing here
+        # would hold a reference to keep it alive.
+        try:
+            root.tk.call("font", "create", name, *spec)
+        except tk.TclError:  # already created earlier in this interpreter
+            root.tk.call("font", "configure", name, *spec)
+        _base_sizes[name] = size
+
+
+def apply_font_scale(root: tk.Misc, scale: float) -> float:
+    """Resize every named font to ``scale`` x its baseline; returns the clamped factor."""
+    scale = clamp_font_scale(scale)
+    init_fonts(root)
+    for name, base in _base_sizes.items():
+        try:
+            tkfont.nametofont(name, root).configure(size=_scaled_size(base, scale))
+        except tk.TclError:
+            continue
+    return scale
+
+
 #: Windowing systems that have a real native ttk theme worth keeping in light mode.
 _NATIVE_LOOK = ("win32", "aqua")
 
@@ -168,6 +266,7 @@ def apply(root: tk.Misc, choice: str, native_ttk_theme: str) -> str:
     """Restyle the whole app for ``choice``; returns the resolved palette name."""
     name = resolve(choice)
     p = PALETTES[name]
+    init_fonts(root)
     style = ttk.Style(root)
     try:
         style.theme_use(ttk_theme_for(root, name, native_ttk_theme))

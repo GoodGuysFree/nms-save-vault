@@ -174,7 +174,7 @@ class Tooltip:
             highlightbackground=TOOLTIP_STYLE["border"],
             padx=8,
             pady=6,
-            font=("TkDefaultFont", 9),
+            font=theme.TIP_FONT,
         ).pack()
         self.window.wm_geometry(f"+{x + 16}+{y + 18}")
 
@@ -282,6 +282,7 @@ class App(tk.Tk):
         # Whatever ttk chose for this OS; light mode restores it so the app keeps the
         # native look it has always had (see theme.apply).
         self._native_ttk_theme = ttk.Style(self).theme_use()
+        theme.init_fonts(self)  # baseline sizes, captured before any zoom is applied
         _ico = _icon_path()
         if _ico:
             try:
@@ -459,6 +460,13 @@ class App(tk.Tk):
             tree.bind("<<TreeviewSelect>>", self._on_tree_select)
             Tooltip(tree, self._tip_for_row)
 
+        # Both spellings of each key: Ctrl+= and Ctrl+- are what those keys report
+        # unshifted, Ctrl++ and Ctrl+_ what they report with Shift held, plus the keypad.
+        for seq in ("<Control-plus>", "<Control-equal>", "<Control-KP_Add>"):
+            self.bind_all(seq, lambda _e: self._zoom(1))
+        for seq in ("<Control-minus>", "<Control-underscore>", "<Control-KP_Subtract>"):
+            self.bind_all(seq, lambda _e: self._zoom(-1))
+
     # --- theme ---------------------------------------------------------------
 
     def _apply_theme(self, *, persist: bool = False) -> None:
@@ -467,12 +475,13 @@ class App(tk.Tk):
         Tag colours cannot live in the ttk style, so they are re-applied here: the
         light-mode green and amber are unreadable on a dark tree background.
         """
+        self.state.font_scale = theme.apply_font_scale(self, self.state.font_scale)
         name = theme.apply(self, self.state.theme, self._native_ttk_theme)
         p = theme.PALETTES[name]
         for tree in (self.live_tree, self.backup_tree):
-            tree.tag_configure("group", font=("TkDefaultFont", 10, "bold"))
+            tree.tag_configure("group", font=theme.HEADING_FONT)
             tree.tag_configure("live", foreground=p["live"])
-            tree.tag_configure("active", foreground=p["active"], font=("TkDefaultFont", 9, "bold"))
+            tree.tag_configure("active", foreground=p["active"], font=theme.BOLD_FONT)
             tree.tag_configure("readonly", foreground=p["readonly"])
             tree.tag_configure("backup", foreground=p["backup"])
         TOOLTIP_STYLE.update(
@@ -483,6 +492,21 @@ class App(tk.Tk):
                 appstate.save(self.state)
             except OSError as exc:
                 _showwarning("Theme", f"Could not save your theme choice:\n{exc}")
+
+    def _zoom(self, steps: int) -> None:
+        """Ctrl+/Ctrl-: step the font zoom; does nothing at the ends of the range.
+
+        Saved quietly: a keystroke should not raise a modal because the install folder
+        is read-only, and the theme dropdown already reports that failure loudly.
+        """
+        wanted = theme.clamp_font_scale(
+            self.state.font_scale + steps * theme.FONT_SCALE_STEP
+        )
+        if wanted == self.state.font_scale:
+            return
+        self.state.font_scale = wanted
+        self._apply_theme()
+        self._save_state_quietly()
 
     # --- update checking -----------------------------------------------------
 
@@ -710,7 +734,7 @@ class App(tk.Tk):
         """One titled pane holding a scrolled tree; returns the tree."""
         frame = ttk.Frame(panes)
         panes.add(frame, weight=weight)
-        ttk.Label(frame, text=title, font=("TkDefaultFont", 10, "bold"), anchor="w").pack(
+        ttk.Label(frame, text=title, font=theme.HEADING_FONT, anchor="w").pack(
             side=tk.TOP, fill=tk.X, pady=(0, 2)
         )
         body = ttk.Frame(frame)
@@ -1580,7 +1604,7 @@ class AccountsDialog(tk.Toplevel):
         if not accounts:
             ttk.Label(grid, text="No accounts found yet -- use Rescan first.").grid(sticky="w")
         for column, heading in enumerate(("Platform", "Real account id", "Shows as")):
-            ttk.Label(grid, text=heading, font=("TkDefaultFont", 9, "bold")).grid(
+            ttk.Label(grid, text=heading, font=theme.BOLD_FONT).grid(
                 row=0, column=column, sticky="w", padx=(0, 10), pady=(0, 4)
             )
         for row, (platform, account) in enumerate(accounts, start=1):
@@ -1925,6 +1949,11 @@ BUTTONS
   dialog is the only place the real ids still appear. The names are stored in
   accounts.ini next to state.json; clearing a name shows the real id again.
 - Help: This dialog.
+
+KEYBOARD
+- Ctrl+plus / Ctrl+minus make every font in the window bigger or smaller, from 70% to
+  200% of your system's own size. The tree rows grow with the text, and the size is
+  remembered in the config just like the theme is.
 
 RIGHT-CLICK
 Every row offers exactly what makes sense for it:

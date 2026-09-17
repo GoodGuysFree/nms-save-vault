@@ -64,6 +64,14 @@ def _source_from_dict(d: dict) -> Source:
     )
 
 
+def _float_or(value, fallback: float) -> float:
+    """state.json is hand-editable, so a non-numeric value must not stop the app."""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return fallback
+
+
 @dataclass
 class AppState:
     """The whole on-disk configuration."""
@@ -73,6 +81,8 @@ class AppState:
     version: int = STATE_VERSION
     # UI preferences. "system" follows the Windows light/dark setting.
     theme: str = "system"
+    # Font zoom factor (Ctrl+/Ctrl-); 1.0 is the platform's own font size.
+    font_scale: float = 1.0
     # Update checking: "ask" until the user answers, then "on" or "off". This is the only
     # thing that makes the app contact the network, so it stays off until asked.
     update_check: str = "ask"
@@ -101,6 +111,7 @@ class AppState:
             "version": self.version,
             "vault": self.vault,
             "theme": self.theme,
+            "font_scale": self.font_scale,
             "update_check": self.update_check,
             "update_last_check": self.update_last_check,
             "sources": [asdict(s) for s in self.sources],
@@ -113,6 +124,7 @@ class AppState:
             vault=d.get("vault"),
             version=d.get("version", STATE_VERSION),
             theme=d.get("theme", "system"),
+            font_scale=_float_or(d.get("font_scale"), 1.0),
             update_check=d.get("update_check", "ask"),
             update_last_check=d.get("update_last_check", ""),
         )

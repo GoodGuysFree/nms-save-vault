@@ -55,3 +55,10 @@ def test_install_dir_falls_back_to_the_os_config_dir(tmp_path, monkeypatch):
         host = host_platform.Host(system, tmp_path, {"LOCALAPPDATA": str(tmp_path / "Local")})
         monkeypatch.setattr(host_platform.Host, "current", classmethod(lambda cls, h=host: h))
         assert state.install_dir() == expected
+
+
+def test_font_scale_round_trips_and_survives_a_hand_edited_config():
+    st = state.AppState(font_scale=1.3)
+    assert state.AppState.from_dict(st.to_dict()).font_scale == 1.3
+    assert state.AppState.from_dict({"font_scale": "big"}).font_scale == 1.0
+    assert state.AppState.from_dict({}).font_scale == 1.0

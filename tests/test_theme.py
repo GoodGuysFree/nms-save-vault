@@ -298,3 +298,82 @@ def test_borders_are_visible_without_being_heavy():
     for name, p in theme.PALETTES.items():
         ratio = contrast(p["border"], p["bg"])
         assert 1.25 <= ratio <= 3.0, f"{name}: border {p['border']} on bg is {ratio:.2f}:1"
+
+
+# --- font zoom ---------------------------------------------------------------
+
+
+def test_font_scale_snaps_to_a_step_and_stays_in_range():
+    assert theme.clamp_font_scale(1.0) == 1.0
+    assert theme.clamp_font_scale(1.04) == 1.0
+    assert theme.clamp_font_scale(1.06) == 1.1
+    assert theme.clamp_font_scale(99) == theme.MAX_FONT_SCALE
+    assert theme.clamp_font_scale(0) == theme.MIN_FONT_SCALE
+    assert theme.clamp_font_scale("nonsense") == 1.0
+
+
+def test_font_sizes_scale_from_the_baseline_keeping_the_sign():
+    """Tk reads a negative size as pixels; zooming must not silently switch it to points."""
+    assert theme._scaled_size(10, 1.5) == 15
+    assert theme._scaled_size(-12, 1.5) == -18
+    assert theme._scaled_size(9, theme.MIN_FONT_SCALE) == 6  # floor, never a 0pt font
+
+
+def test_ctrl_plus_and_minus_resize_every_font_and_the_rows(gui_app, monkeypatch):
+    """The whole point: one keystroke moves the named fonts, and the tree rows follow."""
+    from tkinter import font as tkfont
+    from tkinter import ttk
+
+    from nms_save_vault import gui
+
+    monkeypatch.setattr(gui.appstate, "save", lambda *a, **k: None)  # no config on disk
+    original = gui_app.state.font_scale
+    try:
+        gui_app.state.font_scale = 1.0
+        gui_app._apply_theme()
+        before = tkfont.nametofont("TkDefaultFont", gui_app).cget("size")
+        rows_before = ttk.Style(gui_app).lookup("Treeview", "rowheight")
+
+        gui_app._zoom(1)
+        assert gui_app.state.font_scale == 1.1
+        assert abs(tkfont.nametofont("TkDefaultFont", gui_app).cget("size")) > abs(before)
+        assert abs(tkfont.nametofont(theme.HEADING_FONT, gui_app).cget("size")) > 0
+        assert int(ttk.Style(gui_app).lookup("Treeview", "rowheight")) > int(rows_before)
+
+        gui_app._zoom(-1)
+        assert gui_app.state.font_scale == 1.0
+        assert tkfont.nametofont("TkDefaultFont", gui_app).cget("size") == before
+    finally:
+        gui_app.state.font_scale = original
+        gui_app._apply_theme()
+
+
+def test_every_ctrl_key_spelling_is_bound(gui_app):
+    """Both spellings of each key have to be wired up: Ctrl+= and Ctrl+- are what those
+    keys report unshifted, Ctrl++ and Ctrl+_ what they report with Shift held.
+
+    Checked as bindings rather than by generating the keypress: Tk does not deliver a key
+    event to a withdrawn window, and the suite's App is deliberately never shown.
+    """
+    for sequence in (
+        "<Control-plus>", "<Control-equal>", "<Control-KP_Add>",
+        "<Control-minus>", "<Control-underscore>", "<Control-KP_Subtract>",
+    ):
+        assert gui_app.bind_all(sequence), sequence
+
+
+def test_zoom_stops_at_the_ends_of_the_range(gui_app, monkeypatch):
+    from nms_save_vault import gui
+
+    monkeypatch.setattr(gui.appstate, "save", lambda *a, **k: None)
+    original = gui_app.state.font_scale
+    try:
+        gui_app.state.font_scale = theme.MAX_FONT_SCALE
+        gui_app._zoom(1)
+        assert gui_app.state.font_scale == theme.MAX_FONT_SCALE
+        gui_app.state.font_scale = theme.MIN_FONT_SCALE
+        gui_app._zoom(-1)
+        assert gui_app.state.font_scale == theme.MIN_FONT_SCALE
+    finally:
+        gui_app.state.font_scale = original
+        gui_app._apply_theme()

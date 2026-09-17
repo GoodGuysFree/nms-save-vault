@@ -312,6 +312,10 @@ follows your Windows light/dark setting. Your choice is remembered in `state.jso
 keeps the native Windows widget styling the app has always had; dark switches to a
 fully-colourable widget theme, because the native one ignores colour settings.)
 
+**Font size.** **Ctrl+plus** and **Ctrl+minus** (the main keys or the numeric keypad) scale
+every font in the window, from 70% to 200% of your system's own size. Tree rows grow with
+the text, and the size is remembered in `state.json` as `font_scale`.
+
 **Update checks are opt-in.** The first run asks whether the app may check for new versions.
 If you say yes, it asks GitHub **once a day, on startup**, whether a newer release exists and
 shows a bar at the top when there is one. Nothing about you or your saves is sent, and nothing
@@ -407,7 +411,7 @@ The vault lives outside `st_<id>`, so it is never scanned by the game or synced 
 ## Status
 
 Working. Core format/crypto and all operations are verified against the real save files and
-in a temp sandbox (372 tests). Xbox / Game Pass saves are supported for reading **and**
+in a temp sandbox (378 tests). Xbox / Game Pass saves are supported for reading **and**
 same-platform writing — verified against a real install (reads) and synthetic `wgs` fixtures
 (writes). A full file-copy safety backup of the live folder was made before development
 (`C:\Devel\NMS-SaveBackup-SAFETY-2026-06-24`).
