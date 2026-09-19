@@ -8,7 +8,7 @@ unlimited save slots beyond the game's 15. See [Platform support](#platform-supp
 
 **Just want to run it? No Python needed.** Download the ready-to-use Windows kit from the
 [**latest release**](https://github.com/GoodGuysFree/nms-save-vault/releases/latest) — grab
-`NMSSaveVault-Setup-v0.2.5.zip` under **Assets**.
+`NMSSaveVault-Setup-v0.2.6.zip` under **Assets**.
 
 Extract the zip, open the `NMSSaveVault` folder and run **`NMSSaveVault.exe`**. That is the
 whole thing — Python and Tkinter are bundled, nothing is installed, and because the app
@@ -36,7 +36,11 @@ shortcuts? `install.bat` in the zip adds them. Full details under
    that instead of the real id everywhere, so a screenshot or a screen-share never exposes
    your `st_<steamid64>` or Xbox `<xuid>_<titleid>`. See
    [Account display names](#account-display-names).
-5. **Know what you are looking at** — each slot's two saves are named for what they are
+5. **Total play time** — how long you have actually played, counted once per playthrough
+   rather than once per file: the two saves in a slot, every dated backup of them, and the
+   same run carried to another platform by the NMS cloud all fold into a single row, and
+   the highest play time wins. **Play time...** in the GUI, `nmsvault playtime` on the CLI.
+6. **Know what you are looking at** — each slot's two saves are named for what they are
    (**Auto-Save** vs **Restore-Point**), the difficulty preset is shown by name, Xbox saves
    report their cloud sync state, and hovering any row explains it. See
    [The two saves in every slot](#the-two-saves-in-every-slot).
@@ -78,8 +82,8 @@ Both platforms have a portable kit on the
 
 | Platform | Asset |
 |---|---|
-| Linux / Steam Deck (x86_64) | `NMSSaveVault-v0.2.5-linux-x86_64.tar.gz` |
-| macOS (Apple Silicon) | `NMSSaveVault-v0.2.5-macos-arm64.tar.gz` |
+| Linux / Steam Deck (x86_64) | `NMSSaveVault-v0.2.6-linux-x86_64.tar.gz` |
+| macOS (Apple Silicon) | `NMSSaveVault-v0.2.6-macos-arm64.tar.gz` |
 
 ### Read this first: back up your saves by hand
 
@@ -111,7 +115,7 @@ saw last. It is not a substitute for the copy above.
 ### Then run it
 
 ```sh
-tar -xzf NMSSaveVault-v0.2.5-linux-x86_64.tar.gz
+tar -xzf NMSSaveVault-v0.2.6-linux-x86_64.tar.gz
 cd NMSSaveVault
 ./NMSSaveVault          # the app;  ./nmsvault status  for the command line
 ```
@@ -140,7 +144,7 @@ and can only draw ISO8859-1. Every string the app displays is therefore plain AS
 
 ## Run it (Windows, no Python needed)
 
-Download **`NMSSaveVault-Setup-v0.2.5.zip`** from the
+Download **`NMSSaveVault-Setup-v0.2.6.zip`** from the
 [**Releases**](https://github.com/GoodGuysFree/nms-save-vault/releases) page (under the
 release's **Assets**) and extract it. Open the `NMSSaveVault` folder and run
 **`NMSSaveVault.exe`** — that is all. Everything (Python + Tkinter) is bundled, nothing is
@@ -357,6 +361,7 @@ CLI:
 nmsvault status                          # live folder + 15 slots, both saves each
 nmsvault sources [--rescan]              # configured live sources (Steam/Xbox accounts)
 nmsvault list                            # catalog entries
+nmsvault playtime                        # total play time, one row per playthrough
 nmsvault discover --add                  # find existing backups, add them in place
 nmsvault backup --label "before update"  # full snapshot into the vault
 nmsvault extract 9 --label "main"        # lift slot 9 aside
@@ -426,7 +431,7 @@ The vault lives outside `st_<id>`, so it is never scanned by the game or synced 
 ## Status
 
 Working. Core format/crypto and all operations are verified against the real save files and
-in a temp sandbox (390 tests). Xbox / Game Pass saves are supported for reading **and**
+in a temp sandbox (400 tests). Xbox / Game Pass saves are supported for reading **and**
 same-platform writing — verified against a real install (reads) and synthetic `wgs` fixtures
 (writes). A full file-copy safety backup of the live folder was made before development
 (`C:\Devel\NMS-SaveBackup-SAFETY-2026-06-24`).
@@ -435,6 +440,7 @@ same-platform writing — verified against a real install (reads) and synthetic 
 
 | Version | Date | Highlights |
 |---|---|---|
+| **0.2.6** | 2026-09-19 | **Total play time.** How long have you actually played? Counting files cannot answer that: each playthrough exists twice in its slot (Auto-Save and Restore-Point), again in every dated backup in the vault, and - because an NMS cloud save carries a run to a linked account on another platform - once more under a second platform entirely. 821 save files here are 29 playthroughs. **Play time...** (toolbar) and `nmsvault playtime` fold every copy onto one row and count the highest play time of the copies, since play time only ever goes up. Identity is the game's own: the u64 the Steam meta carries at `OFF_SLOT_IDENTIFIER`, which is the same number the save data holds as `WmU` - it survives a rename, a move to another slot, and the trip through the cloud to another platform. Xbox metas leave that field 0, so an Xbox save is identified from its data blob instead, cached per file so the second run costs nothing. Saves older than the field are matched on their name and the report says how many those were. Also: `lz4_block` now reads the unframed container of pre-Waypoint Xbox saves - one bare LZ4 block with no chunk headers - which previously decoded to nothing. |
 | **0.2.5** | 2026-09-19 | **Fix: Steam Cloud put a cleared slot straight back.** Reported after a clear looked like it worked: the slot was gone in the app, and there again in the game. Steam's Auto-Cloud manifest still lists every `save*.hg` it has uploaded, so a file that is merely *missing* locally is downloaded again at the next launch - nothing inside the save folder can stop that. The clear confirmation now says so before you believe the slot is gone, and gives the sequence that does work: turn off **Keep game saves in the Steam Cloud**, clear the slot, launch and quit the game, turn Cloud back on. The same comparison was quietly threatening restores, which *do* sync: `repopulate_slot` and `restore_full` stamped the live file with the backup's original mtime, so Steam judged its own copy the newer one and could overwrite what had just been restored. Under Cloud a live write now carries the write time; without Cloud the save keeps the age it had. Xbox / Game Pass was right already - a cleared record stays in `containers.index` flagged `Deleted`, which is the cloud's instruction to remove it. |
 | **0.2.4** | 2026-09-17 | **Ctrl+plus / Ctrl+minus change the font size.** The window drew at whatever size Windows picked and there was no way to change it, which is a problem on a high-DPI screen and a different problem on a TV. Both keys now step the whole UI between 70% and 200% of your system size - the main keys or the numeric keypad - and the tree rows grow with the text rather than clipping it, because the row height was already derived from the font metrics. The size is remembered in `state.json` as `font_scale`, exactly like the theme is, so the app reopens the way you left it. It works by resizing Tk's *named* fonts, which every widget in the app draws with, so one keystroke moves everything at once; the five labels that had hardcoded their own point size - the pane titles, the bold group and active rows, the tooltip and the Accounts headings - would have stayed put, so they now name app-defined fonts that scale with the rest. |
 | **0.2.3** | 2026-09-13 | **Fix: Clear slot refused every row you could offer it.** Reported within the hour: "no matter what I try, I get this error" - *Clear empties one of your LIVE slots, so it needs a live one*, on a slot and on either save inside it alike. The right-click menu narrows a save row to its slot before handing it to an action, because clearing is slot-granular, and the dict it built for that carried the folder and the slot number but not the flag saying the slot is **live** - so Clear, the one action that checks it, concluded the row was a backup and bounced it. The toolbar button worked, which is exactly why it shipped: the tests asserted the menu *offered* Clear, and asserted the handler cleared when handed a row, but never clicked the entry to see what the menu actually passed. They now invoke the menu entry itself. |

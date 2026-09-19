@@ -26,7 +26,7 @@ from datetime import datetime
 from pathlib import Path
 
 from .core import aliases, catalog, discover, locations, operations as ops
-from .core import savedir, slotmap
+from .core import playtime, savedir, slotmap
 from .core import state as appstate
 from .core.catalog import Vault
 
@@ -218,6 +218,36 @@ def cmd_extract(args) -> int:
     source = _resolve_source(vault, args.source) if args.source else _resolve_live(args)
     entry = ops.extract_slot(vault, source, args.slot, label=args.label or "")
     print(f"extracted slot {args.slot} -> '{entry.id}' at {entry.path}")
+    return 0
+
+
+def cmd_playtime(args) -> int:
+    """Total play time across the live folders and the vault, one row per playthrough."""
+    vault = _resolve_vault(args)
+    st = appstate.load()
+    live = [s.path for s in st.live_sources if s.exists] if st else [str(_resolve_live(args))]
+    report = playtime.collect(vault, live)
+
+    print(f"{'Play time':>10}  {'Platform':<12}{'Copies':>7}  Save")
+    print("-" * 78)
+    for p in report.playthroughs:
+        mark = "" if p.identified else "  (by name)"
+        print(
+            f"{ops.format_duration(p.play_time):>10}  {','.join(p.platforms):<12}{p.copies:>7}  "
+            f"{aliases.redact(p.name)}{mark}"
+        )
+    print()
+    print(
+        f"{len(report.playthroughs)} playthroughs in {report.saves} save files across "
+        f"{report.folders} folders (live + vault), totalling "
+        f"{ops.format_duration(report.total_play_time)} of play time."
+    )
+    if report.unidentified:
+        n = report.unidentified
+        print(
+            f"{n} of them {'is' if n == 1 else 'are'} counted by name: {'it predates' if n == 1 else 'they predate'} "
+            "the save id the game now writes, so two runs with the same name would merge."
+        )
     return 0
 
 
@@ -448,6 +478,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("status", help="show the live folder and slot table").set_defaults(func=cmd_status)
     sub.add_parser("list", help="list catalog entries").set_defaults(func=cmd_list)
+    sub.add_parser(
+        "playtime", help="total play time across live saves and the vault, deduplicated"
+    ).set_defaults(func=cmd_playtime)
 
     s = sub.add_parser("sources", help="list configured live sources (Steam/Xbox accounts)")
     s.add_argument("--rescan", action="store_true", help="re-detect live folders and merge any new ones")

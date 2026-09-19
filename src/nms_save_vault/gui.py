@@ -21,7 +21,7 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 from . import __version__, theme, updates
 from .core import aliases, catalog, discover, locations, slotmap
 from .core import operations as ops
-from .core import savedir
+from .core import playtime, savedir
 from .core import state as appstate
 from .core.catalog import Vault
 
@@ -385,6 +385,7 @@ class App(tk.Tk):
             ("Copy into live slot...", self.on_copy_slot),
             ("Promote", self.on_promote),
             ("Import...", self.on_import),
+            ("Play time...", self.on_playtime),
             ("Rescan", self.on_rescan),
             ("Discover", self.on_discover),
             ("Undo", self.on_undo),
@@ -1543,6 +1544,17 @@ class App(tk.Tk):
             message="Undoing - please wait...",
         )
 
+    def on_playtime(self) -> None:
+        """Total play time across every save the app can see, one row per playthrough."""
+        self.config(cursor="watch")
+        self.update_idletasks()
+        try:
+            live = [s.path for s in self.state.live_sources if s.exists]
+            report = playtime.collect(self.vault, live)
+        finally:
+            self.config(cursor="")
+        PlaytimeDialog(self, report)
+
     def on_accounts(self) -> None:
         try:
             AccountsDialog(self)
@@ -1570,6 +1582,71 @@ class App(tk.Tk):
         vsb.config(command=txt.yview)
         txt.insert("1.0", HELP_TEXT)
         txt.configure(state="disabled")
+
+
+class PlaytimeDialog(tk.Toplevel):
+    """One row per playthrough, with the headline total above it.
+
+    Every copy of a save -- both members, every dated backup, and the same run on a second
+    platform -- folds into one row, which is the whole point: the total under the headline
+    is the time actually played, not the time on disk.
+    """
+
+    def __init__(self, master, report) -> None:
+        super().__init__(master)
+        self.title("NMS Save Vault - Play time")
+        self.geometry("720x460")
+        self.transient(master)
+
+        total = ops.format_duration(report.total_play_time)
+        ttk.Label(
+            self, text=f"{len(report.playthroughs)} playthroughs, {total} of play time in total.",
+            font=theme.HEADING_FONT, padding=(12, 10, 12, 2),
+        ).pack(side=tk.TOP, anchor="w")
+        ttk.Label(
+            self,
+            text=(
+                f"Counted once each across {report.saves} save files in {report.folders} "
+                "folders (live saves + vault backups)."
+            ),
+            padding=(12, 0, 12, 8),
+        ).pack(side=tk.TOP, anchor="w")
+
+        ttk.Button(self, text="Close", command=self.destroy).pack(side=tk.BOTTOM, pady=8)
+        if report.unidentified:
+            ttk.Label(
+                self,
+                text=(
+                    f"{report.unidentified} save(s) predate the id the game now writes and are "
+                    "counted by name, so two runs sharing a name would merge."
+                ),
+                padding=(12, 0, 12, 6),
+            ).pack(side=tk.BOTTOM, anchor="w")
+
+        frame = ttk.Frame(self, padding=(12, 0, 12, 0))
+        frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+        vsb = ttk.Scrollbar(frame, orient="vertical")
+        vsb.pack(side=tk.RIGHT, fill=tk.Y)
+        tree = RedactingTreeview(
+            frame, columns=("play", "platform", "copies", "name"), show="headings",
+            yscrollcommand=vsb.set,
+        )
+        for cid, text, width, anchor in (
+            ("play", "Play time", 90, "e"),
+            ("platform", "Platform", 110, "w"),
+            ("copies", "Copies", 60, "e"),
+            ("name", "Save", 400, "w"),
+        ):
+            tree.heading(cid, text=text)
+            tree.column(cid, width=width, anchor=anchor, stretch=(cid == "name"))
+        tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        vsb.config(command=tree.yview)
+        for row in report.playthroughs:
+            name = row.name + ("   (counted by name)" if not row.identified else "")
+            tree.insert(
+                "", "end",
+                values=(ops.format_duration(row.play_time), ", ".join(row.platforms), row.copies, name),
+            )
 
 
 class AccountsDialog(tk.Toplevel):
@@ -1929,6 +2006,12 @@ BUTTONS
     * select a slot in a backup and it is the source -- pick where it lands;
     * select a live slot and it is the destination -- press Change... to pick what fills it.
   The save data is copied exactly and the small meta is re-keyed for the new slot number.
+- Play time: How long you have actually played. Every copy of a save is folded onto one
+  playthrough - its two members, every dated backup of it in the vault, and the same run
+  on a second platform (an NMS cloud save keeps its identity across linked accounts) -
+  and the highest play time of the copies is the one counted, because play time only ever
+  goes up. Saves older than the id the game now writes are matched on their name instead,
+  and the window says how many of those there were.
 - Promote: Select one of a live slot's two saves (Auto-Save or Restore-Point) to force it
   to be the newest, so the game loads it instead of the other -- e.g. to roll back to the
   Restore-Point.
