@@ -406,12 +406,27 @@ No Man's Sky uses Steam Cloud, which syncs the `st_<id>` folder. To avoid cloud 
 2. Make your changes (restore / repopulate / promote).
 3. Launch the game. If Steam shows a cloud conflict, choose the **local** copy.
 
+**Deleting is the exception.** Steam's manifest still lists a save it has uploaded, so a
+file that is merely *missing* locally is downloaded again at the next launch: clear a slot
+and it comes back. Overwrites are safe (a changed file is seen as a change, and the app
+stamps every live write with the current time so the cloud copy never looks newer), but to
+make a deletion stick:
+
+1. Steam → No Man's Sky → Properties → General → turn off **Keep game saves in the Steam
+   Cloud**.
+2. Clear the slot in NMS Save Vault, with the game closed.
+3. Launch the game, check the slot is gone, quit.
+4. Turn Cloud back on; if Steam asks, keep the **local** copy.
+
+Xbox / Game Pass is not affected: a cleared save keeps its `containers.index` record
+flagged `Deleted`, which is the cloud's instruction to remove it.
+
 The vault lives outside `st_<id>`, so it is never scanned by the game or synced by Steam.
 
 ## Status
 
 Working. Core format/crypto and all operations are verified against the real save files and
-in a temp sandbox (378 tests). Xbox / Game Pass saves are supported for reading **and**
+in a temp sandbox (384 tests). Xbox / Game Pass saves are supported for reading **and**
 same-platform writing — verified against a real install (reads) and synthetic `wgs` fixtures
 (writes). A full file-copy safety backup of the live folder was made before development
 (`C:\Devel\NMS-SaveBackup-SAFETY-2026-06-24`).

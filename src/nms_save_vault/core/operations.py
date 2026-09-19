@@ -89,6 +89,11 @@ def _is_xbox(path: Path) -> bool:
     return savedir.platform_of(path) == "xbox"
 
 
+def _steam_cloud_on(folder: Path) -> bool:
+    """True when Steam Cloud is syncing this folder (it carries steam_autocloud.vdf)."""
+    return (Path(folder) / formats.STEAM_AUTOCLOUD).is_file()
+
+
 def _guard_same_platform(src: Path, dst: Path) -> None:
     """Cross-platform (Steam<->Xbox) transfer is gated; same-platform is supported."""
     if savedir.platform_of(src) != savedir.platform_of(dst):
@@ -245,13 +250,18 @@ def restore_full(
     snap = snapshot_live(vault, live_dir, reason=f"pre-restore of {entry.id}")
     changed: list[str] = []
 
+    # Steam Cloud compares each local file against its own manifest, so a restored file
+    # stamped with the backup's original mtime looks OLDER than the cloud copy and Steam
+    # can overwrite the restore on the next launch. Under Cloud the write time is the
+    # honest one; elsewhere the save keeps the age it had.
+    keep_mtime = not _steam_cloud_on(live_dir)
     src_hg = {p.name for p in _hg_files(src)}
     for p in _hg_files(src):
-        safety.atomic_copy(p, live_dir / p.name)
+        safety.atomic_copy(p, live_dir / p.name, preserve_mtime=keep_mtime)
         changed.append(p.name)
     vdf = src / formats.STEAM_AUTOCLOUD
     if vdf.is_file():
-        safety.atomic_copy(vdf, live_dir / vdf.name)
+        safety.atomic_copy(vdf, live_dir / vdf.name, preserve_mtime=keep_mtime)
 
     if mirror:
         for p in _hg_files(live_dir):
@@ -335,12 +345,16 @@ def repopulate_slot(
         raise OperationError(f"source slot {source_slot} has no saves in {source_dir}")
 
     snap = snapshot_live(vault, live_dir, reason=f"pre-repopulate slot {dest_slot}")
+    # See restore_full: under Steam Cloud the source mtime would make the cloud copy look
+    # newer than what we just wrote, and Steam would put its copy back.
+    keep_mtime = not _steam_cloud_on(live_dir)
     changed: list[str] = []
     for dst_data, data_bytes, dst_meta, new_meta, mtime in planned:
         safety.atomic_write_bytes(dst_data, data_bytes)
         safety.atomic_write_bytes(dst_meta, new_meta)
-        safety.set_file_mtime(dst_data, mtime)
-        safety.set_file_mtime(dst_meta, mtime)
+        if keep_mtime:
+            safety.set_file_mtime(dst_data, mtime)
+            safety.set_file_mtime(dst_meta, mtime)
         changed += [dst_data.name, dst_meta.name]
 
     _validate_slot(live_dir, dest_slot, warnings)
@@ -558,6 +572,7 @@ class ClearPlan:
     entry_created: str = ""
     backup_name: str = ""
     backup_play_time: int = 0
+    steam_cloud: bool = False
 
     @property
     def backed_up(self) -> bool:
@@ -588,6 +603,24 @@ class ClearPlan:
                 "would be lost."
             )
         return ""
+
+    @property
+    def cloud_warning(self) -> str:
+        """Why a Steam Cloud delete does not stick, and the procedure that makes it.
+
+        Steam restores a file that is merely MISSING locally -- its manifest still lists
+        it -- so deleting saves under Cloud is undone on the next launch. Overwrites are
+        not affected: a changed file is seen as a change.
+        """
+        if not self.steam_cloud:
+            return ""
+        return (
+            "Steam Cloud is syncing this folder, and Steam puts back files that are only "
+            "missing locally, so this slot can reappear the next time you launch the game. "
+            "To make the deletion stick: in Steam, No Man's Sky > Properties > General, "
+            "turn off 'Keep game saves in the Steam Cloud'; clear the slot; launch and quit "
+            "the game once; then turn Cloud back on and keep the local copy if Steam asks."
+        )
 
 
 def format_duration(seconds: int) -> str:
@@ -628,13 +661,15 @@ def plan_clear_slot(vault: Vault, live_dir: Path, slot: int) -> ClearPlan:
     """Describe, without changing anything, what clearing ``slot`` would cost."""
     _check_slot(slot)
     live_dir = Path(live_dir)
-    sv = savedir.scan_any(live_dir).slots.get(slot)
+    view = savedir.scan_any(live_dir)
+    sv = view.slots.get(slot)
     if sv is None or not sv.occupied:
-        return ClearPlan(slot=slot, occupied=False)
+        return ClearPlan(slot=slot, occupied=False, steam_cloud=view.steam_cloud)
 
     plan = ClearPlan(
         slot=slot,
         occupied=True,
+        steam_cloud=view.steam_cloud,
         live_name=sv.display_name,
         live_play_time=max(
             (m.info.total_play_time for m in sv.present_members if m.info is not None), default=0

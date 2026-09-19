@@ -238,6 +238,8 @@ def cmd_clear(args) -> int:
         )
     if plan.warning:
         print(f"\nWARNING: {plan.warning}")
+    if plan.cloud_warning:
+        print(f"\nSTEAM CLOUD: {plan.cloud_warning}")
     if not args.yes and not _confirm(f"Clear slot {plan.slot}?"):
         print("cancelled")
         return 0

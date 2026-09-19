@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 from nms_save_vault.core import operations as ops
-from nms_save_vault.core import savedir, slotmap
+from nms_save_vault.core import formats, savedir, slotmap
 from nms_save_vault.core.catalog import Vault
 
 
@@ -185,3 +185,39 @@ def test_clear_slot_logs_an_undoable_operation(make_wgs_account, tmp_path):
     record = vault.read_oplog()[-1]
     assert record["op"] == "clear_slot" and record["snapshot_id"] == res.snapshot_id
     assert Path(vault.get(res.snapshot_id).path).is_dir()
+
+
+# --- Steam Cloud: the delete that does not stick -----------------------------
+
+
+def test_plan_spells_out_the_steam_cloud_procedure(steam_sandbox):
+    """Steam puts back a file that is only MISSING locally, so a plain delete is undone on
+    the next launch. The plan has to say so before the user believes the slot is gone."""
+    live, vault = steam_sandbox
+    occupied = [s.slot for s in savedir.scan(live).occupied_slots]
+    if not occupied:
+        pytest.skip("the live folder has no occupied slots to clear")
+    (live / formats.STEAM_AUTOCLOUD).write_text("", encoding="utf-8")
+
+    plan = ops.plan_clear_slot(vault, live, occupied[0])
+    assert plan.steam_cloud
+    assert "Keep game saves in the Steam Cloud" in plan.cloud_warning
+
+
+def test_plan_is_silent_about_the_cloud_when_the_folder_is_not_synced(steam_sandbox):
+    live, vault = steam_sandbox
+    occupied = [s.slot for s in savedir.scan(live).occupied_slots]
+    if not occupied:
+        pytest.skip("the live folder has no occupied slots to clear")
+    (live / formats.STEAM_AUTOCLOUD).unlink(missing_ok=True)
+
+    plan = ops.plan_clear_slot(vault, live, occupied[0])
+    assert not plan.steam_cloud and plan.cloud_warning == ""
+
+
+def test_xbox_plan_carries_no_steam_cloud_warning(make_wgs_account, tmp_path):
+    """Xbox deletes propagate: the record stays in containers.index flagged Deleted, which
+    is the cloud's instruction to remove it. Nothing to warn about."""
+    live = make_wgs_account(tmp_path, [("Slot1Auto", '{"a":1}', "Save", "", 100, 1000)])
+    plan = ops.plan_clear_slot(_vault(tmp_path), live, 1)
+    assert not plan.steam_cloud and plan.cloud_warning == ""

@@ -239,6 +239,8 @@ def _clear_question(plan, directory) -> str:
         )
     if plan.warning:
         lines += ["", "WARNING: " + plan.warning]
+    if plan.cloud_warning:
+        lines += ["", "STEAM CLOUD: " + plan.cloud_warning]
     lines += ["", "The current state is auto-snapshotted first, so Undo can put it back."]
     return "\n".join(lines)
 
@@ -1999,6 +2001,10 @@ SAFETY
 - Every change auto-snapshots the live state first and can be reversed with Undo.
 - Steam Cloud: operate with the game closed; if Steam shows a conflict on next launch,
   keep the local copy.
+- Steam Cloud and deleting: Steam puts back a save that is only missing locally, so a
+  cleared slot reappears at the next launch. Turn off "Keep game saves in the Steam
+  Cloud" (game Properties > General), clear the slot, launch and quit the game, then
+  turn Cloud back on. Xbox / Game Pass deletes propagate on their own.
 """
 
 

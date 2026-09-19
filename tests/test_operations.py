@@ -5,13 +5,15 @@ save directory is never modified.
 """
 from __future__ import annotations
 
+import os
 import shutil
+import time
 from pathlib import Path
 
 import pytest
 
 from nms_save_vault.core import operations as ops
-from nms_save_vault.core import savedir, slotmap
+from nms_save_vault.core import formats, savedir, slotmap
 from nms_save_vault.core.catalog import CatalogEntry, Vault
 
 
@@ -282,3 +284,61 @@ def test_prune_snapshots_is_chronological_across_platforms(tmp_path):
     # The most recent snapshot survives; the single oldest is the one pruned.
     assert newest.name in ids and newest.is_dir()
     assert oldest.name not in ids and not oldest.exists()
+
+
+# --- Steam Cloud: mtimes on writes into the live folder ----------------------
+#
+# Steam compares each local file against its own manifest. A file written with the
+# backup's original mtime looks OLDER than the cloud copy, and Steam can overwrite the
+# restore on the next launch -- so under Cloud the live file carries the write time.
+
+
+def _touch_slot(folder: Path, slot: int, when: float) -> None:
+    for fno in slotmap.slot_file_numbers(slot):
+        for name in (slotmap.data_filename(fno), slotmap.meta_filename(fno)):
+            p = folder / name
+            if p.is_file():
+                os.utime(p, (when, when))
+
+
+def test_repopulate_under_cloud_stamps_the_write_time(sandbox):
+    live, vault = sandbox
+    occ = [s.slot for s in savedir.scan(live).occupied_slots]
+    src_slot, dest_slot = occ[0], occ[1]
+    old = time.time() - 30 * 86400
+    _touch_slot(live, src_slot, old)
+    (live / formats.STEAM_AUTOCLOUD).write_text("", encoding="utf-8")
+
+    started = time.time()
+    ops.repopulate_slot(vault, live, src_slot, live, dest_slot, allow_game_running=True)
+
+    fno = slotmap.slot_file_numbers(dest_slot)[0]
+    assert (live / slotmap.data_filename(fno)).stat().st_mtime >= started - 1
+
+
+def test_repopulate_without_cloud_keeps_the_source_age(sandbox):
+    live, vault = sandbox
+    occ = [s.slot for s in savedir.scan(live).occupied_slots]
+    src_slot, dest_slot = occ[0], occ[1]
+    old = time.time() - 30 * 86400
+    _touch_slot(live, src_slot, old)
+    (live / formats.STEAM_AUTOCLOUD).unlink(missing_ok=True)
+
+    ops.repopulate_slot(vault, live, src_slot, live, dest_slot, allow_game_running=True)
+
+    fno = slotmap.slot_file_numbers(dest_slot)[0]
+    assert (live / slotmap.data_filename(fno)).stat().st_mtime == pytest.approx(old, abs=2)
+
+
+def test_restore_under_cloud_stamps_the_write_time(sandbox):
+    live, vault = sandbox
+    victim = [s.slot for s in savedir.scan(live).occupied_slots][0]
+    _touch_slot(live, victim, time.time() - 30 * 86400)
+    entry = ops.create_full_backup(vault, live, label="aged")
+    (live / formats.STEAM_AUTOCLOUD).write_text("", encoding="utf-8")
+
+    started = time.time()
+    ops.restore_full(vault, entry, live, allow_game_running=True)
+
+    fno = slotmap.slot_file_numbers(victim)[0]
+    assert (live / slotmap.data_filename(fno)).stat().st_mtime >= started - 1

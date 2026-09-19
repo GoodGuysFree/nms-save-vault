@@ -91,7 +91,9 @@ src/nms_save_vault/
 4. Validate: meta header + `SizeDisk == file size` + `SizeDecompressed == Σ chunk sizes`
    + sha256 on copies + re-key round-trip.
 5. Dry-run preview; operation log with one-click undo.
-6. Steam Cloud: operate with game closed; vault lives outside `st_…`.
+6. Steam Cloud: operate with game closed; vault lives outside `st_…`. Live writes are
+   stamped with the write time under Cloud, so Steam never judges its copy the newer one;
+   deletions cannot be propagated at all and the clear plan says how to do it by hand.
 
 ## Verification strategy
 * **Read-only** unit tests against the real backups (decode every meta → header + ordinal
