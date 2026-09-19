@@ -8,7 +8,7 @@ unlimited save slots beyond the game's 15. See [Platform support](#platform-supp
 
 **Just want to run it? No Python needed.** Download the ready-to-use Windows kit from the
 [**latest release**](https://github.com/GoodGuysFree/nms-save-vault/releases/latest) — grab
-`NMSSaveVault-Setup-v0.2.4.zip` under **Assets**.
+`NMSSaveVault-Setup-v0.2.5.zip` under **Assets**.
 
 Extract the zip, open the `NMSSaveVault` folder and run **`NMSSaveVault.exe`**. That is the
 whole thing — Python and Tkinter are bundled, nothing is installed, and because the app
@@ -78,8 +78,8 @@ Both platforms have a portable kit on the
 
 | Platform | Asset |
 |---|---|
-| Linux / Steam Deck (x86_64) | `NMSSaveVault-v0.2.4-linux-x86_64.tar.gz` |
-| macOS (Apple Silicon) | `NMSSaveVault-v0.2.4-macos-arm64.tar.gz` |
+| Linux / Steam Deck (x86_64) | `NMSSaveVault-v0.2.5-linux-x86_64.tar.gz` |
+| macOS (Apple Silicon) | `NMSSaveVault-v0.2.5-macos-arm64.tar.gz` |
 
 ### Read this first: back up your saves by hand
 
@@ -111,7 +111,7 @@ saw last. It is not a substitute for the copy above.
 ### Then run it
 
 ```sh
-tar -xzf NMSSaveVault-v0.2.4-linux-x86_64.tar.gz
+tar -xzf NMSSaveVault-v0.2.5-linux-x86_64.tar.gz
 cd NMSSaveVault
 ./NMSSaveVault          # the app;  ./nmsvault status  for the command line
 ```
@@ -140,7 +140,7 @@ and can only draw ISO8859-1. Every string the app displays is therefore plain AS
 
 ## Run it (Windows, no Python needed)
 
-Download **`NMSSaveVault-Setup-v0.2.4.zip`** from the
+Download **`NMSSaveVault-Setup-v0.2.5.zip`** from the
 [**Releases**](https://github.com/GoodGuysFree/nms-save-vault/releases) page (under the
 release's **Assets**) and extract it. Open the `NMSSaveVault` folder and run
 **`NMSSaveVault.exe`** — that is all. Everything (Python + Tkinter) is bundled, nothing is
@@ -435,6 +435,7 @@ same-platform writing — verified against a real install (reads) and synthetic 
 
 | Version | Date | Highlights |
 |---|---|---|
+| **0.2.5** | 2026-09-19 | **Fix: Steam Cloud put a cleared slot straight back.** Reported after a clear looked like it worked: the slot was gone in the app, and there again in the game. Steam's Auto-Cloud manifest still lists every `save*.hg` it has uploaded, so a file that is merely *missing* locally is downloaded again at the next launch - nothing inside the save folder can stop that. The clear confirmation now says so before you believe the slot is gone, and gives the sequence that does work: turn off **Keep game saves in the Steam Cloud**, clear the slot, launch and quit the game, turn Cloud back on. The same comparison was quietly threatening restores, which *do* sync: `repopulate_slot` and `restore_full` stamped the live file with the backup's original mtime, so Steam judged its own copy the newer one and could overwrite what had just been restored. Under Cloud a live write now carries the write time; without Cloud the save keeps the age it had. Xbox / Game Pass was right already - a cleared record stays in `containers.index` flagged `Deleted`, which is the cloud's instruction to remove it. |
 | **0.2.4** | 2026-09-17 | **Ctrl+plus / Ctrl+minus change the font size.** The window drew at whatever size Windows picked and there was no way to change it, which is a problem on a high-DPI screen and a different problem on a TV. Both keys now step the whole UI between 70% and 200% of your system size - the main keys or the numeric keypad - and the tree rows grow with the text rather than clipping it, because the row height was already derived from the font metrics. The size is remembered in `state.json` as `font_scale`, exactly like the theme is, so the app reopens the way you left it. It works by resizing Tk's *named* fonts, which every widget in the app draws with, so one keystroke moves everything at once; the five labels that had hardcoded their own point size - the pane titles, the bold group and active rows, the tooltip and the Accounts headings - would have stayed put, so they now name app-defined fonts that scale with the rest. |
 | **0.2.3** | 2026-09-13 | **Fix: Clear slot refused every row you could offer it.** Reported within the hour: "no matter what I try, I get this error" - *Clear empties one of your LIVE slots, so it needs a live one*, on a slot and on either save inside it alike. The right-click menu narrows a save row to its slot before handing it to an action, because clearing is slot-granular, and the dict it built for that carried the folder and the slot number but not the flag saying the slot is **live** - so Clear, the one action that checks it, concluded the row was a backup and bounced it. The toolbar button worked, which is exactly why it shipped: the tests asserted the menu *offered* Clear, and asserted the handler cleared when handed a row, but never clicked the entry to see what the menu actually passed. They now invoke the menu entry itself. |
 | **0.2.2** | 2026-09-13 | **Clear a slot.** Freeing a live slot meant extracting it and then deleting the files by hand, which is exactly the moment to delete the wrong one. **Clear slot** does it from the app - toolbar, or right-click any live slot - and before it does, it goes looking for the most recently made copy of *that slot* in the vault and compares its play time with the live save's. If the live save is further on, or if the vault has no copy of the slot at all, it says so in the confirmation and asks again, because that gap is precisely what clearing would cost you. The live folder never counts as its own backup, even when it is catalogued in place - that would answer "backed up" by pointing at the very save about to be deleted. Like every other write, the live state is auto-snapshotted first, so **Undo** brings the slot straight back. Xbox / Game Pass clears the same way: the `containers.index` record is kept and flagged `Deleted`, as the Xbox app itself does, so the cloud copy is told to go rather than being re-synced back down - and writing into the slot again un-deletes it. On the CLI: `nmsvault clear <slot> [--yes]`. |
