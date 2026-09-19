@@ -6,6 +6,10 @@ A ``saveN.hg`` is a sequence of chunks:
 This module walks that container and (for deep verification) LZ4-block-decodes it. Only
 *decoding* is implemented -- the app never recompresses, it copies data verbatim.
 
+Pre-Waypoint Microsoft saves predate that framing: the whole save is ONE bare LZ4 block
+with no chunk headers, so nothing on the wire says how big it decompresses to. The size
+lives in the wgs meta instead, and the caller passes it in (see :func:`decompress`).
+
 Note: the game does not always truncate ``saveN.hg`` when a later save is smaller, so the
 file may have trailing stale bytes after the last valid chunk. ``walk_chunks`` reports the
 number of *valid* bytes consumed (which equals the meta's ``size_disk``).
@@ -111,10 +115,26 @@ def decompress_block(src: bytes, expected_size: int) -> bytes:
     return bytes(out[:d])
 
 
-def decompress(data: bytes) -> bytes:
-    """Fully decompress the save container into the concatenated (obfuscated) JSON bytes."""
+def is_chunked(data: bytes) -> bool:
+    """True when the container uses the 0xFEEDA1E5 chunk framing (everything post-Waypoint,
+    and every Steam save). False means a bare LZ4 block -- an old Microsoft save."""
+    return data[: len(formats.SAVE_STREAMING_HEADER)] == formats.SAVE_STREAMING_HEADER
+
+
+def decompress(data: bytes, expected_size: int | None = None) -> bytes:
+    """Fully decompress the save container into the concatenated (obfuscated) JSON bytes.
+
+    ``expected_size`` is used only for a bare, unframed block (an old Microsoft save),
+    which carries no decompressed size of its own -- pass the wgs meta's size field. A
+    chunked container carries its own sizes and ignores it.
+    """
     chunks, _consumed = walk_chunks(data)
-    if not chunks:
-        raise ValueError("no valid save chunks found")
-    parts = [decompress_block(data[c.payload_offset : c.payload_offset + c.compressed_size], c.decompressed_size) for c in chunks]
-    return b"".join(parts)
+    if chunks:
+        parts = [
+            decompress_block(data[c.payload_offset : c.payload_offset + c.compressed_size], c.decompressed_size)
+            for c in chunks
+        ]
+        return b"".join(parts)
+    if expected_size:
+        return decompress_block(data, expected_size)
+    raise ValueError("no valid save chunks found, and no expected size for a bare LZ4 block")
