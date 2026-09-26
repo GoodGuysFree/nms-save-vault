@@ -8,7 +8,7 @@ unlimited save slots beyond the game's 15. See [Platform support](#platform-supp
 
 **Just want to run it? No Python needed.** Download the ready-to-use Windows kit from the
 [**latest release**](https://github.com/GoodGuysFree/nms-save-vault/releases/latest) — grab
-`NMSSaveVault-Setup-v0.2.6.zip` under **Assets**.
+`NMSSaveVault-Setup-v0.2.7.zip` under **Assets**.
 
 Extract the zip, open the `NMSSaveVault` folder and run **`NMSSaveVault.exe`**. That is the
 whole thing — Python and Tkinter are bundled, nothing is installed, and because the app
@@ -85,8 +85,8 @@ Both platforms have a portable kit on the
 
 | Platform | Asset |
 |---|---|
-| Linux / Steam Deck (x86_64) | `NMSSaveVault-v0.2.6-linux-x86_64.tar.gz` |
-| macOS (Apple Silicon) | `NMSSaveVault-v0.2.6-macos-arm64.tar.gz` |
+| Linux / Steam Deck (x86_64) | `NMSSaveVault-v0.2.7-linux-x86_64.tar.gz` |
+| macOS (Apple Silicon) | `NMSSaveVault-v0.2.7-macos-arm64.tar.gz` |
 
 ### Read this first: back up your saves by hand
 
@@ -118,7 +118,7 @@ saw last. It is not a substitute for the copy above.
 ### Then run it
 
 ```sh
-tar -xzf NMSSaveVault-v0.2.6-linux-x86_64.tar.gz
+tar -xzf NMSSaveVault-v0.2.7-linux-x86_64.tar.gz
 cd NMSSaveVault
 ./NMSSaveVault          # the app;  ./nmsvault status  for the command line
 ```
@@ -147,7 +147,7 @@ and can only draw ISO8859-1. Every string the app displays is therefore plain AS
 
 ## Run it (Windows, no Python needed)
 
-Download **`NMSSaveVault-Setup-v0.2.6.zip`** from the
+Download **`NMSSaveVault-Setup-v0.2.7.zip`** from the
 [**Releases**](https://github.com/GoodGuysFree/nms-save-vault/releases) page (under the
 release's **Assets**) and extract it. Open the `NMSSaveVault` folder and run
 **`NMSSaveVault.exe`** — that is all. Everything (Python + Tkinter) is bundled, nothing is
@@ -296,11 +296,11 @@ offered that cannot work, and nothing sensible is missing.
 | You right-clicked | You can |
 |---|---|
 | **A live save folder** | Back it up · make it the active write target · copy a save into one of its slots · undo the last change |
-| **A live slot** | **Replace it with a save from anywhere** · copy it into another live slot · extract it to the vault · **clear it** (deletes both its saves, after warning if the vault has no copy this far on) |
+| **A live slot** | **Replace it with a save from anywhere** · copy it into another live slot · extract it to the vault · **clear it** (deletes both its saves, after warning if the vault has no copy this far on) · show its history |
 | **One of the two saves in a live slot** | All of the above, plus **Promote** — make *that* save the one the game loads |
 | **A backup** (full / snapshot / imported / in-place) | Restore all of it, which **replaces** the live folder |
 | **A single-slot extract** | Put it back in its own slot · **or** copy it into any live slot you choose |
-| **A slot inside a backup, or either save in it** | Copy it into the same-numbered live slot · copy it into a slot you choose · extract it to the vault |
+| **A slot inside a backup, or either save in it** | Copy it into the same-numbered live slot · copy it into a slot you choose · extract it to the vault · show its history |
 
 **Copying always shows both ends.** Pick a slot in a backup and it is the source; pick a
 live slot and it is the destination. Either way the same window opens, naming what is
@@ -443,6 +443,7 @@ same-platform writing — verified against a real install (reads) and synthetic 
 
 | Version | Date | Highlights |
 |---|---|---|
+| **0.2.7** | 2026-09-26 | **Filter backups by save file.** A save's history was scattered: the same run sits in a different slot in one backup than in the next, and a rename makes its old copies look like somebody else's. The new **Save file** dropdown above the backups lists every save that has a backup, under its current name and the names it had before (here, *SHIPSTOGIVE-1400QS - was: ShipsToGive-2400qs*), with its platforms, play time and backup count. Pick one, or right-click any slot or save in either pane and choose **Show this save's history**, and the backups narrow to every copy of that run - renamed, moved, or carried to another platform by the NMS cloud - each opened to just the slot holding it, newest first. **All saves** clears it. It uses the same game-written save id as **Play time**, so it costs no extra decoding. |
 | **0.2.6** | 2026-09-19 | **Total play time.** How long have you actually played? Counting files cannot answer that: each playthrough exists twice in its slot (Auto-Save and Restore-Point), again in every dated backup in the vault, and - because an NMS cloud save carries a run to a linked account on another platform - once more under a second platform entirely. 821 save files here are 29 playthroughs. **Play time...** (toolbar) and `nmsvault playtime` fold every copy onto one row and count the highest play time of the copies, since play time only ever goes up. Identity is the game's own: the u64 the Steam meta carries at `OFF_SLOT_IDENTIFIER`, which is the same number the save data holds as `WmU` - it survives a rename, a move to another slot, and the trip through the cloud to another platform. Xbox metas leave that field 0, so an Xbox save is identified from its data blob instead, cached per file so the second run costs nothing. Saves older than the field are matched on their name and the report says how many those were. Also: `lz4_block` now reads the unframed container of pre-Waypoint Xbox saves - one bare LZ4 block with no chunk headers - which previously decoded to nothing. |
 | **0.2.5** | 2026-09-19 | **Fix: Steam Cloud put a cleared slot straight back.** Reported after a clear looked like it worked: the slot was gone in the app, and there again in the game. Steam's Auto-Cloud manifest still lists every `save*.hg` it has uploaded, so a file that is merely *missing* locally is downloaded again at the next launch - nothing inside the save folder can stop that. The clear confirmation now says so before you believe the slot is gone, and gives the sequence that does work: turn off **Keep game saves in the Steam Cloud**, clear the slot, launch and quit the game, turn Cloud back on. The same comparison was quietly threatening restores, which *do* sync: `repopulate_slot` and `restore_full` stamped the live file with the backup's original mtime, so Steam judged its own copy the newer one and could overwrite what had just been restored. Under Cloud a live write now carries the write time; without Cloud the save keeps the age it had. Xbox / Game Pass was right already - a cleared record stays in `containers.index` flagged `Deleted`, which is the cloud's instruction to remove it. |
 | **0.2.4** | 2026-09-17 | **Ctrl+plus / Ctrl+minus change the font size.** The window drew at whatever size Windows picked and there was no way to change it, which is a problem on a high-DPI screen and a different problem on a TV. Both keys now step the whole UI between 70% and 200% of your system size - the main keys or the numeric keypad - and the tree rows grow with the text rather than clipping it, because the row height was already derived from the font metrics. The size is remembered in `state.json` as `font_scale`, exactly like the theme is, so the app reopens the way you left it. It works by resizing Tk's *named* fonts, which every widget in the app draws with, so one keystroke moves everything at once; the five labels that had hardcoded their own point size - the pane titles, the bold group and active rows, the tooltip and the Accounts headings - would have stayed put, so they now name app-defined fonts that scale with the rest. |

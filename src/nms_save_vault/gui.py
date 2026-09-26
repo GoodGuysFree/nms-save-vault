@@ -2144,6 +2144,8 @@ Every row offers exactly what makes sense for it:
   extract, also copy that slot into any live slot you choose;
 - a slot inside a backup, or either save in it: copy it straight into the same-numbered
   live slot, copy it into a live slot you choose, or extract it to the vault.
+Any slot, or either save in it, in either pane also offers "Show this save's history",
+which narrows the backups to every copy of that save.
 
 WORKFLOWS
 - More than 15 slots: Extract the slots you are not using into the vault, Clear them to
@@ -2155,6 +2157,8 @@ WORKFLOWS
 - Roll back within a slot: expand the live slot, right-click the save you want (usually
   the older one, or the Restore-Point), Promote it.
 - Bring in an outside save: Import the folder, then copy the slot you want into live.
+- See when you backed a save up: pick it under "Save file" above the backups. Renamed
+  copies, and copies in other slots, are included.
 
 UPDATES
 The first time you run it, the app asks whether it may check for new versions. If you
