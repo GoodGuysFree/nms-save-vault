@@ -40,6 +40,9 @@ shortcuts? `install.bat` in the zip adds them. Full details under
    rather than once per file: the two saves in a slot, every dated backup of them, and the
    same run carried to another platform by the NMS cloud all fold into a single row, and
    the highest play time wins. **Play time...** in the GUI, `nmsvault playtime` on the CLI.
+   The same identity drives **Save file** above the backups: pick a save (listed with the
+   names it had before) or right-click a slot, and the backups narrow to every copy of it,
+   renamed or moved, so its backup history reads top to bottom.
 6. **Know what you are looking at** — each slot's two saves are named for what they are
    (**Auto-Save** vs **Restore-Point**), the difficulty preset is shown by name, Xbox saves
    report their cloud sync state, and hovering any row explains it. See
@@ -431,7 +434,7 @@ The vault lives outside `st_<id>`, so it is never scanned by the game or synced 
 ## Status
 
 Working. Core format/crypto and all operations are verified against the real save files and
-in a temp sandbox (400 tests). Xbox / Game Pass saves are supported for reading **and**
+in a temp sandbox (404 tests). Xbox / Game Pass saves are supported for reading **and**
 same-platform writing — verified against a real install (reads) and synthetic `wgs` fixtures
 (writes). A full file-copy safety backup of the live folder was made before development
 (`C:\Devel\NMS-SaveBackup-SAFETY-2026-06-24`).

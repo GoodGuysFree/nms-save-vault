@@ -47,10 +47,24 @@ class Playthrough:
     copies: int = 0
     platforms: list[str] = field(default_factory=list)
     sources: list[str] = field(default_factory=list)
+    # Every (folder, slot) holding a copy, so a backup list can be narrowed to one run.
+    locations: set[tuple[str, int]] = field(default_factory=set)
+    # Every name the run has carried, mapped to when it last carried it.
+    name_seen: dict[str, int] = field(default_factory=dict)
 
     @property
     def cross_platform(self) -> bool:
         return len(self.platforms) > 1
+
+    @property
+    def backups(self) -> int:
+        return sum(1 for s in self.sources if s != "live")
+
+    @property
+    def former_names(self) -> list[str]:
+        """Names other than the current one, most recently used first."""
+        ordered = sorted(self.name_seen, key=lambda n: -self.name_seen[n])
+        return [n for n in ordered if n != self.name]
 
 
 @dataclass
@@ -67,6 +81,11 @@ class PlaytimeReport:
     def unidentified(self) -> int:
         """Playthroughs counted by name because the save predates the id field."""
         return sum(1 for p in self.playthroughs if not p.identified)
+
+    def find(self, folder, slot: int) -> Playthrough | None:
+        """The playthrough in ``slot`` of ``folder``, or None if that slot was not seen."""
+        where = (str(Path(folder)), slot)
+        return next((p for p in self.playthroughs if where in p.locations), None)
 
 
 def _platform(folder: Path) -> str:
@@ -201,6 +220,9 @@ def collect(vault: Vault, live_dirs, use_cache: bool = True) -> PlaytimeReport:
                     p.platforms.append(platform)
                 if source not in p.sources:
                     p.sources.append(source)
+                p.locations.add((str(folder), slot.slot))
+                if name := m.info.save_name:
+                    p.name_seen[name] = max(p.name_seen.get(name, 0), m.effective_timestamp)
                 if m.info.total_play_time >= p.play_time:
                     p.play_time = m.info.total_play_time
                 if m.effective_timestamp > p.newest:

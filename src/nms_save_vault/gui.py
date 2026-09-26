@@ -90,6 +90,8 @@ BACKUP_COLUMNS = (
     Column("saved", "Saved", 130),
 )
 
+ALL_SAVES = "All saves"
+
 @dataclass(frozen=True)
 class SlotSource:
     """One slot's worth of saves that can be copied into a live slot.
@@ -310,6 +312,9 @@ class App(tk.Tk):
             self.live_dir = Path(first[0].path) if first else locations.default_live_save_dir()
 
         self._meta: dict[str, dict] = {}
+        self._report: playtime.PlaytimeReport | None = None
+        self._history_key: str | None = None  # the save file the backups are narrowed to
+        self._history_choices: dict[str, str] = {}  # dropdown label -> playthrough key
         self._build_widgets()
         self._apply_theme()
         self.refresh()
@@ -452,6 +457,17 @@ class App(tk.Tk):
             weight=2,
             sortable=True,
         )
+        body = self.backup_tree.master
+        filter_row = ttk.Frame(body.master)
+        filter_row.pack(side=tk.TOP, fill=tk.X, pady=(0, 2), before=body)
+        ttk.Label(filter_row, text="Save file:").pack(side=tk.LEFT)
+        self.history_var = tk.StringVar(value=ALL_SAVES)
+        self.history_combo = ttk.Combobox(
+            filter_row, textvariable=self.history_var, state="readonly", width=80,
+            values=[ALL_SAVES], postcommand=self._fill_history_combo,
+        )
+        self.history_combo.pack(side=tk.LEFT, padx=(4, 0))
+        self.history_combo.bind("<<ComboboxSelected>>", self._on_history_changed)
         # Which tree the toolbar acts on: whichever the user last selected in.
         self._active_tree = self.live_tree
         # Backups start newest-first; clicking a heading re-sorts.
@@ -784,6 +800,7 @@ class App(tk.Tk):
         for tree in (self.live_tree, self.backup_tree):
             tree.delete(*tree.get_children())
         self._meta.clear()
+        self._report = None  # the saves may have changed; re-read on next use
 
         # --- LIVE pane: every live source, one root row per account -----------
         sources = self.state.live_sources
@@ -810,24 +827,7 @@ class App(tk.Tk):
             })
             self._add_view(node, view, writable=s.writable)
 
-        # --- BACKUPS pane: catalog entries, sortable by any column ------------
-        for e in self.vault.entries:
-            node = self.backup_tree.insert(
-                "", "end", text=e.id,
-                values=(
-                    e.kind,
-                    len(e.occupied_slots),
-                    e.label,
-                    "",
-                    "",
-                    _fmt_created(e.created),
-                ),
-                tags=("backup",),
-            )
-            self._remember(self.backup_tree, node, {"type": "entry", "entry": e, "tip": self._entry_tip(e)})
-            self._add_entry(node, e)
-        self._apply_backup_sort()
-
+        self._populate_backups()
         self._refresh_source_combo()
         running = ops.safety.is_game_running()
         game = {True: "RUNNING (writes blocked)", False: "closed", None: "unknown"}[running]
@@ -839,6 +839,36 @@ class App(tk.Tk):
                 f"Vault: {self.vault.root}   |   Game: {game}"
             )
         )
+
+    def _populate_backups(self) -> None:
+        """BACKUPS pane: catalog entries, sortable by any column, optionally narrowed to
+        the backups holding one save file -- and within each, to the slot(s) holding it."""
+        tree = self.backup_tree
+        tree.delete(*tree.get_children())
+        self._meta = {k: v for k, v in self._meta.items() if k[0] != str(tree)}
+        shown = self._history_playthrough()
+        for e in self.vault.entries:
+            only = None
+            if shown is not None:
+                only = {slot for folder, slot in shown.locations if folder == str(Path(e.path))}
+                if not only:
+                    continue
+            node = tree.insert(
+                "", "end", text=e.id, open=shown is not None,
+                values=(
+                    e.kind,
+                    len(e.occupied_slots),
+                    e.label,
+                    "",
+                    "",
+                    _fmt_created(e.created),
+                ),
+                tags=("backup",),
+            )
+            self._remember(tree, node, {"type": "entry", "entry": e, "tip": self._entry_tip(e)})
+            self._add_entry(node, e, only)
+        self._apply_backup_sort()
+        self._fill_history_combo(compute=False)
 
     def _add_view(self, parent: str, view: savedir.SaveDirView, writable: bool) -> None:
         for slot in sorted(view.slots):
@@ -890,9 +920,9 @@ class App(tk.Tk):
                     "tip": self._member_tip(m, sv),
                 })
 
-    def _add_entry(self, parent: str, entry) -> None:
+    def _add_entry(self, parent: str, entry, only: set[int] | None = None) -> None:
         for s in entry.slots:
-            if not s.occupied:
+            if not s.occupied or (only is not None and s.slot not in only):
                 continue
             ts = max((m.timestamp for m in s.members if m.present), default=0)
             newest = next((m for m in s.members if m.label == s.newest_label), None)
@@ -963,6 +993,66 @@ class App(tk.Tk):
             self.backup_tree.heading(
                 col.key, text=col.title + (arrow if col.key == self._sort_key else "")
             )
+
+    # --- save-file history (backups pane) -------------------------------------
+
+    def _playthrough_report(self) -> playtime.PlaytimeReport:
+        """Every save folded onto its playthrough; read once per refresh, on demand."""
+        if self._report is None:
+            self.config(cursor="watch")
+            self.update_idletasks()
+            try:
+                live = [s.path for s in self.state.live_sources if s.exists]
+                self._report = playtime.collect(self.vault, live)
+            finally:
+                self.config(cursor="")
+        return self._report
+
+    def _history_playthrough(self) -> playtime.Playthrough | None:
+        if self._history_key is None:
+            return None
+        found = next((p for p in self._playthrough_report().playthroughs if p.key == self._history_key), None)
+        if found is None:  # its last copy is gone; fall back to showing everything
+            self._history_key = None
+        return found
+
+    def _fill_history_combo(self, compute: bool = True) -> None:
+        """List every save file that has a backup, under its current name and the names
+        it had before. Without ``compute`` it only relabels from a report already read."""
+        if self._report is None and not compute:
+            if self._history_key is None:
+                self.history_var.set(ALL_SAVES)
+            return
+        self._history_choices = {}
+        runs = [p for p in self._playthrough_report().playthroughs if p.backups]
+        for p in sorted(runs, key=lambda p: p.name.lower()):
+            was = f" - was: {', '.join(p.former_names)}" if p.former_names else ""
+            n = p.backups
+            # Play time is what tells apart runs that share a name, or have none.
+            label = aliases.redact(
+                f"{p.name}{was}  ({', '.join(p.platforms)}, {_fmt_play(p.play_time) or '0h00'}, "
+                f"{n} backup{'s' if n != 1 else ''})"
+            )
+            unique, i = label, 2
+            while unique in self._history_choices:
+                unique, i = f"{label} #{i}", i + 1
+            self._history_choices[unique] = p.key
+        self.history_combo["values"] = [ALL_SAVES, *self._history_choices]
+        current = next((lbl for lbl, k in self._history_choices.items() if k == self._history_key), None)
+        self.history_var.set(current or ALL_SAVES)
+
+    def _on_history_changed(self, _event=None) -> None:
+        self._history_key = self._history_choices.get(self.history_var.get())
+        self._populate_backups()
+
+    def _show_history_of(self, folder: str, slot: int) -> None:
+        """Right-click: narrow the backups to every copy of the save in this slot."""
+        p = self._playthrough_report().find(folder, slot)
+        if p is None or not p.backups:
+            _showinfo("Save file history", f"There is no backup of the save in slot {slot} yet.")
+            return
+        self._history_key = p.key
+        self._populate_backups()
 
     # --- tooltips ------------------------------------------------------------
 
@@ -1203,6 +1293,11 @@ class App(tk.Tk):
                 label=f"Extract slot {slot} to the vault as its own backup",
                 command=lambda: self.on_extract(target),
             )
+        menu.add_separator()
+        menu.add_command(
+            label="Show this save's history (every backup of it)",
+            command=lambda: self._show_history_of(meta["dir"], slot),
+        )
 
     # --- actions -------------------------------------------------------------
 
@@ -1546,14 +1641,7 @@ class App(tk.Tk):
 
     def on_playtime(self) -> None:
         """Total play time across every save the app can see, one row per playthrough."""
-        self.config(cursor="watch")
-        self.update_idletasks()
-        try:
-            live = [s.path for s in self.state.live_sources if s.exists]
-            report = playtime.collect(self.vault, live)
-        finally:
-            self.config(cursor="")
-        PlaytimeDialog(self, report)
+        PlaytimeDialog(self, self._playthrough_report())
 
     def on_accounts(self) -> None:
         try:
@@ -2012,6 +2100,10 @@ BUTTONS
   and the highest play time of the copies is the one counted, because play time only ever
   goes up. Saves older than the id the game now writes are matched on their name instead,
   and the window says how many of those there were.
+- Save file (above the backups): Narrows the backups to every copy of one save file,
+  even where it was renamed or sat in another slot, so you can see when you backed it up.
+  Each save is listed under its current name and the names it had before. Right-click a
+  slot or save in either pane and choose "Show this save's history" to do the same.
 - Promote: Select one of a live slot's two saves (Auto-Save or Restore-Point) to force it
   to be the newest, so the game loads it instead of the other -- e.g. to roll back to the
   Restore-Point.

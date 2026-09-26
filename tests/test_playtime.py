@@ -148,6 +148,33 @@ def test_a_renamed_save_is_still_one_playthrough_under_its_current_name(tmp_path
     assert report.playthroughs[0].play_time == 9000
 
 
+def test_a_renamed_save_is_found_in_every_backup_under_every_name(tmp_path):
+    """Save-file history: from any slot holding the run, reach every backup of it."""
+    from nms_save_vault.core import operations as ops
+
+    vault = _vault(tmp_path)
+    for name, slot, ts in (("First", 1, 1000), ("Second", 4, 2000), ("First", 1, 1500)):
+        bk = tmp_path / f"bk-{ts}"
+        steam_save(bk, slot, 0, name, ts, 0xBBBB, ts)
+        steam_save(bk, 2, 0, "Other run", ts, 0xCCCC, ts)
+        ops.import_backup(vault, bk, label=name)
+    live = tmp_path / "live"
+    steam_save(live, 9, 0, "Third", 3000, 0xBBBB, 3000)
+
+    report = playtime.collect(vault, [live])
+    p = report.find(live, 9)
+
+    assert p is not None and p.name == "Third"
+    assert p.former_names == ["Second", "First"]
+    assert p.backups == 3
+    entries = {Path(e.path): e for e in vault.entries}
+    assert {(Path(f), s) for f, s in p.locations} == (
+        {(path, 4 if e.label == "Second" else 1) for path, e in entries.items()} | {(live, 9)}
+    )
+    assert report.find(next(iter(entries)), 2).name == "Other run"
+    assert report.find(live, 5) is None
+
+
 def test_the_same_run_on_two_platforms_is_one_playthrough(tmp_path, make_wgs_account, monkeypatch):
     """An NMS cloud save carried to another platform keeps its id, so it must not double."""
     ident = 0xDECA9E5054EFD19E

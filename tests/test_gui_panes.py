@@ -19,6 +19,8 @@ def app(gui_app):
 @pytest.fixture(autouse=True)
 def _reset_app(app):
     """Undo whatever the previous test did, since the App is shared across the module."""
+    app._history_key, app._report = None, None
+    app._populate_backups()
     app._sort_key, app._sort_reverse = "saved", True
     app._apply_backup_sort()
     for tree in (app.live_tree, app.backup_tree):
@@ -109,6 +111,64 @@ def test_sorting_keeps_every_backup(app):
     for key in ("type", "name", "slots", "saved", "type"):
         app._sort_backups(key)
     assert {t for t, _v in _top_rows(app)} == before
+
+
+# --- save-file history -------------------------------------------------------
+
+
+def _one_run_in(app, where: dict[str, int]):
+    """A report holding one renamed playthrough, found at ``{entry id: slot}``."""
+    from pathlib import Path
+
+    from nms_save_vault.core import playtime
+
+    paths = {e.id: str(Path(e.path)) for e in app.vault.entries}
+    p = playtime.Playthrough(
+        key="00000000000000AA", identified=True, name="Now", difficulty="", play_time=7200,
+        platforms=["steam"], sources=list(where),
+        locations={(paths[eid], slot) for eid, slot in where.items()},
+        name_seen={"Now": 3, "Before": 2, "First": 1},
+    )
+    app._report = playtime.PlaytimeReport(playthroughs=[p])
+    return p
+
+
+def test_filtering_by_save_file_shows_only_its_backups_and_slots(app):
+    p = _one_run_in(app, {"full-steam-20260101-000000": 2, "inplace-20260201-000000": 1})
+    app._history_key = p.key
+    app._populate_backups()
+
+    rows = {app.backup_tree.item(r, "text"): r for r in app.backup_tree.get_children("")}
+    assert set(rows) == {"full-steam-20260101-000000", "inplace-20260201-000000"}
+    for eid, slot in (("full-steam-20260101-000000", 2), ("inplace-20260201-000000", 1)):
+        row = rows[eid]
+        assert app.backup_tree.item(row, "open")
+        assert [app.backup_tree.item(s, "text") for s in app.backup_tree.get_children(row)] == [f"Slot {slot}"]
+    assert app.history_var.get() == "Now - was: Before, First  (steam, 2h00, 2 backups)"
+
+
+def test_choosing_all_saves_brings_every_backup_back(app):
+    p = _one_run_in(app, {"extract-steam-20260301-000000": 1})
+    app._history_key = p.key
+    app._populate_backups()
+    assert len(app.backup_tree.get_children("")) == 1
+
+    from nms_save_vault import gui
+
+    app._fill_history_combo()
+    app.history_var.set(gui.ALL_SAVES)
+    app._on_history_changed()
+    assert len(app.backup_tree.get_children("")) == 3
+
+
+def test_show_history_from_a_slot_narrows_to_that_run(app):
+    from pathlib import Path
+
+    p = _one_run_in(app, {"full-steam-20260101-000000": 3, "extract-steam-20260301-000000": 1})
+    entry = app.vault.get("full-steam-20260101-000000")
+    app._show_history_of(str(Path(entry.path)), 3)
+    assert app._history_key == p.key
+    assert len(app.backup_tree.get_children("")) == 2
 
 
 # --- tooltips ----------------------------------------------------------------
