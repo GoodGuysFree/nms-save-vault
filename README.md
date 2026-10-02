@@ -8,7 +8,7 @@ unlimited save slots beyond the game's 15. See [Platform support](#platform-supp
 
 **Just want to run it? No Python needed.** Download the ready-to-use Windows kit from the
 [**latest release**](https://github.com/GoodGuysFree/nms-save-vault/releases/latest) — grab
-`NMSSaveVault-Setup-v0.2.7.zip` under **Assets**.
+`NMSSaveVault-Setup-v0.2.8.zip` under **Assets**.
 
 Extract the zip, open the `NMSSaveVault` folder and run **`NMSSaveVault.exe`**. That is the
 whole thing — Python and Tkinter are bundled, nothing is installed, and because the app
@@ -85,8 +85,8 @@ Both platforms have a portable kit on the
 
 | Platform | Asset |
 |---|---|
-| Linux / Steam Deck (x86_64) | `NMSSaveVault-v0.2.7-linux-x86_64.tar.gz` |
-| macOS (Apple Silicon) | `NMSSaveVault-v0.2.7-macos-arm64.tar.gz` |
+| Linux / Steam Deck (x86_64) | `NMSSaveVault-v0.2.8-linux-x86_64.tar.gz` |
+| macOS (Apple Silicon) | `NMSSaveVault-v0.2.8-macos-arm64.tar.gz` |
 
 ### Read this first: back up your saves by hand
 
@@ -118,7 +118,7 @@ saw last. It is not a substitute for the copy above.
 ### Then run it
 
 ```sh
-tar -xzf NMSSaveVault-v0.2.7-linux-x86_64.tar.gz
+tar -xzf NMSSaveVault-v0.2.8-linux-x86_64.tar.gz
 cd NMSSaveVault
 ./NMSSaveVault          # the app;  ./nmsvault status  for the command line
 ```
@@ -147,7 +147,7 @@ and can only draw ISO8859-1. Every string the app displays is therefore plain AS
 
 ## Run it (Windows, no Python needed)
 
-Download **`NMSSaveVault-Setup-v0.2.7.zip`** from the
+Download **`NMSSaveVault-Setup-v0.2.8.zip`** from the
 [**Releases**](https://github.com/GoodGuysFree/nms-save-vault/releases) page (under the
 release's **Assets**) and extract it. Open the `NMSSaveVault` folder and run
 **`NMSSaveVault.exe`** — that is all. Everything (Python + Tkinter) is bundled, nothing is
@@ -448,6 +448,7 @@ same-platform writing — verified against a real install (reads) and synthetic 
 
 | Version | Date | Highlights |
 |---|---|---|
+| **0.2.8** | 2026-10-02 | **Xbox: keep the game's new `xgs` save copy in step.** The game now also keeps a plain copy of each Xbox save in `SystemAppData\xgs`, beside `wgs`. The vault only wrote `wgs`, so a promote, clear, repopulate, restore or undo left the game a stale `xgs` copy; every write now updates both. An account that has only `xgs` is shown read-only. |
 | **0.2.7** | 2026-09-26 | **Filter backups by save file.** A save's history was scattered: the same run sits in a different slot in one backup than in the next, and a rename makes its old copies look like somebody else's. The new **Save file** dropdown above the backups lists every save that has a backup, under its current name and the names it had before (here, *SHIPSTOGIVE-1400QS - was: ShipsToGive-2400qs*), with its platforms, play time and backup count. Pick one, or right-click any slot or save in either pane and choose **Show this save's history**, and the backups narrow to every copy of that run - renamed, moved, or carried to another platform by the NMS cloud - each opened to just the slot holding it, newest first. **All saves** clears it. It uses the same game-written save id as **Play time**, so it costs no extra decoding. |
 | **0.2.6** | 2026-09-19 | **Total play time.** How long have you actually played? Counting files cannot answer that: each playthrough exists twice in its slot (Auto-Save and Restore-Point), again in every dated backup in the vault, and - because an NMS cloud save carries a run to a linked account on another platform - once more under a second platform entirely. 821 save files here are 29 playthroughs. **Play time...** (toolbar) and `nmsvault playtime` fold every copy onto one row and count the highest play time of the copies, since play time only ever goes up. Identity is the game's own: the u64 the Steam meta carries at `OFF_SLOT_IDENTIFIER`, which is the same number the save data holds as `WmU` - it survives a rename, a move to another slot, and the trip through the cloud to another platform. Xbox metas leave that field 0, so an Xbox save is identified from its data blob instead, cached per file so the second run costs nothing. Saves older than the field are matched on their name and the report says how many those were. Also: `lz4_block` now reads the unframed container of pre-Waypoint Xbox saves - one bare LZ4 block with no chunk headers - which previously decoded to nothing. |
 | **0.2.5** | 2026-09-19 | **Fix: Steam Cloud put a cleared slot straight back.** Reported after a clear looked like it worked: the slot was gone in the app, and there again in the game. Steam's Auto-Cloud manifest still lists every `save*.hg` it has uploaded, so a file that is merely *missing* locally is downloaded again at the next launch - nothing inside the save folder can stop that. The clear confirmation now says so before you believe the slot is gone, and gives the sequence that does work: turn off **Keep game saves in the Steam Cloud**, clear the slot, launch and quit the game, turn Cloud back on. The same comparison was quietly threatening restores, which *do* sync: `repopulate_slot` and `restore_full` stamped the live file with the backup's original mtime, so Steam judged its own copy the newer one and could overwrite what had just been restored. Under Cloud a live write now carries the write time; without Cloud the save keeps the age it had. Xbox / Game Pass was right already - a cleared record stays in `containers.index` flagged `Deleted`, which is the cloud's instruction to remove it. |
