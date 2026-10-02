@@ -74,7 +74,8 @@ def microsoft_root() -> Path | None:
 
 
 def find_microsoft_save_dirs() -> list[Path]:
-    """Microsoft / Xbox Game Pass save folders (account folders under wgs)."""
+    """Microsoft / Xbox Game Pass save folders (account folders under wgs, plus read-only
+    xgs account folders that have no wgs twin)."""
     from . import msstore
 
     return msstore.find_microsoft_save_dirs()

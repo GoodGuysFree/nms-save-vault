@@ -123,6 +123,20 @@ Implemented in `core/msstore.py`, exposed via `savedir.scan_any()`.
 Verified read-only against a real Game Pass install (15 slots decoded with correct names,
 play times, summaries and dates) and a synthetic fixture in `tests/test_msstore.py`.
 
+### The `xgs` mirror
+
+Since 2026 the game also keeps `SystemAppData\xgs\<account>\<identifier>\{data,meta}` beside
+`wgs` — no index, no GUIDs, plain names. Verified 2026-10-02 on a real install: all 62 `xgs`
+files were byte-identical to a `wgs` blob, and the game wrote `AccountData` to `xgs` on launch.
+Which copy the game *loads* from is not yet proven, so:
+
+* Every `wgs` write (`write_save` / `delete_save`) is mirrored into `xgs` when that folder
+  exists; a full restore (and so `undo`) re-syncs it with `mirror_xgs`. Slot folders with no
+  live `wgs` save are removed; `AccountData` and unknown folders are never deleted.
+* An account with `xgs` but no `wgs` is scanned by `scan_xgs` and is read-only: it has no
+  `containers.index` to carry the Xbox app's sync state. Times come from the meta, else the
+  file mtime.
+
 ## Cross-platform support (Linux and macOS)
 
 **Status: decided, not yet implemented.** The save *format* work is zero — every platform

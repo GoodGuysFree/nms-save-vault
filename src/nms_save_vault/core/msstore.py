@@ -14,7 +14,12 @@ Save identifiers map onto the same slot/member model used elsewhere:
     "Slot{N}Manual" -> slot N, member B     (manual save / restore point)
     "AccountData", "Settings" -> account-level (not a slot)
 
-This module is read-only. Current Xbox data blobs decompress with the shared
+Since 2026 the game also keeps a plain mirror beside wgs, with the same blob bytes:
+    ...\\SystemAppData\\xgs\\<accountfolder>\\<identifier>\\{data,meta}
+Every wgs write here is mirrored into it (when the game has created it), so the two never
+disagree about a save the vault changed. An account with xgs but no wgs is read-only.
+
+Current Xbox data blobs decompress with the shared
 ``lz4_block`` code; older variants (single LZ4 block, or the "HGSAVEV2" chunk format) are
 also handled.
 
@@ -25,6 +30,7 @@ https://github.com/zencq/libNOM.io, licensed GPL-3.0. See LICENSE and README.md 
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import struct
 import uuid
@@ -78,21 +84,55 @@ def microsoft_root() -> Path | None:
 
 
 def find_microsoft_save_dirs() -> list[Path]:
-    """Account folders under wgs that contain a containers.index."""
+    """Account folders under wgs that contain a containers.index, plus any xgs account
+    folder that has no wgs twin (read-only fallback)."""
     root = microsoft_root()
     out: list[Path] = []
-    if not root or not root.is_dir():
+    if not root:
         return out
-    if (root / "containers.index").is_file():
-        out.append(root)
-    for child in sorted(root.iterdir()):
-        if child.is_dir() and (child / "containers.index").is_file():
-            out.append(child)
+    if root.is_dir():
+        if (root / "containers.index").is_file():
+            out.append(root)
+        for child in sorted(root.iterdir()):
+            if child.is_dir() and (child / "containers.index").is_file():
+                out.append(child)
+    xgs_root = root.parent / "xgs"
+    if xgs_root.is_dir():
+        for child in sorted(xgs_root.iterdir()):
+            if is_xgs_save_dir(child) and not is_microsoft_save_dir(root / child.name):
+                out.append(child)
     return out
 
 
 def is_microsoft_save_dir(path: str | Path) -> bool:
     return (Path(path) / "containers.index").is_file()
+
+
+def is_xgs_save_dir(path: str | Path) -> bool:
+    """An xgs account folder: under ``xgs`` and holding at least one ``<identifier>/data``."""
+    p = Path(path)
+    return (
+        p.parent.name.lower() == "xgs"
+        and p.is_dir()
+        and any((c / "data").is_file() for c in p.iterdir() if c.is_dir())
+    )
+
+
+def xgs_twin(folder: str | Path) -> Path | None:
+    """The xgs mirror of a wgs account folder, or None if the game has not created one."""
+    folder = Path(folder)
+    if folder.parent.name.lower() != "wgs":
+        return None
+    twin = folder.parent.parent / "xgs" / folder.name
+    return twin if twin.is_dir() else None
+
+
+def _slot_member(identifier: str) -> tuple[int, int] | None:
+    """``"Slot{N}Auto"`` -> (N, 0), ``"Slot{N}Manual"`` -> (N, 1); None for anything else."""
+    m = re.fullmatch(r"Slot(\d+)(Auto|Manual)", identifier)
+    if not m or not 1 <= int(m.group(1)) <= formats.MAX_SAVE_SLOTS:
+        return None
+    return int(m.group(1)), 0 if m.group(2) == "Auto" else 1
 
 
 @dataclass
@@ -394,26 +434,45 @@ def scan(folder: str | Path) -> SaveDirView:
         return SaveDirView(path=folder, slots=slots, account_present=False)
 
     for c in containers:
-        ident = c.identifier
-        if ident == "AccountData":
+        if c.identifier == "AccountData":
             account_present = bool(c.data_file and c.data_file.is_file())
             continue
-        if not ident.startswith("Slot"):
-            continue
-        digits = "".join(ch for ch in ident if ch.isdigit())
-        if not digits:
-            continue
-        slot = int(digits)
-        if not 1 <= slot <= formats.MAX_SAVE_SLOTS:
-            continue
-        member = 1 if ident.endswith("Manual") else 0  # Auto -> A, Manual -> B
-        mv = _build_member(slot, member, c)
-        if member == 0:
-            slots[slot].a = mv
-        else:
-            slots[slot].b = mv
+        _place_member(slots, c)
 
     return SaveDirView(path=folder, slots=slots, account_present=account_present, xbox_index=index_info)
+
+
+def _place_member(slots: dict[int, SlotView], c: _Container) -> MemberView | None:
+    parsed = _slot_member(c.identifier)
+    if parsed is None:
+        return None
+    slot, member = parsed
+    mv = _build_member(slot, member, c)
+    if member == 0:
+        slots[slot].a = mv
+    else:
+        slots[slot].b = mv
+    return mv
+
+
+def scan_xgs(folder: str | Path) -> SaveDirView:
+    """Scan an xgs account folder (no containers.index) into the shared model. Read-only:
+    members carry no ``xbox`` identity, so the wgs write paths refuse them. With no index
+    FILETIME, saves whose meta has no timestamp fall back to the data file's mtime."""
+    folder = Path(folder)
+    slots = {k: SlotView(slot=k, a=_empty_member(k, 0), b=_empty_member(k, 1)) for k in range(1, formats.MAX_SAVE_SLOTS + 1)}
+    for d in sorted(p for p in folder.iterdir() if p.is_dir()):
+        c = _Container(
+            identifier=d.name, directory=d, sync_state=0, extension=0, last_write=0.0,
+            size_disk=0, data_file=d / "data", meta_file=d / "meta",
+        )
+        mv = _place_member(slots, c)
+        if mv is not None:
+            mv.xbox = None
+            if mv.exists:
+                mv.note = "Xbox save (xgs, read-only)"
+    account_present = (folder / "AccountData" / "data").is_file()
+    return SaveDirView(path=folder, slots=slots, account_present=account_present)
 
 
 # --- serialization (inverse of the parsers; groundwork for the wgs writer) --------------
@@ -614,6 +673,10 @@ def write_save(
         except OSError:
             pass
 
+    twin = xgs_twin(folder)
+    if twin is not None:
+        _xgs_write(twin, identifier, data_bytes, meta_bytes)
+
 
 def delete_save(folder: str | Path, identifier: str, when: float) -> bool:
     """Remove the save named ``identifier`` (e.g. ``"Slot3Manual"``) from a wgs account
@@ -644,6 +707,10 @@ def delete_save(folder: str | Path, identifier: str, when: float) -> bool:
     # Only ever a GUID-named child of the account folder; never recurse anywhere else.
     if blob_dir.is_dir() and blob_dir.parent == folder:
         shutil.rmtree(blob_dir, ignore_errors=True)
+
+    twin = xgs_twin(folder)
+    if twin is not None:
+        _xgs_delete(twin, identifier)
     return True
 
 
@@ -657,3 +724,62 @@ def mark_modified(folder: str | Path) -> None:
             c.sync_state = BLOB_SYNC_MODIFIED
     info.sync_state = INDEX_SYNC_MODIFIED
     _write_containers_index_file(folder, info, containers)
+
+
+# --- xgs mirror --------------------------------------------------------------------------
+#
+# xgs holds the same data/meta bytes as wgs under plain <identifier>/{data,meta} names. The
+# game writes it (seen for AccountData) and may load from it, so a wgs-only write could
+# leave the game a stale copy. Writes go wgs first (the vault's snapshot covers it), then xgs.
+
+
+def _xgs_identifier_dir(twin: Path, identifier: str) -> Path:
+    # The identifier comes from containers.index; it becomes a path component here.
+    if not re.fullmatch(r"[A-Za-z0-9]+", identifier):
+        raise ValueError(f"refusing unexpected save identifier {identifier!r} as an xgs folder name")
+    return twin / identifier
+
+
+def _xgs_write(twin: Path, identifier: str, data_bytes: bytes, meta_bytes: bytes) -> None:
+    d = _xgs_identifier_dir(twin, identifier)
+    for name, payload in (("data", data_bytes), ("meta", meta_bytes)):
+        safety.atomic_write_bytes(d / name, payload)
+        if (d / name).read_bytes() != payload:
+            raise ValueError(f"xgs {identifier}/{name} does not match what was written")
+
+
+def _xgs_delete(twin: Path, identifier: str) -> None:
+    d = _xgs_identifier_dir(twin, identifier)
+    if d.is_dir():
+        shutil.rmtree(d)
+
+
+def mirror_xgs(folder: str | Path) -> list[str]:
+    """Make the xgs mirror match every save in a wgs account ``folder`` (after a wholesale
+    restore). Only differing saves are rewritten; slot folders with no live wgs save are
+    removed; AccountData and anything unrecognised is never deleted. Returns what changed."""
+    folder = Path(folder)
+    twin = xgs_twin(folder)
+    if twin is None:
+        return []
+    _, containers = parse_containers_index(folder)
+    live = {
+        c.identifier: c
+        for c in containers
+        if c.sync_state != SYNC_STATE_DELETED
+        and c.data_file is not None and c.data_file.is_file()
+        and c.meta_file is not None and c.meta_file.is_file()
+    }
+    changed: list[str] = []
+    for ident, c in live.items():
+        data_bytes, meta_bytes = c.data_file.read_bytes(), c.meta_file.read_bytes()
+        d = _xgs_identifier_dir(twin, ident)
+        current = [(d / n).read_bytes() if (d / n).is_file() else None for n in ("data", "meta")]
+        if current != [data_bytes, meta_bytes]:
+            _xgs_write(twin, ident, data_bytes, meta_bytes)
+            changed.append(f"xgs/{ident}")
+    for d in sorted(twin.iterdir()):
+        if d.is_dir() and _slot_member(d.name) is not None and d.name not in live:
+            _xgs_delete(twin, d.name)
+            changed.append(f"-xgs/{d.name}")
+    return changed

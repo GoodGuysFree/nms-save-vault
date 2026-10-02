@@ -412,6 +412,13 @@ def _ms_identifier(slot: int, member: int) -> str:
     return f"Slot{slot}{'Auto' if member == 0 else 'Manual'}"
 
 
+def _require_wgs(live_dir: Path) -> None:
+    # An xgs-only account has no containers.index to keep the Xbox app's sync state in, so
+    # writing it would be invisible to (or undone by) the cloud. Read-only until understood.
+    if not msstore.is_microsoft_save_dir(live_dir):
+        raise OperationError(f"{live_dir} is an xgs-only Xbox folder; the vault can read it but not write it")
+
+
 def _validate_xbox_slot(live_dir: Path, slot: int, warnings: list[str]) -> None:
     view = savedir.scan_any(live_dir)
     present = view.slots[slot].present_members if slot in view.slots else []
@@ -432,6 +439,7 @@ def _validate_xbox_dir(live_dir: Path, warnings: list[str]) -> None:
 
 def _promote_member_xbox(vault: Vault, live_dir: Path, slot: int, member: int, allow_game_running: bool) -> OpResult:
     warnings: list[str] = []
+    _require_wgs(live_dir)
     _guard_game(allow_game_running, warnings)
     view = savedir.scan_any(live_dir)
     sv = view.slots[slot]
@@ -483,6 +491,7 @@ def _extract_slot_xbox(vault: Vault, source_dir: Path, slot: int, label: str) ->
 
 def _repopulate_slot_xbox(vault: Vault, source_dir: Path, source_slot: int, live_dir: Path, dest_slot: int, allow_game_running: bool) -> OpResult:
     warnings: list[str] = []
+    _require_wgs(live_dir)
     _guard_game(allow_game_running, warnings)
     src_view = savedir.scan_any(source_dir)
     src_sv = src_view.slots.get(source_slot)
@@ -514,6 +523,7 @@ def _repopulate_slot_xbox(vault: Vault, source_dir: Path, source_slot: int, live
 
 
 def _restore_full_xbox(vault: Vault, entry: CatalogEntry, src: Path, live_dir: Path, warnings: list[str]) -> OpResult:
+    _require_wgs(live_dir)
     if not (src / "containers.index").is_file():
         raise OperationError(f"'{entry.id}' is not an Xbox/wgs backup")
     if src.resolve() == live_dir.resolve():
@@ -544,6 +554,7 @@ def _restore_full_xbox(vault: Vault, entry: CatalogEntry, src: Path, live_dir: P
         changed.append(child.name)
 
     msstore.mark_modified(live_dir)  # so the Xbox app re-syncs the restored tree
+    changed += msstore.mirror_xgs(live_dir)
     _validate_xbox_dir(live_dir, warnings)
     vault.append_oplog(_oplog("restore_full", entry_id=entry.id, snapshot_id=snap.id, changed=changed))
     return OpResult(True, "restore_full", f"restored {entry.id}", snapshot_id=snap.id, changed=changed, warnings=warnings)
@@ -725,6 +736,7 @@ def clear_slot(
 
 def _clear_slot_xbox(vault: Vault, live_dir: Path, slot: int, allow_game_running: bool) -> OpResult:
     warnings: list[str] = []
+    _require_wgs(live_dir)
     _guard_game(allow_game_running, warnings)
     sv = savedir.scan_any(live_dir).slots.get(slot)
     if sv is None or not sv.occupied:

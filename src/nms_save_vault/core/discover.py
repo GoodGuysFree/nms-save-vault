@@ -133,7 +133,9 @@ def discover_live_sources(
                 path=str(d),
                 label=_xbox_label(account, i),
                 role=ROLE_LIVE,
-                writable=True,  # same-platform Xbox writes are supported (Steam<->Xbox is not)
+                # Same-platform Xbox writes are supported (Steam<->Xbox is not); an xgs-only
+                # account has no containers.index and is read-only.
+                writable=(Path(d) / "containers.index").is_file(),
                 origin=ORIGIN_AUTO,
             )
         )

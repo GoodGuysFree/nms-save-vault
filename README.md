@@ -398,6 +398,11 @@ promote all work within Xbox, exactly as for Steam (every write auto-snapshots f
 correct sync state, and copies the save data verbatim — it follows the layout used by
 [libNOM.io](https://github.com/zencq/libNOM.io) (see Credits).
 
+The game now also keeps a plain copy of each save in `SystemAppData\xgs\<accountfolder>\`
+(`Slot3Auto\data`, `Slot3Auto\meta`, …). Every write the vault makes to `wgs` is mirrored
+there, so the two never disagree. An account that has only `xgs` (no `wgs`) is shown
+read-only.
+
 **Cross-platform transfer (Steam ↔ Xbox) is not yet supported** and is gated with a "coming
 soon" notice: the obfuscated save body carries a platform field and the two platforms use
 different meta formats, so a faithful transfer needs a conversion step that isn't built yet.
@@ -434,7 +439,7 @@ The vault lives outside `st_<id>`, so it is never scanned by the game or synced 
 ## Status
 
 Working. Core format/crypto and all operations are verified against the real save files and
-in a temp sandbox (404 tests). Xbox / Game Pass saves are supported for reading **and**
+in a temp sandbox (412 tests). Xbox / Game Pass saves are supported for reading **and**
 same-platform writing — verified against a real install (reads) and synthetic `wgs` fixtures
 (writes). A full file-copy safety backup of the live folder was made before development
 (`C:\Devel\NMS-SaveBackup-SAFETY-2026-06-24`).

@@ -193,22 +193,35 @@ def looks_like_save_dir(path: str | Path) -> bool:
     folder = Path(path)
     if not folder.is_dir():
         return False
-    if (folder / "containers.index").is_file():  # Microsoft / Xbox Game Pass
+    if (folder / "containers.index").is_file() or _is_xgs(folder):  # Microsoft / Xbox Game Pass
         return True
     return any(folder.glob("mf_save*.hg")) or (folder / ACCOUNT_META_NAME).is_file()
 
 
+def _is_xgs(folder: Path) -> bool:
+    from . import msstore  # lazy import avoids a circular dependency
+
+    return msstore.is_xgs_save_dir(folder)
+
+
 def platform_of(path: str | Path) -> str:
     """Identify a save folder's platform for labelling: ``"xbox"`` for a Microsoft /
-    Game Pass ``wgs`` folder (it has a ``containers.index``), otherwise ``"steam"``."""
-    return "xbox" if (Path(path) / "containers.index").is_file() else "steam"
+    Game Pass ``wgs`` folder (it has a ``containers.index``) or an ``xgs`` account folder,
+    otherwise ``"steam"``."""
+    folder = Path(path)
+    return "xbox" if (folder / "containers.index").is_file() or _is_xgs(folder) else "steam"
 
 
 def scan_any(path: str | Path) -> SaveDirView:
-    """Scan a folder regardless of platform (Steam ``save*.hg`` or Microsoft ``wgs``)."""
+    """Scan a folder regardless of platform (Steam ``save*.hg``, Microsoft ``wgs`` or
+    ``xgs``)."""
     folder = Path(path)
     if (folder / "containers.index").is_file():
         from . import msstore  # lazy import avoids a circular dependency
 
         return msstore.scan(folder)
+    if _is_xgs(folder):
+        from . import msstore
+
+        return msstore.scan_xgs(folder)
     return scan(folder)
