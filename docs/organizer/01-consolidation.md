@@ -1,8 +1,8 @@
 # Save-file organizer - consolidation of research
 
-Status: research complete (R1-R8, `research/`). This document fixes the decisions the design
-wave builds on, lists the owner forks the designs must present as options, and sets the order
-of work. Audience: the design agents and the parent. The owner gets a short summary separately.
+Status: research complete (R1-R8, `research/`); owner decisions (4a) and the design review
+(`03-design-review.md`) applied. This document fixes the decisions the designs build on, records
+the owner's choices and sets the order of work. Audience: the implementers and the parent.
 
 ## 1. Ground facts (numbers from the owner's real data)
 
@@ -34,7 +34,9 @@ of work. Audience: the design agents and the parent. The owner gets a short summ
   lines or **Split** a line by hand (LaunchBox's escape hatch; R4 B1). Names, mode, difficulty
   are attributes, never identity.
 - **C2 Cross-platform copies stay on one line.** The line shows every live location (e.g.
-  `S2 X4`) and a cross-platform state: same / Steam ahead / Xbox ahead / diverged (R7 3).
+  `S2 X4`). Each platform's live copy is its own tip (owner, 4a Q4): "in step" (same play time),
+  "Steam/Xbox copy N h behind" (the lagging copy), or "two branches" only when the journal saw
+  both progress since they were last in step. No link between the platforms is guessed (D1 2.8).
 - **C3 Branches stay on one line.** Putting an older version live (or a twin into a second
   slot) makes the line's history a tree; each live tip gets its own live badge. The expanded
   line and the history view show the branches.
@@ -70,20 +72,21 @@ of work. Audience: the design agents and the parent. The owner gets a short summ
 - **C13 "Legacy base parts"** = the game's LEGACY STRUCTURES (69 ids) and LEGACY FREIGHTER
   MODULES (20 ids) build groups; two facts: placed in own bases, and still buildable
   (`KnownProducts`) (R6 2.4).
-- **C14 "What changed"** = a fact diff against the lineage parent (never against the previous
-  version by time), on ownership-filtered facts, top items first (R5 F7).
+- **C14 "What changed"** = a fact diff against the lineage parent (an edge of C15; never the
+  previous version by time), on ownership-filtered facts, top items first (R5 F7). A version
+  without such a parent shows nothing ("no recorded parent"; owner, 4a Q5).
 
 ### S3 Lineage
 
-- **C15 Three tiers of edges**, each stored with its tier and shown as such:
-  1. *recorded* - written by app operations at write time (exact);
-  2. *observed* - from a **live journal**: every scan hashes the live members (< 0.1 s) and a
-     changed hash becomes an edge (kinds: game, edited outside the game, deleted, reverted by
-     cloud);
-  3. *inferred* - for history before recording existed: parent = the most-progressed earlier
-     version that passes meta (play time, timestamp) monotonicity, then upgraded with content
-     signals (31 core counters, VisitedSystems extension) once indexed (R7 2.7). Inferred edges
-     are marked as such in the UI and can be corrected by the owner.
+- **C15 Edges are evidence only**, each stored with its tier and method and shown as such:
+  1. *recorded* - written by app operations at write time (exact), and the app's legacy oplog
+     resolved once at bootstrap ("put live by the app");
+  2. *observed* - from the **live journal**: every scan hashes the live members (< 0.1 s) and a
+     changed hash becomes an edge ("seen in the slot"); and, once at bootstrap, consecutive
+     app-made backups of the same live slot ("seen in backups"; owner, 4a Q3);
+  3. *owner* - the owner's own "set parent" correction.
+  Nothing is inferred (owner, 4a): a version none of these reaches is listed by date, without a
+  link. Deletions and cloud reverts are journal events, not edges (D1 2.2).
 - **C16 Binding rule** (R8 4.6): after an operation places V into slot T, later live versions in
   T with the same id and play time >= V's are children of V until the next operation on T.
 - **C17 Lineage lives in its own vault store**, not in `oplog.jsonl`. The oplog stays the
@@ -97,35 +100,39 @@ of work. Audience: the design agents and the parent. The owner gets a short summ
   editable) and per-version **label + comment**; every new version also stores a **snapshot of
   the save-file note at capture time**, so the owner's wish "keep that note with each backup, so
   a user can see what they changed" holds literally (diff the note between versions). The
-  automatic fact diff (C14) is the default description when the owner wrote nothing.
-- **C20 Lock / pin** per version: exempt from any pruning; also offered as the eviction-picker's
-  "do not suggest" mark for live slots.
-- **C21 User data lives in the vault** (portable with it, D11), as JSON written atomically,
-  keyed by identity and version hash. `catalog.json` v1 is not extended (older app versions
-  crash on unknown member keys and drop unknown entry keys; R1 2a).
+  automatic fact diff (C14) is the default description when the owner wrote nothing and the
+  version has a lineage parent.
+- **C20 Pin and lock.** A pin per save file: the eviction picker does not suggest its slot for
+  another save. A lock per version: the owner's "keep" mark, shown and treated as a key version
+  (nothing is pruned under F9).
+- **C21 User data lives in the vault** (portable with it, D11), as JSON written atomically in
+  `<vault>/organizer/`, keyed by identity and version hash. `catalog.json` v1 is not extended.
 - **C22 Notes are stored as Unicode.** The Tk UI on the Linux kit cannot draw beyond Latin-1
   (DESIGN.md "ASCII-only"); there it shows a replacement character. UI strings stay ASCII.
 
 ### S5 Live-slot operations
 
-- **C23 R8 section 4 is the operation spec**: `Place(V, T)`, `PlaceIntoEmpty`, `Swap`,
-  `Evict`, "older version of a live save" = `Place` into the slot holding its id. Mandatory:
-  explicit target (platform, account folder, slot) validated in core; preserve-before-replace
-  (durable, hash-verified, never a prunable snapshot); write **both** members; journal intent
-  and completion; slot-scoped validation and rollback; organizer operations never touch
-  `accountdata`.
+- **C23 R8 section 4 is the operation spec**: `Place(V, T)`, `PlaceIntoEmpty`, `Swap`, "older
+  version of a live save" = `Place` into the slot holding its id. Operations always replace; the
+  app never empties a slot (F8). Mandatory: explicit target (platform, account folder, slot)
+  validated in core; preserve-before-replace (a durable, hash-verified store entry); write
+  **both** members; journal intent and completion; slot-scoped validation and rollback;
+  organizer operations never touch `accountdata`.
 - **C24 Undo for organizer operations is slot-scoped and non-destructive** (undo = Place the
   previous members back; preserve what the owner played since). Today's whole-folder undo stays
   only as a "panic restore".
 - **C25 Post-launch verification**: the next scan compares live slots with the last operation's
   expected hashes and reports cloud reverts (Steam Cloud, Xbox conflicts).
-- **C26 Same platform + same account first.** Cross-platform is a separate, gated phase (F6).
+- **C26 Same platform first.** A save from another account of the same platform is allowed
+  with one warning (F7b; no ownership ids are read or stored). Cross-platform is a separate,
+  gated phase (F6).
 
 ### S6 Vault storage
 
-- **C27 Pruning and deletion become version-aware**: never delete the last copy of a version;
-  preserved (evicted) versions, locked versions, branch tips and live versions are exempt.
-  This is also a fix for today's risk (6 versions exist only in prunable snapshots).
+- **C27 Keep everything (F9)**: nothing is pruned; phase 0 removes today's snapshot pruning
+  (P2), which threatens 6 versions that exist only in snapshots. The only deletion is freeing
+  old backup folders after they were folded into the store, on the owner's request, after a
+  deep check (D3, phase 5).
 - **C28 A version locator** (hash -> where its bytes are) is part of the model whatever F3
   chooses; the organizer asks "where is this version", never "which folder".
 
@@ -165,22 +172,24 @@ Found by R1, R2, R5, R7, R8; all VERIFIED unless noted. They block or distort or
 | P10 | Toolbar needs 1,410 px in a 1,000 px window; Copy dialog clips its buttons at zoom 1.2 | Undo and other buttons unreachable at the owner's settings |
 | P11 | `packaging/sitecustomize.py:125-126` `-c`/`-m` bypass never fires | `nmsvault.exe -c` runs the CLI parser |
 | P12 | Rewriting `containers.index` changes the timestamps of records that were not touched (0 of 7 real indexes survive a parse + rebuild unchanged; D5 P-X1) | every Xbox write today can re-order other slots' members and trigger needless sync |
-| P13 | Old app versions (v0.0.9-v0.2.8) treat an unknown catalog entry `kind` so that Restore wipes every other slot plus accountdata (D2, verified on old releases) | any new entry kind is unsafe; preserved copies must be catalogued as `extract` |
+| P13 | Old app versions (v0.0.9-v0.2.8) treat an unknown catalog entry `kind` so that Restore wipes every other slot plus accountdata (D2, verified on old releases) | moot: users do not go back to older app versions (4a Q2), and new entries live in the store, not the catalog; not fixed |
 
-## 4. Owner forks (designs present these as options; nothing waits on the owner)
+## 4. Owner forks
 
-| Fork | Question | Options (designed) | Parent's lean |
-|---|---|---|---|
-| F1 | UI shape and technology | **T (Tk, R3 T1-A):** organizer built in the existing Tk app with a DPI + theme pass; two shells: (i) organizer as a view beside today's panes, (ii) organizer-first main window with today's panes behind "Backups (classic)"; Tk 9 later. **W (local web UI, R3 T2-A):** stdlib HTTP server on 127.0.0.1 inside the app, organizer in the default browser, the Tk window stays as host and for the classic flows. Not designed: third-party toolkits (break stdlib-only; PySide6 +118 MB), WebView2 via ctypes | R3 leans W (Unicode notes on Linux, graph polish, room for deeper views); T is lower risk and one language |
-| F2 | History view style | A linear timeline with restore events; B lane graph (one lane per branch); C hybrid: version table with a narrow lane column + "key versions / all" | C |
-| F3 | Vault storage | A keep folder-per-backup, add a version index, version-aware pruning, stop copying `cache/`; B content-addressed version store for new captures, old folders indexed in place, optional one-time migration (3.4 GB -> ~0.5 GB) | A first, B later |
-| F4 | Member policy for Place | a: V + its same-id partner (re-time the partner if needed); b: V written to both members | a |
-| F5 | Meta timestamp on Place | a: keep V's original time (honest in-game date); b: re-stamp to now | a |
-| F6 | Steam <-> Xbox transfer | a: verbatim data + meta conversion, gated behind the owner's test runs T1/T2; c: never (point to Hello Games cross-save) | a, as a later phase |
-| F7 | Placing another account's save | a: same person only (known identities in `UsedDiscoveryOwnersV2`); b: allow with a warning; c: block | a |
-| F8 | Deletions under Steam Cloud (Evict, undo of a fill into an empty slot) | a: never needed - organizer offers Place/Swap only; b: refuse and show the manual procedure; c: delete, show the procedure, detect resurrection | a + b |
-| F9 | Retention | keep everything; version-aware thinning (keep tips, branch points, noted, locked, live); per-save-file limits | keep everything + version-aware (C27) |
-| F10 | Order of phases | section 5 | section 5 |
+The forks the designs presented; every one is decided (4a).
+
+| Fork | Question | Options that were designed |
+|---|---|---|
+| F1 | UI shape and technology | T: Tk organizer in the existing app (D6); W: local web UI (D7) |
+| F2 | History view style | A linear timeline; B lane graph; C hybrid version table with a lane column + "key / all" |
+| F3 | Vault storage | A folder-per-backup plus a version index (D2); B content-addressed version store (D3) |
+| F4 | Member policy for Place | a: V + its same-id partner, re-timed; b: V written to both members |
+| F5 | Meta timestamp on Place | a: keep V's original time; b: stamp now |
+| F6 | Steam <-> Xbox transfer | a: verbatim data + meta conversion, gated behind the owner's test runs T1/T2; c: never |
+| F7 | Placing another account's save | a: same person only; b: allow with a warning; c: block |
+| F8 | Emptying a slot under Steam Cloud | a: never needed (replace only); b: show the manual procedure; c: delete and detect resurrection |
+| F9 | Retention | keep everything; version-aware thinning; per-save-file limits |
+| F10 | Order of phases | section 5 |
 
 ## 4a. Owner decisions (2026-10-16)
 
@@ -188,15 +197,15 @@ Found by R1, R2, R5, R7, R8; all VERIFIED unless noted. They block or distort or
 |---|---|
 | F1 UI | **Tk (D6)**, with selected elements of the web design carried over - see `02-ui-review.md` |
 | F2 history style | **C hybrid** (version table + lane column + key/all toggle) |
-| F3 storage | **B version store.** Older app versions need not read the vault after the upgrade; the migration first copies the whole vault aside once, so a failed upgrade can be rolled back. The old-app compatibility machinery in D2/D3 (shadow/barrier entries, cataloguing preserved copies as `extract`, the `snapshot-needs-newer-app` oplog barrier) is therefore not required |
+| F3 storage | **B version store (D3), from phase 2.** Before the first store write the whole vault is copied aside once and verified (D3 copy-aside step), so a failed upgrade can be rolled back (D3 rollback rule). Older app versions are not supported afterwards (Q2): no compatibility machinery (no shadow or barrier entries, no `extract` cataloguing, no oplog barrier) |
 | F4 member policy | **a** - the version plus its own same-id partner, re-timed so the chosen one loads |
 | F5 meta timestamp | **b** - stamp "now" (the original time stays in the vault record) |
 | F6 Steam <-> Xbox | **a**, last phase, after the owner's test runs T1/T2 |
 | F7 other accounts | **b** - allow, with a warning (bases may not be editable until the game re-owns them) |
-| F8 deletions under Steam Cloud | organizer operations always **replace**; emptying a slot shows the manual procedure |
+| F8 emptying a slot | organizer operations always **replace**; the app never empties a slot; emptying shows the manual procedure, and an empty slot warns that Steam Cloud or Xbox sync may fill it again |
 | F9 retention | **keep everything**; a version's last copy is never deleted |
 | F10 order | as section 5 (defects first) |
-| Pre-feature history (D1) | **no guessed tree**: versions captured before recording started show as a flat dated list; the tree is drawn only from recorded and observed history |
+| Pre-feature history (D1) | **no guessed tree**: the tree is drawn only from recorded and observed history, including the "seen in backups" links (Q3); every other version is listed by date |
 | Index display (D4) | D4's defaults accepted (legacy placed + buildable badges; ships "12 (3 corvettes) +5 archived"; companion custom name else creature type; built-in name tables; while the game runs index live saves only, one worker) |
 
 ### Owner answers to the design review (2026-10-17, `03-design-review.md` section 4)
@@ -216,14 +225,21 @@ Found by R1, R2, R5, R7, R8; all VERIFIED unless noted. They block or distort or
 
 | Phase | Content | Why here |
 |---|---|---|
-| 0 | Defects P1-P11 (P1, P2, P3-P6 first) | P1 corrupts identity/order on Xbox; P2 is live data-loss risk; P3-P6 are the hazards a 30-slot organizer multiplies |
-| 1 | Organizer view (read-only): lines by identity, versions as pairs, live markers for 15 + 15 slots, meta-level columns, sort/filter; live journal + lineage store + recorded edges start; notes (save-file + version) | the owner's core ask; cheap (meta scan ~1 s); recording must start early (C18) |
-| 2 | Place / Swap (+ Evict per F8) with the eviction picker, slot-scoped undo, post-launch verification | "move to live" - the owner's main action |
-| 3 | Content index: facts columns, version card, automatic "what changed" | the owner's "important facts"; independent of phase 2 |
-| 4 | History view (recorded + observed + inferred), compare two versions, Combine/Split | needs phases 1-3 data to be useful |
-| 5 | Storage per F3-B (if chosen), retention per F9; Steam <-> Xbox transfer per F6 after T1/T2 | big-risk items last |
+| 0 | Defects P1, P2, P3-P8, P12 first; P9-P11 alongside; P13 moot (4a Q2). P2 = stop pruning: `snapshot_live` no longer calls `_prune_snapshots`, a test asserts no snapshot is ever deleted; costs 41-63 MB per live write (R1 A6) until phase 2 stores snapshots deduplicated | P1 corrupts identity/order on Xbox; P2 is the live data-loss risk; P3-P8 are the hazards a 30-slot organizer multiplies; P12 is a prerequisite of every Xbox write |
+| 1 | Organizer view (read-only): lines by identity, versions as pairs, live markers for 15 + 15 slots, Steam/Xbox tips, meta-level columns, sort/filter; live journal, lineage store, bootstrap ("seen in backups" + legacy oplog); notes (save-file + version); classic live writes serialised by the live-op lock and journaled (D1 2.6.7) | the owner's core ask; cheap (meta scan ~1 s); recording must start early (C18) |
+| 2 | Vault upgrade to the version store (D3): copy-aside, store format, automatic fold of old backups; from then every new backup, snapshot and preserved save is a store entry and `StoreLocator.preserve` is the preserve provider; the entry listing serves the organizer, the classic tab and the CLI; hand-made in-place folders can be copied in (owner action, default off). Then Place / Swap with the eviction picker (always replace, F8), keep-a-copy, slot-scoped undo, post-launch verification | "move to live" - the owner's main action; one way to keep evicted saves, built once |
+| 3 | Content index: facts columns, version card, automatic "what changed" for versions with a lineage parent | the owner's "important facts"; independent of phase 2 |
+| 4 | History view (recorded and observed links, dated list for the rest), compare two versions, owner corrections, Combine/Split | needs phases 1-2; phase 3 adds milestones and "what changed" to it |
+| 5 | Free old folders (on the owner's request after a deep check), merge of store-mode vaults on import; Steam <-> Xbox transfer per F6 after T1/T2 | big-risk items last |
 
-Phases 2 and 3 are independent; their order can swap.
+Phases 2 and 3 are independent; their order can swap. With F7b, phase 2 needs nothing from
+phase 3.
+
+**Cross-design integration suite** (from phase 2, in CI): synthetic Steam and Xbox live folders,
+the real D1 store, D3 store and D5 operations; place, swap, promote, undo, keep-a-copy, crash
+points C1-C14 with forward and backward recovery, and a simulated cloud revert; assert together
+the live tree, store entries, `ops.jsonl`, the oplog, journal edges and events, and
+`op_outcome`. Each design's own suite still uses fakes of the others.
 
 ## 6. Shared vocabulary and interface boundaries (all designs use these)
 
@@ -235,64 +251,77 @@ say so in a "Deviations from 01-consolidation section 6" paragraph.
 | `pid` | playthrough id: 16 upper-case hex digits of `SaveUniversalId`; fallback `legacy:<platform>:<slot>:<name>`; after an owner Combine, an alias table maps pids to a canonical pid |
 | `vid` | version id: sha256 hex of one member's data file exactly as stored (verbatim bytes) |
 | member | `A` (auto-save, file 2k-1) or `B` (restore point, file 2k) of a slot |
-| capture | one observation of one slot: `{where, slot, A: vid or None, B: vid or None, observed_at}`; `where` is a live target or a vault entry |
+| capture | one observation of one slot: `{where, slot, A: vid or None, B: vid or None, observed_at}`; `where` is a live target, a catalog entry or a store entry |
 | pair | the display unit: the distinct `(vid_A, vid_B)` of a capture, labelled by its newer member |
 | live target `T` | `(platform, account_key, slot)`; `account_key` is the live folder's name, kept internally, always passed through `aliases.redact` for display |
 | `op_id` | `op-<UTC yyyymmddThhmmssZ>-<4 hex>`; one per user-level operation (a Place with its eviction is one op) |
-| edge | `{parent vid, child vid, tier: recorded/observed/inferred, kind, op_id or None, confidence, created}`; kinds include play, restore-older, place, swap, edit (outside the game), touch, cloud-revert, cross-save |
-| organizer store | `<vault>/organizer/` - user data and recorded history as JSON, atomic writes (temp + `os.replace`), one lock file; owned by D1 |
+| edge | game-state descent `{parent vid, child vid, tier: recorded/observed/owner, method: op/oplog/journal/capture-sequence/owner, kind: play/touch/edit/unknown, op_id or None, created, target}`; never inferred. Place, swap and undo are operation kinds; deletions and cloud reverts are journal events (D1 2.2) |
+| organizer store | `<vault>/organizer/` - user data and recorded history as JSON, atomic writes (temp + `os.replace`), the store lock and D5's live-op lock; owned by D1 |
+| version store | `<vault>/store/` - content-addressed objects and one manifest per backup, snapshot, extract, import or preserve; owned by D3 |
 | index cache | derived facts per `(vid, extractor_version)`, per-machine sqlite under the app's local data dir, keyed to the vault by a `vault_id` stored in the organizer store; owned by D4 |
 
 Ownership of the seams:
 
-- **D1 (model)** defines the pid/vid/capture/pair/edge/note schemas, the organizer store files,
-  the lineage algorithms (journal observation, binding rule, inference), Combine/Split, the
-  one-time bootstrap of the existing vault, the **read model** the UIs render (lines, versions,
-  live board, history graph) and the abstract `VersionLocator`:
-  `locate(vid) -> list[Location]`, `open(vid) -> (data bytes, meta plaintext, platform)`,
-  `preserve(member) -> Location` (durable, verified), `is_durable(vid) -> bool`.
-- **D2 / D3 (storage A / B)** implement `VersionLocator`, `preserve`, pruning/retention (C27),
-  the `cache/` policy and, for D3, the store layout and migration.
-- **D4 (index)** consumes `vid` + `VersionLocator.open`; exposes `facts(vid) -> dict or None`
-  (per context), `request(vids, priority)`, `changes(child_vid, parent_vid) -> list[str]`.
-- **D5 (operations)** implements Place/Swap/Evict/undo/verification on live targets, writes
-  op records (journal intent/completion) and calls D1's lineage recording API and the
-  locator's `preserve`.
-- **UI designs** consume only D1's read model, D4's facts and D5's operation entry points;
-  no UI reads save files or chooses write targets itself.
+- **D1 (model)** defines the pid/vid/capture/pair/edge/note schemas, the organizer store files
+  and its lock, the lineage algorithms (journal observation, binding rule, bootstrap backfill),
+  the Steam/Xbox tip comparison, Combine/Split and owner corrections, the **read model** the UI
+  and CLI render (lines, versions, live board, history graph and dated list, events), the
+  abstract `VersionLocator` - `locate(vid) -> list[Location]`, `open(vid, prefer) ->
+  OpenedVersion`, `preserve(members, *, op_id, reason) -> list[Location]` (durable, verified),
+  `is_durable(vid) -> bool` - and the composite `VaultLocator` handed to D4 and D5.
+- **D3 (storage B, chosen)** implements `StoreLocator` (including `preserve`), the store layout,
+  the copy-aside, fold, rollback, fsck, the entry listing `list_vault_entries` (catalog + store,
+  for D1's scanner, the classic tab and the CLI) and the `cache/` policy. D2's `FolderLocator`
+  read side serves catalog folders until fold; the rest of D2 (storage A) is not built.
+- **D4 (index)** consumes `vid` + `VaultLocator.open`; its `IndexService` implements D1's
+  `FactsProvider`: `view(vid) -> FactsView | None`, `changes(child, parent) -> ChangeSet | None`,
+  `is_milestone(child, parent)`, `request(vids, Priority)`.
+- **D5 (operations)** implements Place/Swap/undo/keep-a-copy/verification on live targets (no
+  slot is ever emptied, F8), writes op records (journal intent/completion), holds the live-op
+  lock, reports `busy_targets`, and calls D1's `LineageRecorder` and the locator's `preserve`.
+- **The UI (D6)** consumes only D1's read model and notes API, D4's facts and D5's entry
+  points; it never reads save files or chooses write targets itself.
 
 ## 6a. Integration notes from the design wave
 
-Requests between designs that the implementation must honour:
+Agreements between designs that the implementation must honour (all written into the designs):
 
-- D5 -> D1: `Journal.observe()` skips slots with an operation in progress; `op_outcome` reports
-  "confirmed" only after a game session has run.
-- D5 -> D4: add a `save.owners` fact (keyed digests, never raw ids) for the F7a same-person check.
-- D3 -> D5: oplog lines whose snapshot exists only in the version store use
-  `snapshot_id="snapshot-needs-newer-app"` plus `snapshot_store_id` (old apps then refuse undo
-  instead of misbehaving).
+- **D5 -> D1, journal** (D1 2.6.2, 2.6.6): `observe(scan, *, src, skip)` takes a required
+  `skip`; refreshes pass D5's `busy_targets`, D5's own post-write check passes busy targets minus
+  its own op. `op_outcome` is `confirmed` only when a recorded child of the placed pair is seen;
+  an unchanged placed pair stays `pending`, and D5 adds its game-session and upload evidence.
+- **D1 <-> D3, entries**: one listing, `list_vault_entries` (D3), feeds D1's scanner, the classic
+  tab and the CLI; a store entry yields D1 captures from its manifest (no file read); fold and
+  copy-in keep entry ids, so journal references stay valid.
+- **D3 -> D5, store**: preserve = `StoreLocator.preserve` (a `preserve` store entry); pre-op
+  snapshots are store entries; the oplog `snapshot_id` is the store entry id. No barrier or
+  other old-app protection (4a Q2).
+- **D4 -> D1, facts**: D1 calls only the `FactsProvider` subset of `IndexService`; `FactsView`
+  carries `pid_in_data` for D1's id check. No lineage signals and no ownership digests are
+  extracted (no inference; F7b reads no ownership ids).
+- **Locks**: the store lock (D1, `<vault>/organizer/.lock`) is held per transaction or per D3
+  manifest commit, is not re-entrant, and a timeout fails only that transaction. The live-op
+  lock (D5, `<vault>/organizer/.liveop.lock`) covers every live write, including classic ones
+  from phase 1 (D1 2.6.7); it is always taken before the store lock.
 - D1 deviations (edges are descent only; `owner` tier; batch `preserve`; `Location.external`;
-  `LiveRef.instance`; version notes keyed by the pair head) are adopted by D2-D5.
+  `LiveRef.instance`; version notes keyed by the pair head) are adopted by D3-D5.
 
 ## 7. Design wave
 
-UI facts from R3 that every UI design must respect: Tk 8.6 styles whole rows only and puts
-images only in column #0; every new ttk class needs dark-theme mapping (Notebook tabs came out
+UI facts from R3 that the Tk UI must respect: Tk 8.6 styles whole rows only and puts images
+only in column #0; every new ttk class needs dark-theme mapping (Notebook tabs came out
 unreadable); the shipped GUI is DPI-unaware (blurry at 150 %; fix = `SetProcessDpiAwareness(1)`
 plus scaling pixel constants); Linux-kit Tk cannot draw non-Latin-1 text (Tk 9 too); under the
-pythonw launcher `sys.stderr` is None (log to a file; override `http.server.log_message`); the
-POSIX packager ships only `*.py` (static web assets need a packager change or `.py`
-embedding); Edge launched with a private profile silently signs into the Windows account -
-never script Edge; render HTML with headless Chrome and a throwaway `--user-data-dir`.
+pythonw launcher `sys.stderr` is None (log to a file).
 
 Design documents (`designs/`):
 
-| ID | Design | Covers |
-|---|---|---|
-| D1 | Core data model: identity, versions, version locator interface, lineage store, live journal, inference, notes storage, sidecar layout, schema/versioning, concurrency, migration of the existing vault | S1 S3 S4 (C1-C6, C15-C22, C27-C28) |
-| D2 | Storage option A: index over folders | S6 F3-A |
-| D3 | Storage option B: content-addressed version store (+ optional migration) | S6 F3-B |
-| D4 | Content index engine: decoder fixes, HashName, extractor framework, fact catalog v1, contexts, lookups, worker pool, cache schema, changelog | S2 (C7-C14) |
-| D5 | Live operations: Place / PlaceIntoEmpty / Swap / Evict / undo / journal / verification / cloud; F4, F5, F7, F8 as specified alternatives; cross-platform phase (F6) | S5 (C23-C26) |
-| D6 | UI option T: Tk organizer, both shells, all screens, three history styles, mockups rendered by real Tk from `mockups/sample-data.json` | S7 F1-T, F2 |
-| D7 | UI option W: local web UI, all screens, three history styles, HTML mockups rendered by headless Chrome from the same data | S7 F1-W, F2 |
+| ID | Design | Covers | Status |
+|---|---|---|---|
+| D1 | Core data model: identity, versions, version locator interface, lineage store, live journal, Steam/Xbox tips, notes storage, schema, concurrency, bootstrap of the existing vault | S1 S3 S4 (C1-C6, C15-C22, C27-C28) | to build |
+| D2 | Storage option A: index over folders | S6 F3-A | not chosen; only the P2 fix and the `FolderLocator` read side are built |
+| D3 | Storage option B: content-addressed version store, copy-aside, fold | S6 F3-B | to build (phase 2, phase 5) |
+| D4 | Content index engine: decoder fixes, HashName, extractor framework, fact catalog v1, contexts, lookups, worker pool, cache schema, changelog | S2 (C7-C14) | to build |
+| D5 | Live operations: Place / PlaceIntoEmpty / Swap / undo / keep-a-copy / journal / verification / cloud; F4a, F5b, F7b, F8 as decided; cross-platform phase (F6) | S5 (C23-C26) | to build |
+| D6 | Tk organizer, shell 10a, history style C, mockups rendered by real Tk from `mockups/sample-data.json` | S7 F1-T, F2 | to build |
+| D7 | Local web UI | S7 F1-W | not chosen (F1 = Tk); kept for reference, nothing depends on it |
