@@ -199,6 +199,19 @@ Found by R1, R2, R5, R7, R8; all VERIFIED unless noted. They block or distort or
 | Pre-feature history (D1) | **no guessed tree**: versions captured before recording started show as a flat dated list; the tree is drawn only from recorded and observed history |
 | Index display (D4) | D4's defaults accepted (legacy placed + buildable badges; ships "12 (3 corvettes) +5 archived"; companion custom name else creature type; built-in name tables; while the game runs index live saves only, one worker) |
 
+### Owner answers to the design review (2026-10-17, `03-design-review.md` section 4)
+
+| Q | Answer |
+|---|---|
+| Q1 version store start | **With phase 2**: copy the vault aside first; from then on new backups, snapshots and evicted saves go to the store; old folders are folded in automatically, freed only on request |
+| Q2 older app versions | **No guard.** After the upgrade, users cannot and should not go back to older app versions |
+| Q3 pre-recording links | **"Seen in backups"**: consecutive app backups of the same live slot are linked as observed history |
+| Q4 save live on Steam and Xbox | Owner's model: Hello Games cross-save replicates it and the latest usually wins, but a platform not opened for a long time lags; if both vary, each platform effectively becomes its own branch. Show each platform's copy as its own tip: "behind" when it lags, two branches when both progressed |
+| Q5 "what changed" without a known parent | show nothing ("no recorded parent") |
+| Q6 other-account warning | one warning whenever the save comes from another account; no ownership ids processed |
+| Q7 store details | fold old backups automatically after the copy-aside; free old folders only on request after a deep check; keep thumbnails deduplicated (139 MB); offer to copy hand-made in-place backup folders into the store, default off |
+| Names | The owner's machine names must never appear in the product, docs or mockups |
+
 ## 5. Order of work (recommended phasing)
 
 | Phase | Content | Why here |
