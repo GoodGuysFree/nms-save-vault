@@ -10,8 +10,8 @@ The mapping lives in a plain ``accounts.ini`` next to ``state.json`` (see
 :func:`default_path`)::
 
     [accounts]
-    76561197975032661 = Main
-    000901F0DD67CC4E_29070100B936489ABCE8B9AF3980429C = Xbox
+    76561198000000001 = Main
+    0009000000000001_29070100B936489ABCE8B9AF3980429C = Xbox
 
 Only *display* is affected. ``state.json``, ``catalog.json`` and every path the app opens
 keep the real identifiers -- they are data, not presentation.

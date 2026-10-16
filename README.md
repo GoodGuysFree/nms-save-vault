@@ -249,8 +249,8 @@ by hand:
 
 ```ini
 [accounts]
-76561197975032661 = Main
-000901F0DD67CC4E_29070100B936489ABCE8B9AF3980429C = Xbox
+76561198000000001 = Main
+0009000000000001_29070100B936489ABCE8B9AF3980429C = Xbox
 ```
 
 Clearing a name shows the real id again. This is **display only** — `state.json`,
