@@ -169,7 +169,7 @@ Found by R1, R2, R5, R7, R8; all VERIFIED unless noted. They block or distort or
 
 | Fork | Question | Options (designed) | Parent's lean |
 |---|---|---|---|
-| F1 | UI shape and technology | pending R3 - see section 6 | - |
+| F1 | UI shape and technology | **T (Tk, R3 T1-A):** organizer built in the existing Tk app with a DPI + theme pass; two shells: (i) organizer as a view beside today's panes, (ii) organizer-first main window with today's panes behind "Backups (classic)"; Tk 9 later. **W (local web UI, R3 T2-A):** stdlib HTTP server on 127.0.0.1 inside the app, organizer in the default browser, the Tk window stays as host and for the classic flows. Not designed: third-party toolkits (break stdlib-only; PySide6 +118 MB), WebView2 via ctypes | R3 leans W (Unicode notes on Linux, graph polish, room for deeper views); T is lower risk and one language |
 | F2 | History view style | A linear timeline with restore events; B lane graph (one lane per branch); C hybrid: version table with a narrow lane column + "key versions / all" | C |
 | F3 | Vault storage | A keep folder-per-backup, add a version index, version-aware pruning, stop copying `cache/`; B content-addressed version store for new captures, old folders indexed in place, optional one-time migration (3.4 GB -> ~0.5 GB) | A first, B later |
 | F4 | Member policy for Place | a: V + its same-id partner (re-time the partner if needed); b: V written to both members | a |
@@ -231,7 +231,16 @@ Ownership of the seams:
 
 ## 7. Design wave
 
-Pending R3 (UI technology) for the UI forks. Planned design documents (`designs/`):
+UI facts from R3 that every UI design must respect: Tk 8.6 styles whole rows only and puts
+images only in column #0; every new ttk class needs dark-theme mapping (Notebook tabs came out
+unreadable); the shipped GUI is DPI-unaware (blurry at 150 %; fix = `SetProcessDpiAwareness(1)`
+plus scaling pixel constants); Linux-kit Tk cannot draw non-Latin-1 text (Tk 9 too); under the
+pythonw launcher `sys.stderr` is None (log to a file; override `http.server.log_message`); the
+POSIX packager ships only `*.py` (static web assets need a packager change or `.py`
+embedding); Edge launched with a private profile silently signs into the Windows account -
+never script Edge; render HTML with headless Chrome and a throwaway `--user-data-dir`.
+
+Design documents (`designs/`):
 
 | ID | Design | Covers |
 |---|---|---|
@@ -240,4 +249,5 @@ Pending R3 (UI technology) for the UI forks. Planned design documents (`designs/
 | D3 | Storage option B: content-addressed version store (+ optional migration) | S6 F3-B |
 | D4 | Content index engine: decoder fixes, HashName, extractor framework, fact catalog v1, contexts, lookups, worker pool, cache schema, changelog | S2 (C7-C14) |
 | D5 | Live operations: Place / PlaceIntoEmpty / Swap / Evict / undo / journal / verification / cloud; F4, F5, F7, F8 as specified alternatives; cross-platform phase (F6) | S5 (C23-C26) |
-| D6+ | UI options with mockups (F1, F2) | S7 |
+| D6 | UI option T: Tk organizer, both shells, all screens, three history styles, mockups rendered by real Tk from `mockups/sample-data.json` | S7 F1-T, F2 |
+| D7 | UI option W: local web UI, all screens, three history styles, HTML mockups rendered by headless Chrome from the same data | S7 F1-W, F2 |
