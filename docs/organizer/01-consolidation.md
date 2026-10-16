@@ -164,6 +164,8 @@ Found by R1, R2, R5, R7, R8; all VERIFIED unless noted. They block or distort or
 | P9 | `discover --add` catalogues the live Xbox folder as an in-place backup | every Xbox save shows a fake extra backup |
 | P10 | Toolbar needs 1,410 px in a 1,000 px window; Copy dialog clips its buttons at zoom 1.2 | Undo and other buttons unreachable at the owner's settings |
 | P11 | `packaging/sitecustomize.py:125-126` `-c`/`-m` bypass never fires | `nmsvault.exe -c` runs the CLI parser |
+| P12 | Rewriting `containers.index` changes the timestamps of records that were not touched (0 of 7 real indexes survive a parse + rebuild unchanged; D5 P-X1) | every Xbox write today can re-order other slots' members and trigger needless sync |
+| P13 | Old app versions (v0.0.9-v0.2.8) treat an unknown catalog entry `kind` so that Restore wipes every other slot plus accountdata (D2, verified on old releases) | any new entry kind is unsafe; preserved copies must be catalogued as `extract` |
 
 ## 4. Owner forks (designs present these as options; nothing waits on the owner)
 
@@ -228,6 +230,19 @@ Ownership of the seams:
   locator's `preserve`.
 - **UI designs** consume only D1's read model, D4's facts and D5's operation entry points;
   no UI reads save files or chooses write targets itself.
+
+## 6a. Integration notes from the design wave
+
+Requests between designs that the implementation must honour:
+
+- D5 -> D1: `Journal.observe()` skips slots with an operation in progress; `op_outcome` reports
+  "confirmed" only after a game session has run.
+- D5 -> D4: add a `save.owners` fact (keyed digests, never raw ids) for the F7a same-person check.
+- D3 -> D5: oplog lines whose snapshot exists only in the version store use
+  `snapshot_id="snapshot-needs-newer-app"` plus `snapshot_store_id` (old apps then refuse undo
+  instead of misbehaving).
+- D1 deviations (edges are descent only; `owner` tier; batch `preserve`; `Location.external`;
+  `LiveRef.instance`; version notes keyed by the pair head) are adopted by D2-D5.
 
 ## 7. Design wave
 
