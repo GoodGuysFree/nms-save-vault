@@ -18,22 +18,29 @@ and migrated, so every vault copy is durable - no "may be pruned" states); F4 = 
 goes live with its own restore-point partner); F5 = **b** (the game's save date is stamped "now";
 the original date stays in the vault record); F6 = Steam <-> Xbox later, after test runs (shown as
 not available yet); F7 = **b** (another account's save is allowed with a warning); F8 = operations
-always replace, emptying a slot is not an app action (the app shows the manual steps). F1 (Tk or
-web) is still open.
+always replace, emptying a slot is not an app action (the app shows the manual steps).
+
+**F1 = Tk**, and the owner's screen-by-screen review (`docs/organizer/02-ui-review.md`, binding) is
+applied: shell 10a (tabs under the menu bar, the app reopens the last tab); a `>` / `v` expand
+marker instead of the platform boxes; other lines muted while one is expanded; the move dialogs
+(03, 03b) and the history view (04c) rebuilt in Tk on the web mockups' layout; a live area that
+shows one live folder or two chosen ones (08b, 08c); the empty-slot refill warning; the source chip
+"Vault only". Every mockup was re-rendered.
 
 ## 0. Owner summary
 
-1. One window: all 30 save files in a sortable table, the 15 Steam + 15 Xbox slots beside it, and the selected save file's facts and notes below (01).
-2. A line opens into its versions: branches drawn for what the app recorded, older versions as a dated list; Move to live is one dialog that lists all 15 slots, suggests one and names the result on its button (02, 03).
-3. Strengths: native, fast (12k rows in 0.15 s), one language, no local web server; reuses today's theme, tests and look.
-4. Limits versus a web UI: a cell cannot have its own colour (warnings are words and row icons), plainer graphics, and notes in Hebrew/CJK/emoji cannot be drawn by the Linux build.
-5. Your choice: shell (ii) organizer-first window (recommended) or (i) organizer as a tab beside today's panes (10a, 10b).
-6. History is style C as you decided (04c); Tk 9 later can add per-cell colours without a redesign.
+1. The organizer is a tab beside today's live/backups panes; the app opens in the tab you used last (10a).
+2. All 30 save files in one sortable table with a `>` to open each; your live slots in vertical lists on the right - one live folder or two you choose (01, 08b, 08c).
+3. Move to live and Replace use one dialog: what comes in (green) and what goes out (amber), all 15 slots, "What you are putting in", the outcome text, "Your pick", and a button that names the result (03, 03b).
+4. History: branches drawn only for what the app recorded, older versions as a dated list (04c).
+5. An empty live slot always warns that Steam Cloud or Xbox sync may fill it again (01, 08b).
+6. Tk limits that stay: no per-cell colours, plainer graphics, and the Linux build cannot draw non-Latin notes; Tk 9 later adds per-cell colours.
 
 ## 1. Scope, non-goals, dependencies
 
-**In scope.** The Tk front end of the organizer: both window shells; the organizer view (table,
-filter chips, find, column chooser); the live board; the detail pane; the Move to live / Replace
+**In scope.** The Tk front end of the organizer: the window shell (10a; 10b kept as the documented
+alternative); the organizer view (table, filter chips, find, column chooser); the live area (one or
+two live folders); the detail pane; the Move to live / Replace
 with dialog; the history window (style C); the notes window; the compare window; first-run and
 indexing progress; the non-modal "Done - Undo"; verification alerts and the recovery prompt; the
 classic view; the DPI, theme and zoom pass; redaction of every displayed string; the UI threading
@@ -74,8 +81,8 @@ store object) never appear as concepts; a version's places are dated labels ("Va
 
 | Window | Kind | Opens from | Notes |
 |---|---|---|---|
-| Main window: **Organizer** view | root | start | shell (ii); in shell (i) it is a Notebook tab |
-| Main window: **Backups (classic)** view | root | view switch, Ctrl+2 | today's two panes; whole-folder actions |
+| Main window, tab **Organizer** | root | tab under the menu bar, Ctrl+1 | the organizer (01) |
+| Main window, tab **Live saves and backups** | root | tab under the menu bar, Ctrl+2 | today's window content: 14-button toolbar, "Active live", two panes (10a) |
 | Move to live / Replace with | modal Toplevel | Move to live... (Ctrl+M), board right-click, drag onto a slot | one dialog, both ends visible (C30) |
 | History | non-modal Toplevel, one | History (Ctrl+H), line menu | follows the main selection unless "Keep this save file" is ticked |
 | Notes | non-modal Toplevel, one | Notes... (F2), detail-pane links | edits the selected save file and version |
@@ -88,19 +95,21 @@ Selection is the hub: the table selection drives the board highlight, the detail
 window and the default source of Move to live. Keyboard: Tab cycles chips -> Find -> table ->
 board -> detail tabs -> action buttons; arrows move inside each; Enter on a line or version opens
 Move to live, on a board slot opens Replace with; Shift+F10 / the menu key opens the context menu;
-Ctrl+F focuses Find; Ctrl+1 / Ctrl+2 switch views; Ctrl+plus / Ctrl+minus zoom. Every drag has a
-keyboard path (R4 F2): dragging a line or version onto a board slot only pre-fills the dialog.
+Ctrl+F focuses Find; Ctrl+1 / Ctrl+2 switch tabs; Ctrl+plus / Ctrl+minus zoom. Every drag has a
+keyboard path (R4 F2): dragging a line or version onto a board slot only pre-fills the dialog. The
+app stores the last tab in `state.json` (`ui.last_view`) and opens there.
 
-### 2.2 Screen 01 - the organizer (shell ii)
+### 2.2 Screen 01 - the organizer tab
 
 ![01](../mockups/tk/01-organizer.png)
 ![01 dark](../mockups/tk/01-organizer-dark.png)
 
-**Layout (top to bottom).** Native menu bar (File, Edit, View, Live, Tools, Help); a slim toolbar:
-the view switch `[Organizer | Backups (classic)]`, the selection actions `Move to live...`,
-`History`, `Compare...`, `Notes...`, and `Rescan` at the right (fits 1,000 px at zoom 1.2, P10);
-the chip row; a horizontal `ttk.PanedWindow` with the organizer table on the left (weight 3) and,
-on the right, the live board above the detail pane; the status bar.
+**Layout (top to bottom).** Native menu bar (File, Edit, View, Live, Tools, Help); a `ttk.Notebook`
+whose tabs sit directly under the menu bar: `Live saves and backups | Organizer` (shell 10a). The
+Organizer tab holds: a slim toolbar with the selection actions `Move to live...`, `History`,
+`Compare...`, `Notes...` and `Rescan` at the right; the chip row; a horizontal `ttk.PanedWindow`
+with the organizer table on the left (weight 3) and, on the right, the live area above the detail
+pane. The status bar sits below the tabs.
 
 **Chips** (toggle buttons with counts; groups combine with AND, chips inside a group with OR):
 `All 30 | Live 26 | Vault only 4` - `Steam 14 | Xbox 15 | On both 4` - `Has note 6 | Pinned 2 | Not in
@@ -113,7 +122,7 @@ you type (debounced 150 ms). `Columns...` opens the column chooser.
 
 | Column | Line row | Version row | Sort key |
 |---|---|---|---|
-| #0 Save file / version | badge image + name ("(unnamed 9589)", "(unnamed, was Swarm)") | lane image + "#18" ("#1 (restore point only)" for a fork member) | `name` |
+| #0 Save file / version | `>` / `v` expand marker + name ("(unnamed 9589)", "(unnamed, was Swarm)") | lane image + "#18" ("#1 (restore point only)" for a fork member) | `name` |
 | Live (58) | "S9", "S13 X8", "vault" | "S9" or "vault" | `live` |
 | Vers. (40) | distinct versions (C6) | - | `versions` |
 | Play time (76) | "532h16" (`_fmt_play`) | the version's | `play_time` |
@@ -135,16 +144,28 @@ VAULT` (a live pair with no vault copy), `diverged S/X`, `Steam ahead`, `Xbox ah
 `+1 re-save folded`. With the version store (F3-B) the states "snapshot only" and "outside the
 vault" of today's folders disappear after migration.
 
-**Badge** (column #0 image, drawn in code): two squares `[S][X]`, filled in the platform colour when
-the line is live there, outlined when not; an amber dot when a live pair is not in the vault; a
-clock when an operation on it waits for verification (09).
+**Expand marker** (owner review): one `>` per line, `v` when open, drawn in code as the line row's
+column-#0 image (3.1.4). Where a save file is live is the Live column ("S9", "S13 X8", "vault");
+"not in vault" and "check pending" are words in State. No platform boxes.
 
-**Live board** (3.2): one column per live source (Steam, Xbox; more columns if more accounts), 15
-rows each: slot chip `S9` in the platform colour (outlined and grey when empty), name, `+X8` when
-the same save file is live on the other platform, play time, markers (filled amber triangle = not in
-vault, pin = pinned, clock = waiting for the next game launch, red = reverted). The selected line's
-slots are outlined in the accent colour. Header: "Steam live - 14 of 15 used". A legend lists only
-the markers in use.
+**Live area** (3.2), vertical lists as before (the owner kept them over the web's tiles):
+`Live: [One | Two]` plus one combobox per shown list. *Two* (01, 08c) shows two live folders side by
+side, the owner picks which two (any Steam account or Xbox); *One* (08b) shows a single wide list
+with last played and the inline warnings. Only configured live folders are offered, so a user
+without Xbox never sees an empty Xbox column; with a single live folder the area shows that list
+and no selector. Each list has 15 rows: slot chip `S9` in the platform colour (outlined and grey
+when empty), name, `+X8` when the same save file is live on the other platform, play time,
+markers (filled amber triangle = not in vault, pin = pinned, clock = waiting for the next game
+launch, red = reverted, blue cloud = empty slot). The selected line's slots are outlined in the
+accent colour. Header: "Steam live - 14 of 15 used". The legend lists only the markers in use.
+
+**Empty slot** (owner review): an empty slot (Steam slot 1 here; emptied by hand on 2026-09-27)
+carries the cloud marker, its tooltip says "Steam Cloud may put a save back into it at the next game
+start (the app never empties a slot ...)" (shown in 01), the one-list mode prints the sentence in
+the row (08b), and selecting it shows the slot card in the detail pane: "This slot is empty. Steam
+Cloud may fill it again: ...", what was there last, how to keep it empty, how to use it (08b). The
+same sentence is part of the manual procedure (2.13) and of the slot rows of the move dialog
+("may be refilled by Steam Cloud").
 
 **Detail pane** (3.3): title, a one-line summary, buttons (`Move to live...` is the default button),
 and a `ttk.Notebook` with **Summary**, **Facts**, **Notes**, **Where**. Summary for a line: each live
@@ -189,7 +210,9 @@ no guessed tree):
 
 No-progress versions are folded (C5) into their older neighbour: All Parts Building (no recorded
 history, so only a dated list) shows #4 (re-saved without play) folded into #3 ("+1 re-save
-folded"). Version rows have a tinted group background so the expanded block reads as one unit.
+folded"). Version rows have a tinted group background so the expanded block reads as one unit, and
+while any line is expanded every line that is not expanded is drawn muted (tag `dim`, grey text;
+owner review) - Main Save XBox, (unnamed 9589) and Egg Gifting Xbox in the image.
 
 Selecting a version fills the detail pane with the **version card**: where it is ("Vault: backup
 2026-10-05 17:41 - not live"); "Comes from #p (put live by the app / seen in the slot)" for a
@@ -205,89 +228,118 @@ in State and cannot be a source (D5 `SOURCE_UNREADABLE`).
 Reads: D1 `versions`, `history(pid, "default")`; D4 `view`, `changes`, `card`, `request(...,
 INTERACTIVE)`, `request_deep`.
 
-### 2.4 Screen 03 - Move to live (from a version)
+### 2.4 Screens 03 and 03b - the move dialog (Move to live, Replace with)
 
 ![03](../mockups/tk/03-move-to-live.png)
+![03b](../mockups/tk/03b-replace-from-slot.png)
 
-One modal dialog, both ends visible (C30). It opens from a line (source = its newest version), a
-version, the history or compare windows, or a drag onto a board slot (target pre-selected).
+One modal dialog class with one layout (owner review: "the dialogs should follow the web
+version"), entered from either end (C30). **Move to live...** (03) starts from a version: a line
+(its newest version), a version row, the history or compare windows, or a drag onto a board slot
+(that slot pre-picked); the slot is chosen in the dialog. **Replace with...** (03b) starts from a
+live slot (board right-click or Enter); the version is chosen in the dialog.
 
-- **From** card: name, `#2 of 2`, saved, play time, mode, platform, where (D5
-  `SourceSummary.where_label`), the version label. `Change...` opens the version picker of 03b.
-- **Into**: a segmented `[Steam | Xbox]` account switch from `EvictionPicker.account` and
-  `other_accounts`; a blocked account stays visible with its reason ("Xbox: moving saves between
-  Steam and Xbox is not available yet", `CROSS_PLATFORM_GATED`). With two Steam accounts the switch
-  shows their alias labels; the other account is selectable (F7-b) and its plan carries D5's
-  `OTHER_ACCOUNT` confirm warning ("bases may stay owned by that account until you play it here"). Below it, a 15-row `ttk.Treeview` from `candidates`: Slot, In it now,
-  Play time, Last played, Vault copy (`yes` / `NO - kept first`), Pin, and a reason column. Row
-  tags: suggested (bold accent on a tint, "suggested: empty slot" / "same save file" / "in vault,
-  played least recently"), not in vault (amber), pinned (muted, "pinned: not suggested"), empty
-  (muted), blocked (disabled; selecting it is refused with the block text).
-- **What will happen**: one paragraph built from the plan (`plan_place` for the selected slot,
-  computed in a worker on every selection change, < 100 ms): what goes into the slot "with its own
-  restore point" (F4-a), "The game will list it as saved now; its original date (2026-02-22 19:05)
-  stays in the vault record" (F5-b), what leaves live and that it is in the vault. Then the plan's
-  warnings by severity:
-  `info` (blue i), `warn` (amber !), `confirm` (a checkbox the owner must tick; the main button stays
-  disabled until all are ticked and their codes go into `execute(confirmed=...)`), `block` (red;
-  button disabled).
-- **Bottom**: optional "Note for this move" (recorded with the operation, request in 8.3), `Cancel`,
-  and the default button whose text is `plan.outcome`: "Swap into Steam slot 5", "Put into empty Steam
-  slot 1", "Go back to this version in Steam slot 13".
+Layout, top to bottom:
 
-In the image the owner picked slot 5 over the suggested empty slot 1; CrossSaveTest-300qs is also
-live on Xbox (D5 `LIVE_ELSEWHERE`), and Steam Cloud is on (`STEAM_CLOUD_OTHER_DEVICE`).
+1. **Title and one-line purpose**: "Move to live - Pick the live slot. Whatever is in it goes to
+   the vault first, so nothing is lost." / "Replace what is in Steam slot 5 - Pick any version from
+   the vault. The save in the slot now goes to the vault first."
+2. **What goes where** - two boxes and an arrow. Left, tinted **green** ("in"): `PUTTING IN`, name
+   and `#n`, version date, play time, mode, where it is in the vault (D5
+   `SourceSummary.where_label`). Right, tinted **amber** ("out"): `STEAM SLOT 5 NOW - GOES TO THE
+   VAULT`, the occupant, its play time and last played, and "already in the vault - stays there,
+   ready to come back" or "not in the vault yet - copied there first". Both boxes update with every
+   pick. Green and amber are used for the same meaning everywhere in the dialog (the picked slot
+   row is amber because its save goes out, the picked version row is green because it comes in,
+   and the `OUT` / `IN` tags of "Your pick").
+3. **The picker** (left column):
+   - 03: `Into [Steam | Xbox (locked)]` from `EvictionPicker.account` / `other_accounts` (a blocked
+     account stays visible with its reason: "Moving saves between Steam and Xbox comes in a later
+     version"; with two Steam accounts the switch lists their alias labels and the other account is
+     selectable with D5's `OTHER_ACCOUNT` confirm warning, F7-b); a plan-level info strip (D5
+     `STEAM_CLOUD_OTHER_DEVICE`: "Steam Cloud is on. If Steam asks at the next launch which copy to
+     keep, choose the one on this PC."); then the **15 slots** (D5 `candidates`): a radio image in
+     column #0, Slot, In it now (pinned marked), Play time, Last played, In the vault (`yes` / `NO`),
+     and a notes column: `Suggested: empty` / `Suggested: same save file` (green, bold), `Your pick`,
+     `copied to the vault first`, `pinned - not suggested`, `also live in X14`, `59 min more play`,
+     `may be refilled by Steam Cloud` (empty slot). Restoring an older version groups the rows: SAME
+     SAVE FILE first, then OTHER STEAM SLOTS ("a second live copy makes two branches"), the rest
+     folded behind "> 8 more slots" (08).
+   - 03b: a Find entry; chips **`Vault only 4`** (owner review; was "Not live"), `Older versions of
+     Ex-Beachhead-160qs 1`, `Live elsewhere 14`; a grouped tree: VAULT ONLY - 4 SAVE FILES (lines with
+     `>` markers, the open one shows its versions with radio images and their automatic
+     descriptions), OLDER VERSIONS OF EX-BEACHHEAD-160QS, LIVE ELSEWHERE - 14 STEAM SAVE FILES ("a
+     second live copy makes two branches"), and "> 10 more. Xbox-only save files are not listed:
+     moving saves between Steam and Xbox comes later."
+4. **What you are putting in** (right column, 340 px): name and `#n`, play time, saved, platform,
+   then Difficulty, Expedition, Where now, Glyphs, Bases, Largest base, Legacy parts, Galaxies with
+   bases, Ships (D4 `view` of the source; "..." while not read), and "What changed in this version"
+   (D4 `changes` against its lineage parent, or the dated predecessor before recording).
+5. **What will happen** (kept exactly as the owner approved): one paragraph from the plan
+   (`plan_place` for the current pick, computed in the worker on every change, < 100 ms): what goes
+   into the slot "with its own restore point" (F4-a), "The game will list it as saved now; its
+   original date (...) stays in the vault record" (F5-b), what leaves live and that it is in the
+   vault; then the plan's warnings by severity: `info` (blue i), `warn` (amber !), `confirm` (a
+   checkbox the owner must tick; the main button stays disabled until all are ticked and their codes
+   go into `execute(confirmed=...)`), `block` (red; button disabled).
+6. **Your pick** (from the web layout): one line summarising the choice - "Steam slot 5 (the
+   suggestion was the empty slot 1)", `OUT` Ex-Beachhead-160qs -> vault (already there), `IN`
+   CrossSaveTest-300qs #2 -> Steam slot 5.
+7. **Footer**: optional "Note for this move" (recorded with the operation, request in 8.3), the
+   default button whose text is `plan.outcome` (kept exactly: "Swap into Steam slot 5", "Put into
+   empty Steam slot 1", "Go back to this version in Steam slot 13"), `Cancel`.
+
+In 03 the owner picked slot 5 over the suggested empty slot 1; CrossSaveTest-300qs is also live on
+Xbox (D5 `LIVE_ELSEWHERE`). In 03b the slot is fixed and the owner picks (unnamed, was Swarm) #2.
 
 **Execute.** The button calls `execute(ctx, plan, confirmed, progress)` in the worker; the dialog
 replaces its buttons with a determinate bar fed by D5 `Progress` (checking, preserving, snapshot,
 writing, verifying, recording). Outcome: `done` closes the dialog and shows the Done bar (09);
 `stale` shows "Steam slot 5 changed since you opened this. Please check again." and re-renders from
 `replan`; `refused` / `rolled_back` / `failed` keep the dialog open with D5's text (2.14) and, for
-`failed`, a `Recover...` button. Keyboard: arrows choose the slot, Enter executes when enabled, Esc
-cancels. Calls: D5 `eviction_picker`, `plan_place`, `execute`.
+`failed`, a `Recover...` button. Keyboard: arrows choose the slot or version, Enter executes when
+enabled, Esc cancels, Ctrl+F focuses Find (03b). Calls: D5 `eviction_picker`, `plan_place`,
+`execute`; D4 `view`, `changes` for the right column.
 
-### 2.5 Screen 03b - Replace with... (from a slot)
-
-![03b](../mockups/tk/03b-replace-from-slot.png)
-
-The same dialog class entered from the other end: right-click a board slot (or Enter on it) ->
-`Replace with...`. **Into** is fixed (`Steam slot 5 - holds Ex-Beachhead-160qs #2 - 7h17 - in the
-vault`, `Change...`); **From** is a version picker: an `OrganizerTable` with chips `Not live | Steam
-saves | All`, Find, lines expandable to versions; save files that are not live come first; lines of
-the other platform are listed muted with "Xbox save - cannot go to Steam yet". Choosing a version
-runs `plan_place(source, fixed target)`; the result and the button behave as in 03. The board stays
-visible with the slot outlined so the owner sees where the dialog came from. Calls: D5 `plan_place`,
-`execute`.
-
-### 2.6 Screen 04c - History (style C, the owner's choice)
+### 2.5 Screen 04c - History (style C on the web layout)
 
 ![04c](../mockups/tk/04c-history-hybrid.png)
 
-A non-modal window over one save file. Toolbar: `Show: [Key versions 8 | All 23]`, `Compare 2
-selected`, `Move to live...`. Body: a `ttk.PanedWindow` with the version table on top and the
-selected version's card below.
+A non-modal window over one save file, laid out like the web mockup (owner review):
 
-- The table is the organizer table's version layout (same columns, same rows as 02): the
-  **recorded history** with lanes on top (Main Save: the 10-05 rollback fork at #18 with #23 live
-  and #19 replaced; the side branch #11 -> #20-#22), then "Older, by date" and the **dated list**.
-- `Older versions: [Key versions | All 16]` applies to the dated list: in Key mode only noted or
-  locked versions, versions touched by an operation, live versions and the newest and oldest stay;
-  each collapsed run becomes a row "#6-#16 - 10 more versions - click to show" with the play time
-  it covers; clicking a run unfolds it in place.
-- Lanes are D1's (2.10.5) computed over the recorded part only, so 02 and 04c draw the same tree.
-  No edge is guessed or drawn dashed (owner decision); a version from before recording shows
-  "Before it (by date)" in its card. Restores and reverted operations show in the State column and
-  as amber lines in the card. Once the app records an operation on an old version (for example
-  "Go back to this version" on #11 of Creative Primary, 08), that version and its future join the
-  drawn tree.
-- Selecting rows: click selects, Ctrl+click adds a second for Compare; Enter = Move to live.
+- **Header**: name, live badge (`S9`), "23 versions - 3 branch tips - 532h16 played", and a legend
+  (recorded move = thick line, seen in the live slot = thin line, live dot, vault ring, grey dot =
+  before recording: by date).
+- **Left card**: `[Key versions 10 | All 23]` and the sentence "Branches are drawn only from what this
+  app recorded (since 2026-10-05). Older versions are listed by date: which one came from which is
+  not known for sure, so no tree is guessed." Then the table: lane column (images in column #0),
+  Saved, Play time, Where, **How it is linked** (`recorded move` bold, `seen in the slot`, `branch
+  starts here`, `by date`, `first seen`), Parts, Bases, Label / what changed. Two section rows:
+  RECORDED HISTORY (by this app since 2026-10-05; 3 branches, the older versions they start from shown
+  at their foot) with Main Save's 10-05 rollback fork at #18 (#23 live S9, #19 replaced) and the side
+  branch from #11 (#20-#22, invented); then BY DATE ONLY (16 versions before recording; noted, first
+  and newest shown) with folded runs "> 10 more versions - 2026-06-23 to 2026-09-22 (520h43 -
+  529h55) - click to show".
+- **Branch tips** below the table: one row per branch in its lane colour (main line, Vesper Ridge
+  side branch, abandoned re-save) with tip date, play time, where, "from <date>, n versions since",
+  and `Move to live...` / `Compare with live` (or "live now").
+- **Right panel**: the selected version - date and play time, "Steam - the game loads the auto-save
+  - Normal - locked", the label as a yellow callout, `Move to live...`, `Compare...`, `Label`,
+  `Unlock`, a "2 branches continue from here" callout, WHAT CHANGED SINCE (previous version by date
+  before recording), EVENTS (the reverted 17:48 restore in amber, the 17:49 restore), WHERE IT IS,
+  CONTENTS (D4 facts).
 
-Reads: D1 `history`, `versions`; D4 `view`, `changes`, `card`. Calls: none (writes go through 03).
+Lanes are D1's (2.10.5) over the recorded part only, so 02 and 04c draw the same tree; no edge is
+guessed or dashed. Once the app records an operation on an old version (for example "Go back to this
+version" on #11 of Creative Primary, 08), that version and its future join the drawn tree.
+Keyboard: Up / Down version, Left / Right branch, C compare, M move to live, K key versions / all;
+Ctrl+click adds a second version for Compare. Reads: D1 `history`, `versions`; D4 `view`, `changes`,
+`card`. Calls: none (writes go through 2.4).
 
 **Styles A and B** (linear timeline; separate lane graph on a Canvas) were designed, considered and
 rejected by the owner in favour of C; they are not built.
 
-### 2.7 Screen 05 - Notes
+### 2.6 Screen 05 - Notes
 
 ![05](../mockups/tk/05-notes.png)
 
@@ -313,7 +365,7 @@ The notes window edits the two levels of C19 for the selected save file:
 Text is stored as Unicode (C22). Windows Tk draws it; on the Linux kit (no Xft) see 3.14.
 Calls: D1 `Notes` only.
 
-### 2.8 Screen 06 - Compare two versions
+### 2.7 Screen 06 - Compare two versions
 
 ![06](../mockups/tk/06-compare.png)
 
@@ -326,7 +378,7 @@ side" (the top D4 changes along each branch). Facts come from D4 `view` / `card`
 (requested at `INTERACTIVE`); the field-by-field comparison is presentation logic in the UI, it does
 not call `changes()` on non-adjacent versions (D4 rule N1). Calls: none.
 
-### 2.9 Screen 07 - First run and indexing
+### 2.8 Screen 07 - First run and indexing
 
 ![07](../mockups/tk/07-first-run-indexing.png)
 
@@ -341,28 +393,38 @@ its detail says "Reading now - moved to the front of the queue". Nothing freezes
 and dialogs work during indexing. When the game is running D4 drops to one worker; the strip says
 so. Calls: D4 `request`, `progress`, `events_since`, `pause`, `resume`, `cancel`.
 
-### 2.10 Screen 08 - Cross-platform lines
+### 2.9 Screens 08, 08b, 08c - Steam and Xbox, the live area
 
 ![08](../mockups/tk/08-cross-platform.png)
+![08b](../mockups/tk/08b-live-one-source.png)
+![08c](../mockups/tk/08c-live-pick-two.png)
 
-With the `On both 4` chip: Creative Primary (`S13 X8`, `NOT IN VAULT; diverged S/X`) and The
+**08.** With the `On both 4` chip: Creative Primary (`S13 X8`, `NOT IN VAULT; diverged S/X`) and The
 Cartographers (`S3 X14`, `Steam ahead`) are expanded. All their history predates recording, so both
 are dated lists without drawn links (owner decision): Creative Primary's live versions #12 (Steam
 slot 13) and #5 (Xbox slot 8) carry platform-coloured dots, the Xbox restore point #1 is a grey
 diamond ("restore point only"). The platform state is a word in the State column and a sentence in
 the detail pane ("Steam and Xbox copies went separate ways"), computed by D1 from the two live
-heads; no cross-save edge is drawn. Exobiology1-600qs and CrossSaveTest-300qs complete the filter.
-The board marks `+X8` on S13 and `+S13` on X8.
+heads. The move dialog (2.4) for "Creative Primary #11" (an older Steam version): slot 13 suggested
+(same save file; D5 suggests it even when pinned), rows grouped SAME SAVE FILE / OTHER STEAM SLOTS,
+the amber box shows #12 going to the vault ("not in the vault yet - copied there first"), the button
+reads "Go back to this version in Steam slot 13"; warnings: `PLAY_TIME_AHEAD` as a confirm checkbox,
+`NOT_IN_VAULT` (info), the other branch on Xbox slot 8 (`LIVE_ELSEWHERE` plus D1's `diverged`), and
+the blocked Xbox account (`CROSS_PLATFORM_GATED`).
 
-The dialog shows what Move to live warns for "Creative Primary #11" (an older Steam version): slot 13
-is suggested (same save file; D5 suggests it even when pinned); the button reads "Go back to this
-version in Steam slot 13"; warnings: `PLAY_TIME_AHEAD` as a confirm checkbox ("Steam slot 13 has 59
-min more play than this version. That newer save (#12) stays in the vault."), `NOT_IN_VAULT`
-(info), the other branch on Xbox slot 8 (D5 `LIVE_ELSEWHERE` plus D1's `diverged` state), and the
-blocked Xbox account (`CROSS_PLATFORM_GATED`). The detail pane's Summary says "Platforms: Steam and
-Xbox copies went separate ways".
+**08b - one live folder.** `Live: [One]` with a source combobox. One wide list: slot, name,
+other-platform marker, play time, last played, markers; an empty slot prints "Steam Cloud may put a
+save back here at the next game start" in its row. Selected here: the empty Steam slot 1, whose
+detail card explains the refill risk, what was there last ((unnamed 893F) #2, gone 2026-09-27
+without a vault operation), how to keep it empty, and how to use it. With only one configured live
+folder the area shows this list without `One | Two` and without a selector.
 
-### 2.11 Screen 09 - Done, Undo, waiting to confirm
+**08c - two live folders.** `Live: [Two]` with one combobox per list; the open list shows every
+configured live folder (Steam, an invented second Steam account to illustrate several accounts,
+Xbox). The two lists can be any two (two Steam accounts, Steam + Xbox). The choice persists
+(`ui.live_mode`, `ui.live_sources`).
+
+### 2.10 Screen 09 - Done, Undo, waiting to confirm
 
 ![09](../mockups/tk/09-done-undo.png)
 
@@ -376,34 +438,33 @@ in the Move dialog, else it executes directly. Undoing a fill of an empty slot w
 deletion, which the app does not do (F8): its Undo opens the "Empty this slot" steps instead.
 
 The rows update incrementally (no full rebuild, no lost expansion): CrossSaveTest-300qs now `S5 X4`,
-state `placed 12:04, check pending`, a clock in its badge; Ex-Beachhead-160qs `vault only`; the S5
-tile shows the clock; the status bar keeps "Last change 12:04: Swap into Steam slot 5 - checked
+state `placed 12:04, check pending`; Ex-Beachhead-160qs `vault only`; the S5 row of the live list
+shows the clock; the status bar keeps "Last change 12:04: Swap into Steam slot 5 - checked
 after the next game launch". D5 `verification_items` drive this: `pending` -> clock; `confirmed` ->
 clock removed (a tick in the operation history); `reverted` / `deleted` / `resurrected` -> an alert
 bar ("Steam Cloud put the old save back in Steam slot 5. 'CrossSaveTest-300qs' is safe in the
 vault." with `Put it back`, `Show steps`, `Dismiss`).
 
-### 2.12 Screens 10a / 10b - the two shells
+### 2.11 Screens 10a / 10b - the shell
 
 ![10a](../mockups/tk/10a-shell-tab.png)
 ![10b](../mockups/tk/10b-shell-organizer-first.png)
 
-- **(i) Organizer as a tab (10a).** Today's window stays: the 14-button toolbar, the "Active live"
-  selector, and a `ttk.Notebook` whose first tab holds today's two panes and whose second tab is the
-  Organizer view (chips, table, board, detail; no own toolbar, its actions are in its context menus
-  and detail buttons). The old toolbar keeps acting on the classic tab only and is disabled while the
-  Organizer tab is active.
-- **(ii) Organizer first (10b, recommended).** The menu bar and slim toolbar of 01; the view switch
-  shows `Backups (classic)`: today's panes for whole-folder backup, restore-all, import and delete,
-  with an info strip. There is no "Active live" any more: each classic button asks which live folder
-  it writes to (C29); Move to live and slot actions live in the Organizer.
+- **10a, chosen (default).** One main window: the native menu bar, then a `ttk.Notebook` with the
+  tabs `Live saves and backups | Organizer` directly under it, and the status bar at the bottom. The
+  first tab is today's window content unchanged (14-button toolbar inside the tab, the "Active live"
+  selector - it keeps meaning "target of these classic buttons" only - and the two panes); the second
+  is the organizer (01). The app remembers the last tab (`ui.last_view`) and opens there; Ctrl+1 /
+  Ctrl+2 and View > Organizer / Live saves and backups switch. 10a shows the classic tab selected.
+- **10b, alternative (not chosen).** An organizer-first window with a `[Organizer | Backups
+  (classic)]` view switch and no "Active live". Kept as an image only.
 
-### 2.13 Screens not mocked
+### 2.12 Screens not mocked
 
 | Screen | Content | Calls |
 |---|---|---|
 | Recovery (modal at start) | one row per `RecoveryItem`: labels, started, state text, choices `Finish the move` (forward) / `Put the slot back` (back) / `Leave it`; the recommended one is the default button; "Close No Man's Sky to finish" when the game runs | D5 `pending_recovery`, `resolve_recovery` |
-| Empty this slot (manual steps)... | not an app action (F8): a non-modal window with the slot, what is in it and whether it is in the vault (a `Keep a copy in the vault now` button when it is not), then the numbered manual procedure for Steam Cloud / Xbox; the next scan shows the result | D1 `live_board`; D2/D3 preserve via D5 |
+| Empty this slot (manual steps)... | not an app action (F8): a non-modal window with the slot, what is in it and whether it is in the vault (a `Keep a copy in the vault now` button when it is not), the warning that Steam Cloud / Xbox sync may fill the slot again, then the numbered manual procedure for Steam Cloud / Xbox; the next scan shows the result | D1 `live_board`; D2/D3 preserve via D5 |
 | Swap two slots... | pick the second slot on the board (or a 15-row list); one plan, two targets | `plan_swap`, `execute` |
 | Make the other save the one the game loads | board slot menu; hidden when that member already loads (R2 D7) | `plan_promote`, `execute` |
 | Operations log | `op_history`, newest first, per slot; Undo on any `done` row; verification ticks | `op_history`, `plan_undo` |
@@ -435,24 +496,37 @@ vault." with `Put it back`, `Show steps`, `Dismiss`).
    diamond for a restore-point-only fork member, three dots for a folded run), so the text column
    stays aligned. The separator row "Older, by date" has its own muted tag. Images are cached by
    signature and regenerated when the zoom or theme changes the row height or palette.
-4. **Badges.** Column #0 of a line row: the `[S][X]` squares with a 5x7 bitmap glyph, plus the risk
-   dot or the pending clock (3.1.3 rules). Tk 8.6 allows images only in column #0 (R3), so every other
-   status is text.
-5. **Tags.** `odd` (zebra), `ver` (group tint), `vmuted` (unfolded run rows), `run` (italic muted),
-   `pending`, `event`. A tag styles the whole row (R3); no tag sets a font on version rows except
+4. **Expand marker** (owner review). A line row's column-#0 image is a `>` (closed) or `v` (open)
+   chevron drawn in code; `<<TreeviewOpen>>` / `<<TreeviewClose>>` swap it, and a click on the image
+   (`identify("element", x, y) == "image"`) toggles the line. The built-in +/- indicator is removed
+   from the `Treeview.Item` layout. VERIFIED: a style image element keyed on the `user1` (open)
+   state drew `>` on open rows on this Tk 8.6.15, so the state route is not used. Lines get one
+   placeholder child until expanded, so collapsed lines stay openable. Tk 8.6 allows images only in
+   column #0 (R3), so every other status is text.
+5. **Tags.** `odd` (zebra), `ver` (group tint), `dim` (lines not expanded while another line is,
+   grey text), `sep` (the "Older, by date" separator), `run` (italic muted), `pending`, `event`. A tag styles the whole row (R3); no tag sets a font on version rows except
    `run`, so the lane column never leaks a font into other cells (R3's mono-font leak).
 6. **Sorting.** Heading command -> `sort_lines(key, descending)`; versions stay newest first inside a
    line. The sorted heading shows an arrow image (heading images work in 8.6).
 7. **Tooltips.** Today's `Tooltip`, but the text is built on hover (today 1,771 strings are built per
-   refresh): full name and former names, live places, the note, the badge meaning.
+   refresh): full name and former names, live places, the note, the marker meaning.
 8. **Drag.** `<B1-Motion>` beyond 6 px starts an `overrideredirect` ghost (alpha 0.9);
    `winfo_containing` over the board resolves the slot (R3 VERIFIED); the drop opens the Move
    dialog with that target selected.
 
-### 3.2 Live board (`tk.Canvas`)
+### 3.2 Live area (`tk.Canvas` lists)
 
+- Modes (owner review): `One` = one wide list of the live folder picked in a combobox (adds last
+  played and the inline empty-slot sentence); `Two` = two lists side by side, each with its own
+  combobox. The comboboxes list exactly the configured live sources (`LiveBoard.sources`: any number
+  of Steam accounts, by alias label, plus Xbox when present). One configured source -> one list, no
+  selector. No column is ever drawn for a platform the user does not have. Mode and sources persist
+  in `ui.live_mode` / `ui.live_sources`.
 - Data: D1 `live_board()` (`LiveSource` x `BoardSlot`), merged with D5 `verification_items()` for the
   clock / reverted markers and `busy_targets()`.
+- Empty slots: cloud marker, tooltip and (one-list mode) inline sentence "Steam Cloud / Xbox sync may
+  put a save back here at the next game start"; the legend entry "empty: Steam Cloud / Xbox sync may
+  fill it again"; the slot card of 2.2.
 - Drawing: per slot a rectangle, the slot chip, name (truncated with "..." to the measured width;
   full name in the tooltip), the other-platform marker, play time, markers (polygons and ovals, no
   image files). About 400 items; redraw on data or theme change only. Items carry tags
@@ -462,8 +536,8 @@ vault." with `Put it back`, `Show steps`, `Dismiss`).
   in the vault now`, `Undo the last change to this slot`, `Show history`, `Operations on this slot`,
   `Empty this slot (manual steps)...`; Enter = Replace with; arrow keys move a focus ring (the canvas
   takes focus; the ring is an outline item).
-- More than two live sources (two Steam accounts): one column per source in a horizontally
-  scrollable canvas; the header shows the alias label.
+- More than two live sources (several Steam accounts): never more than two lists at once; the
+  comboboxes pick which; each list header shows the alias label.
 - Accessibility: every marker has a text equivalent in the tooltip and in the detail pane.
 
 ### 3.3 Detail pane
@@ -480,11 +554,13 @@ Dark mode: `TNotebook` and `TNotebook.Tab` get background / foreground / `select
 and `lightcolor` / `darkcolor` (3.12); without them the tabs were unreadable (R3). Verified in
 01-dark.
 
-### 3.4 History window (style C)
+### 3.4 History window (style C, web layout)
 
-`HistoryWindow(tk.Toplevel)`: the version table (3.1) with the recorded tree on top and the dated
-list below, a `Key / All` switch for the dated list, a card pane, and `Keep this save file` (stop
-following the selection). The tree comes from D1 `history(pid, ...)` restricted to recorded and
+`HistoryWindow(tk.Toplevel)` with the layout of 2.5: header with legend (Canvas), a left card
+(`tk.Frame`) with the `Key / All` switch, the explanation, the table (3.1 rendering, a "How it is
+linked" column, `sec` section rows) and the branch-tips grid (`tk.Label` lane tags in the lane
+colours, buttons), and a right panel (callouts as tinted `tk.Frame`s, a read-only `tk.Text` for
+changes, events, where and contents); `Keep this save file` stops following the selection. The tree comes from D1 `history(pid, ...)` restricted to recorded and
 journal-observed edges (01-consolidation 4a); the dated list is the rest of `versions(pid)` by
 date. Key mode and unfolding runs are pure UI work on that list (no lanes are involved, so nothing
 needs recomputing in D1). Zoom changes rebuild the lane images. 23 versions here; R3 measured
@@ -498,14 +574,32 @@ worker (the notes file write takes the organizer store lock). Limits are enforce
 (label 80, comment 4,000) with the counter turning amber at the limit. The diff view is a read-only
 `tk.Text` with `add` / `del` tags. Unicode: see 3.14.
 
-### 3.6 Move to live / Replace with dialog
+### 3.6 Move dialog (Move to live / Replace with)
 
 `MoveDialog(tk.Toplevel)`, modal (`grab_set`, `transient`), sized from content (no fixed geometry:
-R2 found the copy dialog clipping its buttons at zoom 1.2), resizable, with a minimum size. Two
-modes: `from_version(source)` and `into_slot(target)`. It holds one `EvictionPicker` and the current
-`PlacePlan`; it never computes suggestions, outcomes or warnings itself - every text comes from D5.
-A `fingerprint` mismatch at execute returns `stale` with a `replan`, which the dialog renders.
-Account switch: changing account calls `eviction_picker(ctx, source, account)` again.
+R2 found the copy dialog clipping its buttons at zoom 1.2), resizable, with a minimum size. Built
+bottom-up so the footer, "Your pick" and "What will happen" always stay visible and the picker
+takes the remaining height. Parts:
+
+- `EndBox` x 2 (`tk.Frame` with a 2 px coloured border; `in_bg`/`in_fg` green, `out_bg`/`out_fg`
+  amber) plus a Canvas arrow.
+- `SlotPicker` (03): the account switch (segmented radio buttons; a blocked account is drawn
+  disabled with its reason), the plan info strip, and a `ttk.Treeview` of the 15 `SlotCandidate`s
+  with a radio `PhotoImage` in column #0 (images only in #0 in Tk 8.6), tags `chosen` (amber tint,
+  bold), `sugg` (green bold), `muted`, `risk` (amber text), group rows for restore-older.
+- `VersionPicker` (03b): Find entry, chips, a grouped `ttk.Treeview` (`grp` rows, lines with `>` /
+  `v` images, versions with radio images; tag `chosen` = green tint).
+- `PuttingInPanel`: a read-only `tk.Text` with the D4 facts of the source and its D4 changes.
+- `OutcomePanel` ("What will happen"): the plan paragraph and severity rows (Canvas icon + Label,
+  `ttk.Checkbutton` for `confirm`).
+- `PickStrip` ("Your pick"): one line of Labels with `OUT` / `IN` tags in the two colours.
+- Footer: note `ttk.Entry`, the outcome-named default button, Cancel.
+
+It holds one `EvictionPicker` and the current `PlacePlan`; it never computes suggestions, outcomes
+or warnings itself - every text comes from D5 (the two boxes and "Your pick" are assembled from the
+plan's `source`, `targets[].evictions` and `outcome`). A `fingerprint` mismatch at execute returns
+`stale` with a `replan`, which the dialog renders. Changing account calls
+`eviction_picker(ctx, source, account)` again.
 
 ### 3.7 Compare window
 
@@ -553,21 +647,23 @@ walk both ancestor chains), a fact `ttk.Treeview` (tag `diff` = tint, `same` = m
 - `ui.px(n) = round(n * root.winfo_fpixels("1i") / 96 * zoom)` for **every** pixel constant: column
   widths, paddings, `wraplength`, canvas geometry, image sizes, dialog minimum sizes, sash positions.
   The mockups use exactly this (`mockui.Env.px`).
-- Images (badges, lanes, arrows) are generated in code at the current scale; nothing loads a bitmap
+- Images (chevrons, radio buttons, lanes, arrows) are generated in code at the current scale; nothing loads a bitmap
   file except the window icon.
 
 ### 3.11 Zoom
 
 Today's named-font zoom (0.7-2.0, Ctrl+plus/minus) stays. Additionally: column widths, canvas
 geometry and images are re-derived from `px()` (which includes the zoom factor); the Treeview row
-height follows the font (exists); lane and badge images are regenerated for the new row height;
+height follows the font (exists); lane and chevron images are regenerated for the new row height;
 dialogs re-measure. Native menus do not zoom (R2) - accepted.
 
 ### 3.12 Theming
 
 `theme.py` gains palette keys (values used in the mockups, `mockui.EXTRA`): `steam`, `xbox`,
-`warn`, `warn_bg`, `ok`, `muted`, `group_bg`, `zebra`, `lanes[4]`, `danger`,
-`pending`, `hl_bg`, `event`, `diff_add`, `diff_del`, `card`, `chip_on`, `slot_empty`; and ttk maps
+`warn`, `warn_bg`, `ok`, `muted`, `group_bg`, `zebra`, `lanes[4]` (main line blue, second branch
+purple, third orange, as in the web mockups), `danger`, `pending`, `hl_bg`, `event`, `diff_add`,
+`diff_del`, `card`, `chip_on`, `slot_empty`, `dim`, `callout_bg`, and the in/out pair of the move
+dialog `in_bg`/`in_fg` (green) and `out_bg`/`out_fg` (amber); and ttk maps
 for `TNotebook`/`TNotebook.Tab`, `TLabelframe`/`TLabelframe.Label`, `TSeparator` (dark), plus the
 styles `Card.TFrame`, `Muted.TLabel`, `Title.TLabel`, `Head.TLabel`, `Toast.*`, `Info.*`.
 Classic widgets (Canvas, Text, chip Checkbuttons, segmented Radiobuttons, card Frames) register
@@ -601,26 +697,21 @@ Edit it on Windows or with `nmsvault note`.") so saving never destroys text it c
 
 ### 3.15 State and preferences
 
-Window geometry, sash positions, columns (set, order, widths), sort, chips, the history mode, and
-the last selected pid are stored in `state.json` under `ui` (per machine; not user data, so not in
+The last tab (`last_view`), window geometry, sash positions, columns (set, order, widths), sort,
+chips, the live-area mode and sources (`live_mode`, `live_sources`), the history mode, and the last
+selected pid are stored in `state.json` under `ui` (per machine; not user data, so not in
 the vault). Today's fixed `1000x640` start geometry goes; the first start uses 80 % of the work area
 with a minimum of 1,000 x 640 logical px.
 
 ## 4. Options
 
-### 4.1 Shell (i) or (ii) - owner's choice
+### 4.1 Shell - decided: 10a
 
-| | (i) Organizer as a tab (10a) | (ii) Organizer first (10b, 01) |
-|---|---|---|
-| What changes | a Notebook around today's panes; the organizer is tab 2 | new main window; today's panes behind `Backups (classic)` |
-| Mental models | two: "Active live" + 14 buttons beside an organizer that names targets | one: every write names its target (C29) |
-| P10 toolbar | still overflowing | fixed (menu bar + slim toolbar) |
-| Risk / size | smallest; the classic code is untouched | larger: the 1,392-line `App` is split into frames (mechanical) |
-| Fit with phase 1 | good (read-only tab) | good |
-| Fit with phase 2 | Move to live in tab 2 while the old Copy / Undo stay in tab 1 (two ways to write a slot) | one place to write slots |
-
-**Recommendation: (ii)**, built as two frame classes (`OrganizerView`, `ClassicView`) inside a
-thin `App` shell, so (i) is only a different shell around the same frames and remains a fallback.
+The owner chose 10a (`02-ui-review.md`): the organizer is a tab beside today's panes, the tabs sit
+under the menu bar, and the app opens in the last tab used. The organizer-first window (10b) stays
+documented as an alternative only. Built as two frame classes (`OrganizerView`, `ClassicView`)
+inside a thin `App` shell holding the menu bar, the Notebook and the status bar, so the shell can
+change later without touching either view.
 
 ### 4.2 History style (F2) - decided: C
 
@@ -654,8 +745,8 @@ owner only if dark mode matters to him.
 | `Tooltip` (131-196) | keep, adapt | text built on hover |
 | `_source_caption`, `_restore_menu_label`, `_clear_question` (199-247) | adapt | captions keep; clear question replaced by D5 plan texts |
 | `_filtered` + `RedactingTreeview` (250-278) | keep, extend | item/set/heading guarded; new redaction helpers (3.13) |
-| `App.__init__` / state (281-378) | adapt | thin shell; `active_source_id` removed in shell (ii) |
-| layout `_build_widgets` (380-488) | replace | menu bar + toolbar + view frames |
+| `App.__init__` / state (281-378) | adapt | thin shell (menu bar, Notebook, status bar); `active_source_id` stays, used by the classic tab only |
+| layout `_build_widgets` (380-488) | move to `ClassicView` (toolbar, Active live, panes) | the shell adds the menu bar and the `Live saves and backups / Organizer` tabs |
 | theme / zoom glue (489-528) | keep, extend | `ThemeAware` registry, image regeneration |
 | update check / install (530-740) | keep | unchanged (banner) |
 | panes, populate, refresh (752-964) | move to `ClassicView` | organizer has incremental refresh |
@@ -686,7 +777,7 @@ Today's flows (aligned with D5 4.5):
 | Import... / Discover / Rescan / Refresh | File menu / Rescan button; Refresh merges into Rescan |
 | Play time... | retired (the table) |
 | "Save file:" history filter | retired (the table + History window) |
-| "Active live" selector | removed in shell (ii); kept for the classic tab in shell (i) |
+| "Active live" selector | kept inside the classic tab for its own buttons; never used by the organizer (C29) |
 | modal "Done" / "Please wait" | Done bar / inline progress |
 | "Proceed anyway (risky)?" | removed for organizer operations (D5 `GAME_RUNNING` blocks; unknown -> confirm checkbox) |
 
@@ -700,15 +791,22 @@ The suite keeps exactly one Tk root per session (`conftest.py:121-158`; R2 / R3 
   `IndexService` with scripted `events_since` / `progress`; a fake `liveops` recording calls and
   returning canned `EvictionPicker` / `PlacePlan` / `OpOutcome` / `VerifyItem` objects (D5's
   dataclasses, so the fakes cannot drift). No test touches a real vault or live folder.
-- **Table**: row values and badge keys per line; chips -> `LineFilter`; Find; sort keys and the
-  arrow image; expansion and selection survive an incremental refresh; folded rows and markers.
+- **Table**: row values per line; the `>` / `v` image follows `<<TreeviewOpen>>` / `<<TreeviewClose>>`
+  and a click on it toggles; other lines get `dim` while one is expanded; chips -> `LineFilter`
+  (including `Vault only`); Find; sort keys and the arrow image; expansion and selection survive an
+  incremental refresh; folded rows and markers.
 - **Lane rows** (pure functions): node/edge -> per-row segments for the fixture graphs (a recorded
   rollback fork, an operation-started side branch, two separate recorded trees in one line); the
   split into recorded tree and dated list (no inferred edge ever drawn); key-mode runs of the dated
   list; image height equals `rowheight` at zoom 0.7, 1.0, 2.0.
-- **Board**: slot items exist for 30 slots; markers match `BoardSlot` fields; hit test of a point
-  returns the right token; the context menu labels; keyboard focus movement.
-- **Move dialog**: the suggested row is tagged; selecting a blocked row is refused; the button text
+- **Live area**: one / two modes with fixtures of one source (Xbox only: no Steam column drawn),
+  two sources and three sources (two Steam accounts + Xbox); combobox values = configured sources;
+  slot items per shown list; markers match `BoardSlot` fields; an empty slot shows the cloud marker,
+  the tooltip text and (one mode) the inline sentence; hit test of a point returns the right token;
+  context menu labels; keyboard focus movement; `ui.live_mode` / `live_sources` round-trip.
+- **Shell**: the Notebook opens on `ui.last_view`; switching tabs stores it; Ctrl+1 / Ctrl+2.
+- **Move dialog**: both entry modes build the same layout; the in/out boxes and "Your pick" follow
+  each pick; the suggested row is tagged; selecting a blocked row is refused; the button text
   equals `plan.outcome`; confirm checkboxes gate the button and are passed as `confirmed`; `stale`
   renders the replan; `failed` shows Recover; `done` closes and shows the Done bar; Undo calls
   `plan_undo` with the op id.
@@ -737,27 +835,27 @@ Phases follow 01-consolidation section 5.
 |---|---|---|---|
 | 1 | DPI awareness in `gui.main` + `px()` helper + scale every existing pixel constant; dialogs size from content (fixes R2 D6) | S | 0 |
 | 2 | Theme: new palette keys, `TNotebook`/`TLabelframe`/`TSeparator` maps, dark title bar, contrast tests | S | 0 |
-| 3 | Menu bar for the secondary actions; toolbar fits at zoom 1.2 (P10) | S | 0 |
+| 3 | Menu bar for the secondary actions (classic toolbar fits at zoom 1.2, P10) | S | 0 |
 | 4 | pythonw log file handler (R3 K6) | S | 0 |
-| 5 | Split `App`: `ClassicView` frame extracted unchanged (mechanical; existing GUI tests green) | M | 1 |
-| 6 | UI infrastructure: `UiWorker` (executor + queue + `after` drain), `ThemeAware` registry, redaction helpers (item/set/text/canvas/title), raster module (badges, arrows) | M | 1 |
-| 7 | `OrganizerTable` with lines from D1, chips, Find, sort, column chooser, `ui` prefs | M | 1 |
-| 8 | `LiveBoard` canvas (read-only: draw, highlight, tooltips, focus) | M | 1 |
+| 5 | Shell 10a: `App` = menu bar + `ttk.Notebook` (`Live saves and backups`, `Organizer`) + status bar; today's content moved unchanged into `ClassicView` (mechanical; existing GUI tests green); `ui.last_view` | M | 1 |
+| 6 | UI infrastructure: `UiWorker` (executor + queue + `after` drain), `ThemeAware` registry, redaction helpers (item/set/text/canvas/title), raster module (chevrons, radio, lanes, arrows) | M | 1 |
+| 7 | `OrganizerTable` with lines from D1, `>` / `v` chevrons, muted other lines, chips (incl. Vault only), Find, sort, column chooser, `ui` prefs | M | 1 |
+| 8 | Live area: one / two modes with source comboboxes over the configured sources; canvas lists (read-only: draw, highlight, tooltips, focus); empty-slot marker, tooltip and slot card | M | 1 |
 | 9 | `DetailPane` (Summary, Where, Notes read view) | M | 1 |
 | 10 | Version rows on expand (default mode, fold markers; no lanes yet) | S | 1 |
 | 11 | Notes window (save-file note + revisions, version label/comment/lock) and pins | M | 1 |
-| 12 | Shell: (ii) main window with view switch (or (i) tab) + incremental refresh + start-up scan in the worker + alerts area | M | 1 |
+| 12 | Organizer tab assembled: toolbar, incremental refresh, start-up scan in the worker, alerts area | M | 1 |
 | 13 | GUI tests with the synthetic read-model fixture; redaction scan | M | 1 |
-| 14 | Move dialog from a version / line: picker, plan per selection, warnings by severity, confirmations, execute with progress, outcomes | L | 2 |
-| 15 | Replace with... (slot first) + drag onto the board | M | 2 |
+| 14 | Move dialog (web layout): in/out boxes, slot picker, "What you are putting in", outcome panel, "Your pick", outcome-named button; plan per pick, warnings by severity, confirmations, execute with progress, outcomes | L | 2 |
+| 15 | Replace with... on the same dialog (version picker with Vault only / Older versions / Live elsewhere) + drag onto the live lists | M | 2 |
 | 16 | Done bar, Undo, operations log | M | 2 |
 | 17 | Verification markers and alerts; start-up recovery dialog | M | 2 |
 | 18 | Board menu: Swap two slots, Promote, Keep a copy in the vault now; the "Empty this slot" steps window | M | 2 |
-| 19 | Classic view re-routed: no "Active live"; whole-folder restore = panic restore | M | 2 |
+| 19 | Classic tab re-routed: its writes name their target (Active live pre-selects it); whole-folder restore = panic restore | M | 2 |
 | 20 | D4 integration: progress strip, event polling, facts columns, `facts:` sorting, first-run banner | M | 3 |
 | 21 | Version card (D4 `card`), deep section on demand, "what changed" in rows | M | 3 |
 | 22 | Lane images in version rows (F2-C) from D1 `history` | M | 4 |
-| 23 | History window (Key / All, runs, card pane, follow selection) | M | 4 |
+| 23 | History window on the web layout (legend, How it is linked, section rows, key / all runs, branch tips, version panel) | M | 4 |
 | 24 | Compare window | M | 4 |
 | 25 | Note snapshot diff in the notes window | S | 4 |
 | 26 | Combine / Split / "comes from" correction dialogs | M | 4 |
@@ -770,7 +868,8 @@ Phases 2 and 3 are independent; their order can swap (as in 01-consolidation).
 ### 8.1 Risks
 
 1. **Looks ceiling** (R3): whole-row styling and images only in column #0. Mitigation: state words,
-   badges, row tints, lane images; the `CellStyle` adapter for Tk 9.
+   row tints, chevron / radio / lane images, tinted frames in dialogs; the `CellStyle` adapter for
+   Tk 9.
 2. **Linux Unicode**: non-Latin-1 names and notes cannot be drawn on the Linux kit; mitigated by the
    display filter and the edit guard (3.14), not solved.
 3. **`App` refactor** of a 1,392-line class: done as a mechanical extraction first (step 5) behind
@@ -785,11 +884,11 @@ Phases 2 and 3 are independent; their order can swap (as in 01-consolidation).
 
 ### 8.2 Open questions (owner)
 
-1. Shell (ii) or (i) (4.1) - recommendation (ii).
-2. Default columns: the mockups show Glyphs, Parts, Legacy, Ships; Bases, Companions, Galaxies and
+1. Default columns: the mockups show Glyphs, Parts, Legacy, Ships; Bases, Companions, Galaxies and
    Story are one click away. Which four does the owner want by default?
-3. Pins: the mockups pin Main Save and All Parts Building to show the column; the owner pins his own.
-4. Drag and drop onto the board: build it (step 15) or rely on the dialog only.
+2. Pins: the mockups pin Main Save and All Parts Building to show the column; the owner pins his own.
+3. Drag and drop onto the live lists: build it (step 15) or rely on the dialogs only.
+4. Default live-area mode for a user with two or more live folders: Two (as mocked) or One.
 
 ### 8.3 Deviations from 01-consolidation section 6, and requests to sibling designs
 
@@ -810,22 +909,26 @@ entry points. Small requests:
 
 | File | Shows |
 |---|---|
-| `01-organizer.png`, `01-organizer-dark.png` | organizer view, 30 lines, board, Main Save summary; dark theme with the dark title bar and the light native menu bar |
-| `02-line-expanded.png` | Main Save expanded (recorded tree with lanes, then the dated list) and All Parts Building (dated list with a folded re-save), #18 card |
-| `03-move-to-live.png` | Move to live from CrossSaveTest-300qs #2, slot 5 picked, slot 1 suggested |
-| `03b-replace-from-slot.png` | Replace with... from Steam slot 5, picking AF24 #2 |
-| `04c-history-hybrid.png` | history style C: recorded tree with lanes, dated list in key mode with folded runs |
+| `01-organizer.png`, `01-organizer-dark.png` | Organizer tab of shell 10a: 30 lines with `>` markers, live lists Steam + Xbox, the empty-slot tooltip on Steam slot 1, Main Save summary; dark theme with the dark title bar and the light native menu bar |
+| `02-line-expanded.png` | Main Save expanded (recorded tree with lanes, then the dated list) and All Parts Building (dated list with a folded re-save), other lines muted, #18 card |
+| `03-move-to-live.png` | the move dialog from CrossSaveTest-300qs #2: in/out boxes, 15 slots (slot 1 suggested, slot 5 picked), What you are putting in, What will happen, Your pick, "Swap into Steam slot 5" |
+| `03b-replace-from-slot.png` | the same dialog entered from Steam slot 5: version picker (Vault only / Older versions / Live elsewhere), picking AF24 #2 |
+| `04c-history-hybrid.png` | history on the web layout: recorded tree with lanes, by-date list with folded runs, branch tips, version panel |
 | `05-notes.png` | notes window: save-file note, revisions, version label/comment/lock, snapshot diff, automatic changes |
 | `06-compare.png` | #23 (main line) vs #22 (invented side branch) |
 | `07-first-run-indexing.png` | first run: facts filling in, progress strip, banner |
-| `08-cross-platform.png` | Creative Primary (diverged) and The Cartographers (Steam ahead) as dated lists, Move to live warnings |
+| `08-cross-platform.png` | Creative Primary (diverged) and The Cartographers (Steam ahead) as dated lists; the move dialog going back to an older version (same-save-file group, confirm, gate) |
+| `08b-live-one-source.png` | live area, one live folder with selector; empty Steam slot 1 selected (inline warning + slot card) |
+| `08c-live-pick-two.png` | live area, two side by side; the source list open (with an invented second Steam account) |
 | `09-done-undo.png` | after a Place: Done bar, pending verification |
-| `10a-shell-tab.png`, `10b-shell-organizer-first.png` | shells (i) and (ii) |
+| `10a-shell-tab.png` | shell 10a (chosen): tabs under the menu bar, classic tab shown |
+| `10b-shell-organizer-first.png` | the alternative organizer-first shell (not chosen) |
 
 Rendering: `uv run --with pillow python docs/organizer/mockups/tk/source/render_all.py` on Windows
 (one process per screen; `SetProcessDpiAwareness(1)`, the app's `theme.apply`, window frame from
 `DwmGetWindowAttribute(DWMWA_EXTENDED_FRAME_BOUNDS)`, `PIL.ImageGrab`, downscaled to 1,800 px with a
 caption band). Data: `mockups/sample-data.json` only; times in the owner's local time (UTC+3); the
-storage state is F3-B after migration (every vault copy durable). Not shown in images: hover
-tooltips, the drag ghost (R3 verified it), the deep-facts spinner, animations, and the Linux kit
-(its Tk would show `?` for the Greek settlement name).
+storage state is F3-B after migration (every vault copy durable). Tooltips and the open combobox
+list in 01 and 08c are real Tk windows captured with the main window. Not shown in images: the drag
+ghost (R3 verified it), the deep-facts spinner, animations, and the Linux kit (its Tk would show `?`
+for the Greek settlement name).
