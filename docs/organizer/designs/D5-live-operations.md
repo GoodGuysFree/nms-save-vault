@@ -1,10 +1,12 @@
-# D5 - Live-slot operations: move to live, swap, evict, undo, recovery, verification
+# D5 - Live-slot operations: move to live, swap, undo, recovery, verification
 
-Status: design, wave 1. Author: D5 subagent, 2026-10-16. Subject S5 (C23-C26, C29-C30; forks
-F4-F8). Binding inputs: `01-consolidation.md` sections 2, 5 and 6; R8 section 4 (the draft spec
-this document turns into a design). Audience: the implementing agents (completeness wins) and the
-parent. No production code was written; every experiment ran on synthetic sandboxes or as a
-read-only probe (Evidence index at the end).
+Status: design, wave 1 (2026-10-16), revised 2026-10-17 for the owner's decisions
+(`01-consolidation.md` 4a and the answers to `03-design-review.md`). Subject S5 (C23-C26,
+C29-C30; forks F4-F8, all decided). Binding inputs: `01-consolidation.md` sections 2, 4a, 5 and
+6; R8 section 4 (the draft spec this document turns into a design); D1 (model, journal, locks),
+D3 (version store: preserve, snapshots, listing). Audience: the implementing agents
+(completeness wins) and the parent. No production code was written; every experiment ran on
+synthetic sandboxes or as a read-only probe (Evidence index at the end).
 
 Tags: VERIFIED = run or read by D5; SOURCED = cited from code or research; INFERRED = reasoning.
 
@@ -14,7 +16,7 @@ Tags: VERIFIED = run or read by D5; SOURCED = cited from code or research; INFER
 2. Both halves of a slot (auto-save, restore point) are replaced together; the version you picked is the one the game loads.
 3. Each move is logged before it starts; after a crash the app finishes or reverses it. Undo restores only that slot and keeps what you played since.
 4. After your next game launch the app checks that Steam Cloud or Xbox did not bring the old save back.
-5. Your choices, my picks: keep the restore point (yes), keep the real date (yes), other accounts only if yours (yes), no emptying slots under Steam Cloud without your steps (yes).
+5. As you decided: the restore point comes along; the in-game date shows "now" (the real date stays in the vault); another account's save gets one warning; the app only replaces, never empties a slot - it shows you the steps instead.
 6. Steam <-> Xbox moves come last, after you test one each way with a throwaway save.
 
 ## Contents
@@ -24,9 +26,9 @@ Tags: VERIFIED = run or read by D5; SOURCED = cited from code or research; INFER
    (2.7), execute (2.8), validation and rollback (2.9), recovery (2.10), undo (2.11), post-launch
    verification (2.12), oplog v2 and lineage (2.13), errors (2.14), safety invariants (2.15),
    concurrency and performance (2.16)
-3. Options: F4 member policy, F5 timestamps, F7 cross-account, F8 deletions under Steam Cloud,
+3. Owner decisions: F4 member policy, F5 timestamps, F7 other accounts, F8 replace only,
    F6 Steam <-> Xbox transfer
-4. Migration and compatibility
+4. Migration of today's operations
 5. Test plan
 6. Implementation plan
 7. Risks and open questions
@@ -43,30 +45,40 @@ The core operation layer that changes live save slots, and only that layer:
   target T, evicting what T holds into the vault. Covers "move to live", "use a backup of a
   live save", "use a backup of a non-live save", and **restore-older** (V's line is the one in T).
 - **PlaceIntoEmpty(V, T)** - the same with nothing to evict.
-- **Swap(T1, T2)** - exchange two live slots of one platform.
-- **Evict(T)** - free a slot (deletion; governed by F8).
+- **Swap(T1, T2)** - exchange two occupied live slots of one platform.
 - **Promote(T, member)** - make the other member of a slot load; re-routed through the same
   machinery (fixes Xbox promote being a no-op, R8 A5).
 - **Undo(op)** - slot-scoped and non-destructive (C24); multi-level per target.
+- **Keep a copy(T)** - copy a live slot into the vault without any live write (D6's "Keep a copy
+  in the vault now").
+- **Empty-slot guidance** - the texts for emptying a slot by hand and for the refill risk of an
+  empty slot. The app itself never empties a slot (F8).
 - The **operation journal** (write-ahead intent, completion, verification state) and **recovery**
   of an interrupted operation on the next start.
-- **Post-launch verification** (C25): Steam Cloud / Xbox reverts and resurrections.
+- **Post-launch verification** (C25): Steam Cloud / Xbox reverts.
 - **Oplog record v2** and the call into D1's lineage recorder.
-- The **eviction-picker data** the UIs render (C30) and the explicit-target rule (C29).
+- The **eviction-picker data** the UI renders (C30) and the explicit-target rule (C29).
+- The **live-op lock** that serialises every live write, classic ones included (2.16).
 - What happens to today's operations and their GUI/CLI entry points (section 4).
 - Phase-5 **Steam <-> Xbox transfer** (F6): meta conversion spec, gates, owner runs T1/T2.
 
 ### 1.2 Non-goals
 
-- UI layout and visuals (D6 Tk, D7 web). D5 defines entry points, plan objects, confirmation
-  codes and message texts; the UIs decide how they look.
+- UI layout and visuals (D6). D5 defines entry points, plan objects, confirmation codes and
+  message texts; the UI decides how they look.
 - Version identity, lineage edges, live-journal observation, notes and pins (D1).
-- Where preserved bytes live, retention and pruning (D2 / D3).
-- Content facts (D4). D5 asks D4 for one extra fact (ownership identities, F7).
-- Cross-account transfer of **another person's** save with an ownership rewrite (libNOM.io-style
-  JSON rewrite): it breaks the verbatim rule (R8 Q4b). Not designed.
+- Where preserved bytes live and the vault upgrade (D3's version store).
+- Content facts (D4). D5's operations need none; phase 2b reads one accountdata flag with D4's
+  decoder (`decode_save`).
+- Deleting live save files: no D5 path empties a slot or deletes a save file, except a rollback
+  removing a file the same op created (F8, I9).
+- Any check of who owns a save: no ownership id is read (F7b, owner Q6).
+- Cross-account transfer with an ownership rewrite (libNOM.io-style JSON rewrite): it breaks the
+  verbatim rule (R8 Q4b). Not designed.
 - Pre-Frontiers / pre-Worlds formats as transfer sources (refused, 3.5).
 - Writing while NMS.exe runs: organizer operations have **no override** (2.15 I1).
+- Older app versions on an upgraded vault: not supported (owner Q2); D5 writes no compatibility
+  records for them.
 
 ### 1.3 Dependencies
 
@@ -79,14 +91,14 @@ The core operation layer that changes live save slots, and only that layer:
 | P5 Clear-slot "in the vault" by slot number | replaced by vid-based durability (`is_durable`) | Phase 0 interim, Phase 2 final | eviction safety display |
 | P6 One-member source into an occupied slot | Place always writes both members (I5) | Phase 0 interim refusal, Phase 2 final | mixed slots |
 | P7 vdf / containers.index across accounts, accountdata rollback | panic restore never copies them; organizer ops never touch them (I7) | Phase 0 | cross-account corruption |
-| P2 age-based snapshot pruning | D2's version-aware pruning; plus the D5 rule "keep the snapshot named by the newest snapshot-bearing oplog record" (4.2) | D2 | old-app undo fall-through (9.2 E) |
-| D1 ids, `LiveTarget`, `PairKey`, read model | live board (vids, MetaSnap, pins, line names) | D1 | planner |
-| D1 `LineageRecorder.record_op`, `expected_pair`, `Journal.observe` events | lineage binding (C16), verification events | D1 | 2.12, 2.13 |
+| P2 age-based snapshot pruning | pruning removed (01 phase 0); every snapshot is kept | Phase 0 | - |
+| D1 ids, `LiveTarget`, `PairKey`, read model | live board (vids, MetaSnap, pins, line names, `Line.cross_platform`) | D1 | planner |
+| D1 `LineageRecorder.record_op`, `expected_pair`, `op_outcome`, `observe(scan, *, src, skip)` events | lineage binding (C16), verification events | D1 | 2.12, 2.13 |
 | D1 organizer store + lock (`safety.exclusive_lock`) | `ops.jsonl` (reserved for D5 by D1), one writer at a time | D1 | journal |
-| D2/D3 `VersionLocator` | `open(vid, prefer)`, `preserve(LiveMember...)`, `is_durable(vid)`, `locate(vid)` | D2/D3 | preserve-before-replace |
-| D2/D3 snapshots | whole-folder pre-op snapshot as today (`snapshot_live`) | D2/D3 | rule "auto-snapshot first"; old-app undo |
-| D4 facts | `save.owners` from `UsedDiscoveryOwnersV2` (request, 8) | D4 | F7a only |
-| UI (D6/D7) | consumes 2.2 objects; must block app exit during `execute`; shows recovery and verification items | D6/D7 | - |
+| D3 version store in store mode (`core.store.vault_mode(vault_root) == "store"`), reached after D3's copy-aside and upgrade | the only preserve provider and snapshot target from phase 2 on | D3, phase 2 | every organizer live op (`VAULT_UPGRADE_NEEDED` until then) |
+| D1/D3 `VersionLocator` (D1's composite `VaultLocator`: `StoreLocator` first, legacy folders until fold) | `open(vid, prefer)`, `preserve(LiveMember...)` (= `StoreLocator.preserve`), `is_durable(vid)`, `locate(vid)` | D1, D3 | preserve-before-replace |
+| D3 snapshots and listing | `VersionStore.add_from_live(kind="snapshot")` for the pre-op snapshot, `read_file(entry_id, path)` for rollback bytes, `list_vault_entries` + `open_entry_folder` for the panic restore, `add_from_live(kind="extract")` for Keep a copy | D3 | rule "auto-snapshot first"; exact rollback |
+| UI (D6) | consumes 2.2 objects; must block app exit during `execute`; shows recovery and verification items | D6 | - |
 
 ## 2. Design
 
@@ -104,7 +116,8 @@ The core operation layer that changes live save slots, and only that layer:
 | op | one user-level operation with one `op_id` (section 6 format); a Place with its eviction is one op; a Swap is one op over two targets |
 | operation journal | `<vault>/organizer/ops.jsonl`, the append-only event log of ops (2.7). Not D1's live journal (`journal.jsonl`), which records observations. |
 | cloud mode | `steam-cloud` (target folder holds `steam_autocloud.vdf`), `steam-local` (no vdf), `xbox` (always synced) |
-| durable | `VersionLocator.is_durable(vid)`: an exact, hash-verified, non-prunable copy exists in the vault (D2 decision 3: managed full/extract/imported, never a snapshot) |
+| durable | `VersionLocator.is_durable(vid)`: an exact, hash-verified copy exists in the vault. Every store entry counts, snapshots included (nothing is pruned); so do managed legacy folders until they are folded (D3). Hand-made in-place folders outside the vault do not |
+| capture account | the live account a source pair was captured from: the live target it was seen in, or the `source` of the vault entry holding it (D3 `VaultEntry.source`); unknown for entries without one (imports of loose folders) |
 
 ### 2.2 Public API
 
@@ -118,13 +131,15 @@ def eviction_picker(ctx: OpContext, source: PairSource,
                     account: LiveAccount | None = None) -> EvictionPicker: ...
 def plan_place(ctx: OpContext, source: PairSource, target: LiveTarget) -> PlacePlan: ...
 def plan_swap(ctx: OpContext, first: LiveTarget, second: LiveTarget) -> PlacePlan: ...
-def plan_evict(ctx: OpContext, target: LiveTarget) -> PlacePlan: ...
 def plan_promote(ctx: OpContext, target: LiveTarget, position: Position) -> PlacePlan: ...
 def plan_undo(ctx: OpContext, op_id: str) -> PlacePlan: ...
 def plan_panic_restore(ctx: OpContext, account: LiveAccount, snapshot_id: str | None = None, *,
                        restore_accountdata: bool = False) -> PlacePlan: ...      # 4.3
+def plan_keep(ctx: OpContext, target: LiveTarget) -> PlacePlan: ...           # 2.4.1, vault only
+def empty_slot_guide(ctx: OpContext, target: LiveTarget) -> EmptySlotGuide: ...  # 2.4.2
 def execute(ctx: OpContext, plan: PlacePlan, confirmed: frozenset[str],
-            progress: Callable[[Progress], None] | None = None) -> OpOutcome: ...
+            progress: Callable[[Progress], None] | None = None, *,
+            note: str = "") -> OpOutcome: ...
 def pending_recovery(ctx: OpContext) -> list[RecoveryItem]: ...
 def resolve_recovery(ctx: OpContext, op_id: str,
                      choice: Literal["forward", "back", "leave"]) -> OpOutcome: ...
@@ -134,29 +149,30 @@ def op_history(ctx: OpContext, target: LiveTarget | None = None,
                limit: int = 50) -> list[OpSummary]: ...
 def resolve_target(ctx: OpContext, target: LiveTarget) -> ResolvedTarget: ...
 def busy_targets(ctx: OpContext) -> frozenset[LiveTarget]: ...          # 2.16, for D1 observe
-def open_snapshot_ids(ctx: OpContext) -> frozenset[str]: ...           # 2.7.4, for D2 retention
+def liveop_lock(ctx: OpContext, timeout: float = 10.0) -> ContextManager[None]: ...  # 2.16
 ```
 
-All `plan_*` and `eviction_picker` calls are **read-only** (no file is created, not even the
-journal). `execute` re-checks everything that can change between plan and execute (2.8 step 1).
-Every returned object is a frozen dataclass with `to_dict()` (JSON-safe; the web UI option W
-serialises it verbatim). Every text field is ASCII and already passed through `aliases.redact`;
-no text contains a path or an account id.
+All `plan_*`, `eviction_picker` and `empty_slot_guide` calls are **read-only** (no file is
+created, not even the journal). `execute` re-checks everything that can change between plan and
+execute (2.8 step 1). `note` is the owner's optional "Note for this move"; it goes into the
+`preparing` event, the oplog line and D1's `OpLineage.note`. Every returned object is a frozen
+dataclass with `to_dict()` (JSON-safe, for the CLI's `--json`). Every text field is ASCII and
+already passed through `aliases.redact`; no text contains a path or an account id.
 
 #### Context and policies
 
 ```python
 @dataclass
 class OpContext:
-    vault: Vault                         # catalog.Vault (oplog, snapshots)
+    vault: Vault                         # catalog.Vault (oplog, legacy entries until fold)
+    versions: VersionStore | None        # D3; None while core.store.vault_mode() != "store"
     store: OrganizerStore                # D1: paths, vault_id, lock()
-    locator: VersionLocator              # D2/D3
-    lineage: LineageRecorder             # D1: record_op, expected_pair
-    readmodel: ReadModel                 # D1: live_board(), line names, pins
-    facts: FactsProvider | None          # D4 (optional; F7a ownership check)
+    locator: VersionLocator              # D1's composite VaultLocator (D3 StoreLocator first)
+    lineage: LineageRecorder             # D1: record_op, observe, expected_pair, op_outcome
+    readmodel: ReadModel                 # D1: live_board(), lines (names, cross_platform), pins
     sources: Sequence[state.Source]      # configured live sources (state.json)
     policies: Policies
-    host: platform.Host                  # D7: env and home arrive as arguments
+    host: platform.Host                  # DESIGN.md D7: env and home arrive as arguments
     app_version: str
     machine_id: str                      # random per machine, user_data_dir(host)/machine-id
     game_probe: Callable[[], bool | None] = safety.is_game_running
@@ -164,18 +180,13 @@ class OpContext:
     faults: FaultInjector | None = None  # tests only (5.3); None in production
 
 @dataclass(frozen=True)
-class Policies:                          # one field per owner fork; defaults = recommendations
-    member: Literal["pair", "twice"] = "pair"                                  # F4 (3.1)
-    timestamp: Literal["keep", "now"] = "keep"                                 # F5 (3.2)
-    cross_account: Literal["same_person", "warn", "block"] = "same_person"     # F7 (3.3)
-    steam_cloud_delete: Literal["overwrite_only", "refuse_guided",
-                                "delete_detect"] = "refuse_guided"             # F8 (3.4)
-    cross_platform: Literal["off", "validated", "never"] = "off"               # F6 (3.5)
+class Policies:
+    cross_platform: Literal["off", "validated"] = "off"                        # F6 (3.5)
 ```
 
-`Policies` is a constant chosen at build time from the owner's answers, not a user setting.
-Only the chosen option of each fork is implemented; the field exists so tests can pin it and a
-later change of mind is one constant.
+The owner's decisions F4a, F5b, F7b and F8 are fixed behaviour (section 3), not switches; only
+the decided option is implemented. `cross_platform` stays a constant because F6 opens per
+direction after the owner's runs (3.5); it is not a user setting.
 
 #### Inputs
 
@@ -247,8 +258,8 @@ class SlotCandidate:
     play_time: int                       # newer member
     last_played: int                     # newer member's meta timestamp
     durable: bool                        # every present member is durable
-    vault_copy: str                      # D1 BoardSlot.vault_copy: durable|partial|prunable-only|
-                                         # outside-vault|none (finer than `durable`, for the UI)
+    vault_copy: Literal["durable", "partial", "outside-vault", "none"]
+                                         # = D1 BoardSlot.vault_copy (finer than `durable`, for the UI)
     pinned: bool                         # occupant's pid is pinned (D1 decision 9)
     same_line: bool                      # occupant pid == source pid
     suggested: bool
@@ -282,8 +293,8 @@ class CloudInfo:
 class AccountChoice:
     account: LiveAccount
     label: str
-    blocked: str                         # e.g. CROSS_PLATFORM_GATED, OTHER_PERSON, XGS_READ_ONLY
-    warnings: tuple[Warning, ...]
+    blocked: str                         # e.g. CROSS_PLATFORM_GATED, XGS_READ_ONLY
+    warnings: tuple[Warning, ...]        # e.g. OTHER_ACCOUNT
 
 @dataclass(frozen=True)
 class EvictionPicker:
@@ -306,8 +317,9 @@ class MemberWrite:
     vid: str                             # data sha256, written verbatim
     pid: str | None
     play_time: int
-    meta_ts: int                         # timestamp written into the meta
-    meta_plain_sha256: str               # plaintext as written (after any timestamp edit)
+    meta_ts: int                         # timestamp written into the meta (now, F5b)
+    source_meta_ts: int | None           # the captured meta time before the stamp
+    meta_plain_sha256: str               # plaintext as written (after the timestamp stamp)
     meta_disk_sha256: str                # bytes as written (Steam: encrypted for `ordinal`)
     disk_time: float                     # Steam mtime / Xbox FILETIME (unix seconds)
     ordinal: int | None                  # Steam storage ordinal; None on Xbox
@@ -330,24 +342,23 @@ class TargetPlan:
     label: str
     cloud_mode: Literal["steam-cloud", "steam-local", "xbox"]
     before: Literal["empty", "occupied", "mixed", "partial", "unreadable"]
-    writes: tuple[MemberWrite, ...]      # 2, or 0 for evict
-    deletes: tuple[Position, ...]        # evict, or the vacated side of a one-sided swap
-    evictions: tuple[Eviction, ...]
+    writes: tuple[MemberWrite, ...]      # always 2; 0 only for keep (vault-only)
+    evictions: tuple[Eviction, ...]      # for keep: the members copied to the vault
 
 @dataclass(frozen=True)
 class Estimate:
     preserve_bytes: int                  # 0 when everything is already durable
-    snapshot_bytes: int
+    snapshot_bytes: int                  # only objects the store does not hold yet (usually ~0)
     write_bytes: int
     seconds: float
 
 @dataclass(frozen=True)
 class PlacePlan:
     plan_id: str                         # random; not an op_id (op_id is minted by execute)
-    kind: Literal["place", "place_into_empty", "restore_older", "swap", "evict",
-                  "promote", "undo", "panic_restore"]
-    targets: tuple[TargetPlan, ...]      # one per slot written: 1, 2 (swap), up to 15 (panic restore)
-    source: SourceSummary | None         # None for evict / swap
+    kind: Literal["place", "place_into_empty", "restore_older", "swap", "promote", "undo",
+                  "panic_restore", "keep"]
+    targets: tuple[TargetPlan, ...]      # one per slot: 1, 2 (swap), up to 15 (panic restore)
+    source: SourceSummary | None         # None for swap / keep / panic_restore
     undo_of: str | None
     warnings: tuple[Warning, ...]
     confirmations: frozenset[str]        # codes the caller must echo back in `confirmed`
@@ -371,7 +382,7 @@ class OpOutcome:
     undo: UndoOffer | None
     verify: Literal["pending", "n/a"]
     error: str | None
-    code: str | None = None              # 'refused' / 'failed': GAME_RUNNING, BUSY, PRESERVE_FAILED:<code>, ...
+    code: str | None = None              # 'refused' / 'failed': GAME_RUNNING, BUSY, VAULT_SPACE, PRESERVE_FAILED:<class>, ...
     replan: PlacePlan | None = None      # status 'stale': the fresh plan to show
 
 @dataclass(frozen=True)
@@ -381,7 +392,8 @@ class Progress:
     total: int
 ```
 
-`RecoveryItem`, `VerifyItem` and `OpSummary` are defined in 2.10, 2.12 and 2.13.
+`RecoveryItem`, `VerifyItem` and `OpSummary` are defined in 2.10, 2.12 and 2.13;
+`EmptySlotGuide` in 2.4.2.
 
 ### 2.3 Planner
 
@@ -395,8 +407,9 @@ class Progress:
 4. the first enabled, writable account of the source's platform (`sources` order).
 
 Every other configured account appears in `other_accounts` with its block reason or warnings:
-other platform -> `CROSS_PLATFORM_GATED` (until F6 opens, 3.5); same platform other account ->
-F7 policy (3.3); xgs-only Xbox folder -> `XGS_READ_ONLY`.
+other platform -> `CROSS_PLATFORM_GATED` (until F6 opens, 3.5); same platform, an account other
+than the capture account -> `OTHER_ACCOUNT` (confirm, 3.3); xgs-only Xbox folder ->
+`XGS_READ_ONLY`.
 
 #### 2.3.2 Candidate rows
 
@@ -421,6 +434,7 @@ unless the caller echoes it; `block` means `execute` refuses.
 | Code | Severity | Where | Condition | Text (template) |
 |---|---|---|---|---|
 | `NOT_IN_VAULT` | info | candidate | a present member is not durable | "Not in the vault yet - it will be copied there first." |
+| `EMPTY_SLOT` | info | candidate | state empty | "Emptied outside the app - checked after the next launch." |
 | `PLAY_TIME_AHEAD` | confirm | candidate (restore_older) | occupant play time > source play time | "Steam slot 7 has 3h12m more play than this version. That newer save stays in the vault." |
 | `PINNED` | warn | candidate | occupant pid pinned | "You pinned this save." |
 | `MIXED_SLOT` | warn | candidate | state mixed | "This slot holds two different saves. Both will be kept in the vault." |
@@ -430,29 +444,28 @@ unless the caller echoes it; `block` means `execute` refuses.
 | `EXPEDITION_ACTIVE` | warn | candidate | occupant meta GameMode == 6 | "Expedition in progress. If the season ends while it is in the vault, it becomes a normal save when you put it back." |
 | `EXPEDITION_SOURCE` | warn | plan | source GameMode == 6 | "Expedition save. If its season has ended, the game turns it into a normal save when you load it." |
 | `TWIN_LIVE` | confirm | candidate | source pid live in another slot of this account and this slot is not that one | "This save is already in Steam slot 4. A second copy makes two separate branches." |
-| `LIVE_ELSEWHERE` | info | plan | source pid live on another account/platform | "This save is also in Xbox slot 4." |
+| `LIVE_ELSEWHERE` | info | plan | source pid live on another account/platform; `data["cross_platform"]` = D1 `Line.cross_platform` | "This save is also in Xbox slot 4." |
 | `ALREADY_LIVE` | block | candidate | kind noop | "This version is already in Steam slot 7." |
 | `CROSS_PLATFORM_GATED` | block | account | F6 not open | "Moving saves between Steam and Xbox is not available yet." |
-| `OTHER_ACCOUNT` | confirm | account | same platform, other account, F7 allows | "This save was played on another account. Bases may stay owned by that account until you play it here." |
-| `OTHER_PERSON` | block (F7a/c) / confirm (F7b) | account | ownership identities not all the owner's (3.3) | "This save belongs to someone else's account." |
+| `OTHER_ACCOUNT` | confirm | account | the capture account is known and differs from the target account (F7b, 3.3) | "This save comes from another account. Its bases may not be editable until the game takes them over when you play it here." |
 | `XGS_READ_ONLY` | block | account | Xbox folder without `containers.index` | "This Xbox folder can only be read." |
 | `GAME_RUNNING` | block | plan | `game_probe() is True` | "No Man's Sky is running. Close it first." |
 | `GAME_STATE_UNKNOWN` | confirm | plan | `game_probe() is None` | "Could not check whether No Man's Sky is running. Make sure it is closed." |
 | `CROSS_SAVE_ON` | warn | plan | accountdata CrossSaves true (if known) | "Hello Games cross-save is on: the game may ask which copy to keep." |
 | `STEAM_CLOUD_OTHER_DEVICE` | info | plan | cloud mode steam-cloud | "If Steam asks at the next launch, choose the copy on this PC." |
-| `STEAM_CLOUD_DELETE` | block or confirm (F8) | plan | a delete under steam-cloud | "Steam Cloud puts deleted saves back. See the steps." |
 | `XBOX_SYNC_BUSY` | block (soft) | plan | `containers.index` mtime < 60 s ago | "Xbox is still syncing. Try again in a minute." |
 | `XBOX_QUOTA` | warn / block | plan | wgs total after the op > 200 MB / > 256 MB | "Xbox cloud space would be nearly full / over the 256 MB limit." |
-| `VAULT_UNAVAILABLE` | block | plan | vault root missing or not writable | "The vault is not reachable. Nothing was changed." |
-| `VAULT_SPACE` | block | plan | free space < estimate x 1.5 + 64 MB (vault) or < 2 x write bytes (live drive) | "Not enough free disk space." |
+| `VAULT_UPGRADE_NEEDED` | block | plan | `core.store.vault_mode(vault_root) != "store"` (D3 upgrade not done, running or failed) | "Upgrade the vault first: Vault > Upgrade. Nothing was changed." |
+| `VAULT_UNAVAILABLE` | block | plan | vault root missing or not writable; D3 `StoreUnavailable` | "The vault is not reachable. Nothing was changed." |
+| `VAULT_SPACE` | block | plan | vault free space < (`StoreLocator.space_needed_for_preserve` + `VersionStore.space_needed` of the snapshot) x 1.5 + 64 MB, or live drive free space < 2 x write bytes; D3 `InsufficientSpace` | "Not enough free disk space." |
 | `SOURCE_UNREADABLE` | block | plan | locator cannot open/verify the source | "That version cannot be read from the vault." |
 | `RECOVERY_PENDING` | block | plan | an open op on any target account (2.10) | "An earlier move was interrupted. Resolve it first." |
 | `STALE_SOURCE_MIXED` | warn | plan | source pair's members have different pids | "The saved slot held two different saves; only the chosen one is used." |
 
-Codes used only by one flow are defined with it: undo `PLAYED_SINCE`, `ALREADY_UNDONE`,
-`UNDO_STALE` (2.11); F8 `STEAM_CLOUD_OFF_CONFIRMED` (3.4); F6 `SOURCE_OLD_FORMAT`,
-`UNSUPPORTED_META`, `SOURCE_NO_ID` (3.5.1); outcome codes `BUSY`, `PRESERVE_FAILED:<code>`,
-`SNAPSHOT_FAILED`, `RECORDING_PENDING` (2.14).
+Codes used only by one flow are defined with it: Swap `SWAP_EMPTY_SIDE` (2.4); empty slots
+`EMPTY_SLOT_MAY_REFILL` (2.4.2); undo `PLAYED_SINCE`, `ALREADY_UNDONE`, `UNDO_STALE`,
+`UNDO_WOULD_EMPTY` (2.11); F6 `SOURCE_OLD_FORMAT`, `UNSUPPORTED_META`, `SOURCE_NO_ID` (3.5.1);
+outcome codes `BUSY`, `PRESERVE_FAILED:<class>`, `SNAPSHOT_FAILED`, `RECORDING_PENDING` (2.14).
 
 #### 2.3.4 Suggested slot (C30, refined)
 
@@ -478,6 +491,11 @@ A pinned slot holding the source's own line is still suggested ("same_line"): pi
 "do not evict this save for another one"; going back to an older version of the same save keeps
 the newer one in the vault and is what the user asked for. The pin shows as a warning.
 
+An empty slot is not a risky suggestion. Steam Cloud's refill risk applies while a slot stays
+empty; a Place writes new files, and overwrites made outside the game stick (R8 E1). Its row
+therefore carries only `EMPTY_SLOT` (info), and verification (2.12) reports a refill if one
+happens. The owner confirms this once in a run (7.2).
+
 #### 2.3.5 `plan_place` (read-only)
 
 ```python
@@ -485,10 +503,10 @@ def plan_place(ctx, source, target) -> PlacePlan:
     rt = resolve_target(ctx, target)                 # C29, 2.3.6; raises TargetError
     src = load_source(ctx, source)                   # metas via locator.open(vid, prefer); data
                                                      # length + vid existence only (no full read)
-    gates = transfer_gates(ctx, src, rt)             # F6 / F7 / XGS_READ_ONLY (3.3, 3.5)
+    gates = transfer_gates(ctx, src, rt)             # VAULT_UPGRADE_NEEDED, F6, F7b, XGS_READ_ONLY
     cur = read_slot(rt)                              # pre-image candidate: hashes via D1 cache
     kind = classify(src, cur)                        # place | place_into_empty | restore_older | noop
-    writes = pairmeta.compute(src, rt, ctx.policies, now=int(ctx.clock()))     # 2.5
+    writes = pairmeta.compute(src, rt, now=int(ctx.clock()))                    # 2.5
     evictions = [eviction(m, ctx.locator) for m in cur.present]
     warnings = candidate_warnings(...) + plan_warnings(ctx, rt, src, writes)
     return PlacePlan(..., fingerprint=fingerprint(rt, cur, src), estimate=estimate(...))
@@ -521,19 +539,22 @@ The resolved folder path never leaves core (UIs get labels only).
 
 ### 2.4 The operations
 
-Every operation is one `op` and runs through the same `execute` (2.8): resolve, preserve,
-snapshot, journal, write, validate, record. They differ only in what they write and delete.
+Every live operation is one `op` and runs through the same `execute` (2.8): resolve, preserve,
+snapshot, journal, write, validate, record. They differ only in what they write. Every one
+**replaces**; none deletes a save file or leaves a slot empty (F8, I9).
 
-| Operation | Preserved first | Writes | Deletes | Undo (2.11) |
-|---|---|---|---|---|
-| **Place** (T occupied) | both present members of T | A and B of T (2.5) | - | Place the evicted pair back |
-| **PlaceIntoEmpty** | - | A and B of T | - | Evict T (F8 rules) |
-| **Restore-older** (T holds the source's pid) | both members (the newer tip) | A and B of T | - | Place the evicted pair back |
-| **Swap** (both full) | both slots | the 4 positions, each pair keeps its positions and metas (re-keyed on Steam) | - | Swap back |
-| **Swap** (one side empty = move) | the full slot | the empty slot's A and B | the vacated slot's A and B (F8) | move back |
-| **Evict** | both members | - | A and B of T (F8; Xbox: records flagged Deleted) | PlaceIntoEmpty the evicted pair |
-| **Promote** (make position p load) | both members (keeps the exact old metas for undo) | A and B of T: same data, re-timed metas (2.5) | - | Place the old pair (old metas) back |
-| **Undo** of op X | T's current content when it differs from what X wrote | the inverse of X | the inverse of X | redo X (an undo is an op) |
+| Operation | Preserved first | Writes | Undo (2.11) |
+|---|---|---|---|
+| **Place** (T occupied) | both present members of T | A and B of T (2.5) | Place the evicted pair back |
+| **PlaceIntoEmpty** | - | A and B of T | blocked: it would empty T (`UNDO_WOULD_EMPTY`, the steps of 2.4.2) |
+| **Restore-older** (T holds the source's pid) | both members (the newer tip) | A and B of T | Place the evicted pair back |
+| **Swap** (both occupied) | both slots | the 4 positions; each pair keeps its positions, metas stamped now (2.5) and re-keyed on Steam | Swap back |
+| **Promote** (make position p load) | both members (keeps the exact old metas) | A and B of T: same data, metas stamped now with p newest (2.5) | Place the old pair back with its old loading position |
+| **Undo** of op X | T's current content when it differs from what X wrote | the inverse of X | redo X (an undo is an op) |
+| **Keep a copy** (2.4.1) | - | nothing live; a vault entry of T | none needed (nothing live changed) |
+
+A Swap with an empty side would vacate a slot and is blocked: `SWAP_EMPTY_SIDE` (block) "Steam
+slot 3 is empty, and the app never empties a slot. Use Move to live to put a save into it."
 
 Rules shared by all of them:
 
@@ -541,37 +562,75 @@ Rules shared by all of them:
   with members of two pids, fills the other position with a copy of V (2.5). No operation ever
   leaves a mixed slot (P6).
 - **Data is verbatim.** Only metas change, and only by: Steam re-key (ordinal of the destination
-  position), the timestamp edits of 2.5, and F6 conversion (3.5).
+  position), the timestamp stamp of 2.5, and F6 conversion (3.5).
 - **Never touched:** `accountdata.hg` / `mf_accountdata.hg` / the Xbox `AccountData` record and
   its xgs folder, `steam_autocloud.vdf`, `cache/`, any other slot, any other account's folder or
   `containers.index`, and every file the op did not create (I7).
 - A **cross-folder Swap** (two accounts of one platform) is one op over two targets with two
-  snapshots, gated by F7. A cross-platform Swap is two transfers, gated by F6.
+  snapshots and the `OTHER_ACCOUNT` confirmation (F7b). A cross-platform Swap is two transfers,
+  gated by F6.
+
+#### 2.4.1 Keep a copy (vault only)
+
+`plan_keep(ctx, target)` plans a copy of one live slot into the vault, for a slot whose save has
+no vault copy yet (D6 offers it on the board and in the empty-slot steps). The plan has kind
+`keep`, no writes, the slot's present members as `evictions`, `NOT_IN_VAULT` per member that is
+not durable, and the blocks `VAULT_UPGRADE_NEEDED`, `VAULT_UNAVAILABLE`, `VAULT_SPACE`;
+the game may run (nothing live is written; D3's stable-read check refuses a file that changes
+while it is read). `execute` takes the live-op lock, re-checks the fingerprint (`stale` on a
+change), journals `preparing`, calls `VersionStore.add_from_live(target_dir, platform=...,
+account_key=..., kind="extract", label="kept: <slot label>", scope=CaptureScope(slots=(n,)),
+op_id=op_id, reason="keep")`, appends an oplog line (`op: "keep"`, `entry_id` = the new entry)
+and `done`. No `record_op` (no live change); D1's scanner picks the entry up as a capture.
+Outcome: "'Main Save' from Steam slot 7 is in the vault."
+
+#### 2.4.2 Emptying a slot and empty slots (F8)
+
+The app never empties a slot. `empty_slot_guide(ctx, target)` returns what the UI shows when the
+owner asks to empty a slot and on the card of an empty slot (read-only):
+
+```python
+@dataclass(frozen=True)
+class EmptySlotGuide:
+    target: LiveTarget
+    label: str                           # "Steam slot 7"
+    cloud_mode: Literal["steam-cloud", "steam-local", "xbox"]
+    occupied: bool
+    durable: bool                        # every present member has a vault copy; else the UI
+                                         # offers Keep a copy (2.4.1) first
+    refill: Warning | None               # EMPTY_SLOT_MAY_REFILL; None on steam-local
+    steps: tuple[str, ...]               # numbered manual steps for this cloud mode
+```
+
+| Cloud mode | `refill` text (`EMPTY_SLOT_MAY_REFILL`, info) | `steps` |
+|---|---|---|
+| steam-cloud | "While this slot is empty, Steam Cloud may put a save back into it at the next game start." | 1 Close No Man's Sky. 2 In Steam: No Man's Sky > Properties > General, turn off "Keep game saves in the Steam Cloud". 3 In the save folder delete the four files of this slot (`save13.hg`, `mf_save13.hg`, `save14.hg`, `mf_save14.hg`). 4 Start the game once and quit. 5 Turn Steam Cloud back on; if Steam asks, keep the copy on this PC. (today's text, `operations.py:629-634`, with the file names) |
+| steam-local | none | 1 Close No Man's Sky. 2 In the save folder delete the four files of this slot (names as above). |
+| xbox | "While this slot is empty, Xbox sync may put a save back into it." | 1 Start No Man's Sky. 2 Delete the save in the game's own load menu. 3 Quit and let Xbox sync finish. (INFERRED: Xbox slot records cannot be edited by hand; the owner confirms these steps once, 7.2) |
+
+The board's empty-slot marker and card take `refill` from here; the next D1 scan shows whether the
+slot stayed empty (D1's journal reports a `resurrected` event if Steam Cloud refilled it).
 
 ### 2.5 What is written: positions, metas and times
 
-`pairmeta.compute(src, rt, policies, now) -> tuple[MemberWrite, MemberWrite]` is a pure function
-(no I/O) so every case is unit-testable. Shown with the recommended policies F4a ("pair") and
-F5a ("keep"); section 3 gives the alternatives.
+`pairmeta.compute(src, rt, now) -> tuple[MemberWrite, MemberWrite]` is a pure function (no I/O)
+so every case is unit-testable. It implements the owner's F4a (the version with its own same-id
+partner) and F5b (stamp "now"; the original time stays in the vault record).
 
 ```python
-def compute(src: SourcePair, rt: ResolvedTarget, pol: Policies, now: int):
+def compute(src: SourcePair, rt: ResolvedTarget, now: int):
     L = src.load                                   # position V was captured in
     O = other(L)
     V = src.member(L)                              # bytes + meta plaintext (locator.open(prefer))
     P = src.member(O)                              # partner or None
-    use_partner = (pol.member == "pair" and P is not None and P.pid == V.pid)
+    use_partner = P is not None and P.pid == V.pid
     Pw = P if use_partner else V                   # O position gets the partner or a copy of V
 
-    # 1) meta timestamps: V must be newest by meta time
-    #    (metas without a timestamp field skip steps 1-2 and keep their bytes, 2.5.2)
-    if pol.timestamp == "keep":
-        ts_L = V.meta_ts or now                    # a stored 0 means unknown -> now
-        ts_O = Pw.meta_ts if (use_partner and Pw.meta_ts < ts_L) else ts_L - 1
-    else:                                          # "now"
-        ts_L, ts_O = now, now - 1
+    # 1) meta timestamps (F5b): V = now, the other position = now - 1
+    #    (metas without a timestamp field keep their bytes, 2.5.2)
+    ts_L, ts_O = now, now - 1
 
-    # 2) metas: timestamp edit (only if changed), then platform encoding
+    # 2) metas: timestamp stamp, then platform encoding
     plain_L = with_ts(V.meta_plain, ts_L, rt.platform)
     plain_O = with_ts(Pw.meta_plain, ts_O, rt.platform)
     if rt.platform == "steam":
@@ -581,45 +640,44 @@ def compute(src: SourcePair, rt: ResolvedTarget, pol: Policies, now: int):
     else:
         disk_L, disk_O = plain_L, plain_O          # plaintext; same bytes to wgs and xgs
 
-    # 3) on-disk times: V newest by mtime / FILETIME as well
-    if rt.cloud_mode in ("steam-cloud", "xbox"):
-        t_L, t_O = float(now), float(now - 1)
-    else:                                          # steam-local: the save keeps its age
-        t_L = float(ts_L)
-        t_O = float(min(ts_O, ts_L - 1))
-    return (MemberWrite(position=L, ...), MemberWrite(position=O, copy_of=None if use_partner else L, ...))
+    # 3) on-disk times: V newest by mtime / FILETIME as well, in every cloud mode
+    t_L, t_O = float(now), float(now - 1)
+    return (MemberWrite(position=L, source_meta_ts=V.meta_ts, ...),
+            MemberWrite(position=O, source_meta_ts=Pw.meta_ts,
+                        copy_of=None if use_partner else L, ...))
 ```
+
+`MemberWrite` gains `source_meta_ts: int | None` (the captured meta time before the stamp); the
+oplog line carries it, and the source version keeps its original meta in the vault entry it came
+from (D1's op record points there through `OpLineage.source`). The placed live copy therefore is
+a meta-only variant of the version: same `vid`, different meta (D1 `MetaSnap.meta_sha`).
 
 #### 2.5.1 Why these rules
 
-- **Positions are kept as captured.** A captured pair goes back exactly as it was; when V is the
-  newer member (the default) no timestamp is edited at all, so the common Place changes nothing
-  but the Steam re-key (R7 2.4 measured: in 581/581 captured pairs the newer member by meta time
-  also has the higher or equal play time, so the default `load` is also the most progressed).
+- **Positions are kept as captured.** The captured pair goes back in its positions; the default
+  `load` is the newer member, which R7 2.4 measured as also the most progressed (581/581 pairs).
 - **"V newest by every signal"** (C23, R8 C5): meta timestamp (what the load screen sorts by,
   DESIGN.md), Steam file mtime order (what Steam Cloud and any mtime fallback see) and Xbox
   FILETIME order (what today's app and possibly the Xbox app use when the meta has no time)
   all put L above O. Strict, not equal: a tie has no defined winner.
-- **Disk time = now under Steam Cloud and on Xbox.** A file stamped older than the cloud's copy
-  risks being replaced by it at the next launch (project rule, `operations.py:253-257`; R8 G5).
-  The meta keeps the real save date (F5a), so the in-game date stays honest. Xbox FILETIME =
-  now follows R8 Q8 (the record's local write time; R8 A5 shows it already is a write/sync time,
-  not the save time).
-- **Steam with Cloud off** keeps the save's age on disk (today's behaviour,
-  `operations.py:350-357`), in the same order.
-- **A copy of V in O** (single-member or mixed source) has `ts = V.ts - 1`, so V loads and the
+- **"Now" everywhere** (F5b): the load screen shows the placed save as the newest, and a file
+  stamped older than the cloud's copy cannot be replaced by it at the next launch (project rule,
+  `operations.py:253-257`; R8 G5). Xbox FILETIME = now follows R8 Q8 (the record's local write
+  time). The meta and the disk times agree, so the unknown "meta time far older than the file"
+  case never arises.
+- **A copy of V in O** (single-member or mixed source) is stamped `now - 1`, so V loads and the
   copy is the fallback the game offers - the same playthrough, never a different one.
 
 #### 2.5.2 Edge cases
 
 | Case | Rule |
 |---|---|
-| V's meta has no timestamp field (Xbox 280-B Waypoint meta, pre-Waypoint Steam) | order by disk time only; `ts_*` unused; warning-free (the game has nothing else to sort by) |
-| `V.meta_ts == 0` in a meta that has the field | treated as unknown: stamp `now` (as `_repopulate_slot_xbox` does today, `operations.py:508`) |
-| partner newer than V (the user picked the restore point / promote) | F4a: partner re-timed to `V.ts - 1`; F4b: partner not written |
-| partner has more play time but older meta time | no edit needed (meta time decides); record it |
+| V's meta has no timestamp field (Xbox 280-B Waypoint meta, pre-Waypoint Steam) | meta bytes unchanged; order by disk time only (the game has nothing else to sort by) |
+| partner newer than V or with more play time (the user picked the restore point) | partner written with `now - 1`; V loads |
 | source pair members have different pids | treated as single-member (copy of V); `STALE_SOURCE_MIXED` warning |
-| Promote of position p | `src` = the slot's own pair with `load = p`; the rules above re-time the other position (F4a) or both (F5b) |
+| Promote of position p | `src` = the slot's own pair with `load = p`; both metas stamped (p = now) |
+| Undo | the evicted pair goes back through `compute` too: stamped now, its old loading position as `load` (2.11) |
+| Panic restore | not `compute`: the snapshot's slot files are restored byte-exact, metas included; disk times now (4.3) |
 | F6 transfer | after step 2, `convert.steam_to_xbox` / `xbox_to_steam` replace the platform encoding (3.5) |
 
 ### 2.6 Slot writers
@@ -649,11 +707,10 @@ class SteamFileWrite:
 class SteamWritePlan:
     folder: Path
     files: tuple[SteamFileWrite, ...]          # in swap order
-    deletes: tuple[str, ...]                   # evict / vacated side (F8 permitting)
     pre: Mapping[str, FileState | None]        # every name the op touches; None = absent
 
 def prepare(folder: Path, writes: Sequence[tuple[MemberWrite, bytes, bytes]],
-            deletes: Sequence[Position], slot: int, op_tag: str) -> SteamWritePlan: ...
+            slot: int, op_tag: str) -> SteamWritePlan: ...
 def stage(plan: SteamWritePlan, payload: Mapping[str, bytes]) -> None: ...
 def swap(plan: SteamWritePlan, faults: FaultInjector | None) -> None: ...
 def rollback(plan: SteamWritePlan, pre_bytes: Mapping[str, bytes]) -> None: ...
@@ -669,15 +726,16 @@ def sweep(folder: Path, op_tag: str) -> list[str]: ...
   (VERIFIED 9.5: `PermissionError`, winerror 5; Steam client or an antivirus scan can hold a
   save briefly). Retry 5 times, 200 ms apart, per file; then abort the swap and roll back the
   files already swapped.
-- **Deletes** (only where F8 allows, 3.4) come after the renames.
+- **No deletes.** A slot is only ever overwritten (F8).
 - **Rollback (exact):** for every name in `pre`: if it existed, write its pre-op bytes
-  (atomic) and set its pre-op mtime; if it did not, delete it. Pre-op bytes come from the op's
-  whole-folder snapshot (made with `copy2`, so mtimes are kept), checked against `pre[name].sha256`;
-  fallback: the preserved versions (data verbatim; a Steam meta re-encrypted from its plaintext
-  with the same ordinal is byte-identical because XXTEA here is deterministic). Then `sweep`.
-  Under Steam Cloud this restores exactly the state Steam's manifest already knows, and deleting
-  a file the op created is safe because Steam syncs only at game launch and exit, so it never
-  saw that file (R8 E1).
+  (atomic) and set its pre-op `mtime_ns` from the journal's `pre` record; if it did not, delete
+  it (a file this op created). Pre-op bytes come from the op's store snapshot
+  (`VersionStore.read_file(snapshot_id, name)`), checked against `pre[name].sha256`; fallback:
+  the preserve entry (`StoreLocator.open(vid, prefer=<preserved location>)`; data verbatim, and a
+  Steam meta re-encrypted from its plaintext with the same ordinal is byte-identical because
+  XXTEA here is deterministic). Then `sweep`. Under Steam Cloud this restores exactly the state
+  Steam's manifest already knows, and deleting a file the op created is safe because Steam syncs
+  only at game launch and exit, so it never saw that file (R8 E1).
 
 #### 2.6.2 Xbox (`msstore.py` additions)
 
@@ -706,11 +764,10 @@ class XboxPairPlan:
     new_files: tuple[str, ...]                  # relative "<DIRGUID>/<GUID>", ".../container.<n>"
     new_dirs: tuple[str, ...]                   # record dirs created for new identifiers
     superseded: tuple[str, ...]                 # old blobs + old container.<n>, deleted in finalize
-    deleted: tuple[str, ...]                    # identifiers flagged Deleted (evict)
     xgs: bool
 
-def prepare_pair(folder: Path, writes: Sequence[XboxRecordWrite],
-                 deletes: Sequence[str] = ()) -> XboxPairPlan: ...   # reads only; GUIDs pre-generated
+def prepare_pair(folder: Path, writes: Sequence[XboxRecordWrite]) -> XboxPairPlan: ...
+                                                # reads only; GUIDs pre-generated
 def apply_pair(plan: XboxPairPlan, payload: Mapping[str, tuple[bytes, bytes]],
                faults: FaultInjector | None = None) -> None: ...
 def finalize_pair(plan: XboxPairPlan) -> None: ...
@@ -723,13 +780,12 @@ def join_index(header: bytes, records: Sequence[tuple[str, bytes]]) -> bytes: ..
   `container.<n>` under the pre-generated GUID names (atomic per file; existing record dirs, or
   a new dir for a new identifier); (2) write **one** new `containers.index` (`os.replace`):
   untouched records copied raw, our records rebuilt (state Modified, or Created for a new
-  identifier, or Deleted for an evict; FILETIME from an int), header FILETIME and state patched
-  as integers; both positions flip together; (3) mirror both identifiers into xgs when the twin
-  exists (wgs first, then xgs, as today; read-back compare).
-- **finalize_pair** (after validation): delete `superseded`; for deleted identifiers remove the
-  old blob dir (only a GUID-named child of the account folder) and the xgs identifier folder.
-  Until then the old blobs stay on disk, unreferenced, so an exact rollback needs nothing from the
-  vault.
+  identifier; FILETIME from an int), header FILETIME and state patched as integers; both
+  positions flip together; (3) mirror both identifiers into xgs when the twin exists (wgs first,
+  then xgs, as today; read-back compare).
+- **finalize_pair** (after validation): delete `superseded` (the replaced blobs of our own two
+  records, now unreferenced; never a record). Until then the old blobs stay on disk,
+  unreferenced, so an exact rollback needs nothing from the vault.
 - **rollback_pair:** re-read the index; write `pre_header_raw` + for our identifiers the
   `pre_records_raw` (dropping records that were absent) + every other record as it is now;
   delete `new_files` and empty `new_dirs`; restore the xgs folders of our identifiers from the
@@ -741,8 +797,9 @@ def join_index(header: bytes, records: Sequence[tuple[str, bytes]]) -> bytes: ..
   immediately before step 2 and aborts (nothing referenced yet; new blobs deleted) if it changed:
   the Xbox app may still be writing sync states right after the game exits (R8 E2). The planner
   also blocks with `XBOX_SYNC_BUSY` while the index's mtime is under 60 s old.
-- `write_save`, `delete_save` and `mark_modified` are re-implemented on the same raw editing
-  (fixes P-X1 for the classic paths too). The parser keeps each record's raw bytes and integer
+- `write_save` and `mark_modified` are re-implemented on the same raw editing (fixes P-X1 for the
+  classic paths too); `delete_save` too while the classic Clear still exists (phases 0-1; it
+  becomes the steps of 2.4.2 in phase 2). The parser keeps each record's raw bytes and integer
   FILETIME (`_Container.raw`, `_Container.filetime`).
 
 ### 2.7 The operation journal
@@ -762,7 +819,7 @@ def join_index(header: bytes, records: Sequence[tuple[str, bytes]]) -> bytes: ..
   write) and is ignored with a log line; an unparsable middle line is logged and skipped. Never
   rewritten in place (no compaction in v1; ~3-6 KB per op).
 - Separate from D1's `journal.jsonl` (live observations) and from the vault's `oplog.jsonl`
-  (audit + old-app undo, 2.13).
+  (audit, 2.13).
 
 #### 2.7.2 Events
 
@@ -771,7 +828,7 @@ Every line: `{"j": 1, "op_id", "seq", "event", "utc", "machine"}` plus the event
 | Event | When | Payload (abridged) |
 |---|---|---|
 | `preparing` | `execute` starts, before any vault write | `kind`, `app`, `targets[] {platform, account_key, slot}`, `source {vid_a, vid_b, load, prefer}`, `undo_of`, `note`, `confirmed[]`, `plan_digest` |
-| `writing` | after preserve + snapshot + writer prepare, **before the first live write** (the write-ahead intent) | per target: `cloud_mode`, `snapshot_id`, `preserved[] {position, vid, location, already}`, `pre {A, B: {vid, pid, data: FileState or null, meta: FileState or null}}`, `post {A, B: MemberWrite}`, `deletes[]`, `steam {files[] {name, temp, sha256, mtime}, deletes[]}` or `xbox {pre_index_sha256, pre_header_b64, pre_records_b64{id: b64 or null}, new_records_b64{}, new_files[], new_dirs[], superseded[], deleted[], xgs}` |
+| `writing` | after preserve + snapshot + writer prepare, **before the first live write** (the write-ahead intent) | per target: `cloud_mode`, `snapshot_id`, `preserved[] {position, vid, location, already}`, `pre {A, B: {vid, pid, data: FileState or null, meta: FileState or null}}`, `post {A, B: MemberWrite}`, `steam {files[] {name, temp, sha256, mtime}}` or `xbox {pre_index_sha256, pre_header_b64, pre_records_b64{id: b64 or null}, new_records_b64{}, new_files[], new_dirs[], superseded[], xgs}` |
 | `validated` | post-write validation passed | per target `ok` |
 | `done` | oplog line and lineage recorded | `oplog: true`, `lineage: true` |
 | `rolled_back` | automatic rollback succeeded | `stage` (`apply`/`validate`), `error`, `restored: true` |
@@ -790,15 +847,14 @@ Example `writing` line for a Steam Place (wrapped here; one line on disk):
 {"j":1,"op_id":"op-20261016T101502Z-3fa2","seq":2,"event":"writing","utc":"2026-10-16T10:15:03.120Z",
  "machine":"m-6f1c2a","targets":[{"target":{"platform":"steam","account_key":"st_<steamid64>","instance":"","slot":7},
  "cloud_mode":"steam-cloud","snapshot_id":"snapshot-steam-20261016-131502",
- "preserved":[{"position":"A","vid":"<vid A old>","location":{"kind":"entry","ref":"keep-steam-20261016-131502","slot":7,"member":"A"},"already":false},
-              {"position":"B","vid":"<vid B old>","location":{"kind":"entry","ref":"keep-steam-20261016-131502","slot":7,"member":"B"},"already":false}],
+ "preserved":[{"position":"A","vid":"<vid A old>","location":{"kind":"store","ref":"preserve-steam-20261016-131502","slot":7,"member":"A"},"already":false},
+              {"position":"B","vid":"<vid B old>","location":{"kind":"store","ref":"preserve-steam-20261016-131502","slot":7,"member":"B"},"already":false}],
  "pre":{"A":{"vid":"<vid A old>","pid":"<pid16>","data":{"sha256":"<vid A old>","size":1800000,"mtime_ns":1791900000000000000},"meta":{"sha256":"<sha>","size":432,"mtime_ns":1791900000000000000}},"B":{...}},
- "post":{"A":{"position":"A","vid":"<vid A new>","pid":"<pid16>","meta_ts":1791500000,"meta_plain_sha256":"...","meta_disk_sha256":"...","disk_time":1792500903.0,"ordinal":14,"copy_of":null,"origin":{...}},"B":{...}},
- "deletes":[],
+ "post":{"A":{"position":"A","vid":"<vid A new>","pid":"<pid16>","meta_ts":1792500903,"source_meta_ts":1791500000,"meta_plain_sha256":"...","meta_disk_sha256":"...","disk_time":1792500903.0,"ordinal":14,"copy_of":null,"origin":{...}},"B":{...}},
  "steam":{"files":[{"name":"save14.hg","temp":".tmp_3fa2_save14.hg.part","sha256":"...","mtime":1792500902.0},
                    {"name":"mf_save14.hg","temp":".tmp_3fa2_mf_save14.hg.part","sha256":"...","mtime":1792500902.0},
                    {"name":"save13.hg","temp":".tmp_3fa2_save13.hg.part","sha256":"...","mtime":1792500903.0},
-                   {"name":"mf_save13.hg","temp":".tmp_3fa2_mf_save13.hg.part","sha256":"...","mtime":1792500903.0}],"deletes":[]}}]}
+                   {"name":"mf_save13.hg","temp":".tmp_3fa2_mf_save13.hg.part","sha256":"...","mtime":1792500903.0}]}}]}
 ```
 
 #### 2.7.3 Relation to the other records
@@ -806,15 +862,15 @@ Example `writing` line for a Steam Place (wrapped here; one line on disk):
 | Record | Owner | Role for an op |
 |---|---|---|
 | `organizer/ops.jsonl` | D5 | state machine of the op: intent, progress, outcome, verification; the source of truth for recovery, undo and verification |
-| `oplog.jsonl` (vault root) | D5 writes, everyone reads | one v2 line per finished op (`done`, `rolled_back`, `failed`): audit trail and **old-app undo compatibility** (2.13) |
+| `oplog.jsonl` (vault root) | D5 writes, everyone reads | one v2 line per finished op (`done`, `rolled_back`, `failed`): the audit trail (2.13) |
 | `organizer/lineage.json` + `journal.jsonl` | D1 | `record_op` gives D1 the binding "T holds pair P since op_id" (C16) and the evicted pair; D1's live journal then observes the game's later versions and emits events that D5's verification consumes |
-| catalog entries | D2/D3 | the preserved versions (`extract` entries, D2 decision 1) and the pre-op snapshot |
+| store entries | D3 | the preserve entry (kind `preserve`, the evicted members) and the pre-op snapshot (kind `snapshot`, the whole folder); both durable, never pruned |
 
 #### 2.7.4 Local marker (vault on another drive)
 
 Right after the `writing` event, `execute` writes
 `platform.user_cache_dir(host)/vaults/<vault_id>/open-ops/<op_id>.json` (D1's per-machine,
-per-vault folder) = `{op_id, vault_id, vault_root, labels[], snapshot_ids[], utc}` (atomic), and
+per-vault folder) = `{op_id, vault_id, vault_root, labels[], utc}` (atomic), and
 deletes it after the terminal event. At startup the app lists `vaults/*/open-ops/`; a marker
 whose vault is not reachable yields a `vault_missing` recovery item: "A move into Steam slot 7 was
 interrupted and its records are on the vault drive. Connect it before playing." The marker holds
@@ -822,22 +878,22 @@ no save data; losing it (cache cleaned) loses only that hint. A per-machine id
 (`platform.user_data_dir(host)/machine-id`, random, deliberately not in the cache folder) tags
 every event so a vault shared between PCs (D11) never recovers another machine's op here.
 
-D2 pins the snapshots of open ops (its `pinned_entries`): `liveops.open_snapshot_ids(ctx) ->
-frozenset[str]` returns the `snapshot_id`s of every open op's `writing` event plus those named
-in this machine's markers.
-
 ### 2.8 Execute
 
 ```python
-def execute(ctx, plan, confirmed, progress=None) -> OpOutcome:
+def execute(ctx, plan, confirmed, progress=None, *, note="") -> OpOutcome:
     if plan.blocked:
         return refused(plan)
     missing = plan.confirmations - confirmed
     if missing:
         raise ConfirmationRequired(missing)
-    with liveop_lock(ctx, timeout=10):                                  # one live op at a time (2.16);
+    if plan.kind == "keep":
+        return execute_keep(ctx, plan, note)                            # 2.4.1: no live write
+    with liveop_lock(ctx, timeout=10):                                  # one live write at a time (2.16);
                                                                         # timeout -> refused(code="BUSY")
         # 1 re-check what can change between plan and execute (none of these writes anything)
+        if vault_mode(ctx.vault.root) != "store":                       # D3 core.store.vault_mode
+            return refused(plan, code="VAULT_UPGRADE_NEEDED")
         if fingerprint_now(ctx, plan) != plan.fingerprint:
             return stale(replan(ctx, plan))
         if open_ops_on(ctx, plan.accounts()):
@@ -846,16 +902,21 @@ def execute(ctx, plan, confirmed, progress=None) -> OpOutcome:
             return refused(plan, code=why)
         if (why := game_problem(ctx, confirmed)):                       # GAME_RUNNING / unconfirmed unknown
             return refused(plan, code=why)
-        ctx.lineage.observe(scan_targets(ctx, plan), src="scan")        # D1: journal the pre-op state
+        ctx.lineage.observe(scan_targets(ctx, plan), src="scan",        # D1: journal the pre-op state
+                            skip=busy_targets(ctx))
         op_id = new_op_id(ctx.clock)                                    # section 6 format
-        jr.append(ctx, preparing(op_id, plan, confirmed))               # short store-lock txn
+        jr.append(ctx, preparing(op_id, plan, confirmed, note))         # short store-lock txn
         try:
             # 2 the source: open, verify, compute final bytes
             payload = load_and_verify_source(ctx, plan)                 # sha256 == vid, chunk total
-            # 3 preserve every member that will be replaced or deleted
-            preserved = preserve_targets(ctx, plan, op_id)              # locator.preserve(...)
-            # 4 whole-folder pre-op snapshot per target folder
-            snaps = {t: storage_snapshot(ctx, t, reason) for t in plan.folders()}
+            # 3 preserve every member that will be replaced
+            preserved = preserve_targets(ctx, plan, op_id)              # StoreLocator.preserve
+            # 4 whole-folder pre-op snapshot per target folder, in the store
+            snaps = {t: ctx.versions.add_from_live(folder(t), platform=t.platform,
+                                                   account_key=t.account_key, kind="snapshot",
+                                                   label=f"auto: {plan.kind}", scope=CaptureScope(),
+                                                   op_id=op_id, reason=plan.kind)
+                     for t in plan.folders()}
             # 5 writers prepare (reads the pre-image; compares with the plan fingerprint)
             wplans = prepare_writers(ctx, plan, payload, op_id)
         except Abandon as why:                                          # nothing live written
@@ -874,29 +935,35 @@ def execute(ctx, plan, confirmed, progress=None) -> OpOutcome:
             return rollback_and_report(ctx, op_id, plan, wplans, snaps, exc)   # 2.9.2
         jr.append(ctx, validated(op_id))
         finalize_writers(wplans)                                        # Xbox superseded, Steam sweep
-        record(ctx, op_id, plan, preserved, snaps)                      # 2.13; errors -> stays 'validated'
-        ctx.lineage.observe(scan_targets(ctx, plan), src="verify")     # D1: the post-write state
+        record(ctx, op_id, plan, preserved, snaps, note)                # 2.13; errors -> stays 'validated'
+        ctx.lineage.observe(scan_targets(ctx, plan), src="verify",      # D1: the post-write state
+                            skip=busy_targets(ctx) - set(plan.target_list()))
         jr.append(ctx, done(op_id)); marker.remove(ctx, op_id)
-    storage_after_operation(ctx, op_id)                                 # D2 retention hook (2.9.5 of D2)
     return OpOutcome(op_id, "done", outcome_text(plan), undo=undo_offer(plan, op_id),
                      verify="pending", warnings=..., error=None)
 ```
 
 Notes:
 
-- **Preserve** calls `locator.preserve([LiveMember(target, position, expected_vid), ...],
-  op_id=op_id, reason=kind)` once per target slot (D2 2.7: takes the store lock itself, re-reads
-  the live slot and refuses `changed-since-plan`, writes both members of the slot into one
-  `keep-<plat>-<stamp>` extract entry when any lacks an exact durable copy, dedupes by (vid, meta
-  plaintext sha256)). Every `PreserveError` code (`live-missing`, `member-missing`,
-  `changed-since-plan`, `vault-unavailable`, `vault-full`, `verify-failed`, `lock-timeout`,
-  `io-error`) becomes `Abandon`; `changed-since-plan` returns `status="stale"` with a fresh plan.
-  The returned `Location`s must be `durable` and not `prunable`. An unreadable member is
-  preserved as raw files (its `vid` is still the data sha256).
-- **Snapshot** = today's `snapshot_live` (Steam `*.hg` + vdf; Xbox the whole account folder),
-  via whatever D2/D3 expose for it. It is the exact pre-image for rollback and the target of the
-  v2 oplog `snapshot_id` (old-app undo, 4.2). It is taken after preserve so the evicted versions
-  are durable even if the snapshot is pruned later.
+- **Preserve** calls `ctx.locator.preserve([LiveMember(target, position, expected_vid), ...],
+  op_id=op_id, reason=kind)` once per target slot. D1's `VaultLocator` hands it to D3's
+  `StoreLocator.preserve`: it re-reads the live slot, keeps both members, writes one store entry
+  of kind `preserve` (id `preserve-<plat>-<stamp>`; written every time, ~3 KB of manifest when the
+  objects already exist) and verifies every object it references before returning durable
+  locations. Error mapping, each an `Abandon` (nothing live written): `PreserveMismatch` or
+  `SourceChanged` -> `stale` with a fresh plan; `PreserveFailed("store-unavailable")` ->
+  `VAULT_UPGRADE_NEEDED`; `StoreUnavailable` -> `VAULT_UNAVAILABLE`; `InsufficientSpace` ->
+  `VAULT_SPACE`; D1 `LockTimeout` -> `BUSY` (retry notice); any other `StoreError` ->
+  `PRESERVE_FAILED:<class>`. An unreadable member is preserved as raw files (its `vid` is still
+  the data sha256).
+- **Snapshot** = the whole target folder (Steam `*.hg` + vdf; Xbox the whole account folder) as a
+  store entry of kind `snapshot`. The store deduplicates, so it costs only the objects it does
+  not hold yet (after preserve, usually none). It is the exact pre-image for rollback (2.9.2),
+  the `snapshot_id` of the oplog line and the source of a panic restore (4.3). Store snapshots are
+  durable and never pruned. Failure -> `abandoned(snapshot_failed)`, code `SNAPSHOT_FAILED`.
+- **Locks:** the live-op lock is the outer lock for the whole call; D1's store lock is taken
+  only inside short transactions (journal appends, `record_op`, `observe`) and D3 takes it only
+  for each manifest commit. Neither is ever held across another call (2.16).
 - **Progress** is reported at each numbered step; the GUI shows it without blocking Tk (C31) and
   must not let the app close while `execute` runs (the GUI worker is a daemon thread today,
   `gui.py:1368`; closing would kill a write mid-way).
@@ -913,10 +980,9 @@ Notes:
 | bytes | for each written position: `sha256(data) == vid`, `sha256(meta file) == meta_disk_sha256` | blobs referenced by the new records: same two hashes |
 | meta | decrypts with the position's ordinal (header `0xEEEEEEBE`); `SizeDecompressed == lz4_block.stats(data).total_decompressed`; meta id (0x15C) == pid when pid is a SaveUniversalId | (after P1) id 0x118 == pid; for 360-B / format 2004 metas `u32 0x10 == chunk total` (it held the compressed size in the Worlds I era, libNOM.io; VERIFIED 41/42 stream metas, 9.1) |
 | order | `SlotView.newest.label == L`; `mtime(L) > mtime(O)` | `SlotView.newest.label == L`; meta time L > O; FILETIME L > O |
-| records | - | our records: state Modified/Created (Deleted for evict), FILETIME as planned (integer); every other record raw-identical to the pre-image |
+| records | - | our records: state Modified/Created, FILETIME as planned (integer); every other record raw-identical to the pre-image |
 | mirror | - | when xgs exists: `xgs/<id>/data` and `meta` byte-equal to the wgs blobs |
-| deletes | deleted names absent | identifiers flagged Deleted; slot empty in `scan_any` |
-| containment | every other `*.hg` and the vdf unchanged (name, size, `mtime_ns` vs the snapshot listing); no `.tmp_<op4>_*` left | header identity unchanged (process id, account id) |
+| containment | every other `*.hg` and the vdf unchanged (name, size, `mtime_ns` vs the snapshot manifest); no `.tmp_<op4>_*` left; no file of the folder is missing | header identity unchanged (process id, account id); no record removed |
 
 #### 2.9.2 Rollback (automatic, slot-scoped, exact)
 
@@ -968,7 +1034,7 @@ Classification of an open op, per target, by comparing the live files with the j
 | `writing` | all `pre` | automatic: sweep the op's temp / unreferenced new files; `abandoned(not_started)` |
 | `writing` | all `post` (crash after the last write) | recommended **forward**: validate, finalize, record, `done` |
 | `writing` | mix of `pre` and `post` only (torn) | choice **forward** (recommended when the source and the preserved copies open and re-verify) or **back** |
-| `writing` | any `other` (the game, an older app version or another tool wrote the slot since) | **leave** only: preserve the slot's current content if not durable, `abandoned(superseded)`; the evicted save is in the vault; explain |
+| `writing` | any `other` (the game or another tool wrote the slot since) | **leave** only: preserve the slot's current content if not durable, `abandoned(superseded)`; the evicted save is in the vault; explain |
 | `validated` | (writes verified) | automatic forward: finalize + record (both idempotent by `op_id`), `done` |
 | `failed` | any | choices **back** (retry rollback), **panic restore** of the folder from the op's snapshot (4.3), **leave** |
 | any, other `machine` | - | `other_machine`: "This move was started on another computer"; no action |
@@ -998,20 +1064,20 @@ and what it evicted (`pre`):
 | exactly the written pair (same vids per position) | `same` | Place the evicted pair back (kind `undo`); the written pair came from the vault, so preserve copies nothing |
 | same pid as the written pair, play time >= (D1 binding: a descendant) | `progressed` | Place the evicted pair back; preserve first stores the newer versions (D1 records them as children of V); confirmation `PLAYED_SINCE`: "You played 1h05m in Steam slot 7 since the move. That progress stays in the vault as the newest version of 'Main Save'." |
 | exactly the evicted pair (a cloud revert already undid it) | `already` | blocked `ALREADY_UNDONE`: "Steam slot 7 already holds 'Polestar' again." |
-| empty | `empty` | PlaceIntoEmpty the evicted pair |
+| empty (emptied outside the app since) | `empty` | PlaceIntoEmpty the evicted pair |
 | anything else (another pid, or the same pid with less play) | `stale` | blocked `UNDO_STALE`: "Steam slot 7 has changed since (it now holds 'X'). Use Move to live to put 'Polestar' where you want it." The UI may open the picker with the evicted pair as the source. |
 
 Per op kind:
 
-- **place / restore_older / promote**: as the table. The evicted pair goes back with its
-  preserved metas and positions (`load` = the position that was loading before), so its in-game
-  date and loading member are exactly as before; only disk times follow 2.5 (now under Steam
-  Cloud and on Xbox).
-- **place_into_empty**: the inverse is an Evict of T after preserving its current content;
-  under Steam Cloud the F8 policy decides (3.4). A slot that held one member before is restored
-  with that member in both positions (2.5, I5) - never a mixed slot, never a deletion.
-- **evict**: PlaceIntoEmpty of the evicted pair when T is still empty; when T was refilled since,
-  a normal Place with eviction and the `TWIN_LIVE` / `PLAY_TIME_AHEAD` checks as usual.
+- **place / restore_older / promote**: as the table. The evicted pair goes back from its preserve
+  entry in its positions, with the position that was loading before as `load`, and like every
+  pair write it is stamped now (2.5, F5b); its original meta times stay in the preserve entry and
+  the oplog. A slot that held one member before gets that member in both positions (2.5, I5) -
+  never a mixed slot, never a deletion.
+- **place_into_empty**: the inverse would empty T, so the undo is blocked: `UNDO_WOULD_EMPTY`
+  (block) "Undoing this would empty Steam slot 1. The app never empties a slot; see the steps to
+  do it yourself." The UI then shows `empty_slot_guide(T)` (2.4.2), which offers Keep a copy
+  (2.4.1) first when the slot's current content is not durable.
 - **swap**: swap back when both slots are `same` or `progressed` (progress travels with its
   save); any `stale` slot blocks the whole undo with the per-slot explanation.
 - **undo**: the inverse of an undo is the original op again (redo), same rules.
@@ -1023,14 +1089,14 @@ Per op kind:
 ### 2.12 Post-launch verification (C25)
 
 A placed save can be undone outside the app: Steam Cloud offers its copy at the next launch and
-the player may pick it (R8 R1); Xbox sync or a console session can do the same (R8 R2); a
-deleted Steam file comes back (R8 E1). Every `done` op therefore enters verification per target.
+the player may pick it (R8 R1); Xbox sync or a console session can do the same (R8 R2). Every
+`done` op therefore enters verification per target.
 
 **Evidence D5 uses** (all read-only):
 
 | Source | Gives |
 |---|---|
-| D1 `LineageRecorder.op_outcome(op_id, target)` and `JournalEvent`s from each `observe` | `reverted` (the slot holds the evicted pair again), `superseded` (a later op), `changed` / `replaced` (another pid), `resurrected` / `deleted` events, and children of the placed pair (the game saved on top of it) |
+| D1 `LineageRecorder.op_outcome(op_id, target)` and `JournalEvent`s from each `observe` | `confirmed` (a later observation shows a recorded child of the placed pair: the game saved on top of it), `reverted` (the slot holds the evicted pair again), `superseded` (a later op), `unexpected` with the `deleted` / `replaced` events (emptied outside the app, another pid); an unchanged placed pair stays `pending` in D1 |
 | Xbox record sync state of our identifiers | Modified/Created after the write -> Synced later = uploaded |
 | Steam `remotecache.vdf` (optional reader, 2.12.2) | our files' SHA-1 present and synced = uploaded |
 | game sessions seen by this app | `safety.is_game_running()` results recorded by each GUI refresh / CLI call into `user_cache_dir/vaults/<vault_id>/game-seen.json` (`last_seen_running` UTC) |
@@ -1042,9 +1108,8 @@ deleted Steam file comes back (R8 E1). Every `done` op therefore enters verifica
 | `pending` | no evidence yet | slot badge "Waiting for the next game launch to confirm" |
 | `confirmed` | a child of the placed pair is live (detail `played`); or the placed pair is still live after a game session seen after the op (`unchanged`); or uploaded (Xbox Synced, Steam manifest) (`uploaded`) | none; tick in the op history |
 | `reverted` | the slot holds the evicted pair, or another version of the evicted pid that is not a descendant of the placed pair | alert: "Steam Cloud put the old save back in Steam slot 7. 'Main Save' is safe in the vault." Actions: Put it back (a new `plan_place` of the placed pair), Dismiss. Hint: "When Steam asks at launch, choose the copy on this PC." |
-| `resurrected` | after an evict (or the deleted side of a move): files of the deleted pair are back | alert with the F8 steps (3.4); actions: Show steps, Dismiss (Clear again only under F8c) |
 | `deleted` | the slot is empty while the placed pair was expected | alert: "Steam slot 7 is empty again. 'Main Save' is safe in the vault." Action: Put it back |
-| `replaced` | another pid (the game started a new save there, another tool, an old app version) | info in the history |
+| `replaced` | another pid (the game started a new save there, or another tool) | info in the history |
 | `superseded` | a later op on the target | none |
 | `expired` | still `pending` after 30 days | none |
 
@@ -1054,11 +1119,12 @@ class VerifyItem:
     op_id: str
     target: LiveTarget
     label: str                           # "Steam slot 7"
-    state: Literal["pending", "confirmed", "reverted", "resurrected", "deleted",
-                   "replaced", "superseded", "expired"]
+    state: Literal["pending", "confirmed", "reverted", "deleted", "replaced", "superseded",
+                   "expired"]
     detail: str                          # played | unchanged | uploaded | ...
     text: str
-    actions: tuple[Literal["place_again", "clear_again", "show_steps", "dismiss"], ...]
+    actions: tuple[Literal["place_again", "show_steps", "dismiss"], ...]   # show_steps: the
+                                         # "choose the copy on this PC" hint of a revert
     since: str                           # local ISO time of the op
 
 def update_verification(ctx, events) -> list[VerifyItem]:
@@ -1070,22 +1136,21 @@ def update_verification(ctx, events) -> list[VerifyItem]:
 
 Dismissing an alert appends `verify {state, dismissed: true}`; the history keeps it. "Put it
 back" never reuses the old op: it is a new Place from the vault (the placed versions are durable:
-they came from the vault, and D2 keeps placed/evicted versions protected).
+they came from the vault, and the store keeps everything).
 
-#### 2.12.1 Request to D1 on `op_outcome`
+#### 2.12.1 `confirmed`: D1 and D5 agree
 
-D5's own `observe(src="verify")` right after the write holds the placed pair, so D1's
-"confirmed = the next observation holds the placed pair" would confirm every op immediately.
-D5 therefore treats D1's `confirmed` as `confirmed` only when the observation shows a child of
-the placed pair; an unchanged placed pair stays `pending` until a game session or an upload is
-seen (rule above). Listed in section 8.
+D5's own `observe(src="verify")` right after the write holds the placed pair. D1's `op_outcome`
+therefore reports `confirmed` only when a later observation shows a recorded child of the placed
+pair; an unchanged placed pair stays `pending` in D1. D5 adds the evidence D1 does not have: a
+game session seen after the op (`unchanged`) or an upload (`uploaded`).
 
 #### 2.12.2 Steam `remotecache.vdf` reader (optional, phase 2b)
 
 `steamcloud.read_manifest(steam_root: Path, accountid32: int) -> dict[str, ManifestEntry]`
 parses `<steam_root>/userdata/<accountid32>/275850/remotecache.vdf` (format R8 E1: per file
-`size`, `localtime`, `time`, `remotetime`, `sha` SHA-1, `syncstate`). Stdlib only (D6); the
-Steam root comes from `platform.steam_roots(host)` (D7); `accountid32 = steamid64 -
+`size`, `localtime`, `time`, `remotetime`, `sha` SHA-1, `syncstate`). Stdlib only (DESIGN.md D6);
+the Steam root comes from `platform.steam_roots(host)` (DESIGN.md D7); `accountid32 = steamid64 -
 76561197960265728` from the folder name. Used only for `uploaded` evidence and a planner
 `PENDING_UPLOAD` hint on Steam; never displayed (the path holds the account id). Absent or
 unparsable -> no evidence, never an error.
@@ -1095,14 +1160,13 @@ unparsable -> no evidence, never an error.
 #### 2.13.1 The oplog line
 
 One line per op that reached `done`, `rolled_back` or `failed` (none for `abandoned`: nothing
-changed), appended to `<vault>/oplog.jsonl` as **one** `write` + `flush` + `fsync` (VERIFIED
-9.2 C: a torn last line makes `read_oplog` raise in every released version, so a partial line
-must never be left). The first six keys are today's (`operations.py:958-966`) so every released
-version reads it; the rest are new (additive keys are ignored by old readers, R1 E4; VERIFIED
-9.2 A, D).
+changed), plus one per `keep`, appended to `<vault>/oplog.jsonl` as **one** `write` + `flush` +
+`fsync` (VERIFIED 9.2 C: a torn last line makes today's `read_oplog` raise, so a partial line must
+never be left). The first six keys are today's (`operations.py:958-966`), so today's readers
+(classic history, CLI) read it unchanged; the rest are additive (R1 E4).
 
 ```json
-{"ts": "2026-10-16T13:15:04", "op": "place", "entry_id": "keep-steam-20261016-131503",
+{"ts": "2026-10-16T13:15:04", "op": "place", "entry_id": "preserve-steam-20261016-131503",
  "snapshot_id": "snapshot-steam-20261016-131503",
  "detail": "place 'Main Save' into steam slot 7; 'Polestar' kept in the vault",
  "changed": ["save14.hg", "mf_save14.hg", "save13.hg", "mf_save13.hg"],
@@ -1111,30 +1175,31 @@ version reads it; the rest are new (additive keys are ignored by old readers, R1
  "targets": [{"platform": "steam", "account_key": "st_<steamid64>", "instance": "", "slot": 7,
    "cloud_mode": "steam-cloud", "snapshot_id": "snapshot-steam-20261016-131503",
    "written": [{"position": "A", "vid": "<64 hex>", "pid": "<16 hex>", "play_time": 1900000,
-                "meta_ts": 1791500000, "disk_time": 1792500904.0, "ordinal": 14,
-                "meta_plain_sha256": "<64 hex>", "meta_disk_sha256": "<64 hex>", "copy_of": null,
-                "origin": {"kind": "entry", "ref": "full-steam-20261005-174129", "slot": 9, "member": "A"}},
+                "meta_ts": 1792500904, "source_meta_ts": 1791500000, "disk_time": 1792500904.0,
+                "ordinal": 14, "meta_plain_sha256": "<64 hex>", "meta_disk_sha256": "<64 hex>",
+                "copy_of": null,
+                "origin": {"kind": "store", "ref": "full-steam-20261005-174129", "slot": 9, "member": "A"}},
                {"position": "B", "...": "..."}],
    "evicted": [{"position": "A", "vid": "<64 hex>", "pid": "<16 hex>", "play_time": 100000,
-                "meta_ts": 1791900000, "preserved_at": {"kind": "entry", "ref": "keep-steam-20261016-131503", "slot": 7, "member": "A"},
-                "already_durable": false}, {"position": "B", "...": "..."}],
-   "deleted": []}],
+                "meta_ts": 1791900000, "preserved_at": {"kind": "store", "ref": "preserve-steam-20261016-131503", "slot": 7, "member": "A"},
+                "already_durable": false}, {"position": "B", "...": "..."}]}],
  "confirmed": ["PLAY_TIME_AHEAD"], "note": "", "error": null}
 ```
 
 | Key | Rule |
 |---|---|
 | `ts` | local ISO seconds, as today |
-| `op` | the D5 kind (`place`, `place_into_empty`, `restore_older`, `swap`, `evict`, `promote`, `undo`) |
-| `entry_id` | the `keep-` entry `preserve` created (first target), else null; informational |
-| `snapshot_id` | **always a whole-folder snapshot** of the first target's folder (4.2); never an extract or a slot-scoped entry |
+| `op` | the D5 kind (`place`, `place_into_empty`, `restore_older`, `swap`, `promote`, `undo`, `panic_restore`, `keep`) |
+| `entry_id` | the `preserve-` store entry of the first target, or the new entry of a `keep`; else null |
+| `snapshot_id` | the store snapshot entry (kind `snapshot`, whole folder) of the first target's folder; each target lists its own; null for `keep` |
 | `detail` | ASCII; save names allowed, never a folder name, path or account id (today's lines embed folder names that contain account ids, R1 E4) |
-| `changed` | file names (Steam) or identifiers (Xbox) written; `-` prefix for deletions; as today |
+| `changed` | file names (Steam) or identifiers (Xbox) written, as today (never a deletion) |
 | `targets[].account_key` | internal key; redacted on any display or export |
 | `status` | `done`, `rolled_back`, `failed`; `error` holds the message for the latter two |
 
 Field set = R7 2.8 items 1-5 and R8 4.6 (op id, UTC, app version, target, per written member
-vid/pid/meta hashes/meta time/disk time/ordinal/origin as a version reference, per evicted member
+vid/pid/meta hashes/meta time and the source's meta time/disk time/ordinal/origin as a version
+reference, per evicted member
 hashes/id/where preserved/already durable, snapshot, cloud mode, confirmed warnings, note,
 `undo_of`). R7 item 6 (the later "confirmed" mark) lives in `ops.jsonl` `verify` events and D1's
 journal, not in the append-only oplog.
@@ -1142,11 +1207,12 @@ journal, not in the append-only oplog.
 #### 2.13.2 Lineage
 
 After validation, per target: `ctx.lineage.record_op(OpLineage(op_id, kind, at, target,
-placed=PairKey(post A vid, post B vid) or (None, None) for evict, evicted=PairKey(pre) or None,
+placed=PairKey(post A vid, post B vid), evicted=PairKey(pre) or None,
 source=<Location of the placed bytes>, preserved={vid: Location}, status, undo_of, note,
 app))` - D1 2.6.6; idempotent on `(op_id, target)`, so a Swap makes two calls and recovery may
 repeat them. A `rolled_back` op is recorded with `status="rolled_back"` (D1 keeps the previous
-binding). Order: oplog line, then `record_op`, then the `done` journal event; on restart a
+binding). A panic restore records one call per written slot with kind `panic_restore` (D1 binds
+the slot but marks no version placed or evicted); Keep a copy records none. Order: oplog line, then `record_op`, then the `done` journal event; on restart a
 `validated` op re-runs the missing steps (the oplog writer first scans the file tail for the
 `op_id`).
 
@@ -1179,8 +1245,10 @@ exceptions subclass `operations.OperationError`, so today's front-end handlers
 | live state or source changed since the plan | `stale` + `replan` | none | "Steam slot 7 changed since you opened this. Please check again." |
 | game running (True) at either check | `refused`, code `GAME_RUNNING` | none | "No Man's Sky is running. Close it first." |
 | open op on the account | `refused`, `RECOVERY_PENDING` | none | "An earlier move was interrupted. Resolve it first." |
-| another live op running (lock timeout) | `refused`, `BUSY` | none | "Another operation is still running." |
-| vault missing / full / preserve failed | `refused`, `PRESERVE_FAILED:<code>` | none | "The current save could not be copied to the vault (vault full). Nothing was changed." |
+| another live write running (lock timeout) | `refused`, `BUSY` | none | "Another operation is still running. Try again in a moment." |
+| vault not upgraded to the version store | `refused`, `VAULT_UPGRADE_NEEDED` | none | "Upgrade the vault first: Vault > Upgrade. Nothing was changed." |
+| vault missing / full | `refused`, `VAULT_UNAVAILABLE` / `VAULT_SPACE` | none | "The vault is not reachable. Nothing was changed." / "Not enough free disk space. Nothing was changed." |
+| preserve failed otherwise | `refused`, `PRESERVE_FAILED:<class>` | none | "The current save could not be copied to the vault (<reason>). Nothing was changed." |
 | snapshot failed | `refused`, `SNAPSHOT_FAILED` | none | "The safety snapshot failed. Nothing was changed." |
 | write or validation failed, rollback verified | `rolled_back` | none (exact pre-image) | "Nothing changed in Steam slot 7. The move failed: <reason>." |
 | rollback failed | `failed` | unknown, journal open | "The move failed and Steam slot 7 could not be put back automatically. Use Recover (recommended) or restore the folder from the safety snapshot." |
@@ -1194,17 +1262,17 @@ rule: surface, never swallow). Logs never contain account ids or full paths (red
 | # | Invariant | Enforced by | Tested by (5) |
 |---|---|---|---|
 | I1 | No live write unless the game check is False (or None and confirmed) both at execute start and immediately before the first live write; organizer ops have no override | `game_problem` at start, the second probe after `writing` | T-G1..G3 |
-| I2 | Every member that will be replaced or deleted is durable and hash-verified in the vault before the first live write | `locator.preserve` (D2 2.7), `Abandon` on any error | T-P1..P4 |
+| I2 | Every member that will be replaced is durable and hash-verified in the vault before the first live write | `StoreLocator.preserve` (D3 2.8), `Abandon` on any error | T-P1..P4 |
 | I3 | Data bytes are written verbatim: `sha256 == vid` on the staged bytes and after the write | writers + validation | T-W1, T-V1 |
 | I4 | Only metas change, and only by re-key, the 2.5 timestamp rules, or F6 conversion | `pairmeta`, `convert` (pure, property-tested) | T-M1..M8 |
 | I5 | Filling a slot always writes both positions; no op leaves a mixed slot | `pairmeta` (copy of V), planner | T-M3, T-F2 |
 | I6 | The member that must load is newest by meta time, Steam mtime and Xbox FILETIME | `pairmeta` + validation `order` row | T-M2, T-V2 |
 | I7 | Never touched: accountdata (both platforms), `steam_autocloud.vdf`, `cache/`, other slots, other accounts, other `containers.index` records, files the op did not create | writers only take the slot's names / identifiers; validation `containment` row | T-V3, T-X3 |
 | I8 | Every write is staged, then swapped, then validated; a failure rolls the slot back exactly | writers 2.6, 2.9.2 | T-C1..C14 |
-| I9 | No deletion under Steam Cloud except (a) as F8 allows, (b) a rollback deleting a file this op created | writers + F8 policy | T-F8a..c |
-| I10 | One live op at a time; an open op blocks new live ops on its account | live-op lock, `RECOVERY_PENDING` | T-R5, T-L1 |
+| I9 | No D5 path deletes a live save file or leaves a slot empty, on any platform; the only deletions are a rollback removing a file the same op created and `finalize_pair` removing the replaced blobs of the op's own Xbox records | writers have no delete input; no Evict; Swap with an empty side and undo of a fill are blocked | T-NODEL |
+| I10 | One live write at a time, organizer and classic alike (phase 1 on); an open op blocks new live ops on its account | live-op lock, `RECOVERY_PENDING` | T-R5, T-L1, T-L2 |
 | I11 | Write-ahead: the `writing` event (with every file the op may create) is fsynced before the first live write | `execute` order, `prepare` before `apply` | T-C1..C14 |
-| I12 | The oplog `snapshot_id` of every v2 line names a whole-folder snapshot | `oplog2` writer | T-O1..O3 |
+| I12 | Every live op takes a whole-folder store snapshot of each target folder before the first live write; the oplog `snapshot_id` names it | `execute` step 4, `oplog2` writer | T-O1, T-O3 |
 | I13 | Recovery never writes a slot whose content matches neither the pre- nor the post-image | recovery classification | T-R3 |
 | I14 | UI text is ASCII and redacted; no account id, folder name or path in messages, logs or the oplog `detail` | `Warning.text` builder, `tests/test_ui_text.py` | T-U1 |
 
@@ -1212,157 +1280,130 @@ rule: surface, never swallow). Logs never contain account ids or full paths (red
 
 **Locks.**
 
-- **Live-op lock** `<vault>/organizer/.liveop.lock` (`safety.exclusive_lock`, the OS lock D1
-  adds), held for a whole `execute` or recovery action, timeout 10 s -> `BUSY`. It serialises
-  two app instances (and two machines sharing one vault).
-- **Store lock** (D1): only per append to `ops.jsonl`; `preserve` and `record_op` take it
-  themselves (D1's lock is not re-entrant, so D5 never holds it across those calls).
+- **Live-op lock** `<vault>/organizer/.liveop.lock` (D5's; an in-process `threading.Lock`, then
+  `safety.exclusive_lock`), held for a whole live `execute`, a Keep a copy and a recovery action.
+  Timeout 10 s -> `BUSY` with a retry notice; nothing else becomes read-only. It serialises the
+  GUI and the CLI, two app instances, and two machines sharing one vault.
+- **Classic writes (phases 0-1).** From phase 1 today's live writers (`repopulate_slot`,
+  `restore_full`, `clear_slot`, `promote_member`, `undo_last`) run inside
+  `liveops.liveop_lock(ctx)` too: D1's phase-1 recording hook takes it around each call (D1
+  2.6.7). So two front ends or two instances can never write one live folder at once; a timeout
+  refuses the classic op with "Another operation is still running." (an `OperationError`).
+  Phase 2 re-routes these ops through `execute` (4.1).
+- **Store lock** (D1, `<vault>/organizer/.lock`): not re-entrant (a nested transaction on one
+  thread is a bug), held for milliseconds per transaction: each `ops.jsonl` append, `record_op`,
+  `observe`. D3 takes it only for each manifest commit (preserve, snapshot, keep). A
+  `LockTimeout` fails that one transaction: before the `writing` event it is an `Abandon` with
+  code `BUSY`; after a verified write (recording) the op ends `done` with `RECORDING_PENDING` and
+  recovery finishes the recording at the next start. The organizer never turns read-only for the
+  session because of one timeout.
+- **Order:** the live-op lock first, then the store lock, never the reverse. No code holding the
+  store lock calls into D5, and D3 never calls D1 while holding it, so there is no deadlock.
 - **Busy targets.** `liveops.busy_targets(ctx) -> frozenset[LiveTarget]` = targets of open ops.
-  D1's `observe` must skip them (record `skipped (target, "operation in progress")`), so a GUI
-  refresh during a write never journals a torn slot as a game event (request, section 8).
+  D1's `observe(scan, *, src, skip)` takes the skip set: every refresh passes `busy_targets()`,
+  so a GUI refresh during a write never journals a torn slot as a game event; D5's post-write
+  `observe(src="verify")` passes the busy targets minus its own op's targets, so the post-write
+  state is journaled at the op (V-12).
 - **GUI.** `execute` runs on a worker thread; the Tk thread never reads save files (C31); the
   window cannot close while it runs; refresh timers pause.
-- **Older app versions** take no lock. The fingerprint (stale check), the preserve-time
-  `expected_vid` check (D2) and recovery's `superseded` class contain what they can do.
 
 **Performance** (INFERRED from measured rates: R1 2h scans 18-43 ms per live folder, R7 2.9
-hashing ~1.7 GB/s warm, D2 2.7 preserve 30-80 ms per Steam slot, R2 2.5 `tasklist` 175 ms):
+hashing ~1.7 GB/s warm, D3 2.8 preserve 10-30 ms of I/O plus fsyncs and 0.17 s for a whole Steam
+snapshot (VERIFIED by D3), R2 2.5 `tasklist` 175 ms):
 
 | Step | Typical (SSD, warm) | Notes |
 |---|---|---|
 | `eviction_picker` | < 50 ms + game probe 175 ms | from D1's live board; probe off the Tk thread |
 | `plan_place` | 30-80 ms | metas only; source data not read |
 | source open + verify | 10-60 ms | reads 2-28 MB, sha256, chunk-header walk |
-| preserve | 0-80 ms | 0 when already durable |
-| whole-folder snapshot | 0.2-0.8 s | Steam ~54 MB `*.hg`, Xbox ~68 MB (R8 R7) |
+| preserve | 10-40 ms | one ~3 KB manifest even when the objects are already stored |
+| whole-folder store snapshot | 0.1-0.3 s | hashes ~54-68 MB (R8 R7); writes only objects the store lacks |
 | stage + swap / apply | 50-200 ms | 4 files or 2 blobs pairs, fsync each |
 | validate + D1 observe | 60-150 ms | re-hash written members, rescan the folder |
 | journal + oplog appends | 10-40 ms | 5-6 fsynced appends |
-| **total** | **~1-1.5 s** (HDD 3-6 s) | progress shown at each step |
+| **total** | **~0.7-1.1 s** incl. two game probes (HDD 2-5 s) | progress shown at each step |
 | `pending_recovery` at start | < 50 ms | folds `ops.jsonl` (3-6 KB per op) |
 
-Disk: preserve adds at most one slot pair per op (0 when durable); the snapshot is the existing
-per-op cost (~54-68 MB) that D2's retention (10 per source, rescue before delete) bounds.
+Disk per op: the preserve entry adds the evicted members only when the store lacks them (0 when
+they are stored) plus its manifest; the snapshot adds only objects the store lacks (usually none
+after preserve) plus a manifest - instead of today's 54-68 MB folder copy per op.
 
-## 3. Options (owner forks)
+## 3. Owner decisions
 
-Each fork is one `Policies` field (2.2). Only the chosen option is implemented; the others are
-specified here so the choice can be made or changed without another design round.
+All five forks are decided (01-consolidation 4a); only the decided behaviour is implemented.
 
-### 3.1 F4 - member policy for Place
+### 3.1 F4 - member policy: (a) the version with its own partner
 
-| | (a) `pair` - V with its partner (recommended) | (b) `twice` - V in both positions |
-|---|---|---|
-| Writes | the captured pair in its captured positions; a copy of V in the other position when the source has one member or members of two pids | V in its position, a copy of V (meta time V - 1 s) in the other |
-| Meta edits | none in the common case (V is the newer member); the partner's time is lowered to V - 1 s only when the user picked the older member (or Promote) | always one (the copy's time); the partner is never written live |
-| In-game load menu | both entries are real: the auto-save and the restore point with their own dates and places | two entries with the same progress |
-| Undo / rollback | restores exactly what was there | same |
-| Lineage | the pair stays a pair in the history | the live slot holds one version twice |
-| Cloud | overwrites only | overwrites only |
-| Risk | none known; R7 2.4: the newer member has >= play time in 581/581 pairs, so the default `load` is the most progressed | the player loses the restore point as an in-game fallback (it stays in the vault) |
+The captured pair goes back in its captured positions with V loading (2.5); a source with one
+member, or with members of two pids, gets a copy of V in the other position. Both in-game load
+entries are real (auto-save and restore point), and no slot is ever mixed (I5).
 
-Not designed: (c) "V + delete the other member" (libNOM.io's Copy): under Steam Cloud the
-deleted member comes back and the slot becomes mixed (R8 Q1c, A4).
+- Rejected (b) V in both positions: the player loses the restore point as an in-game fallback.
+- Rejected (c) V + delete the other member (libNOM.io's Copy): under Steam Cloud the deleted
+  member comes back and the slot becomes mixed (R8 Q1c, A4).
 
-**Recommendation: (a).** It is the most faithful (the game gets back exactly the pair it wrote),
-needs the fewest meta edits, and still never creates a mixed slot.
+### 3.2 F5 - meta timestamp: (b) stamp "now"
 
-### 3.2 F5 - meta timestamp on Place
+Every pair write stamps V = now and the other position = now - 1, in the meta and on disk, in
+every cloud mode (2.5); undo too (2.11). The load screen shows the placed save as the newest; its
+original in-game date stays in the vault (the source entry's meta, which D1's op record points
+at; `source_meta_ts` in the oplog line). The live copy is a meta-only variant of the version
+(same `vid`). The panic restore is exempt: it restores a recorded folder state byte-exact (4.3).
 
-| | (a) `keep` - keep V's original time (recommended) | (b) `now` - re-stamp to now |
-|---|---|---|
-| Meta time written | V's own; partner its own (or V - 1 s, 2.5) | V = now, other = now - 1 s |
-| Disk time (Steam Cloud on, Xbox) | now / now - 1 s | now / now - 1 s |
-| Disk time (Steam Cloud off) | V's meta time (the save keeps its age) | now / now - 1 s |
-| Load screen | shows the save's real date: tells the owner which version is live | shows "just now"; the real date survives only in the vault |
-| History | placed copy = the vault version exactly (same meta) | the live copy has a new meta: a meta-only variant of the version |
-| Hello Games cross-save on (owner: off) | conflict prompt possible (size/time mismatch) | same |
-| Unknowns | T6 (meta time vs mtime disagreeing) does not matter: both orders agree inside the slot | none |
+- Rejected (a) keep V's original time: honest load-screen date, but not the owner's choice.
 
-**Recommendation: (a).** Honest dates, no meta change at all for the common Place, and the
-Steam Cloud rule (stamp the write time on disk) is met by the file times, not the meta.
+### 3.3 F7 - another account's save: (b) allow, with one warning
 
-### 3.3 F7 - placing another account's save (same platform)
+Whenever the capture account (2.1) is known and differs from the target account, the plan
+carries `OTHER_ACCOUNT` (confirm): "This save comes from another account. Its bases may not be
+editable until the game takes them over when you play it here." No ownership id is read, stored
+or compared (owner Q6); an unknown capture account gives no warning. In game, the game appends
+the new identity and re-owns bases and discoveries on first play (VERIFIED for cross-save
+deliveries, R8 D5; not always complete, `..A74F`). Only the slot's files or records are written,
+never `steam_autocloud.vdf` or another account's `containers.index` (I7).
 
-Definitions:
+- Rejected (a) same person only: needs hashed ownership ids in the index.
+- Rejected (c) block: stops moves between the owner's own accounts.
 
-- **Owner identities** = the platform ids of every configured live account (Steam: the
-  steamid64 in `st_<steamid64>`; Xbox: the decimal of the account folder's 16-hex prefix, as
-  libNOM.io derives it, R8 D2) plus ids the owner adds in Accounts ("this is also me").
-- **Save identities** = `CommonStateData.UsedDiscoveryOwnersV2` UIDs (R8 D5): every platform
-  identity that has played the save. Needs the D4 fact `save.owners` (request, section 8);
-  stored in the per-machine index only, never displayed.
-- **Cross-account** = the target account differs from the account the source pair was captured
-  from (the capture's live account, or the vault entry's `source` folder name).
+### 3.4 F8 - the app only replaces
 
-| | (a) `same_person` (recommended) | (b) `warn` | (c) `block` |
-|---|---|---|---|
-| Rule | allowed when every save identity is an owner identity; when D4 facts are not ready, allowed only if the capture account is one of the owner's configured accounts | always allowed | never across accounts |
-| Plan | `OTHER_ACCOUNT` (confirm): "Bases may stay owned by the other account until you play it here." | `OTHER_ACCOUNT` or `OTHER_PERSON` (confirm) | `OTHER_ACCOUNT` (block) |
-| Someone else's save | `OTHER_PERSON` (block) | allowed: "Bases and discoveries stay owned by the original player; editing them may not work." | blocked |
-| What happens in game | the game appends the new identity and re-owns bases/discoveries on first play (VERIFIED for cross-save deliveries, R8 D5); not always complete (`..A74F`) | same; for another person UNTESTED (R8 D5 item 2) | - |
-| Files | only the slot's files/records; never `steam_autocloud.vdf`, never another account's `containers.index` (I7) | same | - |
+No operation deletes a live save file or leaves a slot empty (I9): there is no Evict; a Swap
+with an empty side is blocked (`SWAP_EMPTY_SIDE`); the undo of a fill into an empty slot is
+blocked (`UNDO_WOULD_EMPTY`); the panic restore leaves slots that are absent from the snapshot
+alone and lists them (4.3); the classic Clear becomes the manual steps (4.1). Emptying a slot is
+the owner's manual procedure, shown by `empty_slot_guide` (2.4.2) together with the warning that
+Steam Cloud or Xbox sync may refill an empty slot (`EMPTY_SLOT_MAY_REFILL`). Reason: under Steam
+Cloud a file deleted while the game is closed comes back at the next launch (VERIFIED twice in
+the owner's own oplog, R8 E1; R7 2.6 row 7).
 
-The owner's PC has a second, empty `st_` folder (R8 A1). If it is a configured account, (a)
-blocks placing a save there unless that steamid is among the save's identities - which protects
-a family member's account from receiving the owner's saves by mistake.
+- Rejected: delete after the owner confirms that Steam Cloud is off - the app cannot check it.
+- Rejected: delete and detect the resurrection - the app would pretend a delete worked until the
+  next launch proves otherwise.
 
-**Recommendation: (a)**, with the Accounts "this is also me" escape for a second account the
-game never saw.
+### 3.5 F6 - Steam <-> Xbox transfer: (a), last phase, after the owner's runs T1/T2
 
-### 3.4 F8 - deletions under Steam Cloud
+Verbatim data (same `0xFEEDA1E5` stream; PLATFORM token "Win|Final" on both PC builds, R8 D5)
+plus a field-by-field meta conversion (3.5.2); the game re-owns the save on first play (VERIFIED
+for cross-save deliveries; UNTESTED for a copy that did not pass Hello Games' servers, hence the
+runs). Until a direction passes its run, `CROSS_PLATFORM_GATED` stays and the picker says "Use
+Hello Games cross-save in the game (up to 5 saves)." Undo of a transfer is a transfer back (same
+gates); everything else is an ordinary Place.
 
-Deletions arise from: **Evict**, the **undo of a PlaceIntoEmpty**, and the vacated side of a
-**move** (Swap with one empty slot). On Xbox a deletion is a `Deleted` record that propagates
-(R8 E2) and is allowed under every option; on Steam with Cloud off it is allowed under every
-option. The fork is only about Steam folders that hold `steam_autocloud.vdf`, where a file
-deleted while the game is closed comes back at the next launch (VERIFIED twice by the owner's
-own oplog, R8 E1; R7 2.6 row 7).
+- Rejected (b) libNOM.io-style ownership rewrite: re-serialises the JSON (breaks "never
+  recompress") and needs upkeep per game version (R8 Q4b).
+- Rejected (c) never: the owner wants it after the runs.
 
-| | (a) `overwrite_only` | (b) `refuse_guided` (recommended) | (c) `delete_detect` |
-|---|---|---|---|
-| Move to live (owner's main flow) | always overwrites: the picker evicts into the vault; no deletion needed | same | same |
-| Evict on Steam Cloud | not offered (`STEAM_CLOUD_DELETE` block): "Free this slot by moving another save into it." | blocked by default with the steps; second button "Steam Cloud is off for No Man's Sky - clear now" (confirmation `STEAM_CLOUD_OFF_CONFIRMED`) runs the Evict | runs; the steps are shown as information |
-| Undo of a fill into an empty slot | offers "Replace with another save" or "Leave it" | as Evict | as Evict |
-| Move (one side empty) | becomes a copy (`TWIN_LIVE` confirm) or is blocked | as Evict for the vacated side | deletes |
-| After a delete | - | verification watches for `resurrected` (2.12) | same, plus "Clear again" |
-| Honesty | never pretends | the owner does the Steam side by hand, the app does the rest and checks | the app pretends a delete worked until the next launch proves otherwise |
-
-The steps (today's text, `operations.py:629-634`): in Steam, No Man's Sky > Properties >
-General, turn off "Keep game saves in the Steam Cloud"; clear the slot; launch and quit the game
-once; turn Cloud back on and keep the local copy if Steam asks. The app cannot check whether
-Cloud is off (`steam_autocloud.vdf` stays), hence the explicit confirmation in (b).
-
-**Recommendation: (b)** (= the parent's lean a + b): the main flow never deletes, and the rare
-explicit "free a slot" is honest about what Steam will do.
-
-### 3.5 F6 - Steam <-> Xbox transfer (phase 5)
-
-| | (a) verbatim data + meta conversion, gated by owner runs (recommended, later phase) | (b) libNOM.io-style ownership rewrite | (c) never |
-|---|---|---|---|
-| Data | verbatim (same `0xFEEDA1E5` stream; PLATFORM token "Win\|Final" on both PC builds, R8 D5) | re-serialised JSON, owners rewritten | - |
-| Meta | converted field by field (3.5.2) | rebuilt | - |
-| Ownership | the game re-owns on first play (VERIFIED for cross-save deliveries; UNTESTED for a non-server copy) | rewritten by the app | Hello Games cross-save does it |
-| Project rule "never recompress" | kept | broken | kept |
-| Upkeep | none per game version beyond meta formats | per game version ("Update if new objects with an ownership have been added", R8 Q4b) | none |
-| Status in D5 | specified below | not designed | `CROSS_PLATFORM_GATED` stays; the picker says "Use Hello Games cross-save in the game (up to 5 saves)." |
-
-**Recommendation: (a), as phase 5, after T1 and T2 pass.** Until then the gate stays closed.
-
-#### 3.5.1 Gates (every one must pass; each failure is a `block` warning)
+#### 3.5.1 Gates (each failure blocks unless the row says warn or confirm)
 
 | Gate | Rule | Code |
 |---|---|---|
-| G1 validated | `policies.cross_platform == "validated"` and `organizer/transfer-validation.json` holds a passing run for this direction (3.5.4). For the owner's own runs only: env `NMSVAULT_ALLOW_UNVALIDATED_TRANSFER=1`, target slot empty, and a full backup of the target folder younger than 30 minutes | `CROSS_PLATFORM_GATED` |
+| G1 validated | `policies.cross_platform == "validated"` and `organizer/transfer-validation.json` holds a passing run for this direction (3.5.3). For the owner's own runs only: env `NMSVAULT_ALLOW_UNVALIDATED_TRANSFER=1`, target slot empty, and a full backup of the target folder younger than 30 minutes | `CROSS_PLATFORM_GATED` |
 | G2 stream data | first 4 bytes `E5 A1 ED FE` and a clean chunk walk whose total equals the meta size; refuses single-LZ4 (Xbox before 4.52), HGSAVEV2 (4.52-5.00) and plain JSON (Steam before 3.60) | `SOURCE_OLD_FORMAT`: "This save uses an older format. Load and save it once in the game first." |
 | G3 meta format | Steam 432 B / format 2004 <-> Xbox 360 B / 2004. Worlds I (Steam 384 / Xbox 296, format 2003) refused until a run T2b covers it: no Steam 384-B meta exists in the owner's data to test against (VERIFIED 9.1) | `UNSUPPORTED_META` |
 | G4 identity | meta id != 0 and equals the id in the data's first chunk | `SOURCE_NO_ID` |
-| G5 ownership | F7 policy across platforms (owner identities include both platforms' ids) | `OTHER_PERSON` |
+| G5 other account | a transfer always comes from another account: the F7b confirmation (3.3) | `OTHER_ACCOUNT` (confirm) |
 | G6 Xbox quota | Steam -> Xbox: wgs total after the op <= 256 MB (warn above 200 MB; 67.7 MB used today, R8 D8) | `XBOX_QUOTA` |
 | G7 cross-save | Hello Games cross-save on -> warn | `CROSS_SAVE_ON` |
-
-Everything else is an ordinary Place (preserve, both positions, journal, validation, undo,
-verification); undo of a transfer is a transfer back (same gates).
 
 #### 3.5.2 Meta conversion (`liveops/convert.py`, pure functions)
 
@@ -1421,8 +1462,8 @@ folders; the app never runs them by itself.
    (b) it loads; (c) the base is editable (move a part) and the discovery is listed; (d) save at
    a beacon; quit.
 5. In the app: rescan. Check: (e) the new version descends from the placed one (verification
-   `confirmed: played`); (f) once D4 is indexed, `UsedDiscoveryOwnersV2` lists the Xbox identity
-   and the base owner is Xbox.
+   `confirmed: played`); (f) once D4 has indexed the new version, its bases' owner platform
+   (`ptk`, a platform code, not an id) reads Xbox.
 6. Wait for the Xbox app to show the save as synced; start NMS again: (g) no conflict dialog,
    the save is intact.
 
@@ -1441,44 +1482,28 @@ BaseVersion), notes}` into `organizer/transfer-validation.json`. A failed run is
 and keeps the gate shut. The gate re-closes by itself if the game introduces a new meta length
 or format (G3 refuses unknown values), which asks for a new run.
 
-## 4. Migration and compatibility
+## 4. Migration of today's operations
 
 ### 4.1 Today's operations
 
 | Today (`operations.py`) | Decision | New behaviour |
 |---|---|---|
-| `repopulate_slot` (306-364; Xbox 492-522) | **re-route** | Adapter: `live_dir` must resolve to a configured live account (C29, 2.3.6) or the call is refused; source = the catalogued entry's pair (locator) or, for an uncatalogued folder (CLI `--from <folder>`), `PairSource(folder_slot=(dir, slot))` whose bytes are read and verified directly; then `plan_place` + `execute`. Always writes both positions (P6), journals, preserves. Returns today's `OpResult` shape for existing callers. |
+| `repopulate_slot` (306-364; Xbox 492-522) | **re-route** | Adapter: `live_dir` must resolve to a configured live account (C29, 2.3.6) or the call is refused; source = the vault entry's pair (locator) or, for an uncatalogued folder (CLI `--from <folder>`), `PairSource(folder_slot=(dir, slot))` whose bytes are read and verified directly; then `plan_place` + `execute`. Always writes both positions (P6), journals, preserves. Returns today's `OpResult` shape for existing callers. |
 | `restore_entry` for an extract (191-221) | **re-route** | Place of the extract's pair into the same slot number of the given account |
 | `promote_member` (367-400; Xbox 440-463) | **re-route** | `plan_promote(target, position)`; fixes the Xbox no-op (needs P1) and the old Steam mtime under Cloud (R8 G5) |
-| `plan_clear_slot` + `clear_slot` (671-760) | **re-route** | `plan_evict` + `execute`; "is it in the vault" by vid (`is_durable`), not slot number (P5); Steam Cloud per F8 (3.4); the CLI/GUI texts come from the plan |
-| `extract_slot` (280-303) | keep | vault-only; gains D2's verification and manifest (D2 2.8) |
-| `restore_full` (224-274; Xbox 525-560) | keep as the **panic restore** (4.3) | whole folder, with the P4/P7 fixes |
+| `plan_clear_slot` + `clear_slot` (671-760) | **retire** in phase 2 | "Empty this slot" shows `empty_slot_guide` (2.4.2) and deletes nothing (F8). Phases 0-1: today's code with the P5 interim fix, under the live-op lock from phase 1 (2.16) |
+| `extract_slot` (280-303) | keep | vault-only; in store mode D3 writes it as a store entry (`add_from_live(kind="extract")`), the same call as Keep a copy (2.4.1) |
+| `restore_full` (224-274; Xbox 525-560) | keep as the **panic restore** (4.3) | whole folder, with the P4/P7 fixes; never deletes a slot |
 | `undo_last` (881-919) | **retire** as "Undo" | the new Undo is slot-scoped (2.11); `undo_last` becomes `panic_restore` of the newest snapshot **of that folder** (4.3) |
-| `snapshot_live` (134-145) | keep | called by `execute`; pruning moves to D2's post-op hook (D2 2.9.5) |
-| `create_full_backup`, `import_backup`, `import_vault`, `preview_vault_import` | keep | vault-only, unchanged |
-| `msstore.write_save` / `delete_save` / `mark_modified` | keep names | re-implemented on record-bytes editing (P-X1, 2.6.2) |
+| `snapshot_live` (134-145) | keep until phase 2 | phase 0 removes its pruning (P2); from phase 2 `execute` takes store snapshots directly (2.8) and the classic paths get D3's store snapshot |
+| `create_full_backup`, `import_backup`, `import_vault`, `preview_vault_import` | keep | vault-only; D3 decides where the bytes go (store entries in store mode) |
+| `msstore.write_save` / `mark_modified` (and `delete_save` while the classic Clear exists) | keep names | re-implemented on record-bytes editing (P-X1, 2.6.2) |
 
-### 4.2 Older app versions reading what D5 writes
+### 4.2 Older app versions
 
-Realistic old versions are v0.0.9 to v0.2.8 (D2: v0.0.1-v0.0.8 already crash on the owner's
-catalog). VERIFIED with their sources in a synthetic sandbox (9.2):
-
-| What D5 writes | What an old version does | Rule D5 follows |
-|---|---|---|
-| `organizer/ops.jsonl`, markers, `transfer-validation.json` | never reads them; `import_vault` does not carry `organizer/` (D2 E3) | - |
-| oplog v2 line with extra nested keys | parses it (A, D) | additive keys only; the six old keys keep their meaning |
-| ... whose `snapshot_id` is a whole-folder snapshot | Undo restores that snapshot = the folder's state before the op (A) - today's semantics, with today's hazards (accountdata and vdf rolled back, P7) | `snapshot_id` is always a whole-folder snapshot (I12) |
-| ... if `snapshot_id` named an extract | v0.0.9 wipes every other slot and accountdata; v0.1.0+ refuse (B) | never (I12) |
-| a torn last line | `read_oplog` raises `JSONDecodeError`; Undo is dead until the line is repaired (C) | one write + flush + fsync per line; the new reader skips a torn last line |
-| ... if the newest op's snapshot were pruned | Undo silently falls through to an older snapshot (E) | D2 never prunes the snapshot named by the newest snapshot-bearing oplog line (D2 2.9.4, adopted) |
-| preserved `keep-...` entries | ordinary extracts: Restore puts the slot back in place (v0.1.0+); v0.0.9 full-restores any extract (pre-existing) | D2 decision 1 |
-| catalog | no new keys from D5 | - |
-
-Other cases: an old version used while an op is open may rewrite the slot - recovery then
-classifies it `superseded` and does nothing automatic (I13). An Xbox op followed by an old
-version's Undo with Steam active is refused by the old code ("coming soon"), no write. README
-gets a short "downgrading" note: after organizer moves, an older version's Undo restores the
-whole folder, including account data.
+Not supported on an upgraded vault (owner Q2: users cannot and should not go back to older app
+versions); D5 writes nothing for them. The oplog keeps today's six leading keys only so that
+today's own readers keep working until phase 2 replaces them (2.13.1).
 
 ### 4.3 The panic restore (today's whole-folder undo and restore, kept and fixed)
 
@@ -1488,21 +1513,25 @@ def plan_panic_restore(ctx, account: LiveAccount, snapshot_id: str | None = None
 ```
 
 - Target is a resolved live account (C29), never the GUI's "active live" (P3/P4 class).
-- The snapshot must come from the same folder: catalog `entry.source == account_key`, same
-  platform, and on Xbox the snapshot's `containers.index` account id equals the live one (P7).
+- Source: a whole-folder snapshot or full backup of the same folder, from D3's
+  `list_vault_entries(vault, store)`: kind `snapshot` or `full`, `source == account_key`, same
+  platform, and on Xbox the entry's `containers.index` account id equals the live one (P7).
   Default: the newest such snapshot (P4: today it takes the newest of any folder,
-  `operations.py:893-905`).
+  `operations.py:893-905`). Its files are read through D3's `open_entry_folder(...)` (the legacy
+  folder until it is folded, else a verified temporary materialization).
 - First every live member that is not durable is preserved (up to 15 slots, one `preserve` call
-  per slot) and a fresh whole-folder snapshot is taken, so a panic restore is itself undoable
-  (its undo = panic restore of that fresh snapshot).
-- Writes slot files / slot records only; `steam_autocloud.vdf` is never copied (P7);
-  accountdata is kept unless `restore_accountdata=True` (warning: "rolls back unlocks and
-  settings", R8 B4); on Xbox the live index header identity is kept and only slot records are
-  taken from the snapshot (raw), with the xgs mirror updated per identifier.
-- Slots absent from the snapshot would need deletions: allowed on Xbox and Steam-local; under
-  Steam Cloud handled by the F8 policy (by default those slots are left alone and listed).
-- Journaled like any op (pre: the fresh snapshot; post: the source snapshot's slot files), so a
-  crash mid-restore is recovered forward or back.
+  per slot) and a fresh store snapshot is taken, so a panic restore is itself undoable (its undo =
+  panic restore of that fresh snapshot).
+- Writes slot files / slot records only, byte-exact as in the source, metas included (it restores
+  a recorded state, so the F5b stamp does not apply); disk times are now under Steam Cloud and on
+  Xbox. `steam_autocloud.vdf` is never copied (P7); accountdata is kept unless
+  `restore_accountdata=True` (warning: "rolls back unlocks and settings", R8 B4); on Xbox the live
+  index header identity is kept and only slot records are taken from the source (raw), with the
+  xgs mirror updated per identifier.
+- Slots absent from the source are left alone and listed in the outcome: "Steam slot 12 was
+  empty in the snapshot and was left as it is." (F8: no deletion).
+- Journaled like any op (pre: the fresh snapshot; post: the source's slot files), so a crash
+  mid-restore is recovered forward or back.
 
 ### 4.4 Prerequisites: what is fixed first and how it is tested
 
@@ -1513,24 +1542,25 @@ def plan_panic_restore(ctx, account: LiveAccount, snapshot_id: str | None = None
 | **P-X1** (new) | index parse keeps each record's raw bytes and integer FILETIME; `build_containers_index` writes untouched records raw; `write_save` / `delete_save` / `mark_modified` use record-bytes editing | parse + rebuild is byte-identical for synthetic indexes with sub-second FILETIMEs (fails today); read-only on the real index (0/7 identical today, VERIFIED 9.3) |
 | P3 | `gui.on_promote` uses the clicked row's folder (`gui.py:1539`); finally replaced by `plan_promote(target)` | R1 E9 script as a GUI test |
 | P4 | `undo_last` only considers snapshots whose `source` is the target folder's name and platform; finally the panic restore (4.3) | R1 E3 (two same-platform folders): no cross-folder restore |
-| P5 | interim: `_latest_vault_copy` matches by playthrough id + play time, not slot number; final: `plan_evict` uses `is_durable(vid)` | R1 E10 scenario: no false "safe" |
+| P5 | interim: `_latest_vault_copy` matches by playthrough id + play time, not slot number; final: the classic Clear is retired (4.1) and "in the vault" is `is_durable(vid)` everywhere | R1 E10 scenario: no false "safe" |
 | P6 | interim: `repopulate_slot` refuses a one-member source when the destination holds the other member ("would leave a mixed slot; use Move to live"); final: Place writes both positions | R1 E1 scenario refuses (Steam and Xbox) |
 | P7 | `restore_full` never copies `steam_autocloud.vdf`; Xbox refuses a backup whose index account id differs; accountdata kept unless asked | two `st_` sandbox folders: vdf and accountdata unchanged; Xbox foreign index refused |
-| oplog | `append_oplog`: one write + flush + fsync; `read_oplog`: skip an unparsable last line (log it) | torn-line fixture: new reader OK, every old reader fails (9.2 C) |
+| oplog | `append_oplog`: one write + flush + fsync; `read_oplog`: skip an unparsable last line (log it) | torn-line fixture: the new reader skips it, today's reader raises (9.2 C) |
 
 P1 and P-X1 block every Xbox organizer operation (member order, identity, exact rollback);
 P3-P7 make today's flows safe until they are re-routed and become regression tests afterwards.
 
 ### 4.5 Entry points
 
-**GUI** (today's labels -> organizer route; D6/D7 decide the look):
+**GUI** (today's labels -> organizer route; D6 decides the look):
 
 | Today | Becomes |
 |---|---|
 | backup slot menu "Copy slot N into live slot N" / "...into a live slot..." (`CopySlotDialog`, `gui.py:1478-1526`) | "Move to live..." = the eviction picker (C30) |
 | live slot menu "Replace ... from anywhere..." | "Replace with..." = the picker entered from the slot (version chooser, then `plan_place`) |
 | "Make ... the one the game loads (promote)" (`gui.py:1528-1542`) | `plan_promote` on the clicked slot (P3 gone by construction); hidden on the member already loading (R2 D7) |
-| "Clear slot..." (`gui.py:1455-1476`) | "Free this slot..." = `plan_evict` (F8) |
+| "Clear slot..." (`gui.py:1455-1476`) | "Empty this slot (manual steps)..." = `empty_slot_guide` (2.4.2); nothing is deleted (F8) |
+| (new) live slot menu | "Keep a copy in the vault now" = `plan_keep` (2.4.1), offered when the slot is not in the vault |
 | toolbar Undo (`gui.py:1631-1640`) | per-slot "Undo" of the newest op + the op history; the old global undo becomes "Restore whole folder from a snapshot..." (4.3) |
 | backup root "Restore all of ..." (`gui.py:1403-1437`) | "Restore whole folder..." (4.3); extract roots go to "Move to live..." |
 | modal "Done" (`gui.py:1326-1333`) | non-modal "Done - Undo" (C30) |
@@ -1543,11 +1573,11 @@ P3-P7 make today's flows safe until they are re-routed and become regression tes
 |---|---|
 | `repopulate --from X --src-slot N --to-slot M` | adapter to `place`; prints the plan; asks unless `--yes`; `--force` now only confirms `GAME_STATE_UNKNOWN` (a running game always refuses) |
 | `promote --slot N --member A/B` | `plan_promote` |
-| `clear N` | `evict` (F8) |
+| `clear N` | prints the manual steps of `empty_slot_guide` (2.4.2); deletes nothing |
 | `restore <extract-id>` | `place` |
 | `restore <full-id>` (`--no-mirror`) | panic restore of that snapshot/backup (4.3); `--no-mirror` = leave slots absent from it alone |
 | `undo` | slot-scoped undo of the newest op on `--to` (or the only target); `undo --op <op_id>`; `undo --whole-folder` = panic restore |
-| new `place`, `swap`, `evict`, `ops`, `recover`, `panic-restore`, (phase 5) `transfer-validated` | 2.2 API |
+| new `place`, `swap`, `keep`, `ops`, `recover`, `panic-restore`, (phase 5) `transfer-validated` | 2.2 API |
 
 Targets are written `steam:7`, `xbox:4`, or `steam:<account>:7` when a platform has more than
 one live account; sources `--from <entry-id> --src-slot N [--member A|B]`, `--from live:steam:4`, or `--from vid:<prefix>` (`--from` as in today's `extract` and `repopulate`).
@@ -1559,7 +1589,8 @@ need `--yes` plus `--confirm CODE` for each confirmation code.
 `DESIGN.md`: the operation semantics (both positions, newest by every signal, journal,
 verification), the Xbox meta facts (296/360 B, id 0x118, time 0x120) and the FILETIME rule;
 remove the stale "SizeDisk == file size" line (`DESIGN.md:91`, R1 pre-work list). `README.md`:
-features, the real `uv run pytest` count, the downgrade note (4.2).
+features, "the app replaces, never empties a slot" with the manual steps, the real
+`uv run pytest` count.
 
 ## 5. Test plan
 
@@ -1574,8 +1605,9 @@ absent. Keep fixture paths short (Windows MAX_PATH, R1 G4).
 |---|---|---|
 | `steam_live(tmp, slots, cloud=True)` | `st_76561190000000001/` with synthetic pairs (promote today's `steam_save` helper, `test_playtime.py:43-63`, to `conftest.py`; add `pid`, `play`, `ts`, member choice), `accountdata.hg` / `mf_accountdata.hg`, `steam_autocloud.vdf` when `cloud`, a `cache/` file | both variants (with / without the vdf) for every Steam execute test |
 | `xbox_live(tmp, slots, xgs=True, meta_len=360)` | the fixed `make_wgs_account` (real 360 / 296-B metas, non-zero id 0x118 and time 0x120, sub-second FILETIMEs, an `AccountData` record) plus the `xgs` twin | both variants (with / without xgs) |
-| `vault_with(tmp, pairs)` | a `Vault` with full backups / extracts holding known pairs, plus a locator: D2's `FolderLocator` when present, else `FakeLocator` (implements D1's ABC: `open` verifies sha256, `preserve` writes an extract-shaped entry and re-reads it) | the locator conformance suite (D1 test 10) also runs on `FakeLocator` |
-| `op_ctx(...)` | `OpContext` with a scripted `game_probe` (a list of answers), fixed `clock`, `FaultInjector`, fake `LineageRecorder` (records calls), the real `ops.jsonl` writer | a second `op_ctx` on the same vault = "after restart" |
+| `vault_with(tmp, pairs)` | a vault in store mode: a real D3 `VersionStore` in `tmp_path` (real `safety.exclusive_lock`) holding entries with known pairs, and D1's `VaultLocator` over D3's `StoreLocator` | unit tests that isolate D5 may use `FakeLocator` (D1's ABC: `open` verifies sha256, `preserve` writes a preserve-shaped entry and re-reads it); D1's locator conformance suite also runs on it |
+| `legacy_vault(tmp)` | a vault without a store (`vault_mode == "legacy"`) | `VAULT_UPGRADE_NEEDED`; the phase-1 classic-lock tests |
+| `op_ctx(...)` | `OpContext` with a scripted `game_probe` (a list of answers), fixed `clock`, `FaultInjector`, a fake `LineageRecorder` (records calls) for unit tests, the real `ops.jsonl` writer | a second `op_ctx` on the same vault = "after restart"; the integration suite (5.3) uses D1's real recorder |
 | `tree_hash(path)` | sha256 + `mtime_ns` of every file under a folder | the "nothing changed" assertion |
 
 `FaultInjector.at(point)` raises `SimulatedCrash(BaseException)` - not an `Exception`, so no
@@ -1588,29 +1620,30 @@ executor and writers (`after_preparing`, `in_preserve`, `after_snapshot`, `after
 
 | ID | Area | Scenario | Assert |
 |---|---|---|---|
-| T-M1 | pairmeta | common Place of a full pair, Steam cloud / local / Xbox | positions kept; no meta time edit; Steam metas re-keyed for `file_no + 1` of each position and `is_valid_for`; disk times now / now - 1 (cloud, Xbox) or meta times (local) |
-| T-M2 | pairmeta | V is the older member (user choice, Promote) | F4a: partner time = V - 1 s; order holds on meta time, mtime and FILETIME |
-| T-M3 | pairmeta | one-member source; mixed-pid source | the other position gets a copy of V with V - 1 s; `copy_of` set; never two pids |
-| T-M4 | pairmeta | F5b | V = now, other = now - 1 on every signal |
-| T-M5 | pairmeta | Steam Cloud off | mtimes = meta times, strictly ordered |
-| T-M6 | pairmeta | meta time 0 | stamped now |
-| T-M7 | pairmeta | Xbox 280-B meta (no time field) | order by FILETIME only; the setter is not called |
+| T-M1 | pairmeta | common Place of a full pair, Steam cloud / local / Xbox | positions kept; metas stamped L = now, O = now - 1; `source_meta_ts` = the captured times; Steam metas re-keyed for `file_no + 1` of each position and `is_valid_for`; disk times now / now - 1 |
+| T-M2 | pairmeta | V is the older member (user choice, Promote) | partner stamped now - 1; order holds on meta time, mtime and FILETIME |
+| T-M3 | pairmeta | one-member source; mixed-pid source | the other position gets a copy of V stamped now - 1; `copy_of` set; never two pids |
+| T-M4 | pairmeta | the undo of a place | the evicted pair goes back in its positions with its old loading member as `load`, stamped now |
+| T-M5 | pairmeta | each cloud mode | the same meta stamps and disk times in all three modes |
+| T-M6 | pairmeta | meta-only variant | written `vid` == source `vid`; `meta_plain_sha256` differs from the source's; `source_meta_ts` recorded in the oplog line |
+| T-M7 | pairmeta | Xbox 280-B meta (no time field) | meta bytes unchanged; order by FILETIME only; the setter is not called |
 | T-M8 | P1 | setter on 296/360-B metas | exactly 4 bytes at 0x120 differ; 280 raises |
-| T-P0 | planner | every `plan_*` and `eviction_picker` call | `tree_hash` of live folders and vault unchanged; no `ops.jsonl` created |
-| T-P1 | preserve | Place over a live-only pair | a `keep-` extract exists before the first live write (fault at `after_writing` and inspect), re-hashes to the vids |
-| T-P2 | preserve | vault root missing | `refused`, code `PRESERVE_FAILED:vault-unavailable`; live `tree_hash` unchanged |
+| T-P0 | planner | every `plan_*`, `eviction_picker` and `empty_slot_guide` call | `tree_hash` of live folders and vault unchanged; no `ops.jsonl` created |
+| T-P1 | preserve | Place over a live-only pair | a `preserve` store entry and the store snapshot exist before the first live write (fault at `after_writing` and inspect); their objects re-hash to the vids |
+| T-P2 | preserve | vault without a store; vault root missing | `refused`, `VAULT_UPGRADE_NEEDED` / `VAULT_UNAVAILABLE`; live `tree_hash` unchanged |
 | T-P3 | preserve | the slot changes between plan and execute | `stale` with a fresh plan; nothing written |
-| T-P4 | preserve | vault full (patched `shutil.disk_usage`) | `refused`, live unchanged |
-| T-B1 | planner | candidate states empty / occupied / mixed / partial / unreadable | `state`, `kind`, `durable`, warnings per 2.3.3 |
+| T-P4 | preserve | vault full (patched `shutil.disk_usage`) | `refused`, `VAULT_SPACE`; live unchanged |
+| T-B1 | planner | candidate states empty / occupied / mixed / partial / unreadable | `state`, `kind`, `durable`, warnings per 2.3.3; an empty candidate carries only `EMPTY_SLOT` (info) |
 | T-B2 | planner | suggestion order | same line > lowest empty > durable least recent > least recent > none (all pinned) |
-| T-B3 | planner | blocks | xgs-only account, cross-platform, F7 other person, game running, open op |
-| T-F1 | flows | Place, PlaceIntoEmpty, restore-older, Promote on each fixture variant | post-image hashes; `SlotView.newest == L`; oplog v2 line; ops.jsonl `preparing, writing, validated, done`; `record_op` once per target |
+| T-B3 | planner | blocks and confirmations | xgs-only account, cross-platform, vault not upgraded, game running, open op block; `OTHER_ACCOUNT` (confirm) when the capture account is known and differs, none when it is the same or unknown |
+| T-F1 | flows | Place, PlaceIntoEmpty, restore-older, Promote on each fixture variant | post-image hashes; `SlotView.newest == L`; oplog v2 line; ops.jsonl `preparing, writing, validated, done`; `record_op` once per target; `note` reaches the `preparing` event, the oplog line and `OpLineage.note` |
 | T-F2 | flows | Place from a one-member / mixed source into a full slot | both positions written, one pid (P6 regression, R1 E1) |
-| T-F3 | flows | Swap both full; Swap one empty (per F8 policy) | both slots exchanged with metas re-keyed; one `op_id`, two `record_op` calls |
-| T-F4 | flows | Evict on Xbox and Steam-local | slot empty; Xbox records `Deleted`, blob dirs and xgs folders removed only after validation |
-| T-F8a/b/c | F8 | Evict / undo-of-fill / move on Steam Cloud under each policy | a: blocked; b: blocked unless `STEAM_CLOUD_OFF_CONFIRMED`, then deletes and arms `resurrected`; c: deletes |
+| T-F3 | flows | Swap both occupied; Swap with an empty side | both slots exchanged, stamped and re-keyed, one `op_id`, two `record_op` calls; `SWAP_EMPTY_SIDE` blocks and nothing is written |
+| T-K1 | keep | `plan_keep` + `execute` on Steam and Xbox, game running and not | an `extract` store entry holding the slot's vids; live `tree_hash` unchanged; oplog `keep`; no `record_op` |
+| T-E1 | empty slots | `empty_slot_guide` per cloud mode, occupied and empty | `refill` for steam-cloud and xbox only; the steps name the slot's four files on Steam; `durable` matches `is_durable` |
+| T-NODEL | invariant I9 | every path - place, place_into_empty, restore_older, swap, promote, undo, panic_restore, keep, recovery forward and back, the re-routed classic ops - on every fixture variant, with spies on `os.remove`, `os.unlink`, `Path.unlink`, `shutil.rmtree` and on `containers.index` record states | no live save file or Xbox record is removed except files the same op created (rollback) and the superseded blobs of the op's own records; no slot is empty after an op unless it was empty before |
 | T-G1 | game | probe True at execute start | `refused`; nothing written; no `writing` event |
-| T-G2 | game | probe flips to True after `writing`, before the first live write | `abandoned(game_started)`; live unchanged; the preserved entry stays (harmless) |
+| T-G2 | game | probe flips to True after `writing`, before the first live write | `abandoned(game_started)`; live unchanged; the preserve entry stays (harmless) |
 | T-G3 | game | probe None | without the code: `ConfirmationRequired`; with it: proceeds |
 | T-W1 | Steam writer | stage + swap | temp files fsynced and verified; final names only after all four staged; no temp left |
 | T-W2 | Steam writer | `os.replace` fails (a handle held open; Windows only, skip elsewhere) | retried; persistent failure -> files already swapped rolled back exactly |
@@ -1620,33 +1653,52 @@ executor and writers (`after_preparing`, `in_preserve`, `after_snapshot`, `after
 | T-X4 | Xbox writer | `rollback_pair` for an existing and a new identifier | index byte-identical; wgs and xgs trees identical (the 9.4 prototype as a test) |
 | T-X5 | Xbox writer | index changes between `prepare_pair` and the index write | aborted; new blobs deleted; nothing referenced |
 | T-V1 | validation | post-write checks | each row of 2.9.1 fails on a corrupted file (inject `corrupt_after_swap`) |
-| T-V2 | rollback | validation failure on each fixture variant | exact pre-image (sha256, size, `mtime_ns`; Xbox index bytes); `rolled_back`; oplog line `status: rolled_back` with a whole-folder `snapshot_id` |
+| T-V2 | rollback | validation failure on each fixture variant | exact pre-image (sha256, size, `mtime_ns`; Xbox index bytes), Steam bytes read from the store snapshot; `rolled_back`; oplog line `status: rolled_back` naming the store snapshot |
 | T-V3 | containment | any op | other slots, accountdata, vdf, `cache/` unchanged (`tree_hash` minus the slot's files) |
 | T-C1..C15 | crash matrix | a `SimulatedCrash` at each point: `after_preparing` (C1), `in_preserve` (C2), `after_snapshot` (C3), `after_writing` (C4), Steam `staged:2` (C5), `swapped:1..4` (C6-C9), Xbox `before_index` (C10), `after_index` (C11), `xgs:<first>` (C12), `after_validated` (C13), `after_oplog` (C14), torn `writing` line in `ops.jsonl` (C15) | after restart `pending_recovery` classifies as 2.10 says; both **forward** and **back** (where offered) end exactly in the post- or pre-image; no temp files or unreferenced blobs; exactly one oplog line per finished op; `record_op` idempotent |
-| T-R1..R6 | recovery | all post; torn; `other` (an "old app" rewrites the slot); other machine id; open op blocks the same account only; marker without vault | recommended choice per table; `other` -> nothing written (I13); `RECOVERY_PENDING` only on that account; `vault_missing` item |
-| T-UN1..UN8 | undo | same / progressed / already / empty / stale; undo of PlaceIntoEmpty per F8; undo of a Swap; undo of an undo (redo) | per 2.11; progressed versions preserved before the overwrite; undo never touches another slot |
+| T-R1..R6 | recovery | all post; torn; `other` (another tool rewrites the slot); other machine id; open op blocks the same account only; marker without vault | recommended choice per table; `other` -> nothing written (I13); `RECOVERY_PENDING` only on that account; `vault_missing` item |
+| T-UN1..UN8 | undo | same / progressed / already / empty / stale; undo of PlaceIntoEmpty; undo of a Swap; undo of an undo (redo) | per 2.11; the undo of a fill is blocked with `UNDO_WOULD_EMPTY` and writes nothing; progressed versions preserved before the overwrite; undo never touches another slot |
 | T-VR1 | verification | Steam: write the evicted bytes back with their old mtimes (what a "cloud" pick does) | `reverted` alert; "Put it back" plans a Place of the placed pair |
-| T-VR2 | verification | a child of the placed pair appears (same pid, more play) | `confirmed: played` |
+| T-VR2 | verification | a child of the placed pair appears (same pid, more play) | D1 `op_outcome` `confirmed`; D5 `confirmed: played` |
 | T-VR3 | verification | Xbox record state Modified -> Synced (raw edit) | `confirmed: uploaded` |
-| T-VR4 | verification | after a Steam-cloud Evict (F8b confirmed) the files reappear | `resurrected` with the steps |
-| T-VR5 | verification | another pid appears; the slot empties | `replaced`; `deleted` |
-| T-VR6 | verification | game seen running after the op, slot unchanged | `confirmed: unchanged`; without a session it stays `pending` |
-| T-VR7 | verification | 31 days without evidence | `expired`, no alert |
-| T-O1 | oplog | v2 line | the six old keys present with old meaning; `snapshot_id` names a whole-folder snapshot entry; `detail` has no folder name |
-| T-O2 | old apps | v0.0.9 / v0.1.0 / v0.2.8 `undo_last` after a D5 op (sources from git tags, dev-only, skipped without git) | restores the pre-op folder state; never an extract (9.2 A, B) |
+| T-VR4 | verification | another pid appears; the slot is emptied outside the app | `replaced`; `deleted` |
+| T-VR5 | verification | game seen running after the op, slot unchanged | D1 stays `pending`; D5 `confirmed: unchanged`; without a session D5 stays `pending` |
+| T-VR6 | verification | 31 days without evidence | `expired`, no alert |
+| T-O1 | oplog | v2 line | the six leading keys with today's meaning; `snapshot_id` names the store snapshot of the target folder, `entry_id` the preserve entry; `source_meta_ts` present; `detail` has no folder name |
 | T-O3 | oplog | torn last line | new `read_oplog` skips it with a log line; the D5 writer never produces one (single write) |
-| T-L1 | locks | two contexts run `execute` at once (threads and processes) | the second gets `BUSY`; no deadlock with `preserve` / `record_op` taking the store lock |
+| T-L1 | locks | two contexts run `execute` at once (threads and processes) | the second gets `BUSY`; no deadlock with `preserve`, `record_op`, `observe` and D3's manifest commits taking the store lock |
+| T-L2 | locks | a classic write (phase-1 hook) while an `execute` holds the live-op lock, and the reverse, from two processes | the later one is refused with "Another operation is still running."; never two writers in one live folder |
+| T-L3 | locks | store-lock timeout inside `execute`: before `writing`; during recording | `BUSY`, nothing live written; `done` + `RECORDING_PENDING`, finished by recovery at the next start |
 | T-T1 | targets | unknown account, duplicate folder name without `instance`, vault-inside path, xgs-only | `TargetError` / `XGS_READ_ONLY` |
-| T-U1 | UI text | every `Warning.text`, outcome and recovery/verify text | ASCII (extend `tests/test_ui_text.py` to the new package); no account id or path |
+| T-U1 | UI text | every `Warning.text`, outcome, guide step and recovery/verify text | ASCII (extend `tests/test_ui_text.py` to the new package); no account id or path |
 | T-RD1 | real data (read-only, skip when absent) | P1 parser on the live wgs; P-X1 rebuild of the live index; F6 convert round trips (phase 5) | expectations of 4.4 / 3.5.2; `tree_hash` before == after |
-| T-6x | F6 (phase 5) | each gate G1-G7 blocks; convert unit + property tests | 3.5 |
+| T-6x | F6 (phase 5) | gates G1-G4 and G6 block, G5 asks, G7 warns; convert unit + property tests | 3.5 |
 
-### 5.3 What the tests deliberately do not cover
+### 5.3 Cross-design integration suite (risky path end to end)
 
-The game's and the clouds' real behaviour (which member loads when signals disagree, whether
-Steam reverts an old mtime, Xbox conflict dialogs, ownership migration of a non-server copy):
-those are the owner runs T1-T6 of R8 6, of which T1/T2 gate F6 (3.5.3). Verification (2.12)
-exists precisely to catch what those runs might prove wrong.
+`tests/integration/test_liveops_e2e.py`, part of the normal `uv run pytest` run in CI. It builds
+synthetic Steam (cloud and local) and Xbox (with xgs) live folders and a vault upgraded to store
+mode by D3's real upgrade (copy-aside, then `store/FORMAT`), and uses the real D1 organizer store,
+journal and recorder, the real D3 `VersionStore` / `StoreLocator` and D5 - no fakes between the
+three designs.
+
+- Scenarios: place, place into empty, restore-older, swap, promote, keep, undo (same and
+  progressed), panic restore; every crash point C1-C14 with forward and with back; a simulated
+  cloud revert (the evicted bytes and old mtimes written back); a game child (a new version of
+  the placed pid with more play time).
+- Asserted together after each scenario: the live tree (`tree_hash`); the store entries (one
+  preserve and one snapshot per op, every object verifies in D3's fsck); the `ops.jsonl` events;
+  the oplog lines; D1's journal edges (a recorded edge from the placed pair to the child, none on
+  a revert) and `op_outcome` (`pending`, then `confirmed` or `reverted`); D5's `VerifyItem`
+  states; and the T-NODEL spies.
+
+### 5.4 What the tests deliberately do not cover
+
+The game's and the clouds' real behaviour (which member loads when signals disagree, Xbox
+conflict dialogs, ownership migration of a non-server copy, whether a Place into a slot emptied
+by hand stays under Steam Cloud, the Xbox in-game delete): those are the owner runs T1-T6 of R8 6
+and the two runs of 7.2, of which T1/T2 gate F6 (3.5.3). Verification (2.12) exists precisely to
+catch what those runs might prove wrong.
 
 ## 6. Implementation plan
 
@@ -1667,44 +1719,48 @@ S < 150 lines of code, M 150-400, L 400-900 (tests extra). "Needs" names the sib
 | 0.8 | P5 interim: clear plan by playthrough id + play time | S | R1 E10 | - |
 | 0.9 | P6 interim: refuse a one-member source into a slot holding the other member | S | R1 E1 | - |
 
-(P2 is D2's step 0.2; D5 only relies on its exemptions.)
+P2 (stop pruning) is a phase-0 step of 01-consolidation; D5 depends on no retention.
 
-### Phase 2 - live operations (needs D1 phase 1: ids, store + lock, read model, recorder; D2 2.1 `preserve`)
+### Phase 1 - one live writer at a time (with D1 phase 1)
+
+| Step | Content | Size | Tests | Needs |
+|---|---|---|---|---|
+| 1.1 | `liveops.liveop_lock` (in-process lock + `safety.exclusive_lock` on `.liveop.lock`); D1's phase-1 recording hook takes it around every classic live write (`repopulate_slot`, `restore_full`, `clear_slot`, `promote_member`, `undo_last`) | S | T-L2 | D1 hook (2.6.7), `safety.exclusive_lock` |
+
+### Phase 2 - live operations
+
+Needs D1 phase 1 (ids, store + lock, read model, recorder with `observe(..., skip)`) and D3's
+phase-2 store in store mode, reached after the copy-aside and the upgrade (`StoreLocator.preserve`,
+`add_from_live`, `read_file`, `list_vault_entries`, `open_entry_folder`, `vault_mode`).
 
 | Step | Content | Size | Tests | Needs |
 |---|---|---|---|---|
 | 2.1 | `core/liveops/` skeleton: `model.py` (2.2 dataclasses, `to_dict`), `errors.py`, `OpContext`, `Policies` | S | dataclass round trips | D1 ids |
 | 2.2 | `targets.py`: `resolve_target`, `resolve_account` (C29, `instance`) | S | T-T1 | D1 `LiveTarget` |
-| 2.3 | `pairmeta.py` (F4a / F5a; the other options only if chosen) | M | T-M1..M7 | 0.2 |
+| 2.3 | `pairmeta.py` (F4a, F5b) | M | T-M1..M7 | 0.2 |
 | 2.4 | `steamwrite.py`: prepare / stage / swap (retry) / rollback / sweep | M | T-W1, T-W2 | - |
 | 2.5 | `msstore`: `prepare_pair` / `apply_pair` / `finalize_pair` / `rollback_pair` | M | T-X2, T-X4, T-X5 | 0.3 |
-| 2.6 | `opjournal.py`: events, fold, tolerant reader, markers, machine id, `open_snapshot_ids`, `busy_targets`, live-op lock | M | journal unit tests, T-C15, T-L1 | D1 store + `safety.exclusive_lock` |
-| 2.7 | planner: `eviction_picker`, `plan_place`, `plan_promote`, warnings, suggestion, fingerprint | L | T-P0, T-B1..B3 | D1 read model, D2 `is_durable` |
-| 2.8 | `execute` for place / place_into_empty / restore_older / promote: preserve, snapshot, journal, writers, validation, rollback, oplog v2, `record_op`, D1 observe, D2 post-op hook | L | T-F1, T-F2, T-G1..G3, T-P1..P4, T-V1..V3, T-O1 | D2 `preserve`, D1 recorder |
+| 2.6 | `opjournal.py`: events, fold, tolerant reader, markers, machine id, `busy_targets` | M | journal unit tests, T-C15, T-L1, T-L3 | D1 store, 1.1 |
+| 2.7 | planner: `eviction_picker`, `plan_place`, `plan_promote`, warnings, suggestion, fingerprint, the vault-mode gate | L | T-P0, T-B1..B3 | D1 read model, D3 `is_durable`, `vault_mode` |
+| 2.8 | `execute` for place / place_into_empty / restore_older / promote: preserve, store snapshot, journal, writers, validation, rollback, oplog v2, `record_op`, D1 `observe` with `skip` | L | T-F1, T-F2, T-G1..G3, T-P1..P4, T-V1..V3, T-O1 | D3 preserve and snapshots, D1 recorder |
 | 2.9 | recovery: `pending_recovery`, `resolve_recovery`, startup hook (GUI and CLI `recover`) | L | T-C1..C14, T-R1..R6 | 2.8 |
-| 2.10 | `plan_swap`, `plan_evict` with the F8 policy | M | T-F3, T-F4, T-F8a..c | 2.8 |
-| 2.11 | undo: `plan_undo`, `op_history`, `OpSummary` | M | T-UN1..UN8 | 2.8 |
-| 2.12 | verification: game-seen recorder, `update_verification`, `VerifyItem` | M | T-VR1..VR7 | D1 `op_outcome`, events |
-| 2.13 | re-route classic ops (repopulate, restore extract, promote, clear) through `liveops`; CLI `place` / `swap` / `evict` / `undo` / `ops` / `recover`; update tests that assert old internals; retire the P5/P6 interims | M | existing suites + CLI tests | 2.8-2.11 |
-| 2.14 | panic restore (4.3) replacing `undo_last` / full `restore` entry points | M | panic-restore tests incl. a crash point | 2.8 |
-| 2.15 | GUI wiring until D6/D7 land: picker dialog on the old `CopySlotDialog` slot, non-modal Done-Undo, recovery prompt, verification alerts, close blocked during execute | M | GUI tests via the `gui_app` root | UI design choice |
-| 2.16 | old-app compatibility harness (dev-only, skips without git tags) | S | T-O2 | 2.8 |
+| 2.10 | `plan_swap` (`SWAP_EMPTY_SIDE`), `plan_keep`, `empty_slot_guide` | M | T-F3, T-K1, T-E1 | 2.8 |
+| 2.11 | undo: `plan_undo` (incl. `UNDO_WOULD_EMPTY`), `op_history`, `OpSummary` | M | T-UN1..UN8 | 2.8 |
+| 2.12 | verification: game-seen recorder, `update_verification`, `VerifyItem` | M | T-VR1..VR6 | D1 `op_outcome`, events |
+| 2.13 | re-route classic ops (repopulate, restore extract, promote) through `liveops`; the classic Clear becomes the guide; CLI `place` / `swap` / `keep` / `undo` / `ops` / `recover` / `clear` (steps); update tests that assert old internals; retire the P5/P6 interims | M | existing suites, CLI tests, T-NODEL | 2.8-2.11 |
+| 2.14 | panic restore (4.3) replacing `undo_last` / full `restore` entry points | M | panic-restore tests incl. a crash point, T-NODEL | 2.8, D3 listing |
+| 2.15 | classic-tab GUI wiring: picker dialog on the old `CopySlotDialog` slot, non-modal Done-Undo, recovery prompt, verification alerts, the empty-slot steps, close blocked during execute | M | GUI tests via the `gui_app` root | D6 order of work |
+| 2.16 | cross-design integration suite (5.3) | M | 5.3 | D1, D3, 2.8-2.14 |
 | 2.17 | DESIGN.md and README (4.6) | S | real test count | all |
 
-Rough total: phase 0 about 0.9 kLOC + tests; phase 2 about 4-5 kLOC + tests.
+Rough total: phase 0 about 0.9 kLOC + tests; phase 2 about 4 kLOC + tests.
 
 ### Phase 2b (optional, small)
 
 | Step | Content | Size | Tests |
 |---|---|---|---|
 | 2b.1 | Steam `remotecache.vdf` reader (2.12.2): `uploaded` evidence, Steam `PENDING_UPLOAD` | S/M | parser fixtures; T-VR3 Steam variant |
-| 2b.2 | `CROSS_SAVE_ON` from accountdata flags (needs a D4 helper) | S | flag fixtures |
-
-### Phase 3 (with D4)
-
-| Step | Content | Size | Tests |
-|---|---|---|---|
-| 3.1 | F7a: `save.owners` fact consumed; `OTHER_PERSON`; Accounts "this is also me" list | S | F7 matrix |
+| 2b.2 | `CROSS_SAVE_ON` from the accountdata `CrossSaves` flag (read with D4's `decode_save`; no index change) | S | flag fixtures |
 
 ### Phase 5 - Steam <-> Xbox (F6a)
 
@@ -1725,55 +1781,55 @@ Rough total: phase 0 about 0.9 kLOC + tests; phase 2 about 4-5 kLOC + tests.
 | K2 | Xbox app still writing `containers.index` just after the game exits (uploads 10-30 s later, R8 E2) | medium / lost sync state or our write overwritten | `XBOX_SYNC_BUSY` for 60 s after the index changed; index re-read right before our single write; rollback on any doubt | a sync write inside our ~1 s window is caught by validation (other records must be raw-identical) |
 | K3 | Windows file locks (antivirus, Steam client) during the swap | low-medium / failed op | 5 retries; exact rollback | repeated failures need a retry by the owner |
 | K4 | Old blobs kept until validation; a kill before recovery and a game launch in between | low / extra unreferenced files in a container folder | recovery deletes exactly the files the journal lists | the Xbox app's view of stray files is unknown (believed ignored, as `_resolve_blobs` ignores them) |
-| K5 | Downgrade to an old app version after organizer moves | low / whole-folder undo incl. accountdata | `snapshot_id` rule (I12); D2 keeps the newest-oplog snapshot; README note | old behaviour stays old |
-| K6 | Snapshot disk use (54-68 MB per op) | certain / disk | D2 retention (10 per source, rescue first); D3 would dedupe | none beyond D2/D3's |
-| K7 | Two branches of one save live at once (twins) - cross-save and server behaviour unknown (R8 R3) | medium once "use an older version" is easy | `TWIN_LIVE` confirmation; D1 lineage keeps branches apart | unknown game-side effect |
-| K8 | Expedition saves converting when placed after their season (R8 B5) | low / changed save | warnings `EXPEDITION_SOURCE`, `EXPEDITION_ACTIVE` | by design of the game |
-| K9 | Meta time far older than the file time (F5a) treated specially by the game or Steam | low | orders agree inside the slot on every signal; T6 would settle it | none known |
-| K10 | D1's `op_outcome` confirming too early (2.12.1) | certain if unchanged | D5 requires a child, a game session or an upload | none |
-| K11 | App killed mid-write (Task Manager, power) | low / torn slot | write-ahead journal, exact rollback, recovery at next start; marker for a missing vault drive | the owner must not launch the game before reopening the app - the recovery prompt says so |
-| K12 | F6 ownership of a copy that did not pass Hello Games' servers | unknown | gated behind T1/T2 | - |
+| K5 | The vault upgrade is not done or failed | low / no organizer moves | `VAULT_UPGRADE_NEEDED` blocks with the way out; the classic tab keeps working | the owner finishes the upgrade (D3) |
+| K6 | Two branches of one save live at once (twins) - cross-save and server behaviour unknown (R8 R3) | medium once "use an older version" is easy | `TWIN_LIVE` confirmation; D1 lineage keeps branches apart | unknown game-side effect |
+| K7 | Expedition saves converting when placed after their season (R8 B5) | low / changed save | warnings `EXPEDITION_SOURCE`, `EXPEDITION_ACTIVE` | by design of the game |
+| K8 | The load screen dates a placed save "now" (F5b) | certain / by decision | the original date stays in the vault (`source_meta_ts`, the source entry's meta) | none |
+| K9 | App killed mid-write (Task Manager, power) | low / torn slot | write-ahead journal, exact rollback, recovery at next start; marker for a missing vault drive | the owner must not launch the game before reopening the app - the recovery prompt says so |
+| K10 | F6 ownership of a copy that did not pass Hello Games' servers | unknown | gated behind T1/T2 | - |
+| K11 | A slot the owner empties by hand fills again (Steam Cloud, Xbox sync) | medium / the slot is not empty | `EMPTY_SLOT_MAY_REFILL` and the steps (2.4.2); D1 reports the refill | the owner repeats the steps |
 
 ### 7.2 Open questions
 
-For the owner (designed as options, nothing waits): F4 (3.1), F5 (3.2), F7 (3.3), F8 (3.4),
-F6 (3.5). Two small ones:
+The owner forks are decided (section 3). `ops.jsonl` is kept forever (F9). Open:
 
 - Q1 "Put it back" after a cloud revert: one click with the original plan, or show the plan
   again? Recommended: show it again (the slot may have changed).
-- Q2 Keep `ops.jsonl` forever (~3-6 KB per op) or trim closed ops after a year? Recommended:
-  keep (it is the undo and audit source; size is negligible).
+- Owner run E1 (review V-21): under Steam Cloud, place a save into a slot emptied by hand, launch
+  the game, quit, relaunch: the placed save must still be there (expected: overwrites stick,
+  R8 E1).
+- Owner run E2: on Xbox, delete a throwaway save in the game's load menu, quit, let sync finish,
+  restart: the slot must stay empty. Until it passes, the Xbox steps of 2.4.2 are marked "not
+  yet confirmed".
 
-For sibling designs:
-
-- D1: `observe` skips `liveops.busy_targets()`; `op_outcome("confirmed")` semantics (2.12.1);
-  where the Accounts "this is also me" identities live (D1 notes/settings or state.json).
-- D2: confirm `open_snapshot_ids()` as the source of open-op pins and the name of the post-op
-  retention hook D5 calls (`storage_after_operation` here).
-- D4: the `save.owners` fact (UIDs and platform tags from `UsedDiscoveryOwnersV2`, never
-  displayed) for F7a; optionally accountdata flags (CrossSaves) for `CROSS_SAVE_ON`.
-- D6 / D7: block app exit while `execute` runs; surfaces for recovery items and verification
-  alerts; the confirmation flow (`confirmations` echoed back as `confirmed`); account switch in
-  the picker.
+For D6: block app exit while `execute` runs; surfaces for recovery items and verification
+alerts; the confirmation flow (`confirmations` echoed back as `confirmed`); the account switch in
+the picker; `empty_slot_guide` on the empty-slot card and the "Empty this slot" window; Keep a
+copy; the "Note for this move" field (`execute(note=...)`); `LIVE_ELSEWHERE.data["cross_platform"]`.
 
 ## 8. Deviations from 01-consolidation section 6
 
 1. **`LiveTarget`** carries D1's `instance` disambiguator (two Proton prefixes with the same
    folder name); UIs may pass D1's opaque `token`. D5 resolves it in core (2.3.6).
-2. **Locator** as refined by D1/D2: `preserve(Sequence[LiveMember], *, op_id, reason) ->
-   list[Location]` and `open(vid, prefer)`; D5 needs `prefer` to place the meta exactly as
-   captured.
+2. **Locator** as refined by D1/D3: `preserve(Sequence[LiveMember], *, op_id, reason) ->
+   list[Location]` (D3's `StoreLocator`) and `open(vid, prefer)`; D5 needs `prefer` to place the
+   meta exactly as captured.
 3. **Edge kinds**: D5 follows D1 - place, swap, restore-older, promote and undo are operation
-   kinds linked by `op_id`, not edge kinds; reverts and resurrections are journal events.
-4. **New files**: `<vault>/organizer/ops.jsonl` (reserved by D1), `<vault>/organizer/.liveop.lock`,
+   kinds linked by `op_id`, not edge kinds; reverts are journal events.
+4. **No Evict** (F8): section 6 lists Place/Swap/Evict; D5 implements no Evict and no deletion
+   path; emptying a slot is the owner's manual procedure (2.4.2).
+5. **New entry points**: `plan_keep` (vault-only Keep a copy), `empty_slot_guide`, the `note`
+   argument of `execute`, `liveop_lock` for the classic writers (phase 1).
+6. **New files**: `<vault>/organizer/ops.jsonl` (reserved by D1), `<vault>/organizer/.liveop.lock`,
    `<vault>/organizer/transfer-validation.json` (phase 5); per machine
    `user_cache_dir/vaults/<vault_id>/open-ops/` and `game-seen.json`, and
    `user_data_dir/machine-id`.
-5. **Requests** (interfaces D5 depends on): D1 `observe` skips busy targets; D1 `op_outcome`
-   "confirmed" needs evidence after a game session (2.12.1); D4 `save.owners`; D2 pins open-op
-   snapshots and the newest-oplog snapshot (already adopted by D2).
-6. **`msstore` write primitives** change to record-bytes editing (P-X1), a new prerequisite not
+7. **`msstore` write primitives** change to record-bytes editing (P-X1), a new prerequisite not
    listed in section 3 of 01-consolidation (found here, 9.3).
+
+No request to a sibling design is open: D1 provides `observe(..., skip)` and the `confirmed`
+rule of 2.12.1 and takes the live-op lock in its phase-1 hook; D3 provides preserve, snapshots,
+`read_file`, the listing and `vault_mode`; D4 only its decoder (phase 2b).
 
 ## 9. Evidence index
 
@@ -1785,7 +1841,7 @@ the sandbox. Run from the repo root with `PYTHONUTF8=1 uv run python -I <script>
 | # | Script(s) | Shows |
 |---|---|---|
 | 9.1 | `meta_regions.py`, `steam_0x54.py`, `steam_0x54b.py`, `xplat_same_bytes.py` (input: R7's `inventory.json`) | distinct metas: Steam 432 B x156, Xbox 360 B x36, 296 B x8; the only unknown non-zero Steam field is u32 0x54 = SizeDecompressed (144/156; the 12 others are editor-touched, where 0x3C and 0x54 are stale and 0x38 still equals the chunk total 156/156); Steam 0x08-0x37, 0x40 and the tail are zero; Xbox metas have no unknown non-zero bytes; Xbox time 0x120 non-zero 44/44, id 0x118 == data id 42/44 (2 pre-Worlds); 0 of 195 versions exist byte-identical on both platforms |
-| 9.2 | `oplog_compat_exp.py` with v0.0.9 / v0.1.0 / v0.2.8 sources (copied from D2's git-archive extracts, run with `python -S`) | A: v2 line + whole-folder snapshot -> every version's Undo restores the pre-op state; B: snapshot id = an extract -> v0.0.9 wipes the other slots and accountdata, newer versions refuse; C: torn last line -> `JSONDecodeError` in all; D: a trailing record without snapshot is skipped; E: a pruned newest snapshot -> fall-through to an older one |
+| 9.2 | `oplog_compat_exp.py` (oplog readers of today's code and of released versions) | a torn last line makes `read_oplog` raise `JSONDecodeError`, so an append must be a single write (case C) |
 | 9.3 | `index_roundtrip.py`, `index_roundtrip2.py` (read-only on the live and vault `containers.index` files) | parse + rebuild is byte-identical for 0/7 indexes: the header FILETIME drifts in 7/7 and record FILETIMEs in 28/217 (max 16 ticks) because of the float round trip |
 | 9.4 | `xbox_pair_write_proto.py` (synthetic wgs + xgs) | both Xbox members written with one index replace; untouched records raw-identical; rollback leaves the index byte-identical and the wgs and xgs trees identical, for an existing and a new identifier |
 | 9.5 | `replace_open_file.py` | `os.replace` onto a file another handle holds open fails on Windows (`PermissionError`, winerror 5) |

@@ -1,9 +1,10 @@
 # D4 - Content index engine
 
-Design wave, 2026-10-16. Subject S2 (decisions C7-C14, the indexing half of C11/C31) and defect P8.
-Bound by `../01-consolidation.md` sections 2 and 6; aligned with D1 (`D1-core-model.md`,
-`findings.D1-interfaces`), D2 ("D4 reads bytes only through `open()`"), D3 and D5 alignment notes.
-Audience: implementing agents (completeness wins) and the parent.
+Design wave, 2026-10-16; revised 2026-10-17 for the owner's decisions (`01-consolidation.md`
+4a and the answers to `03-design-review.md`). Subject S2 (decisions C7-C14, the indexing half of
+C11/C31) and defect P8. Bound by `../01-consolidation.md` sections 2 and 6; aligned with D1
+(`D1-core-model.md`: `FactsProvider`, read model), D3 (bytes only through `VersionLocator.open()`)
+and D5. Audience: implementing agents (completeness wins) and the parent.
 
 Evidence tags: **VERIFIED** = measured or checked by D4 on copies; **SOURCED** = read in code
 (`file:line`) or in a research report; **INFERRED** = reasoning. All D4 experiments ran on copies:
@@ -19,13 +20,16 @@ production code, tests or binding docs were changed.
 
 - Every save version gets a fact card: story, Atlas and expedition progress, glyphs, base parts
   and legacy parts, ships, companions, galaxies with bases, money - plus a short "what changed".
+- "What changed" compares a version only with its recorded parent; a version without one shows
+  "no recorded parent" and no list.
 - Your 195 versions index in 12 s on this PC (about 0.5-1 min on an average PC), live saves
-  first; a new version takes under 1 s; the cache is 3 MB, per PC, always rebuildable.
-- Read-only, runs outside the window (no freezes), stores no account ids, never holds your notes.
-- Your calls (my pick): legacy parts = "placed" and "still buildable" badges; ships =
-  "12 (3 corvettes) +5 archived"; companions = custom name, else creature type.
-- Also yours: ship, galaxy and expedition names shipped as small tables (yes); while the game
-  runs, index live saves only, with one worker (yes).
+  first; a new version takes under 1 s; the cache is under 3 MB, per PC, always rebuildable.
+- Read-only, runs outside the window (no freezes), reads and stores no account ids, never holds
+  your notes.
+- Your decisions: legacy parts = "placed" and "still buildable" badges; ships = "12 (3
+  corvettes) +5 archived"; companions = custom name, else creature type; ship, galaxy and
+  expedition names shipped as small tables; while the game runs, index live saves only, with one
+  worker.
 
 ---
 
@@ -39,13 +43,12 @@ production code, tests or binding docs were changed.
 | HashName port; extractors address fields by readable name | C7, R5 F1 | 2.3 |
 | Extractor framework: registry, contexts, graceful degradation, privacy filter, normalisation | C9, R6 2.0 | 2.4 |
 | Fact schema v1 (owner's facts + top extras) and read-time derived views | C10, R6 sec 5 | 2.5 |
-| Lineage signals for D1 (31 core counters, VisitedSystems, context handling) | C15, R7 2.7 | 2.6 |
+| The `FactsProvider` contract D1's read model consumes | D1 2.10, review V-14 | 2.6 |
 | Lookup tables | C12, C13, R6 2.9 | 2.7 |
 | Execution: spawn worker pool, priorities, cancellation, POSIX fallback, UI progress contract | C11, C31, R5 F5 | 2.8 |
 | Per-machine sqlite cache | C8, section 6 | 2.9 |
 | Scheduling: first index, live first, new versions, on-demand deep decode | C10, R5 Q7 | 2.10 |
-| "What changed" against the lineage parent | C14, R5 F7 | 2.11 |
-| Owner check for D5's F7 (keyed digests, never raw ids) | D5 request | 2.4.5, 2.12 |
+| "What changed" against the recorded parent; nothing without one | C14, R5 F7, owner Q5 | 2.11 |
 
 ### 1.2 Non-goals
 
@@ -55,23 +58,24 @@ production code, tests or binding docs were changed.
 - Account-level facts (titles, unlocked specials in `accountdata.hg`; R6 2.1): not per save; a
   later per-account card (option O10).
 - Per-part or per-slot tables in the cache: deep detail is decoded on demand (C10).
-- UI layout and widgets (D6 Tk / D7 web); this design fixes only what a UI may call.
+- UI layout and widgets (D6); this design fixes only what a UI may call.
 - HGSAVEV2 decoding (no real sample exists; explicit "unsupported" result).
-- Lineage algorithms (D1) and live writes (D5); the index only supplies signals and checks.
+- Lineage (D1) and live writes (D5). The index supplies no lineage evidence: parents come only
+  from D1's recorded, observed and "seen in backups" links, never from content.
+- Ownership: no platform account id is read, compared or stored (owner Q6).
 
 ### 1.3 Dependencies (who calls whom)
 
 | Party | Gives D4 | Takes from D4 | Phase |
 |---|---|---|---|
-| D1 core model | `vid`s (scanner, journal), `vault_id`, `platform.user_cache_dir(host)` (D1 2.4), `VersionLocator.open(vid) -> OpenedVersion(data, meta_plain, platform, meta_format, location)` with sha256 verified | `view(vid)` for `Line.facts` and `facts:<name>` sort keys; `changes(child, parent)` for automatic descriptions (C19); `is_milestone(child, parent)` for key versions; `lineage_signals(vid)` for the content classifier (D1 2.8) | 3 (signals used in 4) |
-| D2 / D3 storage | implement `open()`; D2: "D4 reads bytes only through `open()`" | nothing | 3 |
-| D5 live operations | requests after operations | `owner_status(vid, platform, account_id)` for F7; `request(new vids, NEW)`; the index never blocks an operation | 3 |
-| UI (D6 / D7) | user actions (open a version card, rebuild) | `view`, `card`, `changes`, `deep`, `progress`, `events_since` - all non-blocking | 3 |
+| D1 core model | `vid`s (scanner, journal), `vault_id`, `platform.user_cache_dir(host)` (D1 2.4), the vault-level `VersionLocator` (D1's composite: D3 store first, legacy folders until fold) with `open(vid) -> OpenedVersion(data, meta_plain, platform, meta_format, location)`, sha256 verified; `request(...)` calls after each refresh | the `FactsProvider` subset (2.6): `view(vid)` for `Line.facts` and `facts:<name>` sorting (`FactsView.numbers`); `changes(child, parent)` for automatic descriptions (C19); `is_milestone(child, parent)` for key versions | 3 |
+| D3 version store | implements `open()` for store entries; D4 reads bytes only through `open()` | nothing | 3 |
+| D5 live operations | `request(new vids, NEW)` after an operation | nothing; the index never blocks an operation | 3 |
+| UI (D6) | user actions (open a version card, rebuild) | `view`, `card`, `changes`, `deep`, `progress`, `events_since` - all non-blocking | 3 |
 | Front-ends (`gui.py`, `cli.py`) | the execution policy (OS-dependent, computed in `core/platform.py`) | `IndexService` lifecycle | 3 |
 
 Phasing (01-consolidation section 5): decoder fixes are Phase 0 (P8); the index engine is
-Phase 3; deep on-demand detail is Phase 3b; D1's content classifier consumes the lineage signals
-in Phase 4.
+Phase 3; deep on-demand detail is Phase 3b.
 
 ---
 
@@ -89,8 +93,8 @@ in Phase 4.
 | `core/index/__init__.py` | new | public API re-exports | - | no |
 | `core/index/schema.py` | new | TypedDicts, `SCHEMA_VERSION`, `EXTRACTOR_VERSION`, `DECODER_VERSION`, `validate()` | - | no |
 | `core/index/nodes.py` | new | `get()` / `items()` by readable name, normalisers | `hashname`, `privacy` | no |
-| `core/index/privacy.py` | new | deny list, `OwnerScope`, guard, privileged accessors, owner digests | `hashname` | no |
-| `core/index/extract/` | new | `__init__` (registry, `run_extractors`), `save.py`, `progression.py`, `bases.py`, `fleet.py`, `companions.py`, `inventories.py`, `stats.py`, `lineage.py` | `nodes`, `lookups.parts` | no |
+| `core/index/privacy.py` | new | deny list, the one privileged accessor (`owner_platform`) | `hashname` | no |
+| `core/index/extract/` | new | `__init__` (registry, `run_extractors`), `save.py`, `progression.py`, `bases.py`, `fleet.py`, `companions.py`, `inventories.py`, `stats.py` | `nodes`, `lookups.parts` | no |
 | `core/index/lookups/` | new | `galaxies`, `missions`, `ships`, `seasons`, `journey`, `parts`, `creatures`, `_overrides` | - | no |
 | `core/index/derive.py` | new | read-time `FactsView` / `FactsCard` from raw facts + lookups | `lookups` | no |
 | `core/index/changes.py` | new | fact diff, noise rules, templates, `is_milestone` | `derive` | no |
@@ -99,14 +103,14 @@ in Phase 4.
 | `core/index/cache.py` | new | `IndexCache` (sqlite3, WAL, writer thread, read LRU, recovery) | `sqlite3` | no |
 | `core/index/service.py` | new | `IndexService` facade (implements D1's `FactsProvider`) | all above | no |
 | `cli.py` | +subcommand | `nmsvault index status / build / show / changes` | `core.index` | (front-end) |
-| `tools/gen_lookups.py` | new, dev-only | regenerates `core/index/lookups/*.py` from an unpacked game dump | anything (D6 rule) | n/a |
+| `tools/gen_lookups.py` | new, dev-only | regenerates `core/index/lookups/*.py` from an unpacked game dump | anything (DESIGN.md D6) | n/a |
 | `tools/bench_index.py` | new, dev-only | reproduces the performance numbers in 2.14 | - | n/a |
 
 The package path `nms_save_vault.core.index` matches D1's `nms_save_vault.core.organizer`. The
 decoder pieces stay flat in `core/` because they are save-format code used outside the index
 (`playtime`, `tools/nms_visit_history.py`). Only `core/platform.py` (already the per-OS module,
 where D1 also adds `user_cache_dir`) decides OS-dependent execution; `core/index` receives the
-decision as an argument (D7: environment as arguments).
+decision as an argument (DESIGN.md D7: environment as arguments).
 
 ### 2.2 Decoder work in core (P8)
 
@@ -337,7 +341,6 @@ class SaveInput:
     root: dict                        # parsed root (obfuscated keys)
     common: dict | None               # CommonStateData, or None (pre-context)
     layout: Literal["context", "pre-context"]
-    owner: "OwnerScope"               # privacy scope (2.4.5), worker memory only
 
 @dataclass(frozen=True)
 class CtxInput:
@@ -356,12 +359,11 @@ class Extractor:
 def save_extractor(name: str, fields: tuple[str, ...]): ...      # decorator
 def context_extractor(name: str, fields: tuple[str, ...]): ...   # decorator
 
-def run_extractors(decoded: DecodedSave, *, owner_key: bytes) -> tuple["VersionFacts", dict[str, "LineageRow"]]:
+def run_extractors(decoded: DecodedSave) -> "VersionFacts":
     """Runs every save extractor once and every context extractor per context. Each call is
     isolated: an exception blanks that extractor's fields, appends
     {"extractor": "<ctx>.<name>", "error": "<Type>: <message, max 200 chars>"} and sets status
-    'partial'. Then validate() against schema v1 (undeclared keys dropped and reported), then
-    the privacy guard (2.4.5)."""
+    'partial'. Then validate() against schema v1 (undeclared keys dropped and reported)."""
 ```
 
 One global `EXTRACTOR_VERSION` (int) is bumped by any change to extractor output; per-extractor
@@ -374,21 +376,19 @@ of ~43 s CPU for the whole vault).
 |---|---|---|---|
 | `save_basics` | save | `json_version`, `active_context`, `save_name`, `play_time_s`, `pid_in_data` | pre-context: from `PlayerStateData` |
 | `season` | save | `season` | milestones with embedded targets (2.5.4) |
-| `discoveries` | save | `discoveries`, `newest_disc_ts` | store counts by type; `newest_disc_ts` via privileged accessor |
-| `owners` | save | `owner_digests` | keyed digests only (2.4.5) |
+| `discoveries` | save | `discoveries` | store counts by type |
 | `ctx_basics` | context | `game_mode`, `timestamp`, `galaxy`, `summary`, `units`, `nanites`, `quicksilver`, `glyphs`, `nexus`, `title`, `teleporters`, `known_tech` | |
 | `difficulty` | context | `difficulty` | |
 | `words` | context | `words` | race order 0 Gek, 1 Vy'keen, 2 Korvax, 4 Atlas, 8 Autophage |
 | `products` | context | `known_products`, `legacy_known` | 89 legacy ids (extraction-time constant) |
 | `missions` | context | `missions` | raw progress of curated ids (2.5.3) |
-| `stats` | context | `stats` | ~56 curated `^GLOBAL_STATS` ids incl. the 31 core counters |
-| `bases` | context | `bases`, `exocraft_bays` | ownership filter, identity, legacy placed, layout hash |
+| `stats` | context | `stats` | ~56 curated `^GLOBAL_STATS` ids (2.5.3) |
+| `bases` | context | `bases`, `exocraft_bays` | own base types only, identity, legacy placed, layout hash |
 | `ships` | context | `ships`, `archived_ships` | |
 | `companions` | context | `companions`, `eggs`, `pet_slots` | |
 | `fleet` | context | `freighter`, `frigates`, `multitools` | |
 | `settlements` | context | `settlements` | |
 | `inventories` | context | `inventories` | digests only (2.5.5) |
-| `lineage` | context | (lineage row, not a fact) | `visited`, core counters, time, season number |
 
 #### 2.4.4 Graceful degradation
 
@@ -406,38 +406,22 @@ of ~43 s CPU for the whole vault).
 Ownership blocks hold platform account ids and usernames: base `Owner{UID, LID, USN, PTK, TS}`,
 base `LastEditedById` / `LastEditedByUsername` / `PlatformToken`, discovery `OWS`, pet
 `SenderData`, `CommonStateData.UsedDiscoveryOwnersV2`, account `BlockList` (R6 2.0, R8; D4
-VERIFIED the base keys). The index never persists any of them. Four layers:
+VERIFIED the base keys). The index reads none of them, so none can be persisted (owner Q6: no
+ownership ids are processed). Three layers:
 
 1. **Deny list in the accessor.** `DENIED = {"Owner", "OWS", "SenderData",
    "UsedDiscoveryOwnersV2", "LastEditedById", "LastEditedByUsername", "PlatformToken", "UID",
    "LID", "USN", "BlockList", "RID"}`. `get()` raises `PrivacyError` when a path contains one of
-   them. Only three privileged accessors in `privacy.py` read inside them, and each returns only
-   what it is allowed to:
-   - `owner_platforms(base) -> str | None` - `Owner.PTK` only (`"ST"`, `"XB"`, ...; a platform
-     code, not an id);
-   - `own_discovery_newest_ts(records, scope) -> int | None` - the newest `OWS.TS` among
-     records whose owner is one of the save's own identities (compared in memory);
-   - `owner_digests(common, owner_key) -> list[{"ptk", "digest"}]` - for each
-     `UsedDiscoveryOwnersV2` entry, `HMAC-SHA256(owner_key, f"{PTK}:{UID}")[:16]` hex.
+   them. One privileged accessor in `privacy.py` reads inside them:
+   `owner_platform(base) -> str | None` returns `Owner.PTK` only (`"ST"`, `"XB"`, ...; a
+   platform code, not an id) for the bases' `ptk` fact.
 2. **Schema whitelist.** Facts are built only from declared fields; `validate()` drops any
    undeclared key (so "dump a subtree" mistakes cannot leak).
-3. **Targeted runtime guard.** `OwnerScope` collects, in worker memory only, the save's own
-   identities: `UID` / `LID` / `USN` from own bases' `Owner` and `LastEditedBy*`, and from
-   `UsedDiscoveryOwnersV2`. After extraction, every free-text fact (`save_name`, `summary`,
-   base / ship / companion / freighter / multitool names, settlement names) that contains an
-   own `UID`/`LID` digit string or equals an own `USN` is replaced by `""` and reported as
-   `privacy: value withheld`. VERIFIED: 0-1 ms per version, 0 values withheld on 195 versions.
-   Rejected: scanning the whole tree for ids (800+ foreign ids from discovery records, false
-   positives on hex seeds, 137 ms per big save; VERIFIED).
-4. **Nothing else crosses the boundary.** The index never receives the live folder name
+3. **Nothing else crosses the boundary.** The index never receives the live folder name
    (`account_key`), paths or meta plaintext of other versions; errors are truncated messages
    without values or paths; `External*` bases contribute only a count.
 
-`owner_key` is 32 random bytes created with the cache (`secrets.token_bytes`) and stored in the
-cache's `meta` table; it is never exported. Digests answer D5's F7 question ("is this the same
-person?") without storing an id (R6: "hash or drop"): see `owner_status()` in 2.12. A rebuilt
-cache gets a new key and recomputes every digest, so digests can never be compared across
-machines or caches.
+Free text (save, base, ship and companion names) is the player's own text and is kept as typed.
 
 #### 2.4.6 Normalisation (`core/index/nodes.py`)
 
@@ -445,7 +429,7 @@ machines or caches.
 |---|---|---|
 | `u32(v)` | `v & 0xFFFFFFFF` for ints | `Units` is stored signed: -1 = 4,294,967,295 (R6 VERIFIED) |
 | `u64(v)` | `"0x.."` string or int -> int, masked to 64 bits | addresses come as strings and ints in one list (R6: 250 / 148) |
-| `hex64(v)` | `"0x%016X"` | 64-bit values stay exact in JavaScript (D7 web UI) and JSON |
+| `hex64(v)` | `"0x%016X"` | 64-bit values stay exact in JSON (`--json` output) and in every reader of it |
 | `galaxy_of(addr)` | `(u64(addr) >> 32) & 0xFF` | base `GalacticAddress` layout (R6 2.7, 357/357 VERIFIED) |
 | `text(v, limit=128)` | strip `<...>` markup, surrogates -> U+FFFD, trim, truncate | `<PET1>The Hangar</>` (R6); sqlite TEXT must be valid UTF-8 |
 | `gid(v)` | `text(v)` minus a leading `^` | game ids `^ACT1_STEP1`, `^T_WALLM_H`; ids are stored without `^` |
@@ -496,8 +480,6 @@ class SaveFacts(TypedDict):
     pid_in_data: str | None              # SaveUniversalId, '0x%016X' (D1 consistency check)
     season: SeasonFacts | None
     discoveries: dict                    # {"total": int, "by_type": {"Planet": int, ...}}
-    newest_disc_ts: int | None           # newest discovery owned by the player (display only)
-    owner_digests: list[dict]            # [{"ptk": "ST", "digest": "<16 hex>"}] - never displayed
 
 class OwnBase(TypedDict):
     id: str                              # stable identity (2.5.2)
@@ -593,11 +575,19 @@ the vault: median 8.4 KB, max 26 KB per version, 2.27 MB for all 195.
   are captured without an extractor change; a new chain prefix bumps `EXTRACTOR_VERSION`.
 - `missions.version` = `MissionVersion` (selects the final-stage values at read time),
   `missions.current` = `CurrentMissionID`.
-- `stats` keeps these `^GLOBAL_STATS` ids (without `^`): the 31 core lineage counters (2.6) plus
-  `WORDS_LEARNT DISC_CREATURES DISC_FLORA DISC_MINERALS DEATHS SENTINEL_KILLS TRA_STANDING
-  WAR_STANDING EXP_STANDING BUI_STANDING TGUILD_STAND WGUILD_STAND EGUILD_STAND PIRATE_STAND
-  STATIONS_OWNED PETS_ADOPTED SHIPS_BOUGHT FRIGATES EXPEDITIONS MONEY JM JM_BANKED ATLAS_PATH
-  ATLAS_LOOPS HOME_REALITY` (~1.2 KB per context, VERIFIED).
+- `stats` keeps these `^GLOBAL_STATS` ids (without `^`), ~1.2 KB per context (VERIFIED):
+  - 31 counters that never decrease along a known parent step (R7 2.7; VERIFIED by D4 on 179
+    steps): AMMO_FIRED APP_SESSIONS COMM_09_DAY DISC_PLANETS DISC_RARE_SYS DISC_SYSTEMS DIST_FLY
+    DIST_JETPACK DIST_PULSE DIST_WALKED DIST_WARP ESEEN_SYSTEMS EXTREME_WALK ITEMS_TELEPRT
+    LONGEST_LIFE MONEY_EVER MP_FULL_COUNT MP_FULL_TIME MP_SESSIONS NANITES_EVER PARTS_PLACED
+    PLAY_SESSIONS PORTAL_WARPS RES_EXTRACTED SHIP_SUMMON STORM_WALK TIME TIMES_IN_SPACE
+    TSEEN_SYSTEMS VISIT_PLANETS WSEEN_SYSTEMS;
+  - `WORDS_LEARNT DISC_CREATURES DISC_FLORA DISC_MINERALS DEATHS SENTINEL_KILLS TRA_STANDING
+    WAR_STANDING EXP_STANDING BUI_STANDING TGUILD_STAND WGUILD_STAND EGUILD_STAND PIRATE_STAND
+    STATIONS_OWNED PETS_ADOPTED SHIPS_BOUGHT FRIGATES EXPEDITIONS MONEY JM JM_BANKED ATLAS_PATH
+    ATLAS_LOOPS HOME_REALITY`.
+  Stats that do decrease are never reported as changes (N15): BIG_FALL COMM_09_ODD_DAY
+  COMM_CONTRIBUTE DEV_NOTES EXP_STANDING MEDITATION SPACE_TIME VISIT_EXT_BASE.
 
 #### 2.5.4 Expedition milestones (rule replaced)
 
@@ -638,6 +628,7 @@ class FactsView:
     primary: Literal["base", "expedition"] | None
     active: Literal["base", "expedition"] | None      # which context the game loads
     save_name_in_data: str
+    pid_in_data: str | None              # SaveUniversalId '0x%016X' (D1's id consistency check)
     # owner's facts (primary context)
     story: tuple[int, int] | None        # Artemis Path (done, 30)
     story_ending: str | None             # "new galaxy" | "stayed" | None
@@ -686,47 +677,31 @@ not started; ending choices), expedition milestones (value / amount / optional),
 key settings, freighter and frigates, multitools, settlements, exocraft bays, words per race,
 selected stats with labels, inventory fill per container, and the version's errors.
 
-### 2.6 Lineage signals for D1
+### 2.6 The `FactsProvider` contract for D1
+
+D1 declares the protocol its read model consumes (D1 2.10); `IndexService` (2.12) implements it
+with exactly these names and types, and the front end passes the service to `ReadModel.build` as
+`facts`:
 
 ```python
-@dataclass(frozen=True)
-class CtxSignals:
-    core: Mapping[str, float]       # the 31 ids below, without '^'; a missing stat is absent (D1: 0)
-    time: float | None              # stat TIME
-    visited: tuple[int, ...]        # VisitedSystems as u64, file order, <= 512, last entry kept
-    season_number: int | None       # expedition context: SeasonData.SeasonNumber; base: None
-
-@dataclass(frozen=True)
-class LineageSignals:
-    vid: str
-    pid_in_data: str | None         # '0x%016X'
-    play_time_s: int | None
-    active_context: Literal["Main", "Season"] | None
-    contexts: Mapping[Literal["base", "expedition"], CtxSignals]
-    newest_disc_ts: int | None      # save-level (one discovery store serves both contexts)
+class FactsProvider(Protocol):
+    def view(self, vid: Vid) -> FactsView | None: ...
+    def changes(self, child: Vid, parent: Vid, *,
+                edge_kind: str | None = None) -> ChangeSet | None: ...
+    def is_milestone(self, child: Vid, parent: Vid) -> bool | None: ...
+    def request(self, vids: Iterable[Vid], priority: Priority) -> int: ...
 ```
 
-Core counters (VERIFIED by D4 and by D1 independently from R7's data: never decrease on the 179
-known ancestor steps, rise in >= 20 % of them): AMMO_FIRED APP_SESSIONS COMM_09_DAY DISC_PLANETS
-DISC_RARE_SYS DISC_SYSTEMS DIST_FLY DIST_JETPACK DIST_PULSE DIST_WALKED DIST_WARP ESEEN_SYSTEMS
-EXTREME_WALK ITEMS_TELEPRT LONGEST_LIFE MONEY_EVER MP_FULL_COUNT MP_FULL_TIME MP_SESSIONS
-NANITES_EVER PARTS_PLACED PLAY_SESSIONS PORTAL_WARPS RES_EXTRACTED SHIP_SUMMON STORM_WALK TIME
-TIMES_IN_SPACE TSEEN_SYSTEMS VISIT_PLANETS WSEEN_SYSTEMS. Stats that do decrease (never used as
-signals and never reported as changes): BIG_FALL COMM_09_ODD_DAY COMM_CONTRIBUTE DEV_NOTES
-EXP_STANDING MEDITATION SPACE_TIME VISIT_EXT_BASE.
+| Call | Rule |
+|---|---|
+| `view` | cache read, < 1 ms, never queues work; `None` = not indexed yet or index off, and D1 shows meta-level columns |
+| sorting by `facts:<name>` | D1 sorts by `view.numbers.get(name)`; versions without a view or without that number sort last. `numbers` holds every numeric `FactsView` field by its field name; pairs such as `story` and `atlas` by their done count |
+| `changes` | only for a drawn edge (recorded, observed, "seen in backups" or owner); `edge_kind` is D1's kind (`play`, `touch`, `edit`, `unknown`); `None` = one of the two versions is not indexed yet (both are then queued at NEW). D1 never calls it for a version without a parent (2.11.1) |
+| `is_milestone` | `True` when the change set has an item of weight >= 85; `None` while either version is not indexed |
+| `request` | queues; returns how many vids were newly queued. D1's facade after each refresh: LIVE = live members, TIP = line representatives and branch tips, NEW = vids first seen since the last run, BACKFILL = every other version, once per session. INTERACTIVE comes only from an opened version card or compare view, never from a read-model build, so the reserved worker stays free for the owner |
 
-`VisitedSystems` is a variable-length list (1 entry in a fresh save, 512 when full; no filler
-entries in the samples checked, VERIFIED), stored as packed little-endian u64 in the cache
-(<= 4 KB per context; 318 KB for the vault). The "digest" for the extension test is the sequence
-itself: the test aligns `X[:-1]` element by element at every shift `d`, which no fixed-size hash
-can answer, and per-prefix hash lists would be larger than the 8-byte entries they replace. D1 applies the extension test and the
-replaced-expedition rule (`season_number` differs, or expedition `time` fell while base `time`
-did not).
-
-VERIFIED sufficiency (`D4WD\scripts\validate_lineage.py`): R7's classifier rerun on **only** the
-signals stored in the D4 cache reproduces R7 exactly - 179/179 known ancestor steps accepted, 13
-reversed pairs accepted (the external edits), 1,340 intra-identity pairs, 6 incomparable (the
-Creative Primary fork).
+`card`, `facts`, `deep`, `status` and the progress calls (2.12) are for the UI and the CLI, not
+part of the protocol.
 
 ### 2.7 Lookup tables (C12)
 
@@ -814,7 +789,7 @@ def index_execution_policy(host: Host, *, portable_kit: bool, cpu_count: int | N
 ```
 
 The front-end (`gui.py` / `cli.py`, allowed to know the environment) calls it and passes the
-result into `IndexService` (D7). `core/index` never inspects the OS.
+result into `IndexService` (DESIGN.md D7). `core/index` never inspects the OS.
 
 #### 2.8.2 Process pool
 
@@ -837,7 +812,6 @@ class IndexJob:                       # pickled to the worker
     kind: Literal["facts", "deep"]
     data: bytes                       # verbatim data-file bytes from VersionLocator.open()
     bare_size_hint: int | None        # Xbox meta size field (0x10) for pre-4.52 unframed blocks
-    owner_key: bytes                  # 32 bytes, for owner digests
     extractor_version: int
 
 @dataclass(frozen=True)
@@ -847,8 +821,6 @@ class IndexResult:
     actual_sha256: str                # computed by the worker over job.data
     status: Literal["ok", "partial", "corrupt", "unsupported", "error", "mismatch"]
     facts: dict | None                # VersionFacts
-    lineage: dict[str, tuple[str, bytes, float | None, int | None]] | None
-                                      # ctx -> (core JSON, visited u64 bytes, time, season number)
     deep: dict | None
     timings_ms: dict[str, int]        # hash, decode, parse, extract
     error: str | None                 # sanitised
@@ -859,8 +831,9 @@ def run_job(job: IndexJob) -> IndexResult:
 ```
 
 Bytes travel to the worker through the pool's pipe (largest real save 6.3 MB; INFERRED
-~5-10 ms). D1's `Location` has no path and D2 requires reads through `open()`, so the parent's
-dispatcher thread calls `open(vid)` (sha256 verified there; D3 measured 1.43 ms for 2.1 MB) and
+~5-10 ms). D1's `Location` has no path and the storage layer requires reads through `open()`, so
+the parent's dispatcher thread calls `open(vid)` (sha256 verified there; D3 measured 1.43 ms for
+2.1 MB) and
 the worker re-hashes (4 ms for 6 MB) so the cache key is always the hash of the bytes actually
 decoded (invariant I2).
 
@@ -892,8 +865,8 @@ Budget: the owner's largest save needs ~170 MB of heap (R5: 151 MB for 18.2 MB J
 #### 2.8.4 Writer (parent)
 
 One daemon thread `index-write` owns the only sqlite write connection (the parent process is the
-only cache writer, C11). For each result: one transaction (version row + context rows + lineage
-rows, or a failure row), commit, update the progress snapshot, append an `IndexEvent`. A killed
+only cache writer, C11). For each result: one transaction (version row + context rows, or a
+failure row), commit, update the progress snapshot, append an `IndexEvent`. A killed
 worker or app loses only in-flight versions (R5 F5.3). The writer never touches UI objects.
 
 #### 2.8.5 Thread mode (POSIX kits until verified) and "off"
@@ -928,13 +901,11 @@ class IndexEvent:
 
 - `progress()` returns an immutable snapshot replaced under a lock: O(1), never waits on work.
 - `events_since(seq, limit=500)` reads a ring of the last 2,000 events: one consumer model for
-  Tk and for HTTP clients.
+  the Tk poller and the CLI's progress lines.
 - Tk (D6): `root.after(250, poll)`; `poll` reads `events_since(last_seq)`, refreshes only rows
   whose `vid` changed (`view(vid)` is a < 1 ms read), updates the status line from `progress()`,
   and reschedules. No Tk call ever happens off the Tk thread.
-- Web (D7): `GET /api/index/progress` returns `IndexProgress` as JSON; `GET
-  /api/index/events?since=N` returns events (polled every 0.5-1 s, or long-poll); facts endpoints
-  return `FactsView.to_dict()` / `FactsCard.to_dict()` (64-bit values are strings).
+- `--json` output uses `FactsView.to_dict()` / `FactsCard.to_dict()` (64-bit values are strings).
 - Nothing a UI calls decodes a save; decoding happens only in workers (C31).
 
 ### 2.9 Cache
@@ -959,7 +930,7 @@ PRAGMA synchronous = NORMAL;
 PRAGMA foreign_keys = ON;
 
 CREATE TABLE meta (k TEXT PRIMARY KEY, v TEXT NOT NULL);
--- schema=1, created=<unix>, app_version, vault_id, owner_key=<64 hex>, last_open=<unix>
+-- schema=1, created=<unix>, app_version, vault_id, last_open=<unix>
 
 CREATE TABLE version (
   vid                 TEXT PRIMARY KEY CHECK (length(vid) = 64),
@@ -992,16 +963,6 @@ CREATE TABLE context (
   PRIMARY KEY (vid, ctx)
 );
 
-CREATE TABLE lineage (
-  vid           TEXT NOT NULL REFERENCES version(vid) ON DELETE CASCADE,
-  ctx           TEXT NOT NULL,
-  core          TEXT NOT NULL,              -- JSON {id: number}, 31 ids
-  time          REAL,
-  season_number INTEGER,
-  visited       BLOB NOT NULL,              -- packed little-endian u64, file order
-  PRIMARY KEY (vid, ctx)
-);
-
 CREATE TABLE failure (                      -- transient problems, never facts
   vid TEXT PRIMARY KEY, attempts INTEGER NOT NULL, last_error TEXT NOT NULL,
   last_at INTEGER NOT NULL, kind TEXT NOT NULL   -- unavailable | mismatch | worker-died | timeout
@@ -1030,7 +991,7 @@ cheap ad-hoc queries and the CLI). Python 3.10+ `sqlite3` is enough on every pla
 |---|---|
 | `EXTRACTOR_VERSION` bump | rows stay readable with `FactsView.stale = True`; re-queued at REFRESH |
 | `DECODER_VERSION` bump (e.g. HGSAVEV2 support) | only rows with status `corrupt` / `unsupported` / `error` re-queued |
-| cache layout change (schema major) | new file `index-v2.sqlite`; the old file is left for older app versions (downgrade-safe) and deleted after 90 days unused |
+| cache layout change (schema major) | new file `index-v2.sqlite`, filled by a full rebuild; the old file is deleted (derived data, C8) |
 | lookup tables change | nothing (read time) |
 | owner "Rebuild content index" | rows deleted, everything queued (the ~12 s / ~1 min first-index cost) |
 | vid unknown to every location for 180 days (`last_seen`) | row deleted by GC at startup |
@@ -1048,9 +1009,9 @@ cheap ad-hoc queries and the CLI). Python 3.10+ `sqlite3` is enough on every pla
 
 #### 2.9.6 Size
 
-VERIFIED (`D4WD\db\facts-w4.sqlite`, all 195 versions): 3.24 MB (facts 2.27 MB, lineage
-0.49 MB, rest overhead) = ~17 KB per version. 1,000 versions ~17 MB; 10,000 ~170 MB (INFERRED,
-linear).
+VERIFIED (`D4WD\db\facts-w4.sqlite`, all 195 versions): 3.24 MB including a lineage table of
+0.49 MB that this design no longer has (facts 2.27 MB, rest overhead). Without it ~2.75 MB =
+~14 KB per version; 1,000 versions ~14 MB; 10,000 ~140 MB (INFERRED, linear).
 
 ### 2.10 Scheduling
 
@@ -1082,8 +1043,7 @@ the current extractor version is never queued again.
 | The game is running (`safety.is_game_running()` True or None) | 1 worker; BACKFILL and REFRESH paused (O11) |
 | Index setting "off" | nothing |
 
-The index never blocks or delays an operation (invariant I8); D5 reads `owner_status()` and gets
-`"unknown"` when the version is not indexed yet.
+The index never blocks or delays an operation (invariant I8).
 
 #### 2.10.3 Expected times on the owner's vault
 
@@ -1141,21 +1101,24 @@ class ChangeSet:
     def top(self, n: int = 3) -> tuple[Change, ...]: ...
     def lines(self, n: int | None = None) -> list[str]: ...   # header + item texts (section 6's list[str])
 
-def changes(child: VersionFacts, parent: VersionFacts, *, edge_kind: str | None = None,
-            from_platform: str | None = None) -> ChangeSet: ...
+def changes(child: VersionFacts, parent: VersionFacts, *,
+            edge_kind: str | None = None) -> ChangeSet: ...
 def is_milestone(cs: ChangeSet) -> bool: ...   # any item with weight >= 85
 ```
 
-The parent is always D1's lineage parent (C14, rule N1); the index never guesses one. Cost
-VERIFIED: 64 real lineage steps in 15 ms (0.24 ms each).
+The parent is always D1's drawn parent: a recorded, observed, "seen in backups" or owner link
+(C14, rule N1). The index never chooses one, and nothing replaces a missing one: a version with
+no recorded parent gets no change set, and the UI shows "no recorded parent" (owner Q5; the text
+comes from D1's read model). A comparison with the previous version by date is never made (N1).
+Cost VERIFIED: 64 real lineage steps in 15 ms (0.24 ms each).
 
 #### 2.11.2 Algorithm
 
 1. Both versions must be indexed (else `None`, and both are requested at NEW).
-2. Header from the play-time delta `dt` and D1's edge kind: `edit` -> "edited outside the game";
-   `cross-save` -> "came over from Steam" / "from Xbox"; otherwise `dt >= 360 s` -> "+X.Y h
-   played"; else, when no item survives the rules, "no progress (re-saved)" (dt = 0) or "+N min
-   played, nothing indexed changed".
+2. Header from the play-time delta `dt` and D1's edge kind (`play`, `touch`, `edit`,
+   `unknown`): `edit` -> "edited outside the game"; otherwise `dt >= 360 s` -> "+X.Y h played";
+   else, when no item survives the rules, "no progress (re-saved)" (dt = 0) or "+N min played,
+   nothing indexed changed".
 3. Pair contexts like for like (base with base, expedition with expedition); apply N8/N9 first.
 4. Emit items per fact family (2.11.4), apply the noise rules (2.11.3), sort, and keep all items
    (the UI shows `top(3)` in lists and everything on the card).
@@ -1164,7 +1127,7 @@ VERIFIED: 64 real lineage steps in 15 ms (0.24 ms each).
 
 | # | Rule | Evidence |
 |---|---|---|
-| N1 | Compare with the lineage parent only, never with the previous version by time | R5 F7: by-time order made 8 bases "gone" then "new" again |
+| N1 | Compare with the drawn parent only, never with the previous version by time; no parent, no diff | R5 F7: by-time order made 8 bases "gone" then "new" again |
 | N2 | Own bases only; `External*` never enter facts; orphan corvette layouts and `UITempShipBase` excluded | R5 F7, R6 2.3 |
 | N3 | Base identity by type (freighter singleton, corvette by ship slot, others by address + position), then a second pass re-matches unmatched new/gone bases by (type, name, galaxy) | VERIFIED: without it nearly every step showed the freighter and corvette layouts as "gone" + "new"; the second pass removed an "Iaoyun Prime" gone/new flip |
 | N4 | Ignore object `Timestamp` / `UserData` churn: compare part counts and the ObjectID histogram | VERIFIED: ~5,500 timestamps change per save |
@@ -1313,26 +1276,21 @@ class IndexService:
                  game_running: Callable[[], bool | None] = safety.is_game_running,
                  clock: Callable[[], float] = time.time) -> None: ...
 
-    # D1 FactsProvider (all non-blocking: cache reads only)
+    # D1 FactsProvider (2.6; all non-blocking: cache reads or queueing only)
     def view(self, vid: str) -> FactsView | None: ...
-    def views(self, vids: Iterable[str]) -> dict[str, FactsView]: ...
-    def lineage_signals(self, vid: str) -> LineageSignals | None: ...
-    def changes(self, child: str, parent: str, *, edge_kind: str | None = None,
-                from_platform: str | None = None) -> ChangeSet | None: ...
+    def changes(self, child: str, parent: str, *,
+                edge_kind: str | None = None) -> ChangeSet | None: ...
     def is_milestone(self, child: str, parent: str) -> bool | None: ...
+    def request(self, vids: Iterable[str], priority: Priority) -> int: ...   # newly queued
 
-    # facts and cards
+    # facts and cards (UI, CLI)
+    def views(self, vids: Iterable[str]) -> dict[str, FactsView]: ...
     def facts(self, vid: str) -> VersionFacts | None: ...
     def card(self, vid: str) -> FactsCard | None: ...
     def status(self, vid: str) -> Literal["not-indexed", "queued", "running", "ok", "partial",
                                           "corrupt", "unsupported", "unreadable", "stale"]: ...
-    def owner_status(self, vid: str, platform: Literal["steam", "xbox"],
-                     account_id: str) -> Literal["same", "other", "unknown"]: ...
-        # D5 F7: HMAC(owner_key, f"{ST|XB}:{account_id}") in save.owner_digests -> "same";
-        # digests present but no match -> "other"; not indexed / no owner list (pre-Waypoint) -> "unknown"
 
     # scheduling
-    def request(self, vids: Iterable[str], priority: Priority) -> int: ...   # newly queued
     def request_deep(self, vid: str) -> None: ...
     def deep(self, vid: str) -> DeepFacts | None: ...                        # None until ready
     def rebuild(self) -> None: ...
@@ -1352,8 +1310,12 @@ CLI (`cli.py`, read-only towards the vault, D1 decision 7):
 nmsvault index status                       counts by status, stale rows, cache size, policy
 nmsvault index build [--workers N] [--rebuild] [--live-only]   foreground, progress lines
 nmsvault index show <ref> [--json] [--card]                    facts of a version (ref via D1 ReadModel.resolve)
-nmsvault index changes <child-ref> [<parent-ref>]              parent defaults to D1's lineage parent
+nmsvault index changes <child-ref> [<parent-ref>]              parent defaults to D1's drawn parent;
+                                                               none -> prints "no recorded parent"
 ```
+
+An explicit `<parent-ref>` is a comparison the owner asked for (like D6's compare view), not a
+parent; the output header names both versions.
 
 ### 2.13 Error handling and safety invariants
 
@@ -1378,7 +1340,8 @@ Invariants (each has a test, section 5):
 - **I2 Content addressing.** Facts are stored under the sha256 of the exact bytes decoded,
   computed in the worker.
 - **I3 Derived only (C8).** The cache holds no user-authored data; deleting it loses nothing.
-- **I4 Privacy.** No platform id, username or ownership block is persisted (2.4.5).
+- **I4 Privacy.** No platform id, username or ownership block is read or persisted; only the
+  platform code `PTK` (2.4.5).
 - **I5 Kill-safe.** Workers can be terminated at any moment; the parent commits one transaction
   per result.
 - **I6 No decoding on a UI thread (C31).** Every UI-facing method reads the cache only.
@@ -1395,12 +1358,11 @@ Invariants (each has a test, section 5):
 | Full first index, typical PC | <= 60 s | INFERRED 25-60 s |
 | One new version | <= 0.6 s here, <= 2 s typical | max 0.56 s VERIFIED |
 | Extraction per version (parsed tree) | <= 20 ms | max 14 ms VERIFIED |
-| Privacy guard | <= 2 ms | 0-1 ms VERIFIED |
 | `view()` / `facts()` on a UI thread | <= 1 ms warm | sqlite + JSON parse of <= 26 KB (INFERRED from R5's 8.6 ms for all 195) |
 | `changes()` | <= 1 ms | 0.24 ms VERIFIED |
 | Deep decode for a card | <= 1 s here, <= 2 s typical | decode + parse 0.56 s max VERIFIED |
 | Worker memory | <= 300 MB each | R5 VERIFIED 270 MB process peak for 18 MB JSON |
-| Cache size | ~17 KB per version | 3.24 MB / 195 VERIFIED |
+| Cache size | ~14 KB per version | 3.24 MB / 195 VERIFIED, minus the dropped lineage table (2.9.6) |
 | UI event-loop lateness while indexing (process mode) | idle-level (p99 < 15 ms) | R5 F5.1 VERIFIED (process pool p99 11.2 ms) |
 | Cancel | < 50 ms | `terminate()` 18 ms in the kit, R5 VERIFIED |
 
@@ -1408,9 +1370,10 @@ Invariants (each has a test, section 5):
 
 ## 3. Options (owner-facing choices in D4's scope)
 
-Each option is fully specified; the recommendation is the default the implementation builds.
+Decided: the owner accepted every default below (01-consolidation 4a, "Index display"). The
+implementation builds only the decided option; the others stay listed for the record.
 
-| # | Question | Options | Recommendation |
+| # | Question | Options | Decision |
 |---|---|---|---|
 | O1 | "Legacy base parts" (R6 Q1) | (a) parts from LEGACY STRUCTURES / LEGACY FREIGHTER MODULES placed in own bases; (b) (a) plus "still buildable" from known products, as two badges; (c) old bases (`OriginalBaseVersion` < 8) | **(b)** - C13; same cost as (a); (c) is a different concept, available on the card as "base created in an older format" |
 | O2 | Base-part scope (R6 Q2) | (a) planet bases only; (b) all own bases (planet, freighter, corvettes with a live ship, stations, outposts); (c) per-base table | **(b) for the column + (c) on the card**; the card also shows the planet-only total |
@@ -1418,14 +1381,13 @@ Each option is fully specified; the recommendation is the default the implementa
 | O4 | Companion names (R6 Q4) | (a) custom names only; (b) custom name, else creature type; (c) (b) plus eggs | **(b)**, with "+8 eggs" on the card |
 | O5 | Which context represents a save (R6 Q5) | (a) the context the game loads; (b) base, expedition as a badge with progress; (c) two rows | **(b)** - C9; expedition-only saves use the expedition |
 | O6 | Galaxy names (R6 Q6) | (a) embed the 256-name list; (b) game-data names 1-10, "Galaxy N" beyond; (c) port the name generator | **(a)** - C12; (c) is much more code for no extra benefit here |
-| O7 | Where game tables come from, and licensing (R6 Q7) | (a) small curated constants with English names, generated by a dev tool and reviewed; (b) ids only, raw fallbacks everywhere ("Galaxy 10", "Expedition #22", "BIGGS"); (c) read the installed game data at runtime (needs a pak/MBIN reader; not stdlib-friendly) | **(a)**; part and item names (deep view) stay ids until the owner says otherwise |
+| O7 | Where game tables come from, and licensing (R6 Q7) | (a) small curated constants with English names, generated by a dev tool and reviewed; (b) ids only, raw fallbacks everywhere ("Galaxy 10", "Expedition #22", "BIGGS"); (c) read the installed game data at runtime (needs a pak/MBIN reader; not stdlib-friendly) | **(a)**; part and item names (deep view) stay ids |
 | O8 | Milestone presentation (R6 Q8) | (a) chips (Story 30/30, Atlas 11/11, Sentinel, Autophage, Exp n/m); (b) full checklist per chain; (c) journey rank only | **(a) in lists + (b) on the card** |
 | O9 | Index depth (R6 Q9, C10) | (a) curated catalog only; (b) + per-base part histograms and inventories in the cache; (c) de-obfuscated copy per version | **(a) + on-demand deep decode** (C10); (b) costs ~100 KB per version for little gain; (c) up to 40 MB each |
 | O10 | Account-level facts (titles, unlocked specials) | (a) not in v1; (b) a per-account card from `accountdata.hg` | **(a)** now, (b) later if wanted |
 | O11 | Indexing while the game runs | (a) full speed; (b) one worker, live and new versions only; (c) pause until the game exits | **(b)** - live facts stay fresh without taking cores from the game |
 | O12 | CPU use / worker count | `auto` (2-4 workers: cores - 1, capped at 4; 1 on a 1-2 core PC), or a fixed 1-8, or off | **auto**, exposed as a setting |
 | O13 | Raw JSON viewer (R5 Q1-B) | (a) none; (b) bundle MBINCompiler's mapping (LGPL-3.0, 61 KB) for a viewer later | **(a)** in this phase |
-| O14 | Owner check for F7 (D5) | (a) keyed digests in the facts (fast, never raw ids); (b) decode on demand at Place time (~25-50 ms first chunk, nothing stored) | **(a)**; (b) stays available as a fallback for unindexed versions |
 
 R5 section 4 questions and where they were settled: Q1 key names -> C7 (HashName, no mapping
 file); Q2 decoder -> P8 slice copy (2.2); Q3 execution -> C11 spawn pool, thread mode only in
@@ -1471,12 +1433,11 @@ The cache is per machine by design. A vault opened from a USB drive or NAS on an
 gets a fresh local cache there (one first index). Notes, labels and lineage are in the vault
 store (D1), never in the cache, so nothing user-authored is lost or diverges.
 
-### 4.5 Older and newer app versions
+### 4.5 App upgrades
 
-Older apps never read the cache or the D4 tables. The cache file name carries its layout's
-major version, so a downgrade leaves a newer file untouched and an upgrade never misreads an
-older one. The decoder change is compatible with every existing caller (2.2.2). `DESIGN.md:118`
-and `msstore.py:22-24` are corrected in the same commit as the HGSAVEV2 change.
+The cache file name carries its layout's major version, so an upgrade never misreads an older
+file (2.9.4). The decoder change is compatible with every existing caller (2.2.2).
+`DESIGN.md:118` and `msstore.py:22-24` are corrected in the same commit as the HGSAVEV2 change.
 
 ### 4.6 POSIX
 
@@ -1529,7 +1490,7 @@ test (2.3.3); distinct keys for every name the extractors use.
   a running season (milestone targets embedded); expedition only; pre-context layout; legacy
   parts placed and known; orphan corvette layout; `External*` and `UITempShipBase` bases; two
   bases on one planet; `Units = -1`; addresses as strings and ints; markup in names; an invalid
-  UTF-8 byte inside a product id; an empty `VisitedSystems`; settlement claimed; inventories.
+  UTF-8 byte inside a product id; settlement claimed; inventories.
 - Degradation: fault injection (a registered extractor that raises) -> status `partial`, its
   fields absent, all others identical to the golden output.
 - Normalisers: unit tests per helper.
@@ -1538,10 +1499,10 @@ test (2.3.3); distinct keys for every name the extractors use.
 
 A fixture whose `Owner`, `OWS`, `SenderData`, `UsedDiscoveryOwnersV2`, `LastEditedBy*` and
 `PlatformToken` carry sentinel values (`"SENTINEL-UID-000000001"`, `"SENTINEL_USERNAME"`,
-`"0xDEAD..."`): the serialised facts, lineage rows, errors and cache file bytes contain none of
-them; `get(..., "Owner")` raises `PrivacyError`; a base named exactly like the sentinel username
-is withheld; owner digests differ between two caches (different keys) and `owner_status()`
-answers `same` / `other` / `unknown` correctly.
+`"0xDEAD..."`): the serialised facts, errors and cache file bytes contain none of them;
+`get(..., "Owner")` and `get(..., "UsedDiscoveryOwnersV2")` raise `PrivacyError`; the bases'
+`ptk` fact holds only the platform codes; an AST scan of `core/index/` finds no reader of a
+denied name outside `privacy.owner_platform`.
 
 ### 5.5 Cache (`tests/index/test_cache.py`)
 
@@ -1564,15 +1525,20 @@ cache inside a vault or save root; reads during writes (WAL, two threads); GC by
 
 Lookup fallbacks (unknown galaxy, expedition, model, mission); final-stage change points;
 read-time chains reproduce the R6 example values on a synthetic save built to match; one test
-per noise rule N1-N16 with a minimal fact pair; header rules; `is_milestone`; ASCII-only
-templates (covered by `tests/test_ui_text.py` for literals).
+per noise rule N1-N16 with a minimal fact pair; header rules per edge kind (`play`, `touch`,
+`edit`, `unknown`); `is_milestone`; ASCII-only templates (covered by `tests/test_ui_text.py`
+for literals).
 
-### 5.8 Lineage signals and service contract
+### 5.8 Service contract
 
-`lineage_signals()` round trip (visited order, last entry, 512 entries); `season_number`;
-`IndexService` API never decodes on the calling thread (a locator spy proves `open()` is called
-only from the dispatcher thread); `events_since` sequence semantics; `view()` on an unindexed
-vid returns `None` and queues nothing unless asked.
+- `IndexService` satisfies D1's `FactsProvider` protocol: a conformance test calls the four
+  methods with D1's argument types and checks the return types of 2.6 (`changes` and
+  `is_milestone` return `None` while a version is unindexed).
+- `facts:<name>` sorting: every numeric `FactsView` field appears in `numbers` under its name.
+- The API never decodes on the calling thread (a locator spy proves `open()` is called only from
+  the dispatcher thread); `events_since` sequence semantics; `view()` on an unindexed vid
+  returns `None` and queues nothing unless asked.
+- A read-model build (D1's facade with a real `IndexService`) queues nothing at INTERACTIVE.
 
 ### 5.9 Not in CI
 
@@ -1593,18 +1559,18 @@ Sizes: S < 150 lines including tests, M 150-500, L > 500. Every step is one comm
 | 3 | `core/savejson.py` (`decode_save`) + tests; `tools/nms_visit_history.py` switches to it (lossless text) | S | 0 |
 | 4 | Opt-in read-only real-data decoder equivalence test | S | 0 |
 | 5 | `core/hashname.py` + pins + AST name-coverage test | S | 3 |
-| 6 | `core/index/nodes.py` + `privacy.py` (deny list, privileged accessors, guard, digests) + tests | M | 3 |
+| 6 | `core/index/nodes.py` + `privacy.py` (deny list, `owner_platform`) + tests | S | 3 |
 | 7 | `schema.py` (TypedDicts, `validate`) + `tests/index/savebuilder.py` | M | 3 |
-| 8 | Extractors: save basics, season, discoveries, owners; context basics, difficulty, words, products, stats | M | 3 |
+| 8 | Extractors: save basics, season, discoveries; context basics, difficulty, words, products, stats | M | 3 |
 | 9 | Extractors: bases (identity, legacy, layout, ptk), ships, companions, fleet, settlements, exocraft | M | 3 |
-| 10 | Extractors: missions, inventories, lineage rows; golden fixtures complete | M | 3 |
+| 10 | Extractors: missions, inventories; golden fixtures complete | M | 3 |
 | 11 | Lookups package + `tools/gen_lookups.py` + `derive.py` (`FactsView`, `FactsCard`, chips, numbers) | M | 3 |
 | 12 | `worker.py` (`run_job`) + `cache.py` (schema, recovery, reads, writer) | M | 3 |
 | 13 | `pool.py` (policy, dispatcher, process and thread executors, budget, watchdog) + `platform.index_execution_policy` | L | 3 |
-| 14 | `service.py` (`IndexService`, events, `owner_status`, D1 `FactsProvider` wiring) | M | 3 |
+| 14 | `service.py` (`IndexService`, events, D1 `FactsProvider` conformance 2.6) | M | 3 |
 | 15 | `changes.py` (rules N1-N16, templates, `is_milestone`) | M | 3 |
 | 16 | CLI `nmsvault index ...` + `tools/bench_index.py`; README facts (test count, capability) | S | 3 |
-| 17 | UI hooks: Tk poller (D6) / web endpoints (D7) consume `progress` / `events_since` | S (D4 part) | 3 |
+| 17 | UI hook: the Tk poller (D6) consumes `progress` / `events_since` | S (D4 part) | 3 |
 | 18 | Kit checks: Windows kit spawn smoke; POSIX kit spawn on the ladder, then flip `SPAWN_VERIFIED_POSIX_KIT` | S | 3 |
 | 19 | Deep decode on demand (`request_deep` / `deep`) + card integration | M | 3b |
 
@@ -1624,13 +1590,12 @@ a corrupt file); they can ship in any Phase 0 release.
 | 5 | Spawn in POSIX kits unverified | thread mode there until the ladder check passes |
 | 6 | Memory on low-RAM PCs (~270 MB per worker for the biggest save) | heap budget in the dispatcher; worker setting |
 | 7 | CPU competition with the game | O11 default: one worker, live/new only, while the game runs |
-| 8 | Licensing of game names | O7 is the owner's call; ids-only fallback exists |
-| 9 | A player-entered name equal to the player's own username is withheld | rare; documented; the card shows "(name withheld)" |
-| 10 | Task Manager shows extra NMSSaveVault.exe processes while indexing (spawned workers use the kit's renamed `pythonw.exe`) | cosmetic; idle pool closes after 60 s |
-| 11 | Entry modules must stay import-safe for spawn | test 5.6 |
-| 12 | Expedition milestones marked `IsOptional`: does the game's "n of m" count them? | open; the card shows both counts until verified in game |
-| 13 | `newest_disc_ts` is display-only and Low-Medium confidence (R7) | D1 uses it only to bound an uncaptured fork |
-| 14 | The facts schema will grow | `schema` + `EXTRACTOR_VERSION` in every row; tolerant readers; derive.py treats missing keys as `None` |
+| 8 | Licensing of game names | owner decided O7 (a); ids-only fallback exists |
+| 9 | Task Manager shows extra NMSSaveVault.exe processes while indexing (spawned workers use the kit's renamed `pythonw.exe`) | cosmetic; idle pool closes after 60 s |
+| 10 | Entry modules must stay import-safe for spawn | test 5.6 |
+| 11 | Expedition milestones marked `IsOptional`: does the game's "n of m" count them? | open; the card shows both counts until verified in game |
+| 12 | The facts schema will grow | `schema` + `EXTRACTOR_VERSION` in every row; tolerant readers; derive.py treats missing keys as `None` |
+| 13 | Existing versions get a parent only from D1's oplog and "seen in backups" links; a version without one shows no "what changed" | by design (owner Q3, Q5); new versions get recorded or observed parents from phase 1 on |
 
 ---
 
@@ -1638,25 +1603,21 @@ a corrupt file); they can ship in any Phase 0 release.
 
 1. **API surface.** Section 6 lists `facts(vid)`, `request(vids, priority)` and
    `changes(child_vid, parent_vid) -> list[str]`. D4 keeps all three and adds read-time views
-   (`view`, `views`, `card`), `lineage_signals`, `is_milestone` (D1's key-version rule),
-   `owner_status` (D5's F7), `request_deep` / `deep`, and the progress contract (`progress`,
-   `events_since`, `pause` / `resume` / `cancel` / `close`). `changes()` returns a `ChangeSet`
-   whose `lines()` is the section's `list[str]`; it accepts D1's edge kind for the header.
+   (`view`, `views`, `card`), `is_milestone` (D1's key-version rule), `request_deep` / `deep`,
+   and the progress contract (`progress`, `events_since`, `pause` / `resume` / `cancel` /
+   `close`). `changes()` returns a `ChangeSet | None` whose `lines()` is the section's
+   `list[str]`; it accepts D1's edge kind for the header. `view`, `changes`, `is_milestone` and
+   `request` are D1's `FactsProvider` with D1's exact names and types (2.6).
 2. **Raw facts, derived views.** `facts(vid)` returns raw ids and counts; names and milestone
    completion come from `view()` / `card()` at read time, so lookup updates never re-index.
 3. **Cache location.** Keyed by `vault_id` as specified, inside D1's shared per-machine folder
    `<user_cache_dir>/vaults/<vault_id>/index-v1.sqlite`; rows are content-addressed by `vid`.
 4. **How bytes reach workers.** D4 consumes `VersionLocator.open(vid)` (as section 6 says) on the
    parent's dispatcher thread and sends the bytes to workers, because D1's `Location` carries no
-   path and D2 requires reads through `open()`; workers re-hash the bytes.
+   path and the storage layer requires reads through `open()`; workers re-hash the bytes.
 5. **C11 "POSIX kits fall back to one worker"** is implemented as one in-process thread, because
    a single spawn worker would still depend on the unverified spawn path; POSIX source checkouts
    use processes.
-6. **Lineage signal shape** (matches D1 2.8): context keys `base` / `expedition`, stat ids without
-   `^`, `core` / `time` / `visited` / `season_number` per context; D4 places the optional
-   `newest_disc_ts` at save level because one discovery store serves both contexts.
-7. **Owner digests.** A new save-level fact `owner_digests` (keyed HMAC of platform code + id,
-   never the id) serves D5's F7 check; the raw ids are never persisted.
 
 ---
 
@@ -1667,19 +1628,17 @@ a corrupt file); they can ship in any Phase 0 release.
 | `scripts\hardened_lz4.py` | research twin of the proposed decoder |
 | `scripts\bench_hardened.py` | byte identity vs today's decoder and C `lz4` on all 195 versions; timings |
 | `scripts\cmp_overhead.py` | bounds-check overhead vs R5's unchecked variant |
-| `scripts\proto_extract.py` | facts-v1 prototype: HashName access, registry, contexts, privacy guard, inventories |
+| `scripts\proto_extract.py` | facts-v1 prototype: HashName access, registry, contexts, inventories |
 | `scripts\run_index.py` | spawn pool (largest first), parent-only sqlite writer; wall times, sizes |
 | `scripts\proto_changes.py`, `changes-T1.txt` | "what changed" on R7's 64 ground-truth steps |
 | `scripts\base_churn.py` | which base / object fields change every save |
-| `scripts\validate_lineage.py` | R7's classifier on D4-cached signals only |
-| `core_counters.py`, `r7copy\` | the 31 core counters recomputed from R7's data (patched copies of R7 scripts) |
+| `core_counters.py`, `r7copy\` | the 31 never-decreasing counters (2.5.3) recomputed from R7's data (patched copies of R7 scripts) |
 | `db\facts-w4.sqlite`, `db\facts-w1.sqlite` | prototype caches (195 versions) |
 
 Commands (from `C:\Devel\NMSVault`, `PYTHONUTF8=1`):
 `uv run --with lz4 python -I -X utf8 D4WD\scripts\bench_hardened.py all 0` (the `lz4` package is
 research-only); `uv run python -I -X utf8 D4WD\scripts\run_index.py 4 D4WD\db\facts-w4.sqlite`;
-`uv run python -I -X utf8 D4WD\scripts\proto_changes.py D4WD\db\facts-w4.sqlite 8`;
-`uv run python -I -X utf8 D4WD\scripts\validate_lineage.py D4WD\db\facts-w4.sqlite`.
+`uv run python -I -X utf8 D4WD\scripts\proto_changes.py D4WD\db\facts-w4.sqlite 8`.
 
 Inputs reused: R5 corpus (`R5WD\corpus`, 195 sha256-verified copies), R5 `spooky.py` and
 `bench.py` (copied to `D4WD\r5copy`), R6 lookups and decoded samples (`R6\lookups`,
