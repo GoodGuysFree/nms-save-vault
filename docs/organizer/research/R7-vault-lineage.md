@@ -73,7 +73,7 @@ ids and oplog times are local time (UTC+3 in this period).
 | Live Steam | 14 occupied slots (2-15), slot 1 empty, Steam Cloud on; a second `st_` folder holds only a `cache` | VERIFIED |
 | Live Xbox | 15/15 slots; `xgs` mirror byte-identical to `wgs` for 30/30 members (data and meta) | VERIFIED |
 | In-place entry that is live | `inplace-20260624-182102` has the same path as the live `wgs` folder; counting it as a backup double-counts every live Xbox save | VERIFIED; R1 notes its cached summary is stale |
-| Members read | 1,237 (Steam 997, Xbox 240); 3 more incomplete (meta without data, slot 15B of three PC-A folders) | VERIFIED |
+| Members read | 1,237 (Steam 997, Xbox 240); 3 more incomplete (meta without data, slot 15B of three folders in manual backup A) | VERIFIED |
 | Per member | slot, A/B, platform, entry kind/date, meta fields (name, summary, play time, timestamp, difficulty, mode, season, sizes, id), sha256 of data (full file and valid-chunk region), sha256 of meta (raw and decrypted), id from the first data chunk | VERIFIED `<R7>\inventory.json` |
 | Distinct versions decoded fully | 195 (lz4 C package for research speed), de-obfuscated with R5's mapping (0 unknown keys), features per version | VERIFIED `<R7>\features.py`, `<R7>\features\*.json` |
 | Dedup scope used below | 1,177 members in 50 folders (live Steam, live `wgs`, 48 entries; `xgs` mirror and the live alias dropped) | VERIFIED |
@@ -366,7 +366,7 @@ by hand in three steps (backup, extract the evictee, repopulate).
 
 Can the oplog seed lineage? Yes for these edges, after resolving the source folder name to an
 entry and reading the hashes from that entry's folder. Gaps: the source is a folder *name*
-(the in-place PC-B folder is named exactly like the live `st_<steamid64>` folder, so a
+(the in-place folder in manual backup B is named exactly like the live `st_<steamid64>` folder, so a
 repopulate from it would be ambiguous); no hashes, ids or entry ids for source, destination or
 evictee; `restore_full`/`undo` record files, not slots or versions; nothing from the game,
 Steam Cloud, Xbox sync or editors; nothing confirms a write survived.

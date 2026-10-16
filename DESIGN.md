@@ -80,7 +80,7 @@ src/nms_save_vault/
 ```
 
 ## Storage model (hybrid)
-* Existing backups (`Glamdring`, `Anduril`, "Copy before…") are catalogued **in place**.
+* Existing backups (hand-made in-place backup folders, "Copy before…") are catalogued **in place**.
 * New app backups / auto-snapshots / single-slot extracts go in a **managed vault**
   (default: a sibling of `st_…`), recorded in a JSON catalog.
 

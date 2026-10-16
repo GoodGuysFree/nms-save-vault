@@ -65,7 +65,7 @@ file were checked unchanged at the end (VERIFIED, Appendix A).
 | `snapshot` | `snapshots/snapshot-<plat>-<stamp>` | Steam: `*.hg` + `steam_autocloud.vdf`, no cache. Xbox: the whole wgs account folder (`_copy_save_state`, ops:115-131). | yes | no | 16 (14 Steam at 4-50 MiB, 2 Xbox at 63 MiB); 724 MiB |
 | `extract` | `extracts/extract-<plat>-<stamp>` | Steam: the slot's `save*/mf_save*` files at their **original file numbers** (ops:286-295). Xbox: a minimal wgs folder, i.e. a rebuilt `containers.index` + the slot's GUID dirs (ops:466-489). | yes | no | 8 (all Steam), 19 MiB |
 | `imported` | `backups/imported-<plat>-<stamp>` | `copytree` of a user folder (ops:771-775) | yes | no | 0 |
-| `inplace` | none; `path` points at an external folder | nothing copied (ops:777-778) | no | n/a | 8: 7 Steam folders under `%APPDATA%\HelloGames\NMS\{PC-A,PC-B}\`, and **1 that is the live Xbox wgs account folder** |
+| `inplace` | none; `path` points at an external folder | nothing copied (ops:777-778) | no | n/a | 8: 7 Steam folders inside two hand-made backup folders (manual backup A and B) under `%APPDATA%\HelloGames\NMS\`, and **1 that is the live Xbox wgs account folder** |
 
 Totals: 3,404,610,911 B in 4517 files. Of `backups/` (2511 MiB), **1700 MiB is copies of the
 Steam `cache/` DDS thumbnails**: 131 of ~180 MiB per Steam full backup (73%), 180 files named

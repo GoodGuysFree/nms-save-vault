@@ -1,5 +1,7 @@
 # D7 - UI option W: the organizer as a local web page
 
+**Not chosen - the owner picked the Tk UI (D6).**
+
 Design wave, UI design D7 (subject S7, owner fork F1 option W; F2 decided). Branch
 `design/save-organizer`. Binding inputs: `01-consolidation.md` (C1-C32, sections 6 and 7),
 research R2-R4 and R6-R8, and the core designs D1 (read model), D4 (facts), D5 (operations);

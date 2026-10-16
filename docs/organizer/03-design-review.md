@@ -263,8 +263,8 @@ the 195 existing versions (V-05).
 
 - **Location:** D6 header ("every vault copy is durable - no 'may be pruned' states"), 2.2 State
   vocabulary, Appendix ("storage state is F3-B after migration").
-- **Problem:** fold is phase 5; until then D1 reports outside-vault copies (PC-A, PC-B) and,
-  unless V-10 lands, snapshot-only copies.
+- **Problem:** fold is phase 5; until then D1 reports outside-vault copies (the hand-made in-place
+  backup folders) and, unless V-10 lands, snapshot-only copies.
 - **Fix:** keep "outside the vault" (and "only in auto-snapshots" if pruning survives) until fold.
 
 ### V-18 minor - Web-option residue in D1-D6
@@ -377,4 +377,4 @@ the 195 existing versions (V-05).
 | Q4 | Steam vs Xbox state of a save live on both | (a) compare the two live copies by play time ("Steam copy has 3h12 more play"); "diverged" only when recorded history proves it. (b) allow one marked estimate for this label. (c) show nothing | **(a)** |
 | Q5 | "What changed" for a version with no known parent | (a) show nothing ("no recorded parent"). (b) compare with the previous backup by date, labelled as such (can report bases gone and back across branches) | **(a)** |
 | Q6 | Warning for another account's save (F7b) | (a) one warning whenever the save comes from another account. (b) also detect "someone else's save", which needs hashed ownership ids in the index | **(a)**: simpler, no ownership data processed |
-| Q7 | Store details still open in D3 | fold old backups into the store after the copy-aside (M1, +0.5 GB, deletes nothing); free space (M2, 3.4 -> ~0.5 GB) automatically or on request; thumbnail `cache/`: keep deduplicated (+139 MB) or drop; PC-A/PC-B in-place folders: offer to copy in (+73 MB) | **M1 automatic, M2 on request after a deep check; keep thumbnails; offer the copy-in, default off** |
+| Q7 | Store details still open in D3 | fold old backups into the store after the copy-aside (M1, +0.5 GB, deletes nothing); free space (M2, 3.4 -> ~0.5 GB) automatically or on request; thumbnail `cache/`: keep deduplicated (+139 MB) or drop; hand-made in-place backup folders: offer to copy in (+73 MB) | **M1 automatic, M2 on request after a deep check; keep thumbnails; offer the copy-in, default off** |
