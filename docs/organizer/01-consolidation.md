@@ -182,6 +182,23 @@ Found by R1, R2, R5, R7, R8; all VERIFIED unless noted. They block or distort or
 | F9 | Retention | keep everything; version-aware thinning (keep tips, branch points, noted, locked, live); per-save-file limits | keep everything + version-aware (C27) |
 | F10 | Order of phases | section 5 | section 5 |
 
+## 4a. Owner decisions (2026-10-16)
+
+| Fork | Decision |
+|---|---|
+| F1 UI | still open: both the Tk (D6) and the local web (D7) designs are completed for comparison |
+| F2 history style | **C hybrid** (version table + lane column + key/all toggle) |
+| F3 storage | **B version store.** Older app versions need not read the vault after the upgrade; the migration first copies the whole vault aside once, so a failed upgrade can be rolled back. The old-app compatibility machinery in D2/D3 (shadow/barrier entries, cataloguing preserved copies as `extract`, the `snapshot-needs-newer-app` oplog barrier) is therefore not required |
+| F4 member policy | **a** - the version plus its own same-id partner, re-timed so the chosen one loads |
+| F5 meta timestamp | **b** - stamp "now" (the original time stays in the vault record) |
+| F6 Steam <-> Xbox | **a**, last phase, after the owner's test runs T1/T2 |
+| F7 other accounts | **b** - allow, with a warning (bases may not be editable until the game re-owns them) |
+| F8 deletions under Steam Cloud | organizer operations always **replace**; emptying a slot shows the manual procedure |
+| F9 retention | **keep everything**; a version's last copy is never deleted |
+| F10 order | as section 5 (defects first) |
+| Pre-feature history (D1) | **no guessed tree**: versions captured before recording started show as a flat dated list; the tree is drawn only from recorded and observed history |
+| Index display (D4) | D4's defaults accepted (legacy placed + buildable badges; ships "12 (3 corvettes) +5 archived"; companion custom name else creature type; built-in name tables; while the game runs index live saves only, one worker) |
+
 ## 5. Order of work (recommended phasing)
 
 | Phase | Content | Why here |
