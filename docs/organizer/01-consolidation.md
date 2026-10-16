@@ -186,7 +186,7 @@ Found by R1, R2, R5, R7, R8; all VERIFIED unless noted. They block or distort or
 
 | Fork | Decision |
 |---|---|
-| F1 UI | still open: both the Tk (D6) and the local web (D7) designs are completed for comparison |
+| F1 UI | **Tk (D6)**, with selected elements of the web design carried over - see `02-ui-review.md` |
 | F2 history style | **C hybrid** (version table + lane column + key/all toggle) |
 | F3 storage | **B version store.** Older app versions need not read the vault after the upgrade; the migration first copies the whole vault aside once, so a failed upgrade can be rolled back. The old-app compatibility machinery in D2/D3 (shadow/barrier entries, cataloguing preserved copies as `extract`, the `snapshot-needs-newer-app` oplog barrier) is therefore not required |
 | F4 member policy | **a** - the version plus its own same-id partner, re-timed so the chosen one loads |
