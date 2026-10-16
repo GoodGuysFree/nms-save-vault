@@ -14,8 +14,8 @@ from nms_save_vault import cli
 from nms_save_vault.core import aliases
 from nms_save_vault.core import state as appstate
 
-STEAM_ID = "76561197975032661"
-XBOX_ID = "000901F0DD67CC4E_29070100B936489ABCE8B9AF3980429C"
+STEAM_ID = "76561198000000001"
+XBOX_ID = "0009000000000001_29070100B936489ABCE8B9AF3980429C"
 
 
 @pytest.fixture

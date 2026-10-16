@@ -6,7 +6,7 @@ from pathlib import Path
 from nms_save_vault.core import discover, state
 from nms_save_vault.core.formats import ACCOUNT_META_NAME
 
-ACCT_A = "76561197975032661"
+ACCT_A = "76561198000000002"
 ACCT_B = "76561198000000001"
 
 
