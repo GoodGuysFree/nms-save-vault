@@ -20,11 +20,12 @@ from ..organizer.cache import cache_dir
 from ..organizer.model import LiveTarget, target_from_json
 from ..organizer.store import StoreBusy as OrganizerBusy
 from ..organizer.store import StoreReadOnly
-from . import opjournal
+from . import opjournal, steamcloud
 from .context import OpContext
 from .errors import TargetError
 from .model import VerifyItem
 from .slots import SlotNow, read_account
+from .steamwrite import file_names
 from .targets import resolve_account, resolve_target
 from .undo import _labels, _local
 
@@ -183,7 +184,7 @@ def _derive(ctx: OpContext, rec: opjournal.OpRecord, target: LiveTarget, facts: 
         if _metas(ctx, target, slot) not in (None, facts["placed_metas"]):
             # the same saves with other metas: an older copy of the pair came back
             return ("reverted", "", observed) if placed == evicted else ("pending", "", observed)
-        if _uploaded(slot, target):
+        if _uploaded(slot, target, ctx):
             return "confirmed", "uploaded", observed
         if _session_ended_after(ctx, target, seen, done_at):
             return "confirmed", "unchanged", observed
@@ -231,10 +232,21 @@ def _metas(ctx: OpContext, target: LiveTarget, slot: SlotNow) -> tuple | None:
         return None
 
 
-def _uploaded(slot: SlotNow, target: LiveTarget) -> bool:
-    """Xbox: every record of the pair went from Modified/Created to Synced."""
-    return target.platform == "xbox" and bool(slot.present) and \
-        all(m.sync_state == msstore.BLOB_SYNC_SYNCED for m in slot.present)
+def _uploaded(slot: SlotNow, target: LiveTarget, ctx: OpContext | None = None) -> bool:
+    """Xbox: every record of the pair went from Modified/Created to Synced. Steam (when the
+    Steam client's remotecache.vdf is found): every file of the pair is tracked, synced and
+    byte-identical (SHA-1) to what Steam holds."""
+    if target.platform == "xbox":
+        return bool(slot.present) and             all(m.sync_state == msstore.BLOB_SYNC_SYNCED for m in slot.present)
+    if target.platform == "steam" and ctx is not None and slot.present:
+        try:
+            folder = resolve_account(ctx, target.ref).folder
+        except TargetError:
+            return False
+        names = [n for m in slot.present for n in file_names(target.slot, m.position)]
+        manifest = steamcloud.account_manifest(ctx.host, target.ref.account_key)
+        return steamcloud.upload_state(manifest, folder, names) == "uploaded"
+    return False
 
 
 # --- the items -------------------------------------------------------------------------------
