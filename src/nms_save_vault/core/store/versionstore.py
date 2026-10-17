@@ -24,6 +24,7 @@ from typing import Literal
 from ... import __version__
 from .. import safety
 from .errors import StoreNotUpgraded, StoreTooNew, StoreUnavailable
+from .objects import ObjectStore
 
 log = logging.getLogger(__name__)
 
@@ -157,6 +158,8 @@ class VersionStore:
         self.warnings: list[str] = []
         self._lock = lock
         self._faults = faults
+        self.objects = ObjectStore(self.root / OBJECTS, self.root / TMP, self.root / QUARANTINE,
+                                   faults=faults)
 
     @property
     def read_only(self) -> bool:

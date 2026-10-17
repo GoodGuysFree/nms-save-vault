@@ -12,6 +12,7 @@ from .errors import (
     StoreTooNew,
     StoreUnavailable,
 )
+from .objects import ObjectStore, PutResult
 from .versionstore import (
     INLINE_MAX,
     STORE_VERSION,
