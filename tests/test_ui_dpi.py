@@ -104,11 +104,12 @@ def test_main_turns_awareness_on_before_the_first_root(monkeypatch):
         def mainloop(self):
             order.append("mainloop")
 
+    monkeypatch.setattr(gui.logfile, "configure", lambda folder: order.append("log"))
     monkeypatch.setattr(gui.dpi, "enable_awareness", lambda: order.append("dpi"))
     monkeypatch.setattr(gui.aliases, "active", lambda: None)
     monkeypatch.setattr(gui, "App", FakeApp)
     assert gui.main() == 0
-    assert order == ["dpi", "App", "mainloop"]
+    assert order == ["log", "dpi", "App", "mainloop"]
 
 
 # --- every pixel constant goes through px() -------------------------------------------------

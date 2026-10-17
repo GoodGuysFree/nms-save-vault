@@ -21,10 +21,11 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 from . import __version__, theme, updates
 from .core import aliases, catalog, discover, locations, slotmap
 from .core import operations as ops
+from .core import platform as host_platform
 from .core import playtime, savedir
 from .core import state as appstate
 from .core.catalog import Vault
-from .ui import dpi
+from .ui import dpi, logfile
 from .ui.dpi import px, pxs
 
 
@@ -2602,6 +2603,8 @@ SAFETY
 
 
 def main(argv=None) -> int:
+    # First: under pythonw there is no console, so warnings and tracebacks go to a file.
+    logfile.configure(host_platform.user_cache_dir() / "logs")
     # Before the first tk.Tk(): Tk reads the DPI once, when the root is made. Without this
     # Windows stretches a 96-dpi bitmap of the window, which is blurry at 150 %.
     dpi.enable_awareness()

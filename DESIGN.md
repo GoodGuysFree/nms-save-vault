@@ -89,6 +89,7 @@ src/nms_save_vault/
       __init__.py Organizer facade: scan, record, build the model, bootstrap
   ui/             Tk building blocks for the views (docs/organizer/designs/D6-ui-tk.md)
     dpi.py        DPI awareness, px() for every pixel constant, first-start size, dialog fit
+    logfile.py    the GUI's rotating log file (per-machine folder), stderr under pythonw
   theme.py        light/dark/system palettes (incl. the organizer keys) + ttk restyling,
                   dark title bar (front-end)
   updates.py      opt-in GitHub release check + in-place self-update (the only network access)
