@@ -261,7 +261,7 @@ def format_history(graph: HistoryGraph, name: str, *,
         if e is not None and e.method in _METHOD_NOTE:
             notes.append(_METHOD_NOTE[e.method])
         if e is not None and e.hidden and graph.mode == "key":
-            notes.append(f"{e.hidden} versions hidden")
+            notes.append(f"{e.hidden} hidden")
         for kind, count in sorted(node.folded.items()):
             notes.append(f"+{count} {'re-saved' if kind == 'touch' else 'edited'}")
         if node.kind == "fork-member":
