@@ -121,7 +121,7 @@ def store_vault_entry(entry: StoreEntry) -> VaultEntry:
     return VaultEntry(
         id=entry.id, kind=entry.kind, ref=StoreRef(entry.id), origin=kind_of_origin,
         platform=entry.platform, label=entry.label, created=entry.created_local,
-        created_utc=_epoch_utc(entry.created_utc), source=source, managed=True,
+        created_utc=epoch_utc(entry.created_utc), source=source, managed=True,
         slots=tuple(store_slot_summaries(entry)), op_id=entry.op_id, reason=entry.reason)
 
 
@@ -138,24 +138,33 @@ def catalog_vault_entry(vault: catalog.Vault, entry: CatalogEntry) -> VaultEntry
 
 
 def store_slot_summaries(entry: StoreEntry) -> list[SlotSummary]:
-    """The slots of a store entry as ``catalog.summarize`` shows the same folder: every slot of
-    a whole-folder entry, the scope's slots of a slot-scoped one."""
+    """The slots of a store entry as ``catalog.summarize`` shows the same folder."""
+    return [_slot_summary(entry, slot) for slot in entry_slots(entry)]
+
+
+def entry_slots(entry: StoreEntry) -> list[int]:
+    """The slots a store entry observes: every slot of a whole-folder entry, the scope's
+    slots of a slot-scoped one (as a scan of the folder would)."""
     wanted = entry.scope.get("slots")
-    slots = range(1, MAX_SAVE_SLOTS + 1) if not isinstance(wanted, list) else sorted(wanted)
-    return [_slot_summary(entry, slot) for slot in slots]
+    return list(range(1, MAX_SAVE_SLOTS + 1)) if not isinstance(wanted, list) else sorted(wanted)
+
+
+def newest_record(entry: StoreEntry, slot: int) -> MemberRecord | None:
+    """The member the game loads, by ``savedir.SlotView.newest``'s rule on the records."""
+    present = [r for r in (entry.member(slot, label) for label in slotmap.MEMBER_LABELS)
+               if r is not None]
+    candidates = [r for r in present if has_info(entry, r)] or present
+    if not candidates:
+        return None
+    if all(_timestamp(entry, r) for r in candidates):
+        return max(candidates, key=lambda r: _timestamp(entry, r) or file_time(r))
+    return max(candidates, key=file_time)
 
 
 def _slot_summary(entry: StoreEntry, slot: int) -> SlotSummary:
-    # savedir.SlotView.newest and display_name, on the records.
     records = [entry.member(slot, label) for label in slotmap.MEMBER_LABELS]
     present = [r for r in records if r is not None]
-    candidates = [r for r in present if _has_info(entry, r)] or present
-    newest = None
-    if candidates:
-        if all(_timestamp(entry, r) for r in candidates):
-            newest = max(candidates, key=lambda r: _timestamp(entry, r) or _file_time(r))
-        else:
-            newest = max(candidates, key=_file_time)
+    newest = newest_record(entry, slot)
     name = newest.name if newest is not None else ""
     return SlotSummary(
         slot=slot, occupied=bool(present),
@@ -170,27 +179,27 @@ def _member_summary(entry: StoreEntry, slot: int, label: str,
     if r is None:
         return MemberSummary(label=label, present=False, note=entry.absent.get(f"{slot}{label}", ""))
     ms = MemberSummary(label=label, present=True, data_size=entry.file(r.data).size,
-                       valid=_has_info(entry, r), moved=_moved(entry, r), note=r.note)
-    if _has_info(entry, r):
+                       valid=has_info(entry, r), moved=_moved(entry, r), note=r.note)
+    if has_info(entry, r):
         ms.name, ms.summary = r.name, r.summary
         ms.game_mode, ms.season = r.game_mode, r.season
         ms.play_time = r.play_time
-        ms.timestamp = r.meta_ts or int(_file_time(r))
+        ms.timestamp = r.meta_ts or int(file_time(r))
         ms.base_version, ms.difficulty = r.base_version, r.difficulty
     return ms
 
 
-def _has_info(entry: StoreEntry, r: MemberRecord) -> bool:
+def has_info(entry: StoreEntry, r: MemberRecord) -> bool:
     """savedir decoded the meta (its ``info`` is set, and so ``valid``): always for Xbox, for
     Steam when an ordinal opened it."""
     return entry.platform == "xbox" or r.ordinal is not None
 
 
 def _timestamp(entry: StoreEntry, r: MemberRecord) -> int:
-    return r.meta_ts if _has_info(entry, r) else 0
+    return r.meta_ts if has_info(entry, r) else 0
 
 
-def _file_time(r: MemberRecord) -> float:
+def file_time(r: MemberRecord) -> float:
     return r.file_time_ns / 1_000_000_000
 
 
@@ -217,7 +226,7 @@ def _in_live(vault: catalog.Vault, entry: CatalogEntry, live: discover.LiveFolde
     return discover.is_inside(entry_folder(vault, entry), live)
 
 
-def _epoch_utc(iso: str) -> int:
+def epoch_utc(iso: str) -> int:
     try:
         return int(datetime.strptime(iso, "%Y-%m-%dT%H:%M:%SZ")
                    .replace(tzinfo=timezone.utc).timestamp())
@@ -315,7 +324,7 @@ def _copy_aside(vault_root: Path, migration: dict) -> CopyAsideInfo | None:
     found = sibling and where.is_dir() and _count_files(where) >= files
     return CopyAsideInfo(name=rec["name"], sibling=sibling, files=files,
                          bytes=_uint(rec.get("bytes")),
-                         made_utc=_epoch_utc(str(rec.get("verified_utc", ""))), found=found)
+                         made_utc=epoch_utc(str(rec.get("verified_utc", ""))), found=found)
 
 
 def _count_files(folder: Path) -> int:

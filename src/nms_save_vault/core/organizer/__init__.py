@@ -12,7 +12,7 @@ from collections.abc import Callable, Sequence
 from contextlib import ExitStack
 from pathlib import Path
 
-from .. import safety
+from .. import discover, safety
 from ..catalog import Vault
 from ..platform import Host
 from ..state import Source
@@ -40,7 +40,13 @@ class Organizer:
     ``read_only`` opens everything without writing in the vault: no journal, no notes, no
     catalog tidying. The per-machine scan cache is kept on disk unless ``read_only`` (then
     in memory); ``machine_cache`` overrides that, and ``cache`` replaces it.
-    ``busy_targets`` names the live slots an operation is writing (never journaled then).
+    ``busy_targets`` names the live slots an operation is writing (never journaled then):
+    the hook D5's live operations fill in.
+
+    When the vault is in store mode (D3), its version store is opened with the organizer:
+    the scan reads store entries from their manifests, the locator reads the store first,
+    and the store is the one ``preserve`` provider (D1 step 12). Otherwise there is none and
+    ``preserve`` fails with "store-unavailable".
     """
 
     def __init__(self, vault_root: Path, sources: Sequence[Source], *, read_only: bool = False,
@@ -64,6 +70,7 @@ class Organizer:
                 cache = ScanCache.load(path, self.store.vault_id)
         self.cache = cache
         self.notes = Notes(self.store, clock)
+        self.version_store = _open_version_store(self.vault_root, self.sources, read_only)
         self.scan: ScanResult | None = None
         self.model: ReadModel | None = None
         self.locator: VaultLocator | None = None
@@ -87,7 +94,8 @@ class Organizer:
         they are not either ("live-op lock failed")."""
         running = self.game_running()
         self.scan = scan(self.vault, self.sources, self.cache, game_running=running,
-                         deep=deep, now=self.clock, progress=progress, cancel=cancel)
+                         deep=deep, now=self.clock, progress=progress, cancel=cancel,
+                         store=self.version_store)
         self.observed = None
         recording = record and not self.store.read_only
         with ExitStack() as stack:
@@ -105,8 +113,20 @@ class Organizer:
         journal = Journal(self.store, self.scan.versions)
         self.model = ReadModel.build(self.scan, journal.replay(), read_lineage(self.store),
                                      read_notes(self.store), self.sources, now=int(self.clock()))
-        self.locator = VaultLocator([FolderLocator(self.scan, self._folders())], None)
+        self.locator = self._locator()
         return self.model
+
+    def _locator(self) -> VaultLocator:
+        """D1 2.11 by phase: the folders only; from store mode the store first, then the
+        folders, with the store as the one preserver."""
+        folders = FolderLocator(self.scan, self._folders())
+        if self.version_store is None:
+            return VaultLocator([folders], None)
+        from ..store import StoreLocator
+
+        live = {ref: Path(s.path) for s, ref in zip(self.sources, live_refs(self.sources))}
+        store = StoreLocator(self.version_store, live_dir=lambda target: live[target.ref])
+        return VaultLocator([store, folders], store)
 
     def bootstrap(self, *, dry_run: bool = False,
                   progress: Callable[[int, int], None] | None = None,
@@ -114,7 +134,8 @@ class Organizer:
         return _bootstrap.bootstrap(self.vault, self.store, self.sources, self.cache,
                                     game_running=self.game_running,
                                     dry_run=dry_run or self.read_only, clock=self.clock,
-                                    progress=progress, cancel=cancel)
+                                    progress=progress, cancel=cancel,
+                                    version_store=self.version_store)
 
     def _try_live_lock(self, stack: ExitStack) -> str:
         """LOCKED, or why not: SKIP_BUSY (a live write holds it), SKIP_LOCK_FAILED."""
@@ -140,6 +161,23 @@ class Organizer:
         for entry in self.vault.entries:
             folders[EntryRef(entry.id)] = Path(entry.path)
         return folders
+
+
+def _open_version_store(vault_root: Path, sources: Sequence[Source], read_only: bool):
+    """The vault's version store when the vault is in store mode, else None. A store that
+    cannot be opened is logged and left out: the folders still answer."""
+    from ... import __version__
+    from ..store import StoreError, VersionStore, vault_lock, vault_mode
+
+    if vault_mode(vault_root) != "store":
+        return None
+    live = [Path(s.path) for s in sources] + [Path(p) for p in discover.all_live_paths(None)]
+    try:
+        return VersionStore.open(vault_root, lock=vault_lock(vault_root),
+                                 app_version=__version__, live_roots=live, read_only=read_only)
+    except StoreError as exc:
+        log.warning("the vault's version store is not used: %s", exc)
+        return None
 
 
 __all__ = ["Organizer"]

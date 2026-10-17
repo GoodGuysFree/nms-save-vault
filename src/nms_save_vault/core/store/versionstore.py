@@ -179,7 +179,7 @@ def create_store(vault_root: str | Path, *, clock: Callable[[], datetime] = utc_
     return fmt
 
 
-ReadOnlyReason = Literal["too-new", "medium", "no-lock"]
+ReadOnlyReason = Literal["too-new", "medium", "no-lock", "asked"]
 
 
 class VersionStore:
@@ -590,13 +590,14 @@ class VersionStore:
              app_version: str, clock: Callable[[], datetime] = utc_now,
              live_roots: Sequence[Path] | None = None,
              faults: FaultHook | None = None,
-             app_state: AppState | None = None) -> "VersionStore":
+             app_state: AppState | None = None, read_only: bool = False) -> "VersionStore":
         """Open the store of a vault in store mode. Raises StoreUnavailable (vault gone, FORMAT
         unreadable), StoreNotUpgraded (legacy or upgrading vault), StoreTooNew (needs a newer
         app to read). Opens read-only when only writing needs a newer app, the medium cannot be
         written, or the file system cannot lock. ``live_roots``: the live save folders nothing
         is ever written into; None means the live sources of ``app_state`` plus the ones
-        discovered on this machine."""
+        discovered on this machine. ``read_only``: only look - nothing in the vault is written,
+        not even a probe or the sweep of old temp files."""
         vault_root = Path(vault_root)
         if not vault_root.is_dir():
             raise StoreUnavailable("The vault is not reachable.")
@@ -604,7 +605,9 @@ class VersionStore:
         store = cls(vault_root, read_format(store_root(vault_root)), lock=lock,
                     app_version=app_version, clock=clock, live_roots=live_roots, faults=faults,
                     app_state=app_state)
-        if store.format.write_compat > STORE_VERSION:
+        if read_only:
+            store.read_only_reason = "asked"
+        elif store.format.write_compat > STORE_VERSION:
             store._set_read_only("too-new", "This vault was upgraded by a newer NMS Save Vault; "
                                  "it opens read-only. Update the app to write to it.")
         else:
@@ -679,7 +682,8 @@ class VersionStore:
         if self.read_only_reason == "too-new":
             raise StoreTooNew()
         if self.read_only_reason is not None:
-            raise StoreUnavailable(self.warnings[0] if self.warnings else "The vault is read-only.")
+            raise StoreUnavailable(self.warnings[0] if self.warnings
+                                   else "The vault is open read-only.")
 
     def _fault(self, point: str) -> None:
         if self._faults is not None:
