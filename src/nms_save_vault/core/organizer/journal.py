@@ -98,6 +98,8 @@ class OpRecord:
     undo_of: str | None
     note: str
     app: str
+    members: Mapping[Vid, MemberObs] = field(default_factory=dict)   # "m": placed vids the
+                                        # journal had not described, so it alone draws history
 
     @property
     def order(self) -> ObsOrder:
@@ -114,6 +116,21 @@ def obs_fields(src: ObsSrc, target: LiveTarget, pair: PairKey,
     return {"t": "obs", "src": src, "target": target_to_json(target), "pair": pair_to_json(pair),
             "m": {vid: member_to_json(m, with_vid=False) for vid, m in members.items()},
             "note_revs": dict(note_revs), "entry": entry, "q": quality}
+
+
+def op_fields(src: OpSrc, op_id: str, kind: str, target: LiveTarget, placed: PairKey,
+              evicted: PairKey | None, *, source: Mapping[str, Any] | None = None,
+              preserved: Mapping[Vid, Mapping[str, Any]] | None = None,
+              status: OpStatus = "done", undo_of: str | None = None, note: str = "",
+              app: str = "", members: Mapping[Vid, MemberObs] | None = None) -> dict:
+    """An ``op`` record before the store gives it ``id``, ``seq`` and ``at``."""
+    return {"t": "op", "src": src, "op_id": op_id, "kind": kind,
+            "target": target_to_json(target), "pair": pair_to_json(placed),
+            "evicted": pair_to_json(evicted) if evicted is not None else None,
+            "source": dict(source) if source is not None else None,
+            "preserved": {vid: dict(loc) for vid, loc in (preserved or {}).items()},
+            "status": status, "undo_of": undo_of, "note": note, "app": app,
+            "m": {vid: member_to_json(m, with_vid=False) for vid, m in (members or {}).items()}}
 
 
 def decode_record(d: Mapping[str, Any]) -> Record:
@@ -158,9 +175,10 @@ def _decode_op(d: Mapping[str, Any]) -> OpRecord:
         raise ModelError("op record: bad undo_of")
     if not isinstance(d["note"], str) or not isinstance(d["app"], str):
         raise ModelError("op record: bad note or app")
+    members = {vid: member_from_json(m, vid=vid) for vid, m in _dict(d.get("m", {})).items()}
     return OpRecord(d["id"], d["seq"], d["at"], d["src"], d["op_id"], d["kind"],
                     target_from_json(d["target"]), pair_from_json(d["pair"]), evicted, source,
-                    preserved, d["status"], undo_of, d["note"], d["app"])
+                    preserved, d["status"], undo_of, d["note"], d["app"], members)
 
 
 def _dict(value: object) -> dict:
@@ -248,7 +266,7 @@ class Journal:
             with self.store.transaction() as tx:
                 records, problems = _decode_all(tx.journal())
                 last = _last_pairs(records)
-                described = {vid for r in records if isinstance(r, ObsRecord) for vid in r.members}
+                described = {vid for r in records for vid in r.members}
                 notes = tx.doc(NOTES).get("save_files", {}) if wanted else {}
                 for target, capture in wanted:
                     if target in last and last[target] == capture.pair:
@@ -288,12 +306,11 @@ def replay(records: tuple[Record, ...], registry: Mapping[Vid, VersionInfo],
         for vid in rec.pair:
             if vid:
                 _earliest(first_seen, vid, rec.order)
-        if isinstance(rec, ObsRecord):
-            for vid, m in rec.members.items():
-                if vid not in metas:
-                    metas[vid] = m
-                    if m.pid in rec.note_revs:
-                        note_rev[vid] = rec.note_revs[m.pid]
+        for vid, m in rec.members.items():
+            if vid not in metas:
+                metas[vid] = m
+                if isinstance(rec, ObsRecord) and m.pid in rec.note_revs:
+                    note_rev[vid] = rec.note_revs[m.pid]
     run = _Replay(metas, registry, first_seen)
     by_target: dict[LiveTarget, list[Record]] = {}
     seen_ops: set[tuple[str, LiveTarget]] = set()

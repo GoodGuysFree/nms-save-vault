@@ -104,19 +104,21 @@ class ScanCancelled(Exception):
     pass
 
 
-def scan(vault: Vault, sources: Sequence[Source], cache: ScanCache, *,
+def scan(vault: Vault | None, sources: Sequence[Source], cache: ScanCache, *,
          game_running: bool | None, deep: bool = False,
          now: Callable[[], float] = time.time,
          progress: Callable[[int, int], None] | None = None,
          cancel: threading.Event | None = None) -> ScanResult:
-    """Observe ``sources`` (the enabled live folders) and every catalog entry of ``vault``.
+    """Observe ``sources`` (the enabled live folders) and every catalog entry of ``vault``;
+    with no vault only the live folders (the operation hook's quick look at one folder).
     ``deep`` hashes every file again and rescans every entry."""
     run = _Run(cache, deep, int(now()))
     if game_running is None:
         run.problem("game-unknown", None, None, "could not tell whether the game is running")
     elif game_running:
         run.problem("game-running", None, None, "the game is running: live saves are not recorded")
-    entries = sorted(vault.entries, key=lambda e: (_created_utc(e) or 0, e.id))
+    entries = sorted(vault.entries if vault is not None else [],
+                     key=lambda e: (_created_utc(e) or 0, e.id))
     total, done = len(entries) + len(sources), 0
     live_paths = [s.path for s in sources]
 
@@ -146,7 +148,8 @@ def scan(vault: Vault, sources: Sequence[Source], cache: ScanCache, *,
     ordered = [(c, (c.observed_at, -1)) for e in entry_scans.values() for c in e.captures]
     ordered += [(c, (c.observed_at, 0)) for f in live.values() for c in f.captures]
     versions, pairs = _registry(ordered, entry_scans)
-    cache.prune(run.seen_paths, set(entry_scans))
+    if vault is not None:          # only a full scan knows what is gone
+        cache.prune(run.seen_paths, set(entry_scans))
     cache.save()
     timings["registry"] = time.perf_counter() - started
     return ScanResult(

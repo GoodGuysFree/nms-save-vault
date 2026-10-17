@@ -317,6 +317,11 @@ class StoreTx:
             self._docs[name], self._read_as[name] = doc, _dump_doc(doc)
         return self._docs[name]
 
+    @property
+    def last_at(self) -> int:
+        """The latest ``at`` so far: a record given its own time should not go before it."""
+        return self._last_at
+
     def journal(self) -> Sequence[dict]:
         """Every record, as re-read under the lock, plus the ones this transaction added."""
         return tuple(self._journal) + tuple(self._pending)

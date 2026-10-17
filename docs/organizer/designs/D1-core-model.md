@@ -521,8 +521,12 @@ two with the same `op_id`; idempotent on `(op_id, target)`):
  "source": {"kind": "entry", "entry": "full-steam-20261005-174129", "slot": 9},
  "preserved": {"f073ea37...": {"kind": "store", "entry": "preserve-steam-20261016-080054",
                                "slot": 9, "member": "B"}},
- "status": "done", "undo_of": null, "note": "", "app": "nms-save-vault 0.4.0"}
+ "status": "done", "undo_of": null, "note": "", "app": "nms-save-vault 0.4.0",
+ "m": {"9e4b2f00...": {"member": "A", "pid": "DDDAD1BDD39F9C72", "...": "..."}}}
 ```
+
+`m` (as in `obs`) describes the placed vids the journal has not described yet, so a
+recorded step can be drawn from the journal alone once the source entry is gone.
 
 `src`: `app` (D5 or the phase-1 hook) or `oplog` (bootstrap, from a legacy `oplog.jsonl`
 line; `op_id` = `legacy-<line index>`). `kind` for app ops is D5's (`place`,

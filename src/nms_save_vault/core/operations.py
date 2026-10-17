@@ -9,6 +9,8 @@ member only edits the meta timestamp. The data bytes are never recompressed.
 """
 from __future__ import annotations
 
+import functools
+import inspect
 import logging
 import os
 import shutil
@@ -111,6 +113,60 @@ class OpResult:
     entry_id: str | None = None
     changed: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+
+
+LIVE_OP_BUSY = (
+    "Another NMS Save Vault window is changing live saves. Try again when it has finished."
+)
+
+
+def _recorded(kind: str, slot_arg: str | None = None):
+    """The organizer's phase-1 hook (D1 2.6.7) around a live write: the write runs under the
+    live-op lock, so two windows never write one live folder at once, and is journaled as an
+    operation on the slot ``slot_arg`` names (or on every slot a whole-folder restore
+    changed). Recording never fails the write; only a busy lock refuses it."""
+    def wrap(fn):
+        signature = inspect.signature(fn)
+
+        @functools.wraps(fn)
+        def run(*args, **kwargs):
+            from .organizer import recorder   # the organizer reads core modules, not this one
+
+            bound = signature.bind(*args, **kwargs)
+            bound.apply_defaults()
+            arguments = bound.arguments
+            vault = arguments["vault"]
+            try:
+                with recorder.classic_write(vault.root, Path(arguments["live_dir"]), kind) as hook:
+                    result = fn(*args, **kwargs)
+                    if hook is not None:
+                        hook.done(result, slot=arguments[slot_arg] if slot_arg else None,
+                                  source=_op_source(vault, arguments))
+                    return result
+            except recorder.LiveOpBusy as exc:
+                raise OperationError(LIVE_OP_BUSY) from exc
+
+        return run
+
+    return wrap
+
+
+def _op_source(vault: Vault, arguments: dict) -> dict | None:
+    """Where a write took its saves from, by entry id or folder name (never a path)."""
+    if isinstance(arguments.get("entry"), CatalogEntry):
+        return {"kind": "entry", "entry": arguments["entry"].id}
+    source_dir = arguments.get("source_dir")
+    if source_dir is None:
+        return None
+    slot = arguments.get("source_slot")
+    try:
+        here = Path(source_dir).resolve()
+        for entry in vault.entries:
+            if Path(entry.path).resolve() == here:
+                return {"kind": "entry", "entry": entry.id, "slot": slot}
+    except OSError:
+        pass
+    return {"kind": "folder", "name": Path(source_dir).name, "slot": slot}
 
 
 # --- file-set helpers --------------------------------------------------------
@@ -320,6 +376,9 @@ def create_full_backup(
     )
     _log_op(vault, _oplog("full_backup", entry_id=entry.id), collected)
     _hand_over(collected, warnings)
+    from .organizer import recorder
+
+    recorder.observe_folder(vault.root, live_dir)   # a look at the folder narrows the journal's gaps
     return entry
 
 
@@ -393,6 +452,7 @@ def restore_entry(
     )
 
 
+@_recorded("restore_full")
 def restore_full(
     vault: Vault, entry: CatalogEntry, live_dir: Path, mirror: bool = True, allow_game_running: bool = False,
     *, undo_of: str | None = None, restore_accountdata: bool = False,
@@ -561,6 +621,7 @@ def _extract_slot_steam(
     return entry
 
 
+@_recorded("repopulate", "dest_slot")
 def repopulate_slot(
     vault: Vault,
     source_dir: Path,
@@ -690,6 +751,7 @@ def _require_newest(after: savedir.SlotView, expected: str, result: OpResult) ->
         )
 
 
+@_recorded("promote", "slot")
 def promote_member(vault: Vault, live_dir: Path, slot: int, member: int, allow_game_running: bool = False) -> OpResult:
     """Force a slot member to be the one the game treats as newest (timestamp bump).
 
@@ -1289,6 +1351,7 @@ def plan_clear_slot(
     return plan
 
 
+@_recorded("clear", "slot")
 def clear_slot(
     vault: Vault, live_dir: Path, slot: int, allow_game_running: bool = False
 ) -> OpResult:
@@ -1604,6 +1667,7 @@ def plan_undo(vault: Vault, live_dir: Path, other_live_dirs: Iterable[Path] = ()
     )
 
 
+@_recorded("undo")
 def undo_last(
     vault: Vault, live_dir: Path, allow_game_running: bool = False, acknowledge_damage: bool = False,
     other_live_dirs: Iterable[Path] = (), restore_accountdata: bool = False,
