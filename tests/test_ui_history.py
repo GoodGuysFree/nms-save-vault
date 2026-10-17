@@ -191,3 +191,82 @@ def test_history_opens_from_the_tab_and_a_lock_goes_through_the_worker(view, gui
     assert win.lock_button.cget("text") == "Unlock"          # the window followed the new model
     again = view.histories.open_history(pid)
     assert again is win
+
+
+# --- the Compare window (U25) -------------------------------------------------------------
+
+
+def test_the_ancestor_is_found_over_the_drawn_edges_only(tmp_path):
+    from nms_save_vault.ui.organizer import compare as C
+
+    w, (a, b, c, d, e, f), _ = _long(tmp_path)
+    model = w.refresh()
+    anc = C.common_ancestor(model, PID, f, c)
+    assert anc.head == a and anc.text.startswith("#2, branch point; A played +")
+    assert (anc.a_since, anc.b_since) == (3, 1)
+    assert "ancestor of" in C.common_ancestor(model, PID, f, d).text
+    assert C.common_ancestor(model, PID, f, e).head is None
+    assert "no common ancestor recorded" in C.common_ancestor(model, PID, e, f).text
+
+
+def test_facts_may_be_absent_and_a_fact_view_shows_when_present(tmp_path):
+    import dataclasses
+    from types import SimpleNamespace
+
+    from nms_save_vault.ui.organizer import compare as C
+
+    w, (a, b, c, d, e, f), _ = _long(tmp_path)
+    model = w.refresh()
+    ra, rf = (next(r for r in model.versions(PID) if r.head == h) for h in (a, f))
+    facts = {x.name: x for x in C.compare_facts(model, PID, ra, rf)}
+    assert facts["Play time"].differs and facts["Bases"].a == "not indexed"
+    assert not facts["Platform"].differs
+    va = SimpleNamespace(own_bases=3, base_parts=900, ship_names=("Old",), companion_names=())
+    vf = SimpleNamespace(own_bases=4, base_parts=900, ship_names=("Old", "New"),
+                         companion_names=())
+    rich = {x.name: x for x in C.compare_facts(
+        model, PID, dataclasses.replace(ra, facts=va), dataclasses.replace(rf, facts=vf))}
+    assert (rich["Bases"].a, rich["Bases"].b) == ("3", "4") and not rich["Base parts"].differs
+    assert C.named_differences(dataclasses.replace(ra, facts=va),
+                               dataclasses.replace(rf, facts=vf)) == ["Ship: New - only in B"]
+
+
+def test_the_compare_window_swaps_filters_and_picks(host, gui_app, tmp_path):
+    from nms_save_vault.ui.organizer.compare import CompareWindow
+
+    w, (a, b, c, d, e, f), _ = _long(tmp_path)
+    model = w.refresh()
+    win = CompareWindow(host, model=model, themed=gui_app.themed, pid=PID, a=f, b=c)
+    gui_app.update()
+    try:
+        names = [r[0] for r in win.table()]
+        assert "Play time" in names and "Platform" not in names     # differences only
+        assert "ancestor: #2" in win.strip.cget("text")
+        assert win.note.cget("text") == "content facts: not indexed yet for A and B"
+        win.swap()
+        assert (win.a, win.b) == (c, f)
+        win.set_only_differences(False)
+        assert "Platform" in [r[0] for r in win.table()]
+        win.set_versions(a, e)
+        assert "no common ancestor recorded" in win.strip.cget("text")
+        win.pick()
+    finally:
+        win.destroy()
+
+
+def test_compare_with_live_opens_from_the_history_and_says_when_nothing_is_live(view, gui_app):
+    from .organizer_world import PIDS
+
+    pid = PIDS["main"]
+    view.table.select(pid)
+    view.open_history()
+    win = view.histories.history
+    older = next(r.head for r in view.model.versions(pid) if not r.live_in)
+    win._select_head(older)
+    win.compare()
+    cmp = view.histories.compare
+    assert cmp is not None and cmp.a == older and cmp.b != older
+    cmp.destroy()
+    view.histories.compare = None
+    assert view.histories.open_compare(PIDS["old"], view.model.versions(PIDS["old"])[0].head) is None
+    assert "compare" in view.alerts
