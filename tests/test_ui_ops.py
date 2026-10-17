@@ -327,3 +327,38 @@ def test_empty_this_slot_shows_steps_and_the_refill_warning(view, gui_app):
     assert not any("Empty" in b and "slot" in b.lower() and b != "Close" for b in _buttons(w)
                    if "steps" not in b)          # no button that empties: only the steps
     w.destroy()
+
+
+# --- Edit > Undo (Ctrl+Z) and the status bar's "Last change" ---------------------------------------
+
+
+def test_edit_undo_is_the_done_bars_undo_and_last_change_is_reported(view, gui_app):
+    lines = []
+    view.on_last_change = lines.append
+    assert view.undo_last() is False and "nothing to undo" in view.alerts["undo"].text.cget("text")
+    outcome = _place(view, gui_app, occupied=True)
+    assert lines and lines[0].startswith("Last change ") and outcome.outcome.rstrip(".") in lines[0]
+    assert lines[0].endswith("checked after the next game launch")
+    seen = []
+    view.undo_op = seen.append
+    assert view.undo_last() is True and seen == [outcome.op_id]
+
+
+def test_ctrl_z_and_the_edit_menu_dispatch_by_tab_and_leave_text_fields_alone(gui_app, monkeypatch):
+    calls = []
+    monkeypatch.setattr(gui_app.organizer_view, "undo_last", lambda: calls.append("organizer"))
+    monkeypatch.setattr(gui_app, "on_undo", lambda *a: calls.append("classic"))
+    monkeypatch.setattr(gui_app, "current_view", lambda: "organizer")
+    gui_app.on_edit_undo()
+    monkeypatch.setattr(gui_app, "current_view", lambda: "classic")
+    gui_app.on_edit_undo()
+    assert calls == ["organizer", "classic"]
+    entry = tk.Entry(gui_app)
+    monkeypatch.setattr(gui_app, "focus_get", lambda: entry)
+    gui_app._undo_shortcut()
+    assert len(calls) == 2                                               # the field keeps Ctrl+Z
+    monkeypatch.setattr(gui_app, "focus_get", lambda: gui_app)
+    gui_app._undo_shortcut()
+    assert len(calls) == 3
+    entry.destroy()
+    assert gui_app.last_change.get() == "" or isinstance(gui_app.last_change.get(), str)

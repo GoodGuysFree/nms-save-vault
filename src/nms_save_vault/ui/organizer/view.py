@@ -84,6 +84,16 @@ def scan_alerts(organizer: Organizer) -> dict[str, str]:
     return {key: aliases.scrub(text) for key, text in out.items()}
 
 
+def last_change_text(outcome: OpOutcome) -> str:
+    """The status bar's "Last change" line."""
+    from datetime import datetime
+
+    text = f"Last change {datetime.now():%H:%M}: {outcome.outcome.rstrip('.')}"
+    if outcome.verify == "pending":
+        text += " - checked after the next game launch"
+    return aliases.scrub(text)
+
+
 def default_context(organizer: Organizer) -> OpContext:
     """The live-operations context of the app's own organizer (worker thread)."""
     from ... import __version__
@@ -99,7 +109,8 @@ class OrganizerView(ttk.Frame):
     def __init__(self, master, *, worker: UiWorker, themed: ThemeRegistry,
                  prefs: MutableMapping, save_prefs: Callable[[], None],
                  make_organizer: Callable[[], Organizer],
-                 make_context: Callable[[Organizer], OpContext] | None = None) -> None:
+                 make_context: Callable[[Organizer], OpContext] | None = None,
+                 on_last_change: Callable[[str], None] | None = None) -> None:
         super().__init__(master)
         self.worker = worker
         self.themed = themed
@@ -107,6 +118,7 @@ class OrganizerView(ttk.Frame):
         self.save_prefs = save_prefs
         self.make_organizer = make_organizer
         self.make_context = make_context or default_context
+        self.on_last_change = on_last_change
         self.move_dialog: MoveDialog | None = None
         self.plan_dialog: PlanDialog | None = None
         self.log_window: OpsLogWindow | None = None
@@ -429,7 +441,19 @@ class OrganizerView(ttk.Frame):
 
     def _moved(self, outcome) -> None:
         self.done.show(outcome)
+        if self.on_last_change is not None:
+            self.on_last_change(last_change_text(outcome))
         self.rescan()
+
+    def undo_last(self) -> bool:
+        """Edit > Undo (Ctrl+Z): the same Undo as the Done bar's, for the last operation shown
+        there. False (and a note) when there is nothing to undo."""
+        outcome = self.done.outcome
+        if outcome is None or outcome.undo is None or not outcome.op_id:
+            self.alert("undo", "There is nothing to undo here.")
+            return False
+        self.undo_op(outcome.op_id)
+        return True
 
     # --- undo, the log, plans, recovery, steps (U16-U18) ----------------------------------------
 

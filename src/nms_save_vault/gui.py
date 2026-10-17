@@ -31,6 +31,7 @@ from .ui.fmt import local_time as _fmt_ts
 from .ui.fmt import play_time as _fmt_play
 from .ui.redact import RedactingTreeview
 from .ui.tooltip import TOOLTIP_STYLE, Tooltip
+from .ui.organizer.vaultwin import VaultEnv, VaultWindow, needs_attention
 from .ui.organizer.view import OrganizerView
 from .ui.themeaware import ThemeRegistry
 from .ui.worker import UiWorker
@@ -399,6 +400,9 @@ class App(tk.Tk):
         notice = startup_notice(vault_root)
         if notice:
             self.after(400, lambda: _showinfo("Vault upgrade", notice, parent=self))
+        # D3 4.4: an undo of the upgrade that was interrupted asks, at this start, to finish it
+        # or to keep the upgrade (the vault refuses writes until the owner chooses).
+        self.after(700, self._offer_interrupted_undo)
 
         # The active *writable* live source is the target of write operations. An
         # explicit --live wins; otherwise the first writable (Steam) source.
@@ -532,7 +536,8 @@ class App(tk.Tk):
 
         edit = menu("Edit")
         edit.add_command(label="Undo the last change to the active live folder",
-                         command=self.on_undo, underline=0)
+                         command=self.on_edit_undo,
+                         accelerator="Ctrl+Z", underline=0)
 
         view = menu("View")
         for name, key in ((ORGANIZER, "Ctrl+1"), (CLASSIC, "Ctrl+2")):
@@ -561,6 +566,7 @@ class App(tk.Tk):
         live.add_command(label="Promote", command=self.on_promote, underline=0)
 
         tools = menu("Tools")
+        tools.add_command(label="Vault upgrade...", command=self.open_vault_window, underline=0)
         tools.add_command(label="Play time...", command=self.on_playtime, underline=0)
         tools.add_command(label="Check for updates...", command=self.on_check_updates,
                           underline=0)
@@ -572,6 +578,34 @@ class App(tk.Tk):
         self.bind_all("<F1>", self._shortcut(self.on_help))
         self.bind_all("<F5>", self._shortcut(self.refresh))
         self.bind_all("<Control-Key-0>", self._shortcut(self._zoom_reset))
+        self.bind_all("<Control-Key-z>", self._shortcut(self._undo_shortcut))
+        self.bind_all("<Control-Key-Z>", self._shortcut(self._undo_shortcut))
+
+    def _undo_shortcut(self) -> None:
+        """Ctrl+Z (through the grab check): a text field keeps its own undo; elsewhere it is
+        Edit > Undo."""
+        if not isinstance(self.focus_get(), (tk.Text, tk.Entry, ttk.Entry)):
+            self.on_edit_undo()
+
+    def on_edit_undo(self) -> None:
+        """Edit > Undo: on the Organizer tab the same Undo as the Done bar; on the classic
+        tab the classic undo of the active live folder."""
+        if self.current_view() == ORGANIZER:
+            self.organizer_view.undo_last()
+        else:
+            self.on_undo()
+
+    def open_vault_window(self) -> VaultWindow:
+        """The vault upgrade window (D6 row 20): only ever opened by the owner or by the
+        start-up offer after an interrupted undo; it never starts anything by itself."""
+        env = VaultEnv(self.vault.root, [Path(s.path) for s in self.state.live_sources],
+                       self.state, __version__)
+        return VaultWindow(self, worker=self.worker, themed=self.themed, env=env,
+                           on_changed=lambda: self.organizer_view.rescan())
+
+    def _offer_interrupted_undo(self) -> None:
+        if needs_attention(self.vault.root):
+            self.open_vault_window()
 
     def _shortcut(self, action):
         """A window-wide key. Ignored while a dialog or the "Please wait" window holds the
@@ -590,9 +624,14 @@ class App(tk.Tk):
         self._build_menubar()
 
         self.status = tk.StringVar(value="")
+        self.last_change = tk.StringVar(value="")
+        bottom = ttk.Frame(self)
+        bottom.pack(side=tk.BOTTOM, fill=tk.X)
+        ttk.Label(bottom, textvariable=self.last_change, anchor="e", relief="sunken",
+                  style="Status.TLabel").pack(side=tk.RIGHT)
         ttk.Label(
-            self, textvariable=self.status, anchor="w", relief="sunken", style="Status.TLabel"
-        ).pack(side=tk.BOTTOM, fill=tk.X)
+            bottom, textvariable=self.status, anchor="w", relief="sunken", style="Status.TLabel"
+        ).pack(side=tk.LEFT, fill=tk.X, expand=True)
 
         # Shown only when a newer release is found; packed above the tabs at that point.
         self.banner = ttk.Frame(self, style="Banner.TFrame", padding=pxs(8, 6))
@@ -612,7 +651,8 @@ class App(tk.Tk):
         self.classic_view = ttk.Frame(self.notebook)
         self.organizer_view = OrganizerView(
             self.notebook, worker=self.worker, themed=self.themed, prefs=self.state.ui,
-            save_prefs=self._save_state_quietly, make_organizer=self._make_organizer)
+            save_prefs=self._save_state_quietly, make_organizer=self._make_organizer,
+            on_last_change=self.last_change.set)
         self.notebook.add(self.classic_view, text=VIEW_TITLES[CLASSIC])
         self.notebook.add(self.organizer_view, text=VIEW_TITLES[ORGANIZER])
         self._build_classic_view(self.classic_view)
