@@ -79,29 +79,31 @@ class Organizer:
                 cancel=None) -> ReadModel:
         """Scan, journal the live slots when ``record`` (listings do not), build the model.
 
-        The vault's entries are scanned first, without any lock. Recording then tries the
-        live-op lock and, holding it, looks at the live folders again and journals what
-        that second look found, so no live write is under way between the look and the
-        record (as the bootstrap does). When a write holds the lock the slots are not
-        journaled this time ("operation in progress"); when the lock cannot be taken at all
-        they are not either ("live-op lock failed")."""
+        Recording scans the vault's entries first, without any lock, then tries the
+        live-op lock and, holding it, looks at the live folders - once - and journals what
+        it saw, so no live write is under way between the look and the record (as the
+        bootstrap does). When a write holds the lock the live folders are looked at all the
+        same but not journaled this time ("operation in progress"); when the lock cannot be
+        taken at all, neither ("live-op lock failed"). A listing scans everything at once."""
         running = self.game_running()
-        self.scan = scan(self.vault, self.sources, self.cache, game_running=running,
-                         deep=deep, now=self.clock, progress=progress, cancel=cancel)
-        self.observed = None
         recording = record and not self.store.read_only
-        with ExitStack() as stack:
-            lock = self._try_live_lock(stack) if recording else None
-            if lock == LOCKED:
+        self.scan = scan(self.vault, self.sources, self.cache, game_running=running,
+                         deep=deep, now=self.clock, progress=progress, cancel=cancel,
+                         look_live=not recording)
+        self.observed = None
+        if recording:
+            with ExitStack() as stack:
+                lock = self._try_live_lock(stack)
                 fresh = scan(None, self.sources, self.cache, game_running=running,
-                             now=self.clock)
+                             deep=deep, now=self.clock)
                 self.scan = with_live(self.scan, fresh)
-                journal = Journal(self.store, self.scan.versions)
-                self.observed = journal.observe(self.scan, src="scan", skip=self.busy_targets())
-            elif lock is not None:
-                self.observed = ObserveResult(0, (), tuple(
-                    (ref.target(c.slot), lock)
-                    for ref, folder in self.scan.live.items() for c in folder.captures))
+                if lock == LOCKED:
+                    self.observed = Journal(self.store, self.scan.versions).observe(
+                        self.scan, src="scan", skip=self.busy_targets())
+                else:
+                    self.observed = ObserveResult(0, (), tuple(
+                        (ref.target(c.slot), lock)
+                        for ref, folder in self.scan.live.items() for c in folder.captures))
         journal = Journal(self.store, self.scan.versions)
         self.model = ReadModel.build(self.scan, journal.replay(), read_lineage(self.store),
                                      read_notes(self.store), self.sources, now=int(self.clock()))

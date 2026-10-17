@@ -162,6 +162,38 @@ def version_values(row: VersionRow, live_labels: dict) -> dict[str, str]:
     }
 
 
+@dataclass(frozen=True)
+class RowSpec:
+    """One row under an open line: ``key`` is stable across models (a version by its head),
+    so a new model updates the row in place and a selected version stays selected."""
+    key: tuple
+    text: str
+    values: tuple
+    tags: tuple
+    image: object = ""          # a key into the table's images
+    head: str | None = None     # the version the row is
+
+
+def _dot(row: VersionRow) -> tuple[str, str]:
+    kind = "live" if row.live_in else ("member" if row.partner is None and
+                                       "live-partner" in row.flags else "dot")
+    return kind, (row.platform if row.live_in else "muted")
+
+
+def version_specs(model: ReadModel, pid: str, live_labels: dict) -> list[RowSpec]:
+    """The rows of an open line: its versions, newest first, numbered from the oldest."""
+    rows = model.versions(pid)
+    out = []
+    for number, row in zip(range(len(rows), 0, -1), rows):
+        values = version_values(row, live_labels)
+        out.append(RowSpec(("v", row.head), f"#{number}",
+                           tuple(values[c.key] for c in COLUMNS), ("ver",), _dot(row),
+                           row.head))
+    if not rows:
+        out.append(RowSpec(("none",), "(no versions)", (), ("muted",)))
+    return out
+
+
 def chip_counts(lines: Iterable[Line]) -> dict[str, int]:
     """Every chip's count, from the unfiltered lines (D6 2.2)."""
     lines = tuple(lines)
@@ -260,8 +292,8 @@ class OrganizerTable(ttk.Frame):
         self._find_after: str | None = None
         self._images: dict = {}
         self._palette: dict = {}
-        self._dot_kind: dict[str, str] = {}          # version iid -> marker kind
-        self._dot_colour: dict[str, str] = {}        # version iid -> palette key
+        self._child_iids: dict[str, dict[tuple, str]] = {}   # pid -> row key -> iid
+        self._factor = dpi.factor()                  # the scale the widths were set at
         sort = prefs.get("table_sort") or ["last_played", True]
         self.sort_key, self.descending = str(sort[0]), bool(sort[1])
         self.chips: set[str] = {c for c in prefs.get("table_chips", []) if c in CHIP}
@@ -381,10 +413,11 @@ class OrganizerTable(ttk.Frame):
             self.tree.item(iid, image=self._images["open" if pid in self.open_pids
                                                    else "closed"])
         self._show_sort_arrow()
-        for iid in self._version_of:
-            kind = self._dot_kind.get(iid, "dot")
-            colour = self._dot_colour.get(iid, "muted")
-            self.tree.item(iid, image=self._images.get((kind, colour), ""))
+        for children in self._child_iids.values():
+            for iid in children.values():
+                spec = self._values.get(iid)
+                if isinstance(spec, RowSpec):
+                    self.tree.item(iid, image=self._images.get(spec.image, ""))
 
     def _dot_images(self, h: int, scale: float) -> dict:
         p = self._palette
@@ -410,6 +443,9 @@ class OrganizerTable(ttk.Frame):
         """Apply the chips, Find and the sort to the current lines."""
         self.shown = visible_lines(self.lines, self.chips, self.find_var.get(),
                                    self.sort_key, self.descending, self.model)
+        # A line hidden by the chips or Find is closed: the others are muted only while
+        # the open line can be seen.
+        self.open_pids &= {line.pid for line in self.shown}
         tree = self.tree
         wanted = []
         for n, line in enumerate(self.shown):
@@ -435,7 +471,7 @@ class OrganizerTable(ttk.Frame):
             pid = self._pid_of.pop(iid, None)
             if pid is not None:
                 self._iid_of.pop(pid, None)
-            self._forget_versions(iid)
+                self._forget_versions(pid)
             self._values.pop(iid, None)
             tree.delete(iid)
         if self.model is not None and not self.lines:
@@ -463,33 +499,48 @@ class OrganizerTable(ttk.Frame):
     # --- versions under an open line ------------------------------------------------
 
     def _fill_versions(self, pid: str) -> None:
+        """Bring an open line's rows up to date in place: a row keeps its iid (and so its
+        selection) for as long as its version is there (D6 3.1.2)."""
         tree, iid = self.tree, self._iid_of.get(pid)
         if iid is None or self.model is None:
             return
-        self._forget_versions(iid)
-        for child in tree.get_children(iid):
-            tree.delete(child)
         labels = {b.target: b.label for line in self.lines for b in line.live}
-        rows = self.model.versions(pid)
-        for number, row in zip(range(len(rows), 0, -1), rows):
-            viid = self._new_iid("V")
-            self._version_of[viid] = (pid, row.head)
-            values = version_values(row, labels)
-            kind = "live" if row.live_in else ("member" if row.partner is None and
-                                               "live-partner" in row.flags else "dot")
-            colour = (row.platform if row.live_in else "muted")
-            self._dot_kind[viid], self._dot_colour[viid] = kind, colour
-            tree.insert(iid, "end", viid, text=f"#{number}",
-                        values=tuple(values[c.key] for c in COLUMNS), tags=("ver",),
-                        image=self._images.get((kind, colour), ""))
-        if not rows:
-            tree.insert(iid, "end", self._new_iid("P"), text="(no versions)", tags=("muted",))
+        known = self._child_iids.setdefault(pid, {})
+        wanted = []
+        for n, spec in enumerate(version_specs(self.model, pid, labels)):
+            viid = known.get(spec.key)
+            if viid is None or not tree.exists(viid):
+                viid = self._new_iid("V")
+                known[spec.key] = viid
+                tree.insert(iid, "end", viid, text=spec.text, values=spec.values,
+                            tags=spec.tags, image=self._images.get(spec.image, ""))
+            elif self._values.get(viid) != spec:
+                tree.item(viid, text=spec.text, values=spec.values, tags=spec.tags,
+                          image=self._images.get(spec.image, ""))
+            self._values[viid] = spec
+            if spec.head is not None:
+                self._version_of[viid] = (pid, spec.head)
+            else:
+                self._version_of.pop(viid, None)
+            if tree.parent(viid) != iid or tree.index(viid) != n:
+                tree.move(viid, iid, n)
+            wanted.append(viid)
+        for child in tree.get_children(iid):
+            if child not in wanted:
+                self._drop_child(pid, child)
+                tree.delete(child)
 
-    def _forget_versions(self, line_iid: str) -> None:
-        for child in self.tree.get_children(line_iid):
-            self._version_of.pop(child, None)
-            self._dot_kind.pop(child, None)
-            self._dot_colour.pop(child, None)
+    def _drop_child(self, pid: str, iid: str) -> None:
+        self._version_of.pop(iid, None)
+        self._values.pop(iid, None)
+        known = self._child_iids.get(pid, {})
+        for key in [k for k, v in known.items() if v == iid]:
+            del known[key]
+
+    def _forget_versions(self, pid: str) -> None:
+        for iid in self._child_iids.pop(pid, {}).values():
+            self._version_of.pop(iid, None)
+            self._values.pop(iid, None)
 
     # --- opening and closing ----------------------------------------------------------
 
@@ -590,12 +641,21 @@ class OrganizerTable(ttk.Frame):
             return [c.key for c in COLUMNS]
         return list(shown)
 
+    def rezoom(self, ratio: float) -> None:
+        """The zoom changed: every column by the same ratio, so one the user dragged wider
+        stays wider (as the classic panes do)."""
+        for column in ("#0", *(c.key for c in COLUMNS)):
+            width = int(self.tree.column(column, "width"))
+            self.tree.column(column, width=max(1, int(round(width * ratio))))
+        self._factor = dpi.factor()
+
     def _remember_widths(self, _event=None) -> None:
-        """Keep column widths the user dragged, in design pixels."""
+        """Keep column widths the user dragged, in design pixels: at the scale they are
+        drawn at now."""
         if not self._dragging:
             return
         self._dragging = False
-        factor = dpi.factor() or 1.0
+        factor = self._factor or 1.0
         widths = {c: int(round(int(self.tree.column(c, "width")) / factor))
                   for c in ("#0", *(col.key for col in COLUMNS))}
         if widths != self.prefs.get("table_widths"):

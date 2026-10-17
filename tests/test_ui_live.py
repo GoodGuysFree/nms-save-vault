@@ -220,3 +220,27 @@ def test_two_folders_with_one_label_stay_apart_in_the_selector(host, gui_app, tm
     area.pick_vars[0].set("Mine #2")
     area._picked(0)
     assert [s.ref.account_key for s in area.shown_sources()] == [b.name, a.name]
+
+
+# --- chunk E review -------------------------------------------------------------------------
+
+
+def test_the_lists_never_draw_wider_than_the_canvas(host, gui_app, world, monkeypatch):
+    area = _area(host, gui_app, world.model)
+    monkeypatch.setattr(area.canvas, "winfo_ismapped", lambda: True)
+    monkeypatch.setattr(area.canvas, "winfo_width", lambda: 300)
+    area.redraw()
+    assert max(d.box[2] for d in area.drawn.values()) <= 300
+
+
+def test_hover_tints_one_slot_without_redrawing(host, gui_app, world, monkeypatch):
+    area = _area(host, gui_app, world.model)
+    redraws = []
+    monkeypatch.setattr(area, "redraw", lambda: redraws.append(1))
+    first, second = list(area.drawn)[:2]
+    area._hover(first)
+    area._hover(second)
+    c = area.canvas
+    assert redraws == []
+    assert c.itemcget(area.drawn[second].bg, "fill") == area._p["hl_bg"]
+    assert c.itemcget(area.drawn[first].bg, "fill") == area._p["field"]

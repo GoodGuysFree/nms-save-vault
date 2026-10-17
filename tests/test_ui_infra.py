@@ -270,3 +270,27 @@ def test_radio_and_version_dots():
     assert len({frozenset(s) for s in shapes.values()}) == len(raster.DOT_KINDS)
     live = raster.version_dot(20, 24, "live", colour="#1f5fa8", scale=1.0)
     assert {"#1f5fa8", "#ffffff"} <= set(live.pixels.values())
+
+
+def test_the_windowing_system_is_asked_once_per_interpreter():
+    calls = []
+
+    class Interp:
+        def call(self, *args):
+            calls.append(args)
+            return "win32"
+
+    class Widget:
+        tk = Interp()
+
+    for _ in range(50):
+        redact.shown(Widget(), "a name")
+    assert len(calls) == 1
+
+
+def test_the_app_can_be_destroyed_before_its_worker_exists(monkeypatch):
+    from nms_save_vault import gui
+
+    monkeypatch.setattr(tk.Tk, "destroy", lambda self: None)
+    half_built = gui.App.__new__(gui.App)
+    gui.App.destroy(half_built)                  # no AttributeError

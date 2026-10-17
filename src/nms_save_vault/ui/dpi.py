@@ -8,38 +8,17 @@ of physical pixels and so shrinks next to the text. ``px(n)`` turns a size desig
 96 dpi and zoom 1.0 into pixels for this screen and the current font zoom.
 
 One Tk root per process, so the factor is module state: :func:`configure` reads it from
-the root once and again whenever the zoom changes.
+the root once and again whenever the zoom changes. What only the OS can tell (making the
+process DPI-aware, the work area, the window's frame) lives in ``gui``, which may branch
+on the OS; this module stays platform-neutral.
 """
 from __future__ import annotations
-
-import sys
 
 #: The DPI every pixel constant in the UI was designed at (Windows' 100 %).
 BASE_DPI = 96.0
 
 _pixels_per_inch = BASE_DPI
 _zoom = 1.0
-
-
-def enable_awareness() -> bool:
-    """Make the process system-DPI-aware; must run before the first ``tk.Tk()``.
-
-    Windows only, best effort. System awareness (1), not per-monitor (2): per-monitor needs
-    ``WM_DPICHANGED`` handling that Tk 8.6 lacks, and system awareness degrades to Windows'
-    bitmap scaling on a second monitor with another DPI. True when the call succeeded.
-    """
-    if sys.platform != "win32":
-        return False
-    import ctypes
-
-    try:
-        return ctypes.windll.shcore.SetProcessDpiAwareness(1) == 0
-    except (AttributeError, OSError):
-        pass
-    try:  # no shcore (older Windows): the Vista-era switch, system-aware too
-        return bool(ctypes.windll.user32.SetProcessDPIAware())
-    except (AttributeError, OSError):
-        return False
 
 
 def scaled(n: float, pixels_per_inch: float, zoom: float) -> int:
@@ -79,42 +58,6 @@ def screen_px(n: float) -> int:
 def pxs(*values: float) -> tuple[int, ...]:
     """:func:`px` of each value: ``padding=pxs(14, 0, 14, 12)``."""
     return tuple(px(v) for v in values)
-
-
-def work_area(root) -> tuple[int, int]:
-    """The usable desktop size in pixels: the screen without the taskbar on Windows."""
-    if sys.platform == "win32":
-        import ctypes
-        from ctypes import wintypes
-
-        rect = wintypes.RECT()
-        try:
-            if ctypes.windll.user32.SystemParametersInfoW(0x0030, 0, ctypes.byref(rect), 0):
-                width, height = rect.right - rect.left, rect.bottom - rect.top
-                if width > 0 and height > 0:
-                    return width, height
-        except (AttributeError, OSError):
-            pass
-    return int(root.winfo_screenwidth()), int(root.winfo_screenheight())
-
-
-def window_chrome(root) -> tuple[int, int]:
-    """What the window adds around the size given to ``geometry()``: the borders, the
-    title bar and the menu bar. Windows asks the system; elsewhere a fair estimate."""
-    if sys.platform == "win32":
-        import ctypes
-
-        metric = ctypes.windll.user32.GetSystemMetrics
-        try:
-            frame_x = metric(32) + metric(92)        # SM_CXSIZEFRAME + SM_CXPADDEDBORDER
-            frame_y = metric(33) + metric(92)        # SM_CYSIZEFRAME + SM_CXPADDEDBORDER
-            caption, menu = metric(4), metric(15)    # SM_CYCAPTION, SM_CYMENU
-        except (AttributeError, OSError):
-            pass
-        else:
-            if caption > 0:
-                return 2 * frame_x, caption + menu + 2 * frame_y
-    return screen_px(16), screen_px(80)
 
 
 def first_start_size(area: tuple[int, int], minimum: tuple[int, int],

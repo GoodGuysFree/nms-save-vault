@@ -63,9 +63,44 @@ def test_reads_and_temp_writes_pass(event, args):
 
 
 @needs_windows_folders
-def test_the_hook_is_installed_and_records_a_real_write():
-    """End to end without writing anything: an audit event as open() raises it."""
+def test_a_write_under_the_real_folders_is_refused_before_it_happens():
+    """End to end without writing anything: the audit event open() raises refuses it."""
     target = os.path.join(REAL_LOCAL, "NMSSaveVault", "state.json")
-    sys.audit("open", target, "w", 0)
+    with pytest.raises(PermissionError):
+        sys.audit("open", target, "w", 0)
     hits = conftest.take_violations()
     assert len(hits) == 1 and hits[0].startswith("open: ")
+
+
+@pytest.mark.parametrize("parts", [
+    (".local", "share", "Steam", "steamapps", "compatdata", "275850", "pfx", "x.hg"),
+    (".config", "NMSSaveVault", "state.json"),
+    (".cache", "NMSSaveVault", "scan-cache.json"),
+    ("Library", "Application Support", "HelloGames", "NMS", "save.hg"),
+    (".steam", "steam", "steamapps", "compatdata", "275850", "x.hg"),
+    (".var", "app", "com.valvesoftware.Steam", "x.hg"),
+])
+def test_the_posix_user_folders_are_guarded_too(parts):
+    target = str(conftest._REAL_HOME.joinpath(*parts))
+    assert conftest.real_write_target("open", (target, "wb", 0))
+
+
+def test_bytecode_caches_are_not_writes_to_guard():
+    pyc = conftest._REAL_HOME / ".local" / "share" / "uv" / "python" / "__pycache__"
+    assert conftest.real_write_target("os.mkdir", (str(pyc), 0o777, -1)) is None
+
+
+def test_home_points_at_a_temp_folder(tmp_path_factory):
+    base = tmp_path_factory.getbasetemp().resolve()
+    assert base in Path(os.environ["HOME"]).resolve().parents
+
+
+def test_a_try_outside_any_test_is_kept_for_the_end_of_the_session():
+    """A session fixture's setup writes between tests: that is reported, never dropped."""
+    conftest._VIOLATIONS.append("open: somewhere real")
+    conftest.start_test()
+    try:
+        assert "open: somewhere real" in conftest._UNATTRIBUTED
+        assert "open: somewhere real" in conftest.session_violations()
+    finally:
+        conftest._UNATTRIBUTED.remove("open: somewhere real")

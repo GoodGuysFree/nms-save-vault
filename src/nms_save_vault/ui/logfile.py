@@ -17,13 +17,12 @@ from __future__ import annotations
 
 import logging
 import logging.handlers
-import os
 import re
 import sys
 import threading
 from pathlib import Path
 
-from ..core import aliases
+from ..core import aliases, safety
 
 FILENAME = "nmsvault.log"
 MAX_BYTES = 1_000_000
@@ -40,14 +39,15 @@ XBOX_ACCOUNT = re.compile(r"\b[0-9A-Fa-f]{16}_[0-9A-Fa-f]{32}\b")
 
 
 def _home_pattern(home: Path) -> re.Pattern | None:
-    """The home folder however a message spells it: either slash, any case on Windows."""
+    """The home folder however a message spells it: either slash, any case (where names
+    ignore case another spelling is the same folder; elsewhere redacting one more spelling
+    costs nothing)."""
     text = str(home).rstrip("\\/")
     if len(text) < 3:
         return None
     parts = [re.escape(p) for p in re.split(r"[\\/]+", text) if p]
     prefix = "/" if text.startswith("/") else ""
-    flags = re.IGNORECASE if os.name == "nt" else 0
-    return re.compile(prefix + r"[\\/]+".join(parts) + r"(?=[\\/]|$|\W)", flags)
+    return re.compile(prefix + r"[\\/]+".join(parts) + r"(?=[\\/]|$|\W)", re.IGNORECASE)
 
 
 class RedactingFormatter(logging.Formatter):
@@ -89,6 +89,7 @@ class _LogStream:
     def __init__(self, logger: logging.Logger) -> None:
         self.logger = logger
         self._pending = ""
+        self._lock = threading.Lock()          # threads write to stderr at once
         self._busy = threading.local()
 
     def write(self, text: str) -> int:
@@ -96,28 +97,26 @@ class _LogStream:
             return len(text)
         self._busy.on = True
         try:
-            self._pending += text
-            while "\n" in self._pending:
-                line, self._pending = self._pending.split("\n", 1)
+            with self._lock:
+                self._pending += text
+                *lines, self._pending = self._pending.split("\n")
+            for line in lines:                 # logged outside the lock: a handler is slow
                 if line.strip():
                     self.logger.warning("%s", line)
         except Exception:  # noqa: BLE001 - writing to stderr never raises
-            self._pending = ""
+            pass
         finally:
             self._busy.on = False
         return len(text)
 
     def flush(self) -> None:
-        if self._pending.strip():
-            self.write("\n")
-        self._pending = ""
+        with self._lock:
+            rest, self._pending = self._pending, ""
+        if rest.strip():
+            self.write(rest + "\n")
 
     def isatty(self) -> bool:
         return False
-
-
-def _same_file(a: str | os.PathLike, b: str | os.PathLike) -> bool:
-    return os.path.normcase(os.path.abspath(a)) == os.path.normcase(os.path.abspath(b))
 
 
 def configure(log_dir: Path, *, level: int = logging.INFO,
@@ -129,7 +128,8 @@ def configure(log_dir: Path, *, level: int = logging.INFO,
     path = Path(log_dir) / FILENAME
     logger = logging.getLogger(LOGGER)
     for handler in logger.handlers:
-        if _same_file(getattr(handler, "baseFilename", ""), path):
+        name = getattr(handler, "baseFilename", None)
+        if name and safety.same_path(name, path):
             return path
     try:
         path.parent.mkdir(parents=True, exist_ok=True)

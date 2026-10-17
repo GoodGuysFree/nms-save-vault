@@ -207,3 +207,57 @@ def test_a_folder_reached_through_a_junction_gets_one_handler(tmp_path, clean_lo
     logfile.configure(link / "logs")
     logfile.configure(link / "logs")
     assert len(clean_logger.handlers) == before + 1
+
+
+# --- chunk E review ----------------------------------------------------------------
+
+
+def test_threads_writing_to_stderr_at_once_lose_no_line(tmp_path, clean_logger, monkeypatch):
+    import threading
+
+    monkeypatch.setattr(sys, "stderr", None)
+    path = logfile.configure(tmp_path)
+    stream = sys.stderr
+    old = sys.getswitchinterval()
+    sys.setswitchinterval(1e-6)                 # switch threads as often as possible
+    try:
+        def writer(n):
+            for i in range(300):
+                stream.write(f"thread {n} ")
+                stream.write(f"line {i}\n")
+
+        threads = [threading.Thread(target=writer, args=(n,)) for n in range(6)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+    finally:
+        sys.setswitchinterval(old)
+    _flush(clean_logger)
+    import re
+
+    text = path.read_text(encoding="utf-8")
+    assert len(re.findall(r"line \d+", text)) == 6 * 300     # interleaved, but nothing lost
+    assert len(re.findall(r"thread \d", text)) == 6 * 300
+
+
+def test_the_home_folder_in_another_case_is_redacted_everywhere(tmp_path, clean_logger):
+    home = tmp_path / "Users" / "Someone"
+    path = logfile.configure(tmp_path / "logs", home=home)
+    logging.getLogger("nms_save_vault.x").warning("%s", str(home).swapcase() + "/x")
+    _flush(clean_logger)
+    assert "~/x" in path.read_text(encoding="utf-8")
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="a junction is a Windows folder link")
+def test_a_folder_and_a_junction_to_it_are_one_log(tmp_path, clean_logger):
+    import _winapi
+
+    real = tmp_path / "real"
+    (real / "logs").mkdir(parents=True)
+    link = tmp_path / "link"
+    _winapi.CreateJunction(str(real), str(link))
+    before = len(clean_logger.handlers)
+    logfile.configure(real / "logs")
+    logfile.configure(link / "logs")
+    assert len(clean_logger.handlers) == before + 1

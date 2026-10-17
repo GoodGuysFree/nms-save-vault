@@ -22,11 +22,22 @@ def _latin1(text: str) -> str:
     return "".join(ch if ord(ch) < 256 else "?" for ch in text)
 
 
+#: Per Tcl interpreter (its windowing system never changes): the interpreter, and the answer.
+_LATIN1: dict[int, tuple[object, bool]] = {}
+
+
 def needs_latin1(widget: tk.Misc) -> bool:
+    """The X11 kit draws only Latin-1; asked once per interpreter, not per string."""
+    interp = widget.tk
+    known = _LATIN1.get(id(interp))
+    if known is not None and known[0] is interp:
+        return known[1]
     try:
-        return widget.tk.call("tk", "windowingsystem") == "x11"
+        answer = interp.call("tk", "windowingsystem") == "x11"
     except tk.TclError:
         return False
+    _LATIN1[id(interp)] = (interp, answer)
+    return answer
 
 
 def shown(widget: tk.Misc | None, text):

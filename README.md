@@ -219,8 +219,9 @@ uv run pytest -m slow      # the long ones: real-data read-only smoke, time budg
 ```
 
 The tests never touch this machine's own folders: each runs with %LOCALAPPDATA%, %APPDATA%,
-the XDG folders and the install folder (state.json, accounts.ini) pointed at temp folders,
-and a test that writes under the real ones anyway fails (`tests/conftest.py`).
+HOME, the XDG folders and the install folder (state.json, accounts.ini) pointed at temp
+folders, and any write under the real ones (Windows, Linux or macOS user folders, the
+safety backup) is refused before it happens and fails the test (`tests/conftest.py`).
 
 ## Auto-configuration
 
@@ -465,7 +466,7 @@ The vault lives outside `st_<id>`, so it is never scanned by the game or synced 
 ## Status
 
 Working. Core format/crypto and all operations are verified against the real save files and
-in a temp sandbox (1157 tests). Xbox / Game Pass saves are supported for reading **and**
+in a temp sandbox (1191 tests). Xbox / Game Pass saves are supported for reading **and**
 same-platform writing — verified against a real install (reads) and synthetic `wgs` fixtures
 (writes). A full file-copy safety backup of the live folder was made before development
 (`C:\Devel\NMS-SaveBackup-SAFETY-2026-06-24`).

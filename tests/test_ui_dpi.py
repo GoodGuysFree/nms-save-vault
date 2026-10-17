@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from nms_save_vault import gui
 from nms_save_vault.ui import dpi
 
 SRC = Path(__file__).resolve().parents[1] / "src" / "nms_save_vault"
@@ -80,7 +81,7 @@ def test_the_minimum_start_size_follows_the_dpi_not_the_zoom(restore_dpi):
 
 
 def test_window_chrome_is_positive(gui_app):
-    width, height = dpi.window_chrome(gui_app)
+    width, height = gui._window_chrome(gui_app)
     assert width >= 0 and height > 0
 
 
@@ -89,7 +90,7 @@ def test_window_chrome_is_positive(gui_app):
 
 def test_awareness_is_windows_only(monkeypatch):
     monkeypatch.setattr(sys, "platform", "linux")
-    assert dpi.enable_awareness() is False
+    assert gui._enable_dpi_awareness() is False
 
 
 def test_awareness_asks_for_system_awareness(monkeypatch):
@@ -99,7 +100,7 @@ def test_awareness_asks_for_system_awareness(monkeypatch):
     shcore = types.SimpleNamespace(SetProcessDpiAwareness=lambda v: calls.append(v) or 0)
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setattr(ctypes, "windll", types.SimpleNamespace(shcore=shcore), raising=False)
-    assert dpi.enable_awareness() is True
+    assert gui._enable_dpi_awareness() is True
     assert calls == [1], "system-aware (1); per-monitor (2) needs WM_DPICHANGED that Tk lacks"
 
 
@@ -110,7 +111,7 @@ def test_awareness_falls_back_without_shcore(monkeypatch):
     user32 = types.SimpleNamespace(SetProcessDPIAware=lambda: calls.append("vista") or 1)
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setattr(ctypes, "windll", types.SimpleNamespace(user32=user32), raising=False)
-    assert dpi.enable_awareness() is True
+    assert gui._enable_dpi_awareness() is True
     assert calls == ["vista"]
 
 
@@ -127,7 +128,7 @@ def test_main_turns_awareness_on_before_the_first_root(monkeypatch):
             order.append("mainloop")
 
     monkeypatch.setattr(gui.logfile, "configure", lambda folder: order.append("log"))
-    monkeypatch.setattr(gui.dpi, "enable_awareness", lambda: order.append("dpi"))
+    monkeypatch.setattr(gui, "_enable_dpi_awareness", lambda: order.append("dpi"))
     monkeypatch.setattr(gui.aliases, "active", lambda: None)
     monkeypatch.setattr(gui, "App", FakeApp)
     assert gui.main() == 0
@@ -229,3 +230,14 @@ def test_dialogs_size_from_content_with_a_scaled_minimum(restore_dpi):
     huge = _FakeWindow((5000, 5000))
     dpi.fit_to_content(huge, 300, 200)
     assert huge.set == "2850x1800", "never larger than the screen"
+
+
+# --- the ui package stays platform-neutral (.agent/rules: only the edge modules branch) ------
+
+
+@pytest.mark.parametrize("name", sorted(
+    str(p.relative_to(SRC)).replace("\\", "/") for p in (SRC / "ui").rglob("*.py")))
+def test_the_ui_package_does_not_branch_on_the_os(name):
+    source = (SRC / name).read_text(encoding="utf-8")
+    for needle in ("sys.platform", "os.name", "ctypes", "winreg", "platform.system"):
+        assert needle not in source, f"{name} branches on the OS ({needle})"

@@ -44,6 +44,13 @@ class ThemeRegistry:
             except Exception:  # noqa: BLE001 - one widget must not keep the rest unthemed
                 log.exception("a widget could not take the new theme")
 
+    def rezoom(self, ratio: float) -> None:
+        """The zoom changed by ``ratio``: members that keep pixel sizes of their own (column
+        widths) scale them; the rest redraw with the next palette call anyway."""
+        for member in list(self._members):
+            if _alive(member) and hasattr(member, "rezoom"):
+                member.rezoom(ratio)
+
     def __len__(self) -> int:
         return len(self._members)
 

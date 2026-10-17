@@ -127,10 +127,12 @@ def scan(vault: Vault | None, sources: Sequence[Source], cache: ScanCache, *,
          game_running: bool | None, deep: bool = False,
          now: Callable[[], float] = time.time,
          progress: Callable[[int, int], None] | None = None,
-         cancel: threading.Event | None = None) -> ScanResult:
+         cancel: threading.Event | None = None, look_live: bool = True) -> ScanResult:
     """Observe ``sources`` (the enabled live folders) and every catalog entry of ``vault``;
     with no vault only the live folders (the operation hook's quick look at one folder).
-    ``deep`` hashes every file again and rescans every entry."""
+    ``deep`` hashes every file again and rescans every entry. ``look_live`` False scans
+    the entries only (the live folders still tell an entry that IS one): the caller looks
+    at the live folders itself, under the live-op lock, and joins the two (:func:`with_live`)."""
     run = _Run(cache, deep, int(now()))
     if game_running is None:
         run.problem("game-unknown", None, None, "could not tell whether the game is running")
@@ -138,7 +140,8 @@ def scan(vault: Vault | None, sources: Sequence[Source], cache: ScanCache, *,
         run.problem("game-running", None, None, "the game is running: live saves are not recorded")
     entries = sorted(vault.entries if vault is not None else [],
                      key=lambda e: (_created_utc(e) or 0, e.id))
-    total, done = len(entries) + len(sources), 0
+    looked = list(zip(sources, live_refs(sources))) if look_live else []
+    total, done = len(entries) + len(looked), 0
     live_paths = [s.path for s in sources]
 
     started = time.perf_counter()
@@ -155,7 +158,7 @@ def scan(vault: Vault | None, sources: Sequence[Source], cache: ScanCache, *,
 
     started = time.perf_counter()
     live: dict[LiveRef, LiveFolderScan] = {}
-    for source, ref in zip(sources, live_refs(sources)):
+    for source, ref in looked:
         _check(cancel)
         live[ref] = run.scan_live(source, ref)
         done += 1

@@ -2,6 +2,7 @@
 keeps every test away from this machine's real user folders (see the write guard)."""
 from __future__ import annotations
 
+import errno
 import json
 import os
 import re
@@ -20,14 +21,18 @@ from nms_save_vault.core import catalog, formats, meta, msstore, slotmap
 # The owner's real data is strictly read-only, and so is everything of the app's in the
 # real user folders (config, cache, logs). Two layers:
 #
-# 1. every test runs with the user folders pointed at fresh temp folders (the environment
-#    the app derives them from: %LOCALAPPDATA%, %APPDATA%, the XDG folders, the portable
-#    install root that holds state.json and accounts.ini);
+# 1. every test (but the slow real-data checks, which read the real config on purpose) runs
+#    with the user folders pointed at fresh temp folders: the environment the app derives
+#    them from (%LOCALAPPDATA%, %APPDATA%, HOME, the XDG folders, the portable install root
+#    that holds state.json and accounts.ini);
 # 2. an audit hook sees every file write, rename, delete and mkdir of the process and
-#    fails the test that made one under the REAL folders, captured here at import time.
+#    REFUSES one under the real folders (PermissionError: the write never happens), for
+#    every test, the slow ones included. The test that tried fails; a try outside any test
+#    (a session fixture, its teardown) fails the run at the end.
 
 _REAL_ENV = {name: os.environ.get(name) for name in (
-    "LOCALAPPDATA", "APPDATA", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME")}
+    "LOCALAPPDATA", "APPDATA", "HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME")}
+_REAL_HOME = Path.home()
 SAFETY_BACKUP = Path(r"C:\Devel\NMS-SaveBackup-SAFETY-2026-06-24")
 
 
@@ -39,12 +44,26 @@ def _norm(path) -> str:
     return os.path.normcase(os.path.abspath(text))
 
 
-_GUARDED = tuple(_norm(v) for v in (_REAL_ENV["LOCALAPPDATA"], _REAL_ENV["APPDATA"],
-                                    str(SAFETY_BACKUP)) if v)
-#: Under %LOCALAPPDATA% on Windows, and where every tmp_path lives.
+def _guarded_roots() -> tuple[str, ...]:
+    """The real per-user folders on every OS: Windows' AppData, the XDG folders (Linux,
+    with the Steam and Proton saves under ~/.local/share/Steam), macOS' Application
+    Support, Flatpak's app data; and the owner's safety backup."""
+    home = _REAL_HOME
+    roots = [_REAL_ENV["LOCALAPPDATA"], _REAL_ENV["APPDATA"], str(SAFETY_BACKUP),
+             _REAL_ENV["XDG_CONFIG_HOME"] or str(home / ".config"),
+             _REAL_ENV["XDG_DATA_HOME"] or str(home / ".local" / "share"),
+             _REAL_ENV["XDG_CACHE_HOME"] or str(home / ".cache"),
+             str(home / ".steam"), str(home / "Library" / "Application Support"),
+             str(home / "Library" / "Caches"), str(home / ".var" / "app")]
+    return tuple(_norm(r) for r in roots if r)
+
+
+_GUARDED = _guarded_roots()
+#: Where every tmp_path lives (under %LOCALAPPDATA% on Windows).
 _ALLOWED = (_norm(tempfile.gettempdir()),)
 _WRITE_FLAGS = os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_APPEND | os.O_TRUNC
-_VIOLATIONS: list[str] = []
+_VIOLATIONS: list[str] = []          # since the current test began
+_UNATTRIBUTED: list[str] = []        # outside any test: reported when the session ends
 
 
 def _under(path: str, roots) -> bool:
@@ -71,9 +90,11 @@ def real_write_target(event: str, args: tuple) -> str | None:
         return None
     for target in targets:
         path = _norm(target)
-        if path and _under(path, _GUARDED) and not _under(path, _ALLOWED) \
-                and not path.endswith(".pyc"):
-            return f"{event}: {path}"
+        if not path or not _under(path, _GUARDED) or _under(path, _ALLOWED):
+            continue
+        if path.endswith(".pyc") or f"{os.sep}__pycache__" in path:
+            continue                    # Python's own bytecode cache of an installed runtime
+        return f"{event}: {path}"
     return None
 
 
@@ -82,6 +103,7 @@ def _audit(event: str, args: tuple) -> None:
         hit = real_write_target(event, args)
         if hit:
             _VIOLATIONS.append(hit)
+            raise PermissionError(errno.EACCES, "the tests never write here", hit)
 
 
 _AUDITED = frozenset({"open", "os.rename", "shutil.copyfile", "shutil.copytree", "os.link",
@@ -97,24 +119,47 @@ def take_violations() -> list[str]:
     return out
 
 
+def start_test() -> None:
+    """Tries made since the last test ended (a session or module fixture's setup) belong to
+    no test: they are kept for the end of the session, never dropped."""
+    _UNATTRIBUTED.extend(take_violations())
+
+
+def session_violations() -> list[str]:
+    """Everything outside a test, the session's teardown included."""
+    return _UNATTRIBUTED + take_violations()
+
+
+def pytest_sessionfinish(session, exitstatus):
+    hits = session_violations()
+    if hits:
+        reporter = session.config.pluginmanager.get_plugin("terminalreporter")
+        if reporter is not None:
+            reporter.write_line("write guard: tried to write under the real user folders "
+                                "outside any test:", red=True)
+            for hit in hits[:20]:
+                reporter.write_line(f"  {hit}", red=True)
+        session.exitstatus = pytest.ExitCode.TESTS_FAILED
+
+
 @pytest.fixture(autouse=True)
 def _no_real_user_folders(request, tmp_path_factory, monkeypatch):
-    """Point the user folders at temp ones (not for the slow real-data checks, which read
-    the real config on purpose), and fail the test if anything was written under the real
-    ones all the same."""
-    take_violations()                   # what earlier setup did is reported by its own test
+    """Point the user folders at temp ones (not for the slow real-data checks), and fail the
+    test if it tried to write under the real ones all the same."""
+    start_test()
     if request.node.get_closest_marker("slow") is None:
         home = tmp_path_factory.mktemp("user")
         monkeypatch.setenv("NMSVAULT_PORTABLE_ROOT", str(home / "install"))
         monkeypatch.setenv("LOCALAPPDATA", str(home / "Local"))
         monkeypatch.setenv("APPDATA", str(home / "Roaming"))
+        monkeypatch.setenv("HOME", str(home))
         for name, sub in (("XDG_CONFIG_HOME", ".config"), ("XDG_DATA_HOME", ".local/share"),
                           ("XDG_CACHE_HOME", ".cache")):
             monkeypatch.setenv(name, str(home / sub))
     yield
     hits = take_violations()
     if hits:
-        pytest.fail("wrote under the real user folders:\n" + "\n".join(hits[:20]))
+        pytest.fail("tried to write under the real user folders:\n" + "\n".join(hits[:20]))
 
 
 @pytest.fixture(autouse=True)

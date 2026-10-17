@@ -113,6 +113,7 @@ class _Drawn:
     source: LiveSource
     slot: BoardSlot
     box: tuple[int, int, int, int]
+    bg: int = 0                 # the slot's background rectangle (hover tints only it)
 
 
 class LiveArea(ttk.Frame):
@@ -296,7 +297,8 @@ class LiveArea(ttk.Frame):
         base, bold, small, italic = self._fonts()
         row_h = base.metrics("linespace") + px(8)
         head_h = bold.metrics("linespace") + px(10)
-        width = max(canvas.winfo_width(), int(canvas.cget("width")))
+        # The canvas as it is: its real width once on screen, the asked-for one before.
+        width = canvas.winfo_width() if canvas.winfo_ismapped() else int(canvas.cget("width"))
         gap = px(8)
         wide = len(lists) == 1
         col_w = (width - gap * (len(lists) - 1) - px(2)) // len(lists)
@@ -331,13 +333,13 @@ class LiveArea(ttk.Frame):
                    bold, small, italic) -> None:
         canvas, p = self.canvas, self._p
         tag = f"slot:{token}"
-        self.drawn[token] = _Drawn(token, source, slot, (x0, y0, x1, y1))
         empty = slot.state == "empty"
         selected = self.selected_pid is not None and slot.pid == self.selected_pid
         fill = p["hl_bg"] if token == self.hover_token else p["field"]
-        canvas.create_rectangle(x0, y0, x1, y1, fill=fill,
-                                outline=p["accent"] if selected else p["border"],
-                                width=px(2) if selected else 1, tags=(tag, "bg"))
+        bg = canvas.create_rectangle(x0, y0, x1, y1, fill=fill,
+                                     outline=p["accent"] if selected else p["border"],
+                                     width=px(2) if selected else 1, tags=(tag, "bg"))
+        self.drawn[token] = _Drawn(token, source, slot, (x0, y0, x1, y1), bg)
         colour = p["xbox"] if source.platform == "xbox" else p["steam"]
         chip_w = px(30)
         cy = (y0 + y1) / 2
@@ -451,9 +453,14 @@ class LiveArea(ttk.Frame):
         return None
 
     def _hover(self, token: str | None) -> None:
-        if token != self.hover_token:
-            self.hover_token = token
-            self.redraw()
+        """Tint the slot under the pointer: two rectangles change, nothing is redrawn."""
+        if token == self.hover_token:
+            return
+        for old, fill in ((self.hover_token, self._p["field"]), (token, self._p["hl_bg"])):
+            drawn = self.drawn.get(old) if old is not None else None
+            if drawn is not None:
+                self.canvas.itemconfigure(drawn.bg, fill=fill)
+        self.hover_token = token
 
     def _on_motion(self, event) -> None:
         self._hover(self.token_at(event.x, event.y))

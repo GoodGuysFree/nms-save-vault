@@ -384,8 +384,8 @@ class App(tk.Tk):
         # The minimum is logical pixels at this DPI, not zoomed: a large font must not push
         # the first window off a small screen.
         width, height = dpi.first_start_size(
-            dpi.work_area(self), (dpi.screen_px(1000), dpi.screen_px(640)),
-            dpi.window_chrome(self))
+            _work_area(self), (dpi.screen_px(1000), dpi.screen_px(640)),
+            _window_chrome(self))
         self.geometry(f"{width}x{height}")
         vault_root =Path(vault) if vault else (self.state.vault or locations.default_vault_dir())
         self.vault = Vault(vault_root)
@@ -750,7 +750,10 @@ class App(tk.Tk):
                 _showwarning("Theme", f"Could not save your theme choice:\n{exc}")
 
     def destroy(self) -> None:
-        self.worker.shutdown()
+        worker = self.__dict__.get("worker")   # absent if __init__ failed early (no getattr:
+        # Tk forwards unknown attributes to its interpreter, which is not there yet either)
+        if worker is not None:
+            worker.shutdown()
         super().destroy()
 
     def _windows(self) -> list[tk.Misc]:
@@ -784,6 +787,7 @@ class App(tk.Tk):
             for column in ("#0", *tree["columns"]):
                 width = int(tree.column(column, "width"))
                 tree.column(column, width=max(1, int(round(width * ratio))))
+        self.themed.rezoom(ratio)               # the organizer's tables likewise
 
     def _zoom(self, steps: int) -> None:
         """Ctrl+/Ctrl-: step the font zoom; does nothing at the ends of the range.
@@ -2588,12 +2592,72 @@ SAFETY
 """
 
 
+# --- what only the OS can tell the window (D6 3.10, 3.15) ---------------------------
+
+
+def _enable_dpi_awareness() -> bool:
+    """Make the process system-DPI-aware; must run before the first ``tk.Tk()``.
+
+    Windows only, best effort. System awareness (1), not per-monitor (2): per-monitor needs
+    ``WM_DPICHANGED`` handling that Tk 8.6 lacks, and system awareness degrades to Windows'
+    bitmap scaling on a second monitor with another DPI. True when the call succeeded.
+    """
+    if sys.platform != "win32":
+        return False
+    import ctypes
+
+    try:
+        return ctypes.windll.shcore.SetProcessDpiAwareness(1) == 0
+    except (AttributeError, OSError):
+        pass
+    try:  # no shcore (older Windows): the Vista-era switch, system-aware too
+        return bool(ctypes.windll.user32.SetProcessDPIAware())
+    except (AttributeError, OSError):
+        return False
+
+
+def _work_area(root) -> tuple[int, int]:
+    """The usable desktop size in pixels: the screen without the taskbar on Windows."""
+    if sys.platform == "win32":
+        import ctypes
+        from ctypes import wintypes
+
+        rect = wintypes.RECT()
+        try:
+            if ctypes.windll.user32.SystemParametersInfoW(0x0030, 0, ctypes.byref(rect), 0):
+                width, height = rect.right - rect.left, rect.bottom - rect.top
+                if width > 0 and height > 0:
+                    return width, height
+        except (AttributeError, OSError):
+            pass
+    return int(root.winfo_screenwidth()), int(root.winfo_screenheight())
+
+
+def _window_chrome(root) -> tuple[int, int]:
+    """What the window adds around the size given to ``geometry()``: the borders, the
+    title bar and the menu bar. Windows asks the system; elsewhere a fair estimate."""
+    if sys.platform == "win32":
+        import ctypes
+
+        metric = ctypes.windll.user32.GetSystemMetrics
+        try:
+            frame_x = metric(32) + metric(92)        # SM_CXSIZEFRAME + SM_CXPADDEDBORDER
+            frame_y = metric(33) + metric(92)        # SM_CYSIZEFRAME + SM_CXPADDEDBORDER
+            caption, menu = metric(4), metric(15)    # SM_CYCAPTION, SM_CYMENU
+        except (AttributeError, OSError):
+            pass
+        else:
+            if caption > 0:
+                return 2 * frame_x, caption + menu + 2 * frame_y
+    return dpi.screen_px(16), dpi.screen_px(80)
+
+
 def main(argv=None) -> int:
     # First: under pythonw there is no console, so warnings and tracebacks go to a file.
     logfile.configure(host_platform.user_cache_dir() / "logs")
     # Before the first tk.Tk(): Tk reads the DPI once, when the root is made. Without this
     # Windows stretches a 96-dpi bitmap of the window, which is blurry at 150 %.
-    dpi.enable_awareness()
+    _enable_dpi_awareness()
     try:
         aliases.active()  # fail before any window shows a real id we were told to hide
     except aliases.AliasConfigError as exc:

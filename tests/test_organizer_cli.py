@@ -405,3 +405,19 @@ def test_a_lock_that_fails_is_not_reported_as_busy(world, monkeypatch):
     org.refresh(record=True)
     assert {reason for _, reason in org.observed.skipped} == {SKIP_LOCK_FAILED}
     assert (vault.root / "organizer" / "journal.jsonl").read_bytes() == before
+
+
+def test_recording_looks_at_each_live_folder_once(world, monkeypatch):
+    from nms_save_vault.core.organizer import scanner
+
+    vault, live, state = world
+    looked = []
+    real = scanner._Run.scan_live
+    monkeypatch.setattr(scanner._Run, "scan_live",
+                        lambda self, source, ref: looked.append(ref) or real(self, source, ref))
+    org = Organizer(vault.root, state.live_sources)
+    org.refresh(record=True)
+    assert len(looked) == len(state.live_sources)
+    looked.clear()
+    org.refresh(record=False)
+    assert len(looked) == len(state.live_sources)

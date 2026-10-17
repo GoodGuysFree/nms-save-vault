@@ -270,3 +270,48 @@ def test_a_theme_switch_redraws_the_markers(table, gui_app):
     finally:
         gui_app.state.theme = original
         gui_app._apply_theme()
+
+
+# --- chunk E review -------------------------------------------------------------------------
+
+
+def test_a_selected_version_stays_selected_through_a_new_model(table, world):
+    pid = PIDS["main"]
+    oldest = world.model.versions(pid)[-1].head
+    table.select(pid, oldest)
+    (selected,) = table.tree.selection()
+    world.organizer.notes.set_save_note(PIDS["other"], "changed", base_rev=None)
+    table.set_model(world.refresh())
+    assert table.tree.selection() == (selected,)
+    assert table.selection_ref() == (pid, oldest)
+    assert table.tree.item(selected, "text") == "#1"
+
+
+def test_an_open_line_hidden_by_find_mutes_nothing(table, gui_app):
+    pid = PIDS["main"]
+    table.set_open(pid, True)
+    table.find_var.set("other")
+    table._find_now()
+    assert _names(table) == ["Other Run"]
+    assert pid not in table.open_pids
+    assert not any("dim" in table.tree.item(i, "tags") for i in table.tree.get_children(""))
+
+
+def test_column_widths_follow_the_zoom(table, gui_app, monkeypatch):
+    from nms_save_vault import gui
+
+    monkeypatch.setattr(gui.appstate, "save", lambda *a, **k: None)
+    original = gui_app.state.font_scale
+    try:
+        gui_app.state.font_scale = 1.0
+        gui_app._apply_theme()
+        before = int(table.tree.column("note", "width"))
+        gui_app._set_zoom(2.0)
+        assert int(table.tree.column("note", "width")) == pytest.approx(2 * before, abs=2)
+        table._dragging = True
+        table._remember_widths()
+        assert table.prefs["table_widths"]["note"] == pytest.approx(
+            before / (table._factor / 2.0), abs=2)
+    finally:
+        gui_app.state.font_scale = original
+        gui_app._apply_theme()
