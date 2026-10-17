@@ -117,8 +117,8 @@ class MoveDialog(tk.Toplevel):
                  make_context: Callable[[], OpContext], source: PairSource | None, name: str,
                  card: list[Segment] | None = None, labels: dict | None = None,
                  model: ReadModel | None = None, fixed: BoardSlot | None = None,
-                 prefer_slot: int | None = None, account: LiveRef | None = None, on_done: Callable[[OpOutcome], None] | None = None
-                 ) -> None:
+                 prefer_slot: int | None = None, account: LiveRef | None = None, on_done: Callable[[OpOutcome], None] | None = None,
+                 on_recover: Callable[[], None] | None = None) -> None:
         super().__init__(master)
         self.worker, self.make_context, self.source, self.name = worker, make_context, source, name
         self.card = card or []
@@ -130,6 +130,7 @@ class MoveDialog(tk.Toplevel):
         self._refresh_only = False
         self.start_account = account
         self.on_done = on_done
+        self.on_recover = on_recover
         self.picker: EvictionPicker | None = None
         self.accounts: list[LiveRef] = []
         self.account: LiveRef | None = None
@@ -166,6 +167,7 @@ class MoveDialog(tk.Toplevel):
         foot.pack(side=tk.BOTTOM, fill=tk.X)
         self.status = ttk.Label(foot, text="", style="Muted.TLabel", anchor="w")
         self.bar = ttk.Progressbar(foot, mode="determinate", length=px(200))
+        self.recover_button = ttk.Button(foot, text="Recover...", command=self._recover)
         ttk.Label(foot, text="Note for this move (optional):").pack(side=tk.LEFT)
         self.note_var = tk.StringVar()
         self.note = ttk.Entry(foot, textvariable=self.note_var, width=30)
@@ -635,6 +637,7 @@ class MoveDialog(tk.Toplevel):
         self._gen += 1
         gen = self._gen
         self.error.configure(text="")
+        self.recover_button.pack_forget()
         self._progress = None
         self.cancel_button.state(["disabled"])
         self.tree.state(["disabled"])
@@ -683,6 +686,12 @@ class MoveDialog(tk.Toplevel):
         why = outcome.error or " ".join(w.text for w in outcome.warnings) or outcome.outcome
         self.error.configure(text=shown(self, f"{outcome.outcome}: {why}" if outcome.error else why))
         self._set_idle("")
+        if outcome.status in ("failed", "rolled_back") and self.on_recover is not None:
+            self.recover_button.pack(side=tk.LEFT, padx=px(6))
+
+    def _recover(self) -> None:
+        if self.on_recover is not None:
+            self.on_recover()
 
     def _exec_failed(self, gen: int, error: BaseException) -> None:
         if gen != self._gen or not self.winfo_exists():

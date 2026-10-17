@@ -12,13 +12,17 @@ stays on screen. A background failure becomes an alert bar, never a modal.
 """
 from __future__ import annotations
 
+import logging
 import time
 import tkinter as tk
 from collections.abc import Callable, MutableMapping
+from pathlib import Path
 from tkinter import ttk
 
 from ...core import aliases
-from ...core.liveops import OpContext
+from ...core.liveops import (
+    OpContext, OpOutcome, PlacePlan, dismiss_verification, empty_slot_guide, execute,
+    pending_recovery, plan_keep, plan_promote, plan_swap, plan_undo, update_verification)
 from ...core.organizer import Organizer
 from ...core.organizer.readmodel import BoardSlot, LiveSource, ReadModel
 from ..dpi import px, pxs
@@ -29,10 +33,13 @@ from .detail import DetailPane
 from .live import LiveArea
 from .move import MoveDialog, source_for
 from .notes import NotesWindow, toggle_pin
+from .ops import DoneBar, OpsLogWindow, PlanDialog, RecoveryDialog, StepsWindow
 from .table import OrganizerTable
 
 #: Coming back to the tab rescans when the last look is older than this (seconds).
 STALE_AFTER = 5.0
+
+log = logging.getLogger(__name__)
 
 
 def summary_text(model: ReadModel, organizer: Organizer | None) -> str:
@@ -101,6 +108,10 @@ class OrganizerView(ttk.Frame):
         self.make_organizer = make_organizer
         self.make_context = make_context or default_context
         self.move_dialog: MoveDialog | None = None
+        self.plan_dialog: PlanDialog | None = None
+        self.log_window: OpsLogWindow | None = None
+        self.recovery_dialog: RecoveryDialog | None = None
+        self._recovery_checked = False
         self.organizer: Organizer | None = None
         self.model: ReadModel | None = None
         self.notes_window: NotesWindow | None = None
@@ -119,6 +130,8 @@ class OrganizerView(ttk.Frame):
         self.notes_button.pack(side=tk.LEFT)
         self.move_button = ttk.Button(bar, text="Move to live...", command=self.open_move)
         self.move_button.pack(side=tk.LEFT, padx=pxs(6, 0))
+        self.log_button = ttk.Button(bar, text="Operations...", command=lambda: self.open_log())
+        self.log_button.pack(side=tk.LEFT, padx=pxs(6, 0))
         self.rescan_button = ttk.Button(bar, text="Rescan", command=lambda: self.rescan())
         self.rescan_button.pack(side=tk.RIGHT)
         self.progress = ttk.Progressbar(bar, mode="indeterminate", length=px(120))
@@ -129,6 +142,9 @@ class OrganizerView(ttk.Frame):
         self.alert_area = ttk.Frame(self)
         self.alert_area.pack(side=tk.TOP, fill=tk.X, padx=px(6))
 
+        done_slot = ttk.Frame(self)
+        done_slot.pack(side=tk.BOTTOM, fill=tk.X)
+        self.done = DoneBar(done_slot, on_undo=self.undo_op, on_history=self.open_log)
         panes = ttk.PanedWindow(self, orient=tk.HORIZONTAL)
         panes.pack(fill=tk.BOTH, expand=True, padx=px(6), pady=pxs(2, 6))
         self.panes = panes
@@ -142,7 +158,7 @@ class OrganizerView(ttk.Frame):
         # takes what is left.
         self.live = LiveArea(right, themed=self.themed, prefs=self.prefs,
                              save_prefs=self.save_prefs, on_slot=self._slot_clicked,
-                             on_activate=self._slot_activated)
+                             on_activate=self._slot_activated, on_context=self._slot_context)
         self.live.pack(side=tk.TOP, fill=tk.X)
         self.detail = DetailPane(right, themed=self.themed, on_link=self._link,
                                  on_notes=self.open_notes_for, on_pin=self._pin,
@@ -175,10 +191,33 @@ class OrganizerView(ttk.Frame):
             self.organizer = self.make_organizer()
         organizer = self.organizer
         model = organizer.refresh(record=record)
-        return organizer, model
+        return organizer, model, self._extras(organizer, record)
+
+    def _extras(self, organizer: Organizer, record: bool) -> dict:
+        """In the worker after a scan: the verification of earlier moves (D5), the vault
+        store's status (D3) and, once per session, the moves that were interrupted. A failure
+        here never spoils the scan."""
+        out: dict = {"verify": None, "store": None, "recovery": None}
+        try:
+            ctx = self.make_context(organizer)
+            if record:
+                out["verify"] = update_verification(ctx)
+            if not self._recovery_checked:
+                self._recovery_checked = True
+                out["recovery"] = pending_recovery(ctx)
+        except Exception:  # noqa: BLE001
+            log.exception("the live operations' look-over failed")
+        try:
+            if organizer.version_store is not None:
+                from ...core.store import store_status
+                out["store"] = store_status(organizer.vault_root, organizer.version_store,
+                                            live_roots=[Path(s.path) for s in organizer.sources])
+        except Exception:  # noqa: BLE001
+            log.exception("the vault store's status could not be read")
+        return out
 
     def _scanned(self, result) -> None:
-        organizer, model = result
+        organizer, model, extras = result
         self._scan_over()
         self.clear_alert("scan-failed")
         self.set_model(model)
@@ -189,6 +228,7 @@ class OrganizerView(ttk.Frame):
         for key, text in alerts.items():
             self.alert(key, text)
         set_label(self.summary, summary_text(model, organizer))
+        self._extras_shown(extras)
 
     def _scan_failed(self, error: BaseException) -> None:
         self._scan_over()
@@ -225,15 +265,22 @@ class OrganizerView(ttk.Frame):
 
     # --- alerts --------------------------------------------------------------------------------
 
-    def alert(self, key: str, text: str) -> None:
-        """One bar per key, above the table, until dismissed (D6 3.8)."""
+    def alert(self, key: str, text: str, actions: tuple = (), dismiss=None) -> None:
+        """One bar per key, above the table, until dismissed (D6 3.8). ``actions`` are
+        (label, command) buttons; ``dismiss`` runs too when Dismiss is pressed."""
         bar = self.alerts.get(key)
         if bar is None:
             bar = ttk.Frame(self.alert_area, style="Alert.TFrame", padding=pxs(8, 4))
             bar.text = ttk.Label(bar, text="", style="Alert.TLabel", anchor="w")
             bar.text.pack(side=tk.LEFT, fill=tk.X, expand=True)
-            ttk.Button(bar, text="Dismiss", command=lambda: self.clear_alert(key)).pack(
-                side=tk.RIGHT)
+
+            def close() -> None:
+                if dismiss is not None:
+                    dismiss()
+                self.clear_alert(key)
+            ttk.Button(bar, text="Dismiss", command=close).pack(side=tk.RIGHT)
+            for label, command in actions:
+                ttk.Button(bar, text=label, command=command).pack(side=tk.RIGHT, padx=px(4))
             bar.pack(side=tk.TOP, fill=tk.X, pady=pxs(2, 0))
             self.alerts[key] = bar
         set_label(bar.text, text)
@@ -316,7 +363,8 @@ class OrganizerView(ttk.Frame):
         self.move_dialog = MoveDialog(
             self.winfo_toplevel(), worker=self.worker, themed=self.themed,
             make_context=lambda: self.make_context(organizer), source=source, name=name,
-            card=card, labels=labels, prefer_slot=slot, account=account, on_done=self._moved)
+            card=card, labels=labels, prefer_slot=slot, account=account, on_done=self._moved,
+            on_recover=self.open_recovery)
         return self.move_dialog
 
     def open_replace_for(self, slot: BoardSlot) -> MoveDialog | None:
@@ -331,7 +379,8 @@ class OrganizerView(ttk.Frame):
         self.move_dialog = MoveDialog(
             self.winfo_toplevel(), worker=self.worker, themed=self.themed,
             make_context=lambda: self.make_context(organizer), source=None, name="",
-            labels=labels, model=self.model, fixed=slot, on_done=self._moved)
+            labels=labels, model=self.model, fixed=slot, on_done=self._moved,
+            on_recover=self.open_recovery)
         return self.move_dialog
 
     def _slot_activated(self, token: str, slot: BoardSlot) -> None:
@@ -379,9 +428,194 @@ class OrganizerView(ttk.Frame):
         return True
 
     def _moved(self, outcome) -> None:
-        undo = f"  Undo: {outcome.undo.label}" if outcome.undo else ""
-        self.alert("moved", aliases.scrub(f"Done: {outcome.outcome}.{undo}"))
+        self.done.show(outcome)
         self.rescan()
+
+    # --- undo, the log, plans, recovery, steps (U16-U18) ----------------------------------------
+
+    def _job(self, fn, *args):
+        """``fn(ctx, *args)`` in the worker, with a fresh context."""
+        organizer = self.organizer
+        return lambda: fn(self.make_context(organizer), *args)
+
+    def undo_op(self, op_id: str) -> None:
+        if self.organizer is None:
+            return
+        self.worker.submit(self._job(plan_undo, op_id),
+                           on_done=lambda plan: self._undo_planned(plan),
+                           on_error=self._worker_error("Undo"))
+
+    def _undo_planned(self, plan: PlacePlan) -> None:
+        if any(w.code == "UNDO_WOULD_EMPTY" for w in plan.blocked) and plan.targets:
+            self.open_steps(plan.targets[0].target)         # the app never deletes (F8)
+        elif plan.blocked or plan.warnings or plan.confirmations:
+            self.show_plan("Undo", plan)
+        else:
+            self.worker.submit(self._job(execute, plan, frozenset()), on_done=self._undone,
+                               on_error=self._worker_error("Undo"))
+
+    def _undone(self, outcome: OpOutcome) -> None:
+        if outcome.status == "done":
+            self._moved(outcome)
+        else:
+            self.alert("undo", aliases.scrub(outcome.error or outcome.outcome))
+
+    def show_plan(self, title: str, plan: PlacePlan) -> PlanDialog | None:
+        if self.plan_dialog is not None and self.plan_dialog.winfo_exists():
+            self.plan_dialog.destroy()
+        organizer = self.organizer
+        self.plan_dialog = PlanDialog(
+            self.winfo_toplevel(), worker=self.worker, themed=self.themed,
+            make_context=lambda: self.make_context(organizer), plan=plan, title=title,
+            on_done=self._moved, on_recover=self.open_recovery)
+        return self.plan_dialog
+
+    def run_plan(self, title: str, planner, *args) -> None:
+        """Plan in the worker, then show the plan for confirmation."""
+        if self.organizer is None:
+            return
+        self.worker.submit(self._job(planner, *args),
+                           on_done=lambda plan: self.show_plan(title, plan),
+                           on_error=self._worker_error(title))
+
+    def open_log(self, select: str | None = None, targets: list | None = None) -> None:
+        if self.model is None or self.organizer is None:
+            return
+        if self.log_window is not None and self.log_window.winfo_exists():
+            self.log_window.destroy()
+        targets = targets or [s.target for src in self.model.live_board().sources
+                              for s in src.slots]
+        organizer = self.organizer
+        self.log_window = OpsLogWindow(
+            self.winfo_toplevel(), worker=self.worker, themed=self.themed,
+            make_context=lambda: self.make_context(organizer), targets=targets,
+            on_undo=self.undo_op, select=select)
+
+    def open_steps(self, target) -> None:
+        if self.organizer is None:
+            return
+        self.worker.submit(self._job(empty_slot_guide, target), on_done=self._steps,
+                           on_error=self._worker_error("Empty this slot"))
+
+    def _steps(self, guide) -> StepsWindow:
+        return StepsWindow(self.winfo_toplevel(), themed=self.themed, guide=guide,
+                           on_keep=lambda t: self.run_plan("Keep a copy in the vault",
+                                                           plan_keep, t))
+
+    def open_recovery(self, items=None) -> RecoveryDialog | None:
+        """The interrupted moves (given, or asked of the live operations in the worker)."""
+        if self.organizer is None:
+            return None
+        if items is None:
+            self.worker.submit(self._job(pending_recovery), on_done=self.open_recovery,
+                               on_error=self._worker_error("Recovery"))
+            return None
+        if self.recovery_dialog is not None and self.recovery_dialog.winfo_exists():
+            self.recovery_dialog.destroy()
+        if not items:
+            self.alert("recovery", "No interrupted move is waiting.")
+            return None
+        organizer = self.organizer
+        self.recovery_dialog = RecoveryDialog(
+            self.winfo_toplevel(), worker=self.worker, themed=self.themed,
+            make_context=lambda: self.make_context(organizer), items=items,
+            on_changed=lambda: self.rescan())
+        return self.recovery_dialog
+
+    # --- the board menu ---------------------------------------------------------------------------
+
+    def slot_menu(self, slot: BoardSlot) -> tk.Menu:
+        """Right click on a live slot: Replace with..., Swap, Promote, Keep a copy, History,
+        and the steps to empty it. A slot is only ever replaced or filled by the app (F8)."""
+        menu = tk.Menu(self, tearoff=False)
+        target = slot.target
+        occupied = slot.state in ("occupied", "partial")
+        menu.add_command(label="Replace with..." if occupied else "Put a save into it...",
+                         command=lambda: self.open_replace_for(slot))
+        if occupied and self.model is not None:
+            others = [s for src in self.model.live_board().sources for s in src.slots
+                      if s.target != target and s.target.platform == target.platform
+                      and s.state in ("occupied", "partial")]
+            swap = tk.Menu(menu, tearoff=False)
+            for other in others:
+                swap.add_command(
+                    label=f"{other.label} - {other.name or '(unnamed)'}",
+                    command=lambda o=other: self.run_plan(
+                        "Swap two slots", plan_swap, target, o.target))
+            if others:
+                menu.add_cascade(label="Swap with", menu=swap)
+            for pos, word in (("A", "auto-save"), ("B", "restore point")):
+                if slot.member_loaded != pos:
+                    menu.add_command(
+                        label=f"Make the {word} load",
+                        command=lambda q=pos: self.run_plan("Promote", plan_promote, target, q))
+            menu.add_command(label="Keep a copy in the vault now",
+                             command=lambda: self.run_plan("Keep a copy in the vault",
+                                                           plan_keep, target))
+        menu.add_separator()
+        menu.add_command(label="History of this slot...",
+                         command=lambda: self.open_log(targets=[target]))
+        menu.add_command(label="Empty this slot...", command=lambda: self.open_steps(target))
+        return menu
+
+    def _slot_context(self, token: str, slot: BoardSlot, event) -> None:
+        menu = self.slot_menu(slot)
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
+
+    # --- verification, store status, recovery after a scan ------------------------------------------
+
+    def _extras_shown(self, extras: dict) -> None:
+        items = extras.get("verify")
+        if items is not None:
+            seen = set()
+            for item in items:
+                if item.state == "pending":
+                    continue                      # the slot's clock shows it
+                key = f"verify:{item.op_id}:{item.target.ref.account_key}:{item.target.slot}"
+                seen.add(key)
+                self.alert(key, aliases.scrub(item.text), actions=self._verify_actions(item),
+                           dismiss=lambda i=item: self._dismiss_verify(i))
+            for key in [k for k in self.alerts if k.startswith("verify:") and k not in seen]:
+                self.clear_alert(key)
+        status = extras.get("store")
+        if status is not None:
+            parts = []
+            if status.damage:
+                parts.append(f"{len(status.damage)} damaged file(s) in the vault store")
+            if status.fold_failed:
+                parts.append(f"{len(status.fold_failed)} backup(s) could not be folded into "
+                             "the store")
+            if status.fold_waiting_for_space:
+                parts.append("the vault upgrade is waiting for free disk space")
+            if parts:
+                self.alert("store-status", aliases.scrub("Vault: " + "; ".join(parts) + "."))
+            else:
+                self.clear_alert("store-status")
+        if extras.get("recovery"):
+            self.open_recovery(extras["recovery"])
+
+    def _verify_actions(self, item) -> tuple:
+        slot = self._board_slot(item.target)
+        out = []
+        if "place_again" in item.actions and slot is not None:
+            out.append(("Put it back", lambda: self.open_replace_for(slot)))
+        if "show_steps" in item.actions:
+            out.append(("Show steps", lambda: self.open_steps(item.target)))
+        return tuple(out)
+
+    def _board_slot(self, target) -> BoardSlot | None:
+        if self.model is None:
+            return None
+        return next((s for src in self.model.live_board().sources for s in src.slots
+                     if s.target == target), None)
+
+    def _dismiss_verify(self, item) -> None:
+        if self.organizer is not None:
+            self.worker.submit(self._job(dismiss_verification, item.op_id, item.target),
+                               on_error=self._worker_error("Dismiss"))
 
     # --- notes and pins -------------------------------------------------------------------------
 

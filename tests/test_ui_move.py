@@ -192,8 +192,9 @@ def test_a_full_place_into_a_synthetic_steam_folder(view, gui_app, world, thread
     assert outcomes and outcomes[0].status == "done"
     assert tree_hash(folder) != before
     assert not any(threads)
-    _wait(gui_app, lambda: not view.scanning and "moved" in view.alerts)
-    assert "Done:" in view.alerts["moved"].text.cget("text")
+    _wait(gui_app, lambda: not view.scanning)
+    assert view.done.winfo_ismapped() or view.done.outcome is outcomes[0]
+    assert view.done.text.cget("text").startswith("Done. Put 'Polestar'")
 
 
 def test_a_move_the_game_forbids_comes_back_as_text_and_the_dialog_stays(view, gui_app, running):
