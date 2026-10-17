@@ -278,3 +278,32 @@ def _existing_dirs(paths: Iterable[Path]) -> list[Path]:
         seen.add(key)
         out.append(path)
     return out
+
+
+# --- content index execution ---------------------------------------------------
+
+#: Flips once the POSIX kit's launcher is shown to spawn worker processes (DESIGN.md T2/T3);
+#: until then a POSIX kit indexes on one in-process thread.
+SPAWN_VERIFIED_POSIX_KIT = False
+
+
+def index_execution_policy(host: Host, *, portable_kit: bool, cpu_count: int | None,
+                           setting: str | int = "auto"):
+    """How the content index runs here (D4 2.8.1): spawned worker processes, one thread, or off.
+
+    ``auto`` uses ``cpu_count - 1`` workers, at least 2 and at most 4, and 1 on a 1-2 core
+    PC; ``setting`` 0 or "off" turns indexing off, 1-8 fixes the count. One worker stays free
+    for on-demand jobs when there are 3 or more.
+    """
+    from .index.pool import ExecutionPolicy
+
+    if setting in (0, "0", "off"):
+        return ExecutionPolicy("off", 0, False)
+    if host.system != WINDOWS and portable_kit and not SPAWN_VERIFIED_POSIX_KIT:
+        return ExecutionPolicy("thread", 1, False)
+    if setting == "auto":
+        cores = cpu_count or 1
+        workers = 1 if cores <= 2 else min(4, max(2, cores - 1))
+    else:
+        workers = min(8, max(1, int(setting)))
+    return ExecutionPolicy("processes", workers, workers >= 3)
