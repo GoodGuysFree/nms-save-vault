@@ -62,6 +62,28 @@ def test_first_start_uses_80_percent_of_the_work_area_with_a_minimum():
     assert dpi.first_start_size((900, 600), (1000, 640)) == (900, 600)     # never off-screen
 
 
+def test_the_first_window_with_its_chrome_fits_the_work_area():
+    """The size given to geometry() is the inside: the title bar, menu bar and borders come
+    on top, and must not push the window past the taskbar."""
+    assert dpi.first_start_size((1100, 700), (1000, 640), (16, 90)) == (1000, 610)
+    assert dpi.first_start_size((2000, 1000), (1000, 640), (16, 90)) == (1600, 800)
+    assert dpi.first_start_size((900, 600), (1000, 640), (16, 90)) == (884, 510)
+
+
+def test_the_minimum_start_size_follows_the_dpi_not_the_zoom(restore_dpi):
+    class Root:
+        def winfo_fpixels(self, _):
+            return 144.0
+
+    dpi.configure(Root(), zoom=2.0)
+    assert dpi.screen_px(1000) == 1500 and dpi.px(1000) == 3000
+
+
+def test_window_chrome_is_positive(gui_app):
+    width, height = dpi.window_chrome(gui_app)
+    assert width >= 0 and height > 0
+
+
 # --- awareness ----------------------------------------------------------------------------------
 
 
@@ -104,11 +126,12 @@ def test_main_turns_awareness_on_before_the_first_root(monkeypatch):
         def mainloop(self):
             order.append("mainloop")
 
+    monkeypatch.setattr(gui.logfile, "configure", lambda folder: order.append("log"))
     monkeypatch.setattr(gui.dpi, "enable_awareness", lambda: order.append("dpi"))
     monkeypatch.setattr(gui.aliases, "active", lambda: None)
     monkeypatch.setattr(gui, "App", FakeApp)
     assert gui.main() == 0
-    assert order == ["dpi", "App", "mainloop"]
+    assert order == ["log", "dpi", "App", "mainloop"]
 
 
 # --- every pixel constant goes through px() -------------------------------------------------

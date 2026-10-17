@@ -3,6 +3,7 @@ entry folders, as the last scan saw them. It reads; it never keeps anything (``p
 belongs to the version store, phase 2)."""
 from __future__ import annotations
 
+import struct
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
@@ -55,13 +56,24 @@ class FolderLocator(VersionLocator):
                 continue
             try:
                 return self._read(vid, loc, folder)
-            except (OSError, ValueError) as exc:
+            except VersionUnavailable as exc:
                 problems.append(f"{_name(loc.ref)}: {exc}")
         raise VersionUnavailable("; ".join(problems) or "no readable copy")
 
+    @classmethod
+    def _read(cls, vid: Vid, loc: Location, folder: Path) -> OpenedVersion:
+        """One location's bytes; anything wrong there (the slot gone from the folder, a meta
+        that does not decrypt) makes this location unavailable, not the version."""
+        try:
+            return cls._read_unchecked(vid, loc, folder)
+        except (OSError, ValueError, KeyError, IndexError, struct.error) as exc:
+            raise VersionUnavailable(str(exc) or type(exc).__name__) from exc
+
     @staticmethod
-    def _read(vid: Vid, loc: Location, folder: Path) -> OpenedVersion:
+    def _read_unchecked(vid: Vid, loc: Location, folder: Path) -> OpenedVersion:
         view = savedir.scan_any(folder)
+        if loc.slot not in view.slots:
+            raise ValueError(f"slot {loc.slot} is no longer there")
         mv = view.slots[loc.slot].members["AB".index(loc.member)]
         if not mv.exists:
             raise ValueError("the save is no longer there")

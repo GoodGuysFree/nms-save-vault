@@ -59,6 +59,7 @@ SKIP_GAME = "game running"
 SKIP_UNSTABLE = "unstable"
 SKIP_UNREADABLE = "unreadable"
 SKIP_READ_ONLY = "organizer read-only"
+SKIP_LOCK_FAILED = "live-op lock failed"
 
 
 # --- records ------------------------------------------------------------------

@@ -47,7 +47,10 @@ def _real_setup():
     root = Path(state.vault) if state and state.vault else locations.default_vault_dir()
     if not catalog.looks_like_vault_dir(root):
         pytest.skip("no real vault on this machine")
-    sources = state.live_sources if state is not None else discover.discover_live_sources()
+    # A config that lists no live folder (a from-source config from a test run) says
+    # nothing about this machine: discover them, read-only.
+    sources = (state.live_sources if state is not None and state.live_sources
+               else discover.discover_live_sources())
     return root, sources
 
 

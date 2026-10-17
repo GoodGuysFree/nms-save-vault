@@ -87,6 +87,9 @@ class AppState:
     # thing that makes the app contact the network, so it stays off until asked.
     update_check: str = "ask"
     update_last_check: str = ""  # ISO date of the last check; throttles to once a day
+    # Per-machine window preferences of the GUI (D6 3.15): last tab, live-area mode, sort,
+    # columns, ... A plain dict the GUI owns; this module only keeps it.
+    ui: dict = field(default_factory=dict)
 
     # --- lookups -------------------------------------------------------------
 
@@ -114,6 +117,7 @@ class AppState:
             "font_scale": self.font_scale,
             "update_check": self.update_check,
             "update_last_check": self.update_last_check,
+            "ui": self.ui,
             "sources": [asdict(s) for s in self.sources],
         }
 
@@ -127,6 +131,7 @@ class AppState:
             font_scale=_float_or(d.get("font_scale"), 1.0),
             update_check=d.get("update_check", "ask"),
             update_last_check=d.get("update_last_check", ""),
+            ui=d["ui"] if isinstance(d.get("ui"), dict) else {},
         )
         _migrate(state)
         return state

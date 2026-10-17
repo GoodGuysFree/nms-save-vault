@@ -352,20 +352,38 @@ def test_the_hook_honours_a_pid_fixed_when_first_seen(tmp_path, monkeypatch):
     assert op["m"][vid]["pid"] == "legacy:steam:3:Voyagers"
 
 
-def test_the_hook_names_a_folder_as_the_scanner_does(tmp_path):
-    """Two live folders of one name (two Proton prefixes): the instance tag tells them apart
-    in the journal, and the hook must use the same tag."""
+def test_the_hook_names_a_folder_as_the_scanner_does(tmp_path, monkeypatch):
+    """Two configured live folders of one name (two Proton prefixes): the scanner tags each
+    with its location, and the hook must give the same tag - also before the journal has
+    ever seen either folder."""
     vault, live = _setup(tmp_path)
     twin = tmp_path / "prefix-b" / ACCOUNT
     steam_save(twin, 1, 0, "Main", 10, MAIN, T0, extra="twin")
     sources = [Source(id="a", platform="steam", account=ACCOUNT, path=str(live)),
                Source(id="b", platform="steam", account=ACCOUNT, path=str(twin))]
-    result = scanner.scan(Vault(vault.root), sources, ScanCache(None, None), game_running=False)
-    Journal(OrganizerStore(vault.root, create=True), result.versions).observe(
-        result, src="scan", skip=frozenset())
+    monkeypatch.setattr(rec_mod, "_configured_sources", lambda: sources)
+    OrganizerStore(vault.root, create=True)
     operations.clear_slot(vault, live, 3)
     op = _ops(vault)[-1]
     assert op["target"]["instance"] == scanner.instance_of(live) != ""
+    assert scanner.live_refs(sources)[0].instance == op["target"]["instance"]
+
+
+def test_the_hook_does_not_tag_a_folder_the_journal_once_knew_tagged(tmp_path, monkeypatch):
+    """The tag follows the configuration now, not history: with one folder of that name left,
+    the scanner names it untagged, so the hook must too."""
+    vault, live = _setup(tmp_path)
+    twin = tmp_path / "prefix-b" / ACCOUNT
+    steam_save(twin, 1, 0, "Main", 10, MAIN, T0, extra="twin")
+    both = [Source(id="a", platform="steam", account=ACCOUNT, path=str(live)),
+            Source(id="b", platform="steam", account=ACCOUNT, path=str(twin))]
+    result = scanner.scan(Vault(vault.root), both, ScanCache(None, None), game_running=False)
+    Journal(OrganizerStore(vault.root, create=True), result.versions).observe(
+        result, src="scan", skip=frozenset())             # the journal knows the tagged name
+    monkeypatch.setattr(rec_mod, "_configured_sources", lambda: both[:1])
+    operations.clear_slot(vault, live, 3)
+    op = _ops(vault)[-1]
+    assert op["target"]["instance"] == "" == scanner.live_refs(both[:1])[0].instance
 
 
 def test_one_operation_is_one_append(tmp_path, monkeypatch):
@@ -398,3 +416,68 @@ def test_an_undo_names_the_operation_it_undid(tmp_path):
     operations.undo_last(vault, live)
     clear, undo = _ops(vault)
     assert undo["kind"] == "undo" and undo["undo_of"] == clear["op_id"]
+
+
+# --- chunk C review -----------------------------------------------------------
+
+
+def test_an_undo_that_failed_before_logging_names_no_operation(tmp_path, monkeypatch):
+    """An earlier undo's log line is not this one's: what a failed undo undid is unknown."""
+    vault, live = _setup(tmp_path)
+    operations.clear_slot(vault, live, 3)
+    operations.undo_last(vault, live)                         # logged, names the clear
+    operations.clear_slot(vault, live, 9)
+
+    def broken(live_dir, warnings):
+        raise RuntimeError("the disk went away after the files were written")
+
+    monkeypatch.setattr(operations, "_validate_dir_metas", broken)
+    with pytest.raises(RuntimeError):
+        operations.undo_last(vault, live)
+    undo = _ops(vault)[-1]
+    assert undo["kind"] == "undo" and undo["note"].startswith("failed after writing")
+    assert undo["target"]["slot"] == 9 and undo["undo_of"] is None
+
+
+def test_a_write_into_a_folder_not_looked_at_before_is_still_recorded(tmp_path, monkeypatch):
+    """The look before the write failed (or the folder was missing): the write is recorded
+    with nothing known about what it replaced."""
+    vault, live = _setup(tmp_path)
+    backup = operations.create_full_backup(vault, live, warnings=[])
+    real_scan = rec_mod.scan
+    calls = []
+
+    def first_look_fails(*args, **kwargs):
+        calls.append(1)
+        if len(calls) == 1:
+            raise OSError("the folder could not be listed")
+        return real_scan(*args, **kwargs)
+
+    monkeypatch.setattr(rec_mod, "scan", first_look_fails)
+    operations.repopulate_slot(vault, Path(backup.path), 3, live, 9)
+    (op,) = _ops(vault)
+    assert op["target"]["slot"] == 9 and op["evicted"] is None
+    assert op["pair"] == [_vid(_data(live, 9)), None] and op["preserved"] == {}
+
+
+# --- chunk D review -----------------------------------------------------------
+
+
+def test_a_look_that_failed_half_way_is_prepared_again(tmp_path, monkeypatch):
+    """The first look opened the store but not the cache: the record after the write must
+    prepare again, not run on half a setup."""
+    vault, live = _setup(tmp_path)
+    backup = operations.create_full_backup(vault, live, warnings=[])
+    real_load = rec_mod.ScanCache.load
+    calls = []
+
+    def load_fails_once(*args, **kwargs):
+        calls.append(1)
+        if len(calls) == 1:
+            raise OSError("the cache folder is not there yet")
+        return real_load(*args, **kwargs)
+
+    monkeypatch.setattr(rec_mod.ScanCache, "load", load_fails_once)
+    operations.repopulate_slot(vault, Path(backup.path), 3, live, 9)
+    (op,) = _ops(vault)
+    assert op["target"]["slot"] == 9 and len(calls) == 2

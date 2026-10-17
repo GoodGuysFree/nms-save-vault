@@ -218,6 +218,10 @@ uv run pytest
 uv run pytest -m slow      # the long ones: real-data read-only smoke, time budget
 ```
 
+The tests never touch this machine's own folders: each runs with %LOCALAPPDATA%, %APPDATA%,
+the XDG folders and the install folder (state.json, accounts.ini) pointed at temp folders,
+and a test that writes under the real ones anyway fails (`tests/conftest.py`).
+
 ## Auto-configuration
 
 On first run the app **auto-detects** every save folder on the PC and records them in a
@@ -317,14 +321,21 @@ per-save action — it changes *which* of a slot's two saves the game loads.
 
 ## Appearance and updates
 
-**Theme.** The dropdown at the top right offers **Light**, **Dark**, or **System**, which
+**Tabs.** Under the menu bar the window has two tabs: **Live saves and backups** (the two
+panes described above, as they have always been) and **Organizer**. **Ctrl+1** and
+**Ctrl+2** (or **View**) switch, and the app reopens the tab you used last (`state.json`,
+`ui.last_view`).
+
+**Theme.** **View > Theme** offers **Light**, **Dark**, or **System**, which
 follows your Windows light/dark setting. Your choice is remembered in `state.json`. (Light
 keeps the native Windows widget styling the app has always had; dark switches to a
 fully-colourable widget theme, because the native one ignores colour settings.)
 
 **Font size.** **Ctrl+plus** and **Ctrl+minus** (the main keys or the numeric keypad) scale
-every font in the window, from 70% to 200% of your system's own size. Tree rows grow with
-the text, and the size is remembered in `state.json` as `font_scale`.
+every font in the window, from 70% to 200% of your system's own size (**Ctrl+0** goes back
+to 100%). Tree rows grow with the text, and the size is remembered in `state.json` as
+`font_scale`. Every toolbar action is also in the menu bar (File, Edit, View, Live, Tools,
+Help), so the keyboard reaches it at any window size.
 
 **Update checks are opt-in.** The first run asks whether the app may check for new versions.
 If you say yes, it asks GitHub **once a day, on startup**, whether a newer release exists and
@@ -454,7 +465,7 @@ The vault lives outside `st_<id>`, so it is never scanned by the game or synced 
 ## Status
 
 Working. Core format/crypto and all operations are verified against the real save files and
-in a temp sandbox (1036 tests). Xbox / Game Pass saves are supported for reading **and**
+in a temp sandbox (1339 tests). Xbox / Game Pass saves are supported for reading **and**
 same-platform writing — verified against a real install (reads) and synthetic `wgs` fixtures
 (writes). A full file-copy safety backup of the live folder was made before development
 (`C:\Devel\NMS-SaveBackup-SAFETY-2026-06-24`).

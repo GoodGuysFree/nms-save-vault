@@ -85,8 +85,9 @@ def _history(tmp_path):
 def _run(vault, live, *, now: int = 1_800_000_000, **kw):
     store = OrganizerStore(vault.root, create=False)
     source = Source(id="s", platform="steam", account=ACCOUNT, path=str(live))
-    report = bootstrap(vault, store, [source], ScanCache(None, None), game_running=False,
-                       clock=lambda: now, **kw)
+    report = bootstrap(vault, store, [source], ScanCache(None, None),
+                       game_running=kw.pop("game_running", lambda: False), clock=lambda: now,
+                       **kw)
     return store, report
 
 
@@ -181,9 +182,10 @@ def test_lines_and_backups_that_cannot_be_placed_are_reported(tmp_path):
     store = OrganizerStore(vault.root, create=False)
     sources = [Source(id="s", platform="steam", account=ACCOUNT, path=str(live)),
                Source(id="t", platform="steam", account="b", path=str(second))]
-    report = bootstrap(vault, store, sources, ScanCache(None, None), game_running=False)
+    report = bootstrap(vault, store, sources, ScanCache(None, None), game_running=lambda: False)
     reasons = dict(report.ops_unresolved)
-    assert "0 vault entries match the source 'gone-folder'" in reasons["line 4: repopulate_slot"]
+    assert "0 vault entries match the folder it copied from" in reasons[
+        "line 4: repopulate_slot"]
     assert reasons["line 5: clear_slot"] == "detail not understood"
     # With two Steam live folders a line that names none cannot be placed either.
     assert "2 steam live folders" in reasons["line 1: repopulate_slot"]
@@ -309,3 +311,29 @@ def test_restoring_a_one_slot_extract_whole_emptied_the_other_slots(tmp_path):
     assert sorted(r["target"]["slot"] for r in ops) == list(range(1, 16))
     assert next(r for r in ops if r["target"]["slot"] == 3)["pair"] == [None, None]
     assert "deleted" not in report.events
+
+
+# --- chunk C review -----------------------------------------------------------
+
+
+def test_the_game_is_asked_again_before_the_live_slots_are_journaled(tmp_path):
+    """The game started during the deep scan: the final look journals nothing."""
+    vault, live = _history(tmp_path)
+    answers = iter([False, True])
+    store, _ = _run(vault, live, game_running=lambda: next(answers))
+    assert next(answers, "asked twice") == "asked twice"
+    assert [r for r in store.journal_records() if r["src"] == "scan"] == []
+    assert any(r["src"] == "backfill" for r in store.journal_records())
+
+
+def test_reasons_never_name_an_account_folder(tmp_path):
+    """A live folder's name carries the account id: no reason repeats it."""
+    vault, live = _history(tmp_path)
+    _entry(vault, "full", "20251231-100000", "2025-12-31T10:00:00", {9: "v1"},
+           source="st_76561198000000009")
+    _oplog(vault, "2026-01-01T09:00:00", "repopulate_slot",
+           "st_76561198000000002 slot 2 -> slot 4")
+    _, report = _run(vault, live)
+    reasons = [r for _, r in report.entries_skipped + report.ops_unresolved]
+    assert len(reasons) == 2
+    assert not any("7656119800000000" in r for r in reasons)

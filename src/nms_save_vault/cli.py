@@ -41,7 +41,6 @@ from .core import playtime, savedir, slotmap
 from .core import state as appstate
 from .core.catalog import Vault
 from .core.organizer import Organizer
-from .core.organizer.cache import ScanCache
 from .core.organizer.notes import NoteConflict
 from .core.organizer.readmodel import (
     SORT_KEYS,
@@ -537,23 +536,26 @@ _METHOD_WORDS = {"journal": "seen in the slot", "capture-sequence": "seen in bac
                  "owner": "set by you"}
 
 
-def _organizer(args) -> Organizer:
+def _organizer(args, *, writable: bool = False) -> Organizer:
+    """The organizer over the configured vault. Only the commands that write (scan, note and
+    pin changes, bootstrap) open it ``writable``; everything else opens it read-only, so not
+    even the catalog is tidied (D1 2.14.2) - the per-machine scan cache is still kept."""
     st = appstate.load()
     if args.vault:
         root = Path(args.vault)
     else:
         root = Path(st.vault) if (st and st.vault) else locations.default_vault_dir()
     sources = st.live_sources if st is not None else discover.discover_live_sources()
-    cache = ScanCache(None, None) if getattr(args, "no_cache", False) else None
-    org = Organizer(root, sources, cache=cache)
+    keep_cache = not getattr(args, "no_cache", False)
+    org = Organizer(root, sources, read_only=not writable, machine_cache=keep_cache)
     for problem in org.problems:
         print(f"note: {problem}", file=sys.stderr)
     return org
 
 
-def _model(args):
+def _model(args, *, writable: bool = False):
     """Listings look and never record (D1 O-D1-3): only the per-machine cache is written."""
-    org = _organizer(args)
+    org = _organizer(args, writable=writable)
     return org, org.refresh(record=False)
 
 
@@ -637,9 +639,10 @@ def cmd_board(args) -> int:
 
 
 def cmd_note(args) -> int:
-    org, model = _model(args)
     version_flags = (args.label is not None or args.comment is not None or args.lock
                      or args.unlock)
+    writes = version_flags or args.set is not None or args.append is not None
+    org, model = _model(args, writable=writes)
     try:
         if version_flags:
             row = _resolve(resolve_version, model, args.ref)
@@ -672,7 +675,7 @@ def cmd_note(args) -> int:
 
 
 def cmd_pin(args) -> int:
-    org, model = _model(args)
+    org, model = _model(args, writable=True)
     pid = _resolve(resolve_save, model, args.save)
     try:
         org.notes.set_pinned(pid, not args.off)
@@ -684,12 +687,15 @@ def cmd_pin(args) -> int:
 
 
 def cmd_scan(args) -> int:
-    org = _organizer(args)
+    org = _organizer(args, writable=True)
     try:
         model = org.refresh(record=True)
     except (StoreBusy, StoreReadOnly) as exc:
         _die(f"error: {exc}")
     observed = org.observed
+    if observed is None:
+        why = "; ".join(org.problems) or "the vault cannot be written"
+        _die(f"error: nothing was recorded - the organizer is read-only here ({why})")
     labels = {slot.target: slot.label for src in model.live_board().sources for slot in src.slots}
     print(f"Journaled {observed.written} live slot(s).")
     for event in observed.events:
@@ -704,7 +710,7 @@ def cmd_scan(args) -> int:
 
 
 def cmd_organizer_bootstrap(args) -> int:
-    org = _organizer(args)
+    org = _organizer(args, writable=not args.dry_run)
     try:
         report = org.bootstrap(dry_run=args.dry_run)
     except (StoreBusy, StoreReadOnly) as exc:
@@ -733,6 +739,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--live", help="path to the live st_<id> save folder")
     p.add_argument("--vault", help="path to the vault folder")
     sub = p.add_subparsers(dest="command", required=True)
+    from . import cli_store
+    cli_store.add_commands(sub)
 
     sub.add_parser("status", help="show the live folder and slot table").set_defaults(func=cmd_status)
     sub.add_parser("list", help="list catalog entries").set_defaults(func=cmd_list)

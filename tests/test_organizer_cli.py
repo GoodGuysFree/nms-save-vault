@@ -2,6 +2,7 @@
 saves, versions, board, note, pin, scan and organizer bootstrap (D1 2.11, 2.13)."""
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
 from pathlib import Path
@@ -14,6 +15,7 @@ from nms_save_vault.core import state as appstate
 from nms_save_vault.core.catalog import Vault
 from nms_save_vault.core.organizer import Organizer
 from nms_save_vault.core.organizer.cache import ScanCache
+from nms_save_vault.core.organizer.folders import FolderLocator
 from nms_save_vault.core.organizer.locator import (
     LiveMember,
     PreserveFailed,
@@ -208,10 +210,11 @@ def test_scan_records_what_changed(world, capsys):
     vault, live, _ = world
     steam_save(live, 9, 0, "Main Save", 7300, MAIN, T0 + 60, extra="played")
     journal = vault.root / "organizer" / "journal.jsonl"
-    others = {k: v for k, v in _fingerprint(vault.root).items() if "journal" not in k}
+    mine = ("journal", ".liveop.lock")         # the record, and the lock it was made under
+    others = {k: v for k, v in _fingerprint(vault.root).items() if not any(m in k for m in mine)}
     code, out = _run(capsys, "scan")
     assert code == 0 and "Journaled 1 live slot(s)." in out and "S9" in out
-    after = {k: v for k, v in _fingerprint(vault.root).items() if "journal" not in k}
+    after = {k: v for k, v in _fingerprint(vault.root).items() if not any(m in k for m in mine)}
     assert after == others and journal.is_file()           # only the journal was written
 
 
@@ -223,3 +226,182 @@ def test_organizer_bootstrap_from_the_cli(world, capsys):
     code, out = _run(capsys, "organizer", "bootstrap")
     assert code == 0 and out.startswith("Built the history")
     assert (vault.root / "organizer" / "lineage.json").is_file()
+
+
+# --- chunk C review -----------------------------------------------------------
+
+
+def _stale_temp(vault: Vault) -> Path:
+    """What an interrupted catalog save leaves; a writable load deletes it."""
+    import os
+    stale = vault.root / ".catalog.json.tmp_left.part"
+    stale.write_bytes(b"{")
+    os.utime(stale, (T0, T0))
+    return stale
+
+
+def test_listings_open_the_vault_read_only(world, capsys, tmp_path):
+    vault, _, _ = world
+    stale = _stale_temp(vault)
+    for argv in (["saves"], ["versions", "S9"], ["board"], ["note", "S9"],
+                 ["note", "S9", "--history"], ["organizer", "bootstrap", "--dry-run"]):
+        assert _run(capsys, *argv)[0] == 0
+        assert stale.exists(), argv
+    assert list((tmp_path / "Local").rglob("scan-cache.json"))      # the per-machine cache
+    _run(capsys, "scan")                                           # a writer tidies
+    assert not stale.exists()
+
+
+def test_scan_says_why_it_cannot_record(world, capsys):
+    vault, _, _ = world
+    header = vault.root / "organizer" / "organizer.json"
+    data = json.loads(header.read_text(encoding="ascii"))
+    data["schema"] = 99
+    header.write_text(json.dumps(data), encoding="ascii")
+    with pytest.raises(SystemExit) as exit_:
+        cli.main(["scan"])
+    assert "nothing was recorded" in str(exit_.value) and "read-only" in str(exit_.value)
+
+
+def test_bootstrap_reasons_show_no_account_folder(world, capsys):
+    vault, _, _ = world
+    other = "st_76561198000000009"
+    folder = vault.backups_dir / "full-steam-20251231-100000"
+    steam_save(folder, 9, 0, "Main Save", 10, MAIN, T0 - 9000, extra="old")
+    entry = vault.make_entry_from_dir("full-steam-20251231-100000", "full", "", folder,
+                                      managed=True, source=other)
+    entry.created = "2025-12-31T10:00:00"
+    vault.upsert(entry)
+    vault.append_oplog({"ts": "2026-01-01T09:00:00", "op": "repopulate_slot", "entry_id": None,
+                        "snapshot_id": None, "detail": "st_76561198000000002 slot 2 -> slot 4",
+                        "changed": []})
+    code, out = _run(capsys, "organizer", "bootstrap", "--dry-run")
+    assert code == 0 and "backup full-steam-20251231-100000: taken of another" in out
+    assert "not placed - line" in out
+    assert "76561198000000009" not in out and "76561198000000002" not in out
+
+
+def test_a_live_slot_whose_save_has_no_version_row_is_a_ref_error(world, monkeypatch):
+    vault, _, state = world
+    model = Organizer(vault.root, state.live_sources).refresh(record=False)
+    monkeypatch.setattr(model, "versions", lambda pid: ())
+    with pytest.raises(RefError, match="S9"):
+        resolve_version(model, "S9")
+
+
+def test_refresh_does_not_journal_while_a_live_write_holds_the_lock(world):
+    import threading
+    from nms_save_vault.core.organizer.store import liveop_lock_path
+    vault, live, state = world
+    steam_save(live, 9, 0, "Main Save", 7300, MAIN, T0 + 60, extra="played")
+    journal = vault.root / "organizer" / "journal.jsonl"
+    before = journal.read_bytes()
+    held, release = threading.Event(), threading.Event()
+
+    def writer():
+        with safety.exclusive_lock(liveop_lock_path(vault.root), timeout=5):
+            held.set()
+            release.wait(30)
+
+    thread = threading.Thread(target=writer)
+    thread.start()
+    try:
+        assert held.wait(30)
+        org = Organizer(vault.root, state.live_sources)
+        org.refresh(record=True)
+        assert org.observed.written == 0 and journal.read_bytes() == before
+        assert {reason for _, reason in org.observed.skipped} == {"operation in progress"}
+    finally:
+        release.set()
+        thread.join(30)
+    org.refresh(record=True)
+    assert org.observed.written == 1
+
+
+def test_a_location_that_cannot_be_read_hands_over_to_the_next(world, monkeypatch):
+    from nms_save_vault.core import savedir
+    from nms_save_vault.core.organizer import folders
+    vault, live, state = world
+    org = Organizer(vault.root, state.live_sources)
+    model = org.refresh(record=False)
+    head = model.versions(PID)[0].head
+    entry_loc, live_loc = org.locator.locate(head)
+    backup = Path(Vault(vault.root).get(entry_loc.ref.entry_id).path)
+    real_scan = savedir.scan_any
+
+    def slot_gone(folder):                     # e.g. an Xbox index that lost the slot
+        view = real_scan(folder)
+        return dataclasses.replace(view, slots={}) if Path(folder) == backup else view
+
+    monkeypatch.setattr(folders.savedir, "scan_any", slot_gone)
+    assert org.locator.open(head).location == live_loc
+    monkeypatch.setattr(folders.savedir, "scan_any", real_scan)
+    real_decrypt = folders.metacrypt.decrypt
+    monkeypatch.setattr(folders.metacrypt, "decrypt",
+                        lambda blob, ordinal: real_decrypt(b"", ordinal))     # IndexError
+    with pytest.raises(VersionUnavailable, match="entry|live"):
+        org.locator.open(head)
+    two = VaultLocator([FolderLocator(org.scan, {}), org.locator], None)
+    monkeypatch.setattr(folders.metacrypt, "decrypt", real_decrypt)
+    assert two.open(head).location == entry_loc
+
+
+# --- chunk D review -----------------------------------------------------------
+
+
+def test_refresh_scans_the_vault_unlocked_and_the_live_folders_under_the_lock(world,
+                                                                              monkeypatch):
+    """A live write waits for the lock: holding it over the whole vault scan would make it
+    wait for seconds. Only the second look at the live folders and the record hold it."""
+    import contextlib
+
+    from nms_save_vault.core import organizer as org_mod
+
+    vault, live, state = world
+    held = []
+    real_lock, real_scan = safety.exclusive_lock, org_mod.scan
+    calls = []
+
+    @contextlib.contextmanager
+    def watched(path, **kw):
+        with real_lock(path, **kw) as handle:
+            held.append(True)
+            try:
+                yield handle
+            finally:
+                held.pop()
+
+    def scan_then_play(vault_arg, *args, **kw):
+        calls.append((vault_arg is not None, bool(held)))
+        result = real_scan(vault_arg, *args, **kw)
+        if len(calls) == 1:                         # the game saves after the vault scan
+            steam_save(live, 9, 0, "Main Save", 7400, MAIN, T0 + 90, extra="later")
+        return result
+
+    monkeypatch.setattr(safety, "exclusive_lock", watched)
+    monkeypatch.setattr(org_mod, "scan", scan_then_play)
+    org = Organizer(vault.root, state.live_sources)
+    model = org.refresh(record=True)
+    assert calls == [(True, False), (False, True)]
+    later = hashlib.sha256((live / slotmap.data_filename(
+        slotmap.slot_file_numbers(9)[0])).read_bytes()).hexdigest()
+    last9 = [r for r in org.store.journal_records() if r["target"]["slot"] == 9][-1]
+    assert last9["pair"][0] == later                # what the second look saw is recorded
+    assert model.versions(PID)[0].head == later     # and the model shows it
+
+
+def test_a_lock_that_fails_is_not_reported_as_busy(world, monkeypatch):
+    from nms_save_vault.core.organizer.journal import SKIP_LOCK_FAILED
+
+    vault, live, state = world
+    steam_save(live, 9, 0, "Main Save", 7300, MAIN, T0 + 60, extra="played")
+    before = (vault.root / "organizer" / "journal.jsonl").read_bytes()
+
+    def broken(path, **kw):
+        raise PermissionError(13, "read-only vault")
+
+    monkeypatch.setattr(safety, "exclusive_lock", broken)
+    org = Organizer(vault.root, state.live_sources)
+    org.refresh(record=True)
+    assert {reason for _, reason in org.observed.skipped} == {SKIP_LOCK_FAILED}
+    assert (vault.root / "organizer" / "journal.jsonl").read_bytes() == before

@@ -1,10 +1,13 @@
-"""Shared fixtures. Locates the live NMS save dir for read-only verification tests."""
+"""Shared fixtures. Locates the live NMS save dir for read-only verification tests, and
+keeps every test away from this machine's real user folders (see the write guard)."""
 from __future__ import annotations
 
 import json
 import os
 import re
 import struct
+import sys
+import tempfile
 import uuid
 from pathlib import Path
 
@@ -12,9 +15,121 @@ import pytest
 
 from nms_save_vault.core import catalog, formats, meta, msstore, slotmap
 
+# --- the write guard --------------------------------------------------------------------
+#
+# The owner's real data is strictly read-only, and so is everything of the app's in the
+# real user folders (config, cache, logs). Two layers:
+#
+# 1. every test runs with the user folders pointed at fresh temp folders (the environment
+#    the app derives them from: %LOCALAPPDATA%, %APPDATA%, the XDG folders, the portable
+#    install root that holds state.json and accounts.ini);
+# 2. an audit hook sees every file write, rename, delete and mkdir of the process and
+#    fails the test that made one under the REAL folders, captured here at import time.
+
+_REAL_ENV = {name: os.environ.get(name) for name in (
+    "LOCALAPPDATA", "APPDATA", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME")}
+SAFETY_BACKUP = Path(r"C:\Devel\NMS-SaveBackup-SAFETY-2026-06-24")
+
+
+def _norm(path) -> str:
+    try:
+        text = os.fsdecode(path)
+    except TypeError:
+        return ""
+    return os.path.normcase(os.path.abspath(text))
+
+
+_GUARDED = tuple(_norm(v) for v in (_REAL_ENV["LOCALAPPDATA"], _REAL_ENV["APPDATA"],
+                                    str(SAFETY_BACKUP)) if v)
+#: Under %LOCALAPPDATA% on Windows, and where every tmp_path lives.
+_ALLOWED = (_norm(tempfile.gettempdir()),)
+_WRITE_FLAGS = os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_APPEND | os.O_TRUNC
+_VIOLATIONS: list[str] = []
+
+
+def _under(path: str, roots) -> bool:
+    return any(path == root or path.startswith(root + os.sep) for root in roots)
+
+
+def real_write_target(event: str, args: tuple) -> str | None:
+    """The guarded path an audit event would write, or None."""
+    if event == "open":
+        path, mode, flags = (tuple(args) + (None, None, None))[:3]
+        if isinstance(path, int):
+            return None
+        writes = (isinstance(mode, str) and any(c in mode for c in "wax+")) or (
+            mode is None and isinstance(flags, int) and flags & _WRITE_FLAGS)
+        targets = [path] if writes else []
+    elif event in ("os.rename", "shutil.move"):          # the source goes away too
+        targets = list(args[:2])
+    elif event in ("shutil.copyfile", "shutil.copytree", "os.link", "os.symlink"):
+        targets = list(args[1:2])                         # copying FROM real data is reading
+    elif event in ("os.remove", "os.rmdir", "os.mkdir", "os.truncate", "os.utime",
+                   "os.chmod", "shutil.rmtree"):
+        targets = list(args[:1])
+    else:
+        return None
+    for target in targets:
+        path = _norm(target)
+        if path and _under(path, _GUARDED) and not _under(path, _ALLOWED) \
+                and not path.endswith(".pyc"):
+            return f"{event}: {path}"
+    return None
+
+
+def _audit(event: str, args: tuple) -> None:
+    if event in _AUDITED:
+        hit = real_write_target(event, args)
+        if hit:
+            _VIOLATIONS.append(hit)
+
+
+_AUDITED = frozenset({"open", "os.rename", "shutil.copyfile", "shutil.copytree", "os.link",
+                      "os.symlink", "os.remove", "os.rmdir", "os.mkdir", "os.truncate",
+                      "os.utime", "os.chmod", "shutil.rmtree", "shutil.move"})
+if _GUARDED:
+    sys.addaudithook(_audit)
+
+
+def take_violations() -> list[str]:
+    out = list(_VIOLATIONS)
+    _VIOLATIONS.clear()
+    return out
+
+
+@pytest.fixture(autouse=True)
+def _no_real_user_folders(request, tmp_path_factory, monkeypatch):
+    """Point the user folders at temp ones (not for the slow real-data checks, which read
+    the real config on purpose), and fail the test if anything was written under the real
+    ones all the same."""
+    take_violations()                   # what earlier setup did is reported by its own test
+    if request.node.get_closest_marker("slow") is None:
+        home = tmp_path_factory.mktemp("user")
+        monkeypatch.setenv("NMSVAULT_PORTABLE_ROOT", str(home / "install"))
+        monkeypatch.setenv("LOCALAPPDATA", str(home / "Local"))
+        monkeypatch.setenv("APPDATA", str(home / "Roaming"))
+        for name, sub in (("XDG_CONFIG_HOME", ".config"), ("XDG_DATA_HOME", ".local/share"),
+                          ("XDG_CACHE_HOME", ".cache")):
+            monkeypatch.setenv(name, str(home / sub))
+    yield
+    hits = take_violations()
+    if hits:
+        pytest.fail("wrote under the real user folders:\n" + "\n".join(hits[:20]))
+
+
+@pytest.fixture(autouse=True)
+def _no_configured_live_folders(monkeypatch):
+    """The classic-operation hook names a live folder by the app's configured live folders
+    (state.json); a test never reads this machine's configuration. Tests that need some set
+    ``recorder._configured_sources`` themselves."""
+    from nms_save_vault.core.organizer import recorder
+    monkeypatch.setattr(recorder, "_configured_sources", lambda: [], raising=False)
+
 
 def find_live_save_dir() -> Path | None:
-    appdata = os.environ.get("APPDATA")
+    """The real Steam save folder, for read-only checks: found from the real %APPDATA%,
+    whatever a test has pointed the environment at."""
+    appdata = _REAL_ENV["APPDATA"]
     if not appdata:
         return None
     base = Path(appdata) / "HelloGames" / "NMS"
@@ -234,6 +349,10 @@ def gui_app(tmp_path_factory):
     # Keep the real machine's save folder out of the test: the App falls back to it when
     # the config lists no sources.
     mp.setattr(locations, "default_live_save_dir", lambda: None)
+    # The App reads and writes its config (the theme, the zoom): never the real one.
+    mp.setenv("NMSVAULT_PORTABLE_ROOT", str(tmp_path / "install"))
+    mp.setenv("LOCALAPPDATA", str(tmp_path / "Local"))
+    mp.setenv("APPDATA", str(tmp_path / "Roaming"))
     try:
         application = _build_app(gui, tmp_path)
     finally:
@@ -270,4 +389,4 @@ def _build_app(gui, tmp_path):
         })
     vault_root.mkdir(parents=True)
     (vault_root / "catalog.json").write_text(json.dumps(payload), "utf-8")
-    return gui.App(vault=vault_root)
+    return gui.App(vault=vault_root, state_path=tmp_path / "install" / "state.json")

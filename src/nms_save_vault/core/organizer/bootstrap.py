@@ -23,7 +23,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .. import catalog, safety, savedir
 from ..formats import MAX_SAVE_SLOTS
@@ -54,6 +54,9 @@ from .lineage import ensure_skeleton
 from .scanner import EntryScan, ScanProblem, ScanResult, scan
 from .recorder import LIVEOP_TIMEOUT
 from .store import APP, LINEAGE, OrganizerStore, liveop_lock_path
+
+if TYPE_CHECKING:
+    from ..store import VersionStore
 
 log = logging.getLogger(__name__)
 
@@ -103,14 +106,18 @@ class _Item:
 
 
 def bootstrap(vault: Vault, store: OrganizerStore, sources: Sequence[Source],
-              cache: ScanCache, *, game_running: bool | None, dry_run: bool = False,
-              clock: Callable[[], float] = time.time,
+              cache: ScanCache, *, game_running: Callable[[], bool | None],
+              dry_run: bool = False, clock: Callable[[], float] = time.time,
               progress: Callable[[int, int], None] | None = None,
-              cancel: threading.Event | None = None) -> BootstrapReport:
+              cancel: threading.Event | None = None,
+              version_store: VersionStore | None = None) -> BootstrapReport:
+    """``game_running`` is asked twice: for the deep scan, and again just before the live
+    slots are journaled at the end (the game may have started meanwhile). With
+    ``version_store`` the vault's store entries are evidence too (D3 2.9)."""
     started = time.perf_counter()
     begun = int(clock())
-    result = scan(vault, sources, cache, game_running=game_running, deep=True, now=clock,
-                  progress=progress, cancel=cancel)
+    result = scan(vault, sources, cache, game_running=game_running(), deep=True, now=clock,
+                  progress=progress, cancel=cancel, store=version_store)
     existing, problems = decode_all(store.journal_records())
     lineage = store.document(LINEAGE)
     done_at = (lineage.get("bootstrap") or {}).get("done_at")
@@ -148,13 +155,15 @@ def bootstrap(vault: Vault, store: OrganizerStore, sources: Sequence[Source],
 
 
 def _observe_now(vault: Vault, store: OrganizerStore, sources: Sequence[Source],
-                 cache: ScanCache, deep: ScanResult, game_running: bool | None,
+                 cache: ScanCache, deep: ScanResult,
+                 game_running: Callable[[], bool | None],
                  clock: Callable[[], float]) -> tuple[Journal, int]:
     """Journal the live slots as they are now, not as the deep scan found them seconds or
-    minutes ago: a quick second look under the live-op lock, so no write is under way."""
+    minutes ago: a quick second look under the live-op lock, so no write is under way, and
+    a fresh game check (a running game's slots are never journaled)."""
     try:
         with safety.exclusive_lock(liveop_lock_path(vault.root), timeout=LIVEOP_TIMEOUT):
-            fresh = scan(None, sources, cache, game_running=game_running, now=clock)
+            fresh = scan(None, sources, cache, game_running=game_running(), now=clock)
             journal = Journal(store, {**deep.versions, **fresh.versions})
             return journal, journal.observe(fresh, src="scan", skip=frozenset()).written
     except safety.LockTimeout:
@@ -191,7 +200,7 @@ class _Plan:
                 continue                # owner copies of unknown time: no timeline evidence
             if entry_id in self.represented or not self._before_cutoff(scanned.created):
                 continue
-            ref = self._live_for_entry(self.catalog[entry_id], scanned)
+            ref = self._live_for_entry(entry_id, scanned)
             if ref is None:
                 continue
             for capture in scanned.captures:
@@ -199,17 +208,26 @@ class _Plan:
                                         capture.pair, {m.vid: m for m in capture.members},
                                         entry=entry_id))
 
-    def _live_for_entry(self, entry: CatalogEntry, scanned: EntryScan) -> LiveRef | None:
-        platform = Vault.tag_of(entry.id) or savedir.platform_of(Path(entry.path))
+    def _platform_of(self, entry_id: str, scanned: EntryScan) -> str:
+        """A store entry knows its platform; a catalog entry tells it by its id or folder."""
+        if scanned.platform:
+            return scanned.platform
+        entry = self.catalog.get(entry_id)
+        return Vault.tag_of(entry_id) or (savedir.platform_of(Path(entry.path)) if entry
+                                          else "steam")
+
+    def _live_for_entry(self, entry_id: str, scanned: EntryScan) -> LiveRef | None:
+        platform = self._platform_of(entry_id, scanned)
         same_platform = [r for r in self.refs if r.platform == platform]
         named = [r for r in same_platform if r.account_key == scanned.source]
         if len(named) == 1:
             return named[0]
         if not named and len(same_platform) == 1:
-            self.skipped.append((entry.id, f"taken of {scanned.source!r}; mapped to the only "
-                                           f"{platform} live folder"))
+            # Never the folder's own name: it carries the account id.
+            self.skipped.append((entry_id, f"taken of another {platform} folder; mapped to "
+                                           f"the only {platform} live folder"))
             return same_platform[0]
-        self.skipped.append((entry.id, "entry-unmapped: no single live folder it was taken of"))
+        self.skipped.append((entry_id, "entry-unmapped: no single live folder it was taken of"))
         return None
 
     # --- "put live by the app" ----------------------------------------------------------
@@ -271,9 +289,7 @@ class _Plan:
         scanned = self.result.entries.get(entry_id)
         if scanned is None:
             raise _Unresolved(f"the restored entry {entry_id} is not in the vault")
-        entry = self.catalog[entry_id]
-        ref = self._target_ref(record, Vault.tag_of(entry.id)
-                               or savedir.platform_of(Path(entry.path)))
+        ref = self._target_ref(record, self._platform_of(entry_id, scanned))
         # A full restore mirrored the folder: a slot the entry does not hold (a one-slot
         # extract restored whole, as old versions allowed) was emptied.
         held = {c.slot: c for c in scanned.captures}
@@ -287,7 +303,7 @@ class _Plan:
         written = record.get("target")
         if written:
             for ref, folder in self.result.live.items():
-                if _same_path(folder.source.path, written):
+                if safety.same_path(folder.source.path, written):
                     return ref
             raise _Unresolved("the folder it wrote is not a live folder here")
         candidates = [r for r in self.refs if r.platform == platform]
@@ -299,7 +315,8 @@ class _Plan:
         matches = [e for e in self.catalog.values() if e.id in self.result.entries and (
             (e.managed and e.id == name) or (not e.managed and Path(e.path).name == name))]
         if len(matches) != 1:
-            raise _Unresolved(f"{len(matches)} vault entries match the source {name!r}")
+            # Not the name: a live folder's name carries the account id.
+            raise _Unresolved(f"{len(matches)} vault entries match the folder it copied from")
         return matches[0]
 
     # --- records ----------------------------------------------------------------------
@@ -360,13 +377,6 @@ def _followed_by_its_undo(records: list, index: int) -> bool:
     after = records[index + 1][1]
     return (after.get("op") == "undo" and not after.get("entry_id")
             and after.get("snapshot_id") == records[index][1].get("entry_id"))
-
-
-def _same_path(a: str, b: str) -> bool:
-    try:
-        return Path(a).resolve() == Path(b).resolve()
-    except OSError:
-        return False
 
 
 def _utc(local: object) -> int | None:
