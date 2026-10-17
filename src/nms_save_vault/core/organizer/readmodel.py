@@ -15,6 +15,7 @@ appears in ``to_dict()``: live slots travel as opaque tokens (``<platform>:<sour
 from __future__ import annotations
 
 import dataclasses
+import re
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -713,11 +714,21 @@ class _Builder:
                                         last_event.get(target), pending.get(target)))
             ranked = self._ranks(slots)
             sources.append(LiveSource(
-                ref, str(aliases.redact(source.label or source.account or ref.account_key)),
-                ref.platform, source.writable,
+                ref, self._source_label(source, ref), ref.platform, source.writable,
                 folder.steam_cloud if folder is not None and ref.platform == "steam" else None,
                 tuple(ranked)))
         return LiveBoard(tuple(sources))
+
+    def _source_label(self, source: Source, ref: LiveRef) -> str:
+        """The folder's name in the app (the owner's aliases applied), never its account id."""
+        label = str(aliases.redact(source.label)) if source.label else ""
+        ids = {ref.account_key, ref.account_key.removeprefix("st_"), source.account} - {""}
+        if not label or any(i in label for i in ids):
+            label = "Steam" if ref.platform == "steam" else "Xbox"
+            if ref.platform in self.several:
+                same = [r for r in self.refs if r.platform == ref.platform]
+                label += f" {same.index(ref) + 1}"
+        return label
 
     def _slot(self, target, folder, p, live_pids, pinned, event, pending) -> BoardSlot:
         capture = None
@@ -818,6 +829,100 @@ class _Builder:
             "unexpected": f"Changed unexpectedly after an operation: {where}",
         }[e.kind]
         return str(aliases.redact(text))
+
+
+# --- references (the CLI's <save> and <version>) -------------------------------
+
+_BADGE = re.compile(r"[SX][0-9]+(?:\.[0-9]+)?", re.IGNORECASE)
+_HEX = re.compile(r"[0-9a-fA-F]+")
+
+
+class RefError(ValueError):
+    """A reference names nothing, or more than one thing (``candidates`` lists them)."""
+
+    def __init__(self, message: str, candidates: Sequence[str] = ()) -> None:
+        super().__init__(message + "".join(f"\n  {c}" for c in candidates))
+        self.candidates = tuple(candidates)
+
+
+def resolve_save(model: ReadModel, ref: str) -> Pid:
+    """A save file by live badge (``S9``, ``X4``, ``S2.7``), id prefix (6+ hex digits) or
+    its name (case does not matter)."""
+    ref = ref.strip()
+    if _BADGE.fullmatch(ref):
+        slot = _board_slot(model, ref)
+        if slot.pid is None:
+            raise RefError(f"live slot {slot.label} holds no save")
+        return slot.pid
+    lines = model.lines()
+    if _HEX.fullmatch(ref) and len(ref) >= 6:
+        found = [line for line in lines
+                 if any(p.upper().startswith(ref.upper()) for p in (line.pid, *line.raw_pids))]
+        if found:
+            return _one(found, ref, _describe_line).pid
+    folded = ref.casefold()
+    found = [line for line in lines if line.name.casefold() == folded]
+    if not found:
+        raise RefError(f"no save file is called or numbered {ref!r}")
+    return _one(found, ref, _describe_line).pid
+
+
+def resolve_version(model: ReadModel, ref: str) -> VersionRow:
+    """A version by live badge (the one loaded there), id prefix (8+ hex digits), or
+    ``<save>@YYYY-MM-DD[THH:MM]`` (the newest saved at or before that local time)."""
+    ref = ref.strip()
+    if "@" in ref:
+        save, _, when = ref.rpartition("@")
+        pid = resolve_save(model, save)
+        try:
+            moment = datetime.fromisoformat(when)
+        except ValueError:
+            raise RefError(f"{when!r} is not a date (YYYY-MM-DD or YYYY-MM-DDTHH:MM)") from None
+        if len(when) == 10:
+            moment = moment.replace(hour=23, minute=59, second=59)
+        limit = int(moment.timestamp())
+        rows = [r for r in model.versions(pid) if r.saved_at <= limit]
+        if not rows:
+            raise RefError(f"{model.line(pid).name!r} has no version saved by {when}")
+        return max(rows, key=lambda r: (r.saved_at, r.play_time))
+    if _BADGE.fullmatch(ref):
+        slot = _board_slot(model, ref)
+        if slot.head is None:
+            raise RefError(f"live slot {slot.label} holds no save")
+        return next(r for line in model.lines() for r in model.versions(line.pid)
+                    if r.head == slot.head)
+    if _HEX.fullmatch(ref) and len(ref) >= 8:
+        prefix = ref.lower()
+        found = [r for line in model.lines() for r in model.versions(line.pid)
+                 if any(v and v.startswith(prefix) for v in r.pair)]
+        if not found:
+            raise RefError(f"no version id starts with {ref!r}")
+        return _one(found, ref, _describe_row)
+    raise RefError(f"{ref!r} is not a version: give 8+ hex digits of its id, a live slot "
+                   "like S9, or <save>@YYYY-MM-DD")
+
+
+def _board_slot(model: ReadModel, badge: str) -> BoardSlot:
+    for source in model.live_board().sources:
+        for slot in source.slots:
+            if slot.label.upper() == badge.upper():
+                return slot
+    raise RefError(f"there is no live slot {badge.upper()}")
+
+
+def _one(found: list, ref: str, describe):
+    if len(found) > 1:
+        raise RefError(f"{ref!r} could be several:", [describe(f) for f in found])
+    return found[0]
+
+
+def _describe_line(line: Line) -> str:
+    return f"{line.name or '(no name)'}  [{line.pid[:16]}]"
+
+
+def _describe_row(row: VersionRow) -> str:
+    when = datetime.fromtimestamp(row.saved_at).strftime("%Y-%m-%d %H:%M") if row.saved_at else "-"
+    return f"{row.head[:8]}  {row.name}  {when}"
 
 
 # --- sorting and filtering ----------------------------------------------------

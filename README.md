@@ -378,10 +378,21 @@ nmsvault restore <entry-id>              # mirror the live folder to a backup (k
 nmsvault undo                            # undo the last change to this live folder (repeat to go back further)
 nmsvault verify [live|<id>|<folder>]
 nmsvault accounts [--set <id>=NAME] [--clear <id>]   # hide the real account ids
+nmsvault saves [--sort play_time] [--live-only] [--find TEXT] [--json]   # every save file, one line each
+nmsvault versions "Main Save" [--all]   # its versions (key ones; --all every one), or a slot: S9
+nmsvault board                           # the 15 slots of every live folder
+nmsvault note S9 --set "Next: Atlas"     # a save file's note (--append, --history);
+                                         #   a version's: --label/--comment/--lock
+nmsvault pin S9 [--off]                  # never suggest that save's slot for another save
+nmsvault scan                            # record what the live slots hold now
+nmsvault organizer bootstrap [--dry-run] # read in the history of an existing vault
 ```
 
 Every write first checks the game is closed (override `--force`), auto-snapshots the
-live state, writes atomically, validates, and logs to `oplog.jsonl` for `undo`.
+live state, writes atomically, validates, and logs to `oplog.jsonl` for `undo`. Live writes
+wait for one another (one window at a time) and are recorded in the organizer's journal
+(`<vault>/organizer/`), which is how it knows what put a save into a slot. Listing commands
+never write the vault; `scan`, notes and pins do, and only there.
 
 ## Xbox / Game Pass (read **and write**)
 
@@ -442,7 +453,7 @@ The vault lives outside `st_<id>`, so it is never scanned by the game or synced 
 ## Status
 
 Working. Core format/crypto and all operations are verified against the real save files and
-in a temp sandbox (901 tests). Xbox / Game Pass saves are supported for reading **and**
+in a temp sandbox (913 tests). Xbox / Game Pass saves are supported for reading **and**
 same-platform writing — verified against a real install (reads) and synthetic `wgs` fixtures
 (writes). A full file-copy safety backup of the live folder was made before development
 (`C:\Devel\NMS-SaveBackup-SAFETY-2026-06-24`).
