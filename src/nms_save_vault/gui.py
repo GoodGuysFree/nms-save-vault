@@ -26,7 +26,10 @@ from .core import playtime, savedir
 from .core import state as appstate
 from .core.catalog import Vault
 from .ui import dpi, logfile
+from .ui.fmt import local_time as _fmt_ts
+from .ui.fmt import play_time as _fmt_play
 from .ui.redact import RedactingTreeview
+from .ui.tooltip import TOOLTIP_STYLE, Tooltip
 from .ui.themeaware import ThemeRegistry
 from .ui.worker import UiWorker
 from .ui.dpi import px, pxs
@@ -39,22 +42,6 @@ def _icon_path() -> Path | None:
         Path(__file__).resolve().parents[2] / "packaging" / "nmsvault.ico",
     ]
     return next((c for c in candidates if c.is_file()), None)
-
-
-def _fmt_ts(unix: int) -> str:
-    if not unix:
-        return ""
-    try:
-        return datetime.fromtimestamp(unix).strftime("%Y-%m-%d %H:%M")
-    except (OverflowError, OSError, ValueError):
-        return str(unix)
-
-
-def _fmt_play(seconds: int) -> str:
-    if not seconds:
-        return ""
-    h, rem = divmod(int(seconds), 3600)
-    return f"{h}h{rem // 60:02d}"
 
 
 def _fmt_size(nbytes: int) -> str:
@@ -129,78 +116,6 @@ _KIND_HELP = {
     catalog.KIND_IMPORTED: "imported - your own backup, copied into the vault",
     catalog.KIND_INPLACE: "in place - catalogued where it already lives, not copied",
 }
-
-# Tooltip colours; the theme swaps these so hover text stays readable in dark mode.
-TOOLTIP_STYLE = {"background": "#ffffe0", "foreground": "#1a1a1a", "border": "#9a9a7a"}
-
-
-class Tooltip:
-    """Hover text for tree rows.
-
-    ``text_for(tree, row_id)`` supplies the text (''  to show nothing). The text is built
-    when the row is created, not on hover, so moving the mouse never re-scans anything.
-    """
-
-    DELAY_MS = 450
-
-    def __init__(self, tree, text_for):
-        self.tree = tree
-        self.text_for = text_for
-        self.window: tk.Toplevel | None = None
-        self.row: str | None = None
-        self._after: str | None = None
-        tree.bind("<Motion>", self._on_motion, add="+")
-        tree.bind("<Leave>", self.hide, add="+")
-        tree.bind("<Button>", self.hide, add="+")
-
-    def _on_motion(self, event) -> None:
-        row = self.tree.identify_row(event.y)
-        if row == self.row:
-            return
-        self.row = row
-        self._close()
-        self._cancel()
-        if row:
-            x, y = event.x_root, event.y_root
-            self._after = self.tree.after(self.DELAY_MS, lambda: self._show(row, x, y))
-
-    def _show(self, row: str, x: int, y: int) -> None:
-        self._after = None
-        text = self.text_for(self.tree, row)
-        if not text or row != self.row:
-            return
-        self.window = tk.Toplevel(self.tree)
-        self.window.wm_overrideredirect(True)  # no title bar / border
-        tk.Label(
-            self.window,
-            text=text,
-            justify="left",
-            relief="solid",
-            borderwidth=1,
-            background=TOOLTIP_STYLE["background"],
-            foreground=TOOLTIP_STYLE["foreground"],
-            highlightbackground=TOOLTIP_STYLE["border"],
-            padx=px(8),
-            pady=px(6),
-            font=theme.TIP_FONT,
-        ).pack()
-        self.window.wm_geometry(f"+{x + px(16)}+{y + px(18)}")
-
-    def hide(self, _event=None) -> None:
-        self.row = None
-        self._cancel()
-        self._close()
-
-    def _cancel(self) -> None:
-        if self._after is not None:
-            self.tree.after_cancel(self._after)
-            self._after = None
-
-    def _close(self) -> None:
-        if self.window is not None:
-            self.window.destroy()
-            self.window = None
-
 
 def _source_caption(source) -> str:
     """How a live source is named in the tree and the dropdown.

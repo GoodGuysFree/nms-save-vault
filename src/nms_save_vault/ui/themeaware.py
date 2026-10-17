@@ -36,6 +36,9 @@ class ThemeRegistry:
     def apply(self, p: Mapping[str, str]) -> None:
         self.palette = p
         for member in list(self._members):
+            if not _alive(member):           # a destroyed widget the GC has not taken yet
+                self._members.discard(member)
+                continue
             try:
                 member.apply_palette(p)
             except Exception:  # noqa: BLE001 - one widget must not keep the rest unthemed
@@ -43,3 +46,13 @@ class ThemeRegistry:
 
     def __len__(self) -> int:
         return len(self._members)
+
+
+def _alive(member) -> bool:
+    exists = getattr(member, "winfo_exists", None)
+    if exists is None:
+        return True
+    try:
+        return bool(exists())
+    except Exception:  # noqa: BLE001 - the interpreter behind it is gone
+        return False

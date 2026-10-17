@@ -145,7 +145,11 @@ _BARE = [
 ]
 
 
-@pytest.mark.parametrize("name", ["gui.py", "theme.py"])
+_UI_FILES = ["gui.py", "theme.py"] + sorted(
+    str(p.relative_to(SRC)).replace("\\", "/") for p in (SRC / "ui").rglob("*.py"))
+
+
+@pytest.mark.parametrize("name", _UI_FILES)
 def test_no_bare_pixel_constant_is_left(name):
     """Entry and Combobox widths are characters, not pixels, and are not matched."""
     found = []

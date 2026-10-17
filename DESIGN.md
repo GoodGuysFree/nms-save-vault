@@ -94,6 +94,10 @@ src/nms_save_vault/
     themeaware.py ThemeRegistry: classic widgets and drawn images follow the theme
     redact.py     every shown string redacted (trees, texts, labels, canvas, titles)
     raster.py     images drawn in code: chevrons, sort arrows, radio marks, dots
+    fmt.py        play time and local time as every view shows them
+    tooltip.py    hover text for tree rows and canvas items, built on hover
+    organizer/    the Organizer tab
+      table.py    OrganizerTable: lines with > / v, chips, Find, sort, column chooser
   theme.py        light/dark/system palettes (incl. the organizer keys) + ttk restyling,
                   dark title bar (front-end)
   updates.py      opt-in GitHub release check + in-place self-update (the only network access)
