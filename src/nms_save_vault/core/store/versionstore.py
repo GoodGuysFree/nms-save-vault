@@ -42,7 +42,15 @@ from .errors import (
     StoreTooNew,
     StoreUnavailable,
 )
-from .manifest import ENTRY_KINDS, MAX_ENTRY_ID, EntryKind, FileEntry, StoreEntry, is_entry_id
+from .manifest import (
+    ENTRY_KINDS,
+    MAX_ENTRY_ID,
+    EntryKind,
+    FileEntry,
+    MemberRecord,
+    StoreEntry,
+    is_entry_id,
+)
 from .materialize import MaterializeResult, check_destination, files_to_write, write_entry
 from .objects import ObjectStore, sha256
 
@@ -380,8 +388,11 @@ class VersionStore:
 
     def add_from_live(self, target_dir: str | Path, *, platform: Platform, account_key: str,
                       kind: EntryKind, label: str, scope: CaptureScope,
-                      op_id: str | None = None, reason: str = "") -> StoreEntry:
-        """Keep (part of) a live save folder; it is only read."""
+                      op_id: str | None = None, reason: str = "",
+                      finish: Callable[[list[MemberRecord]], str | None] | None = None
+                      ) -> StoreEntry:
+        """Keep (part of) a live save folder; it is only read. ``finish`` sees the member
+        records before the commit: it may refuse (raise) or return the label to use."""
         target_dir = Path(target_dir)
         if target_dir.is_dir() and savedir.platform_of(target_dir) != platform:
             raise StoreError(f"That folder is not a {platform} save folder.")
@@ -389,13 +400,14 @@ class VersionStore:
         return self._add(target_dir, platform=platform, account_key=account_key, live=True,
                          kind=kind, label=label, source=source, scope=scope, entry_id=None,
                          origin=None, created_local=None, op_id=op_id, reason=reason,
-                         cancel=None, progress=None)
+                         cancel=None, progress=None, finish=finish)
 
     def _add(self, folder: Path, *, platform: Platform, account_key: str | None, live: bool,
              kind: EntryKind, label: str, source: Mapping[str, Any], scope: CaptureScope,
              entry_id: str | None, origin: Mapping[str, Any] | None, created_local: str | None,
              op_id: str | None, reason: str, cancel: Callable[[], bool] | None,
-             progress: Callable[[int, int], None] | None) -> StoreEntry:
+             progress: Callable[[int, int], None] | None,
+             finish: Callable[[list[MemberRecord]], str | None] | None = None) -> StoreEntry:
         if kind not in ENTRY_KINDS:
             raise ValueError(f"not an entry kind: {kind!r}")
         if entry_id is not None and not is_entry_id(entry_id):
@@ -428,6 +440,8 @@ class VersionStore:
                 raise Cancelled("Cancelled. Nothing was kept.")
         members, notes = capture.describe_members(folder, platform, records, stats, plan.slots)
         plan.require_consistent(records)
+        if finish is not None:
+            label = finish(members) or label
         for note in notes:
             log.warning("keeping a copy of %s: %s", folder.name, note)
         fields = dict(kind=kind, label=label, reason=reason, op_id=op_id,

@@ -8,10 +8,16 @@ from datetime import timedelta
 
 import pytest
 
-from nms_save_vault.core import formats, meta
+from nms_save_vault.core import formats, meta, msstore
 from nms_save_vault.core import store as vstore
-from nms_save_vault.core.organizer.model import EntryRef, StoreRef
-from nms_save_vault.core.store.d1 import Location, VaultLocator, VersionUnavailable
+from nms_save_vault.core.organizer.model import EntryRef, LiveTarget, StoreRef
+from nms_save_vault.core.store.d1 import (
+    LiveMember,
+    Location,
+    PreserveFailed,
+    VaultLocator,
+    VersionUnavailable,
+)
 
 from .conftest import steam_save
 from .store_helpers import (
@@ -150,3 +156,103 @@ def test_d1s_vault_locator_composes_with_the_store(tmp_path):
         vault_locator.open("1" * 64)
     assert issubclass(vstore.ObjectMissing, VersionUnavailable)
     assert issubclass(vstore.ObjectCorrupt, VersionUnavailable)
+
+
+# --- preserve (B-8) ------------------------------------------------------------------------
+
+
+def _target(slot, platform="steam", account=STEAM_ACCOUNT):
+    return LiveTarget(platform, account, slot)
+
+
+def _steam_locator(tmp_path, **kw):
+    vault = new_vault(tmp_path)
+    live = steam_live(tmp_path / "live")
+    store = open_vault_store(vault, clock=_ticking_clock(), **kw)
+    return vault, live, store, vstore.StoreLocator(store, live_dir=lambda t: live)
+
+
+def test_preserve_contract(tmp_path):
+    _vault, live, store, loc = _steam_locator(tmp_path)
+    vid_a = _sha((live / "save.hg").read_bytes())
+    kept = loc.preserve([LiveMember(_target(1), "A", vid_a)], op_id="op-20261016T111500Z-ab12",
+                        reason="place")
+    entry = store.entry(kept[0].ref.key)
+    assert kept == [Location(vid_a, "store", StoreRef(entry.id), 1, "A", "steam", durable=True)]
+    assert entry.id.startswith("preserve-steam-") and entry.kind == "preserve"
+    assert (entry.label, entry.op_id, entry.reason) == ("kept: slot 1 (Main)",
+                                                       "op-20261016T111500Z-ab12", "place")
+    assert [f.path for f in entry.files] == ["mf_save.hg", "mf_save2.hg", "save.hg", "save2.hg"]
+    assert [(m.slot, m.member) for m in entry.members] == [(1, "A"), (1, "B")]   # both members
+    assert loc.open(vid_a, prefer=kept[0]).data == (live / "save.hg").read_bytes()
+    assert loc.is_durable(vid_a)
+
+
+def test_preserve_is_written_every_time_and_keeps_the_input_order(tmp_path):
+    _vault, live, store, loc = _steam_locator(tmp_path)
+    vid_a = _sha((live / "save.hg").read_bytes())
+    vid_b = _sha((live / "save2.hg").read_bytes())
+    vid_2 = _sha((live / "save3.hg").read_bytes())
+    first = loc.preserve([LiveMember(_target(1), "A", vid_a)], op_id="op-1", reason="r")
+    objects = sorted(store.objects.digests())
+    kept = loc.preserve([LiveMember(_target(2), "A", vid_2), LiveMember(_target(1), "B", vid_b),
+                         LiveMember(_target(1), "A", vid_a)], op_id="op-2", reason="r")
+    assert [(k.vid, k.slot, k.member) for k in kept] == [(vid_2, 2, "A"), (vid_b, 1, "B"),
+                                                        (vid_a, 1, "A")]
+    assert kept[1].ref == kept[2].ref != first[0].ref != kept[0].ref
+    assert sorted(store.objects.digests()) == objects           # deduplicated, still recorded
+    assert len([e for e in store.entries() if e.kind == "preserve"]) == 3
+
+
+def test_preserve_refuses_a_slot_that_changed(tmp_path):
+    _vault, live, store, loc = _steam_locator(tmp_path)
+    with pytest.raises(vstore.PreserveMismatch, match="changed"):
+        loc.preserve([LiveMember(_target(1), "A", "0" * 64)], op_id="op-1", reason="r")
+    assert isinstance(vstore.PreserveMismatch("x"), PreserveFailed)
+    assert store.entries() == []
+    with pytest.raises(PreserveFailed):
+        loc.preserve([LiveMember(_target(9), "A", "0" * 64)], op_id="op-1", reason="r")
+
+
+def test_preserve_of_an_xbox_slot(tmp_path, make_wgs_account):
+    vault = new_vault(tmp_path)
+    acct = wgs_live(make_wgs_account, tmp_path / "live")
+    store = open_vault_store(vault)
+    loc = vstore.StoreLocator(store, live_dir=lambda t: acct)
+    slot1 = msstore.scan(acct).slots[1]
+    vid_b = _sha(slot1.b.data_path.read_bytes())
+    kept = loc.preserve([LiveMember(_target(1, "xbox", acct.name), "B", vid_b)],
+                        op_id="op-1", reason="r")
+    entry = store.entry(kept[0].ref.key)
+    assert entry.id.startswith("preserve-xbox-") and entry.xbox["index_kind"] == "rebuilt"
+    assert [(m.slot, m.member) for m in entry.members] == [(1, "A"), (1, "B")]
+    assert loc.open(vid_b, prefer=kept[0]).meta_plain == slot1.b.meta_path.read_bytes()
+
+
+def test_preserve_rereads_what_it_kept(tmp_path):
+    _vault, live, store, loc = _steam_locator(tmp_path)
+    vid_a = _sha((live / "save.hg").read_bytes())
+
+    def medium_garbles_it(at):
+        if at == "entry.before_replace":
+            path = store.objects.path_for(vid_a)
+            raw = path.read_bytes()
+            path.write_bytes(raw[:-1] + bytes([raw[-1] ^ 1]))
+
+    store._faults = medium_garbles_it
+    with pytest.raises(PreserveFailed, match="damaged"):
+        loc.preserve([LiveMember(_target(1), "A", vid_a)], op_id="op-1", reason="r")
+    assert [(r.path, r.problem) for r in store.damage()] == [("save.hg", "corrupt")]
+
+
+def test_space_needed_for_preserve(tmp_path):
+    _vault, live, store, loc = _steam_locator(tmp_path)
+    vid_a = _sha((live / "save.hg").read_bytes())
+    vid_b = _sha((live / "save2.hg").read_bytes())
+    both = [LiveMember(_target(1), "A", vid_a), LiveMember(_target(1), "B", vid_b)]
+    sizes = (live / "save.hg").stat().st_size + (live / "save2.hg").stat().st_size
+    assert loc.space_needed_for_preserve(both) == sizes + 64 * 1024
+    loc.preserve(both, op_id="op-1", reason="r")
+    assert loc.space_needed_for_preserve(both) == 64 * 1024
+    assert loc.space_needed_for_preserve(both[:1]) == (live / "save2.hg").stat().st_size + 64 * 1024
+    assert loc.space_needed_for_preserve([LiveMember(_target(9), "A", vid_a)]) == 64 * 1024
