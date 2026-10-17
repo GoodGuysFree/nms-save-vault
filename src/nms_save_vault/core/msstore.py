@@ -1163,9 +1163,12 @@ def pair_xgs_states(plan: XboxPairPlan) -> dict[str, str]:
     states = {}
     for ident, pre in plan.pre_xgs.items():
         now = _xgs_hashes(_xgs_identifier_dir(twin, ident))
+        # A file the write leaves as it was (the same data, a new meta) is both pre and post:
+        # only the files that differ between the two tell them apart.
         kinds = {"pre" if n == b else "post" if n == p else "other"
-                 for n, b, p in zip(now, pre or ("", ""), post[ident])}
-        states[ident] = "other" if "other" in kinds else "torn" if len(kinds) > 1 else kinds.pop()
+                 for n, b, p in zip(now, pre or ("", ""), post[ident]) if b != p or n != b}
+        states[ident] = ("other" if "other" in kinds else "torn" if len(kinds) > 1
+                         else kinds.pop() if kinds else "post")
     return states
 
 

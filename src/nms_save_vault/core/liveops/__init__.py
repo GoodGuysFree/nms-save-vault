@@ -44,6 +44,7 @@ from .model import (
 )
 from .context import context_for
 from .errors import SourceUnreadable
+from .execute import execute
 from .opjournal import busy_targets, liveop_lock
 from .planner import eviction_picker, plan_place, plan_promote
 from .targets import resolve_target
@@ -56,6 +57,7 @@ __all__ = [
     "PlacePlan", "Policies", "Position", "Progress", "RecoveryItem", "ResolvedTarget",
     "RollbackError", "SimulatedCrash", "SlotCandidate", "SourceSummary", "TargetError",
     "TargetPlan", "UndoOffer", "VerifyItem", "VersionStore", "Warning", "WriteError",
-    "SourceUnreadable", "busy_targets", "context_for", "eviction_picker", "liveop_lock",
+    "SourceUnreadable", "busy_targets", "context_for", "eviction_picker", "execute",
+    "liveop_lock",
     "plan_place", "plan_promote", "resolve_target",
 ]

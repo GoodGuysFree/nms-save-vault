@@ -29,11 +29,19 @@ from typing import Any
 
 from .. import msstore, platform, safety
 from ..organizer.cache import cache_dir
-from ..organizer.model import LiveTarget, ModelError, is_op_id, target_from_json, target_to_json
+from ..organizer.locator import Location
+from ..organizer.model import (
+    LiveTarget,
+    ModelError,
+    is_op_id,
+    source_from_json,
+    target_from_json,
+    target_to_json,
+)
 from ..organizer.recorder import LIVEOP_TIMEOUT, LiveOpBusy
 from ..organizer.store import liveop_lock_path
 from .context import OpContext
-from .model import MemberWrite
+from .model import MemberWrite, PairSource
 from .steamwrite import FileState, SteamFileWrite, SteamWritePlan, file_names, op_tag
 
 log = logging.getLogger(__name__)
@@ -407,6 +415,39 @@ def file_state_from_json(value: object) -> FileState | None:
 
 def member_write_to_json(mw: MemberWrite) -> dict:
     return mw.to_dict()
+
+
+def location_to_json(loc: Location) -> dict:
+    return {**loc.to_json(), "vid": loc.vid, "plat": loc.platform, "durable": loc.durable}
+
+
+def location_from_json(value: object) -> Location:
+    d = _obj(value)
+    try:
+        ref = source_from_json(d)
+        member = _position(d.get("member"))
+        slot = _uint(d.get("slot"))
+        if not 1 <= slot <= 15 or d.get("plat") not in ("steam", "xbox"):
+            raise JournalError("not a location")
+        return Location(_sha(d.get("vid")), d["kind"], ref, slot, member, d["plat"],
+                        _bool(d.get("durable")))
+    except (ModelError, KeyError) as exc:
+        raise JournalError(f"not a location ({exc})") from None
+
+
+def pair_source_to_json(src: PairSource) -> dict:
+    """What an op writes into a slot, as the journal keeps it (folder_slot never: the
+    classic adapter's folder is no place recovery may read from later)."""
+    return {"vid_a": src.vid_a, "vid_b": src.vid_b, "load": src.load,
+            "prefer": None if src.prefer is None else location_to_json(src.prefer)}
+
+
+def pair_source_from_json(value: object) -> PairSource:
+    d = _obj(value)
+    vids = [None if d.get(k) is None else _sha(d.get(k)) for k in ("vid_a", "vid_b")]
+    load = None if d.get("load") is None else _position(d.get("load"))
+    prefer = None if d.get("prefer") is None else location_from_json(d.get("prefer"))
+    return PairSource(vids[0], vids[1], load, prefer)
 
 
 def member_write_from_json(value: object) -> MemberWrite:
