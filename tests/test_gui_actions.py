@@ -448,27 +448,15 @@ def test_a_history_that_could_not_be_written_is_shown(app, live_target, monkeypa
 # --- step 11: the account data is a choice, unticked by default -------------------------------
 
 
-@pytest.mark.parametrize("ticked", [False, True], ids=["kept", "restored"])
-def test_a_full_restore_offers_the_account_data_and_passes_the_choice(app, live_target, monkeypatch, ticked):
-    from nms_save_vault import gui
-    from nms_save_vault.core import operations as ops
-
+def test_a_whole_folder_restore_opens_the_panic_restore_dialog_for_that_backup(app, live_target,
+                                                                              monkeypatch):
     entry = next(e for e in app.vault.entries if e.kind == "full")
-    offered = {}
-
-    def confirm(master, title, message, check=None):
-        offered["check"] = check
-        return True, ticked
-
-    monkeypatch.setattr(gui, "_confirm", confirm)
-    recorded = {}
-    monkeypatch.setattr(ops, "restore_entry", lambda vault, e, live, **kw: recorded.update(kw))
-    _capture_run(app, monkeypatch)
+    opened = []
+    monkeypatch.setattr(app, "open_panic_restore", lambda e=None: opened.append(e))
 
     app.on_restore({"type": "entry", "entry": entry})
 
-    assert offered["check"] == gui.ACCOUNT_DATA_CHOICE
-    assert recorded["restore_accountdata"] is ticked
+    assert opened == [entry]
 
 
 def test_the_confirm_dialog_starts_unticked(app, monkeypatch):
@@ -938,7 +926,7 @@ def test_the_steps_are_shown_after_offering_to_keep_a_copy(app, live_target, mon
     monkeypatch.setattr(classic, "empty_guide", lambda vault, directory, slot: _guide())
     asked, shown, kept = [], [], {}
     monkeypatch.setattr(gui, "_askyesno", lambda title, msg: asked.append(msg) or True)
-    monkeypatch.setattr(gui, "_showinfo", lambda title, msg: shown.append(msg))
+    monkeypatch.setattr(gui, "StepsWindow", lambda master, **kw: shown.append(kw["guide"]))
     monkeypatch.setattr(classic, "keep_copy",
                         lambda vault, directory, slot: kept.update(slot=slot, directory=str(directory)))
     _capture_run(app, monkeypatch)
@@ -947,7 +935,7 @@ def test_the_steps_are_shown_after_offering_to_keep_a_copy(app, live_target, mon
 
     assert "no copy in the vault" in asked[0]
     assert kept == {"slot": 4, "directory": str(live_target)}
-    assert "1. Close No Man's Sky." in shown[-1] and "never empties a slot" in shown[-1]
+    assert shown[-1].steps[0] == "Close No Man's Sky."
 
 
 def test_a_failed_copy_stops_before_the_steps(app, live_target, monkeypatch):
@@ -973,28 +961,6 @@ def test_a_failed_copy_stops_before_the_steps(app, live_target, monkeypatch):
     assert errors and "the vault is full" in errors[0] and shown == []
 
 
-def test_the_account_data_box_is_not_offered_for_an_xbox_restore(app, live_target, monkeypatch):
-    from nms_save_vault import gui
-    from nms_save_vault.core import savedir
-
-    monkeypatch.setattr(savedir, "platform_of", lambda path: "xbox")
-    asked = {}
-
-    def confirm(master, title, message, check=None):
-        asked.update(check=check, message=message)
-        return False, False
-
-    monkeypatch.setattr(gui, "_confirm", confirm)
-    entry = type("E", (), {"id": "full-1", "kind": "full", "occupied_slots": []})()
-    monkeypatch.setattr(gui, "_extract_slot_number", lambda e: None)
-    monkeypatch.setattr(app, "_selected", lambda: {"type": "entry", "entry": entry})
-    monkeypatch.setattr(app, "_require_live", lambda: True)
-
-    app.on_restore()
-
-    assert asked["check"] is None and "nothing is removed" in asked["message"]
-
-
 def test_declining_the_copy_still_shows_the_steps_and_keeps_nothing(app, live_target, monkeypatch):
     from nms_save_vault import gui
     from nms_save_vault.core.liveops import classic
@@ -1002,13 +968,13 @@ def test_declining_the_copy_still_shows_the_steps_and_keeps_nothing(app, live_ta
     monkeypatch.setattr(classic, "empty_guide", lambda vault, directory, slot: _guide())
     monkeypatch.setattr(gui, "_askyesno", lambda *a, **k: False)
     shown = []
-    monkeypatch.setattr(gui, "_showinfo", lambda title, msg: shown.append(msg))
+    monkeypatch.setattr(gui, "StepsWindow", lambda master, **kw: shown.append(kw["guide"]))
     monkeypatch.setattr(classic, "keep_copy", lambda *a, **k: pytest.fail("must not keep"))
     calls = _capture_run(app, monkeypatch)
 
     app.on_clear({"type": "slot", "dir": str(live_target), "slot": 4, "live": True})
 
-    assert shown and "2. Delete the four files" in shown[-1] and calls == {}
+    assert shown and shown[-1].steps[1] == "Delete the four files of this slot." and calls == {}
 
 
 def test_a_slot_already_in_the_vault_is_not_offered_a_copy(app, live_target, monkeypatch):
@@ -1018,7 +984,7 @@ def test_a_slot_already_in_the_vault_is_not_offered_a_copy(app, live_target, mon
     monkeypatch.setattr(classic, "empty_guide", lambda *a, **k: _guide(durable=True))
     monkeypatch.setattr(gui, "_askyesno", lambda *a, **k: pytest.fail("must not ask"))
     shown = []
-    monkeypatch.setattr(gui, "_showinfo", lambda title, msg: shown.append(msg))
+    monkeypatch.setattr(gui, "StepsWindow", lambda master, **kw: shown.append(kw["guide"]))
     _capture_run(app, monkeypatch)
 
     app.on_clear({"type": "slot", "dir": str(live_target), "slot": 4, "live": True})
@@ -1057,11 +1023,11 @@ def test_the_steps_are_offered_from_the_right_click_menu(app, live_target, monke
     meta = dict(meta, dir=str(live_target))
     monkeypatch.setattr(classic, "empty_guide", lambda *a, **k: _guide(durable=True))
     shown = []
-    monkeypatch.setattr(gui, "_showinfo", lambda title, msg: shown.append((title, msg)))
+    monkeypatch.setattr(gui, "StepsWindow", lambda master, **kw: shown.append('steps window'))
     _capture_run(app, monkeypatch)
 
     assert _invoke_menu_entry(app, app._menu_for_slot, meta, "Empty live slot 4")
-    assert shown and "steps" in shown[0][0]
+    assert shown and shown[0] == "steps window"
 
 
 def test_the_steps_need_a_live_row(app, monkeypatch):

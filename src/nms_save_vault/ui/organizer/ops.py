@@ -169,6 +169,8 @@ class PlanDialog(_Dialog):
 
     def describe(self) -> str:
         """What goes where, from the plan's targets alone."""
+        if self.plan is None:
+            return "Looking at what would change..."
         plan, lines = self.plan, [self.plan.outcome + "."]
         for t in plan.targets:
             gone = [f"'{e.name or 'a save'}' ({play_time(e.play_time) or 'no play time'})"
@@ -186,10 +188,12 @@ class PlanDialog(_Dialog):
             w.destroy()
         self.vars.clear()
         set_label(self.summary, self.describe())
+        if self.plan is None:
+            return
         for w in sorted(self.plan.warnings + self.plan.blocked,
                         key=lambda w: SEVERITY_ORDER[w.severity]):
             self._row(w)
-        set_label(self.apply_button, self.plan.outcome)
+        set_label(self.apply_button, self.plan.outcome if self.plan else "Apply")
         self._recolour()
         self._update()
 
@@ -223,7 +227,7 @@ class PlanDialog(_Dialog):
         self.error.configure(background=p["bg"], foreground=p["danger"])
 
     def _update(self) -> None:
-        ok = (not self.plan.blocked and not self.busy and
+        ok = (self.plan is not None and not self.plan.blocked and not self.busy and
               self.plan.confirmations <= {c for c, v in self.vars.items() if v.get()} and
               all(v.get() for v in self.vars.values()))
         self.apply_button.state(["!disabled"] if ok else ["disabled"])
@@ -247,12 +251,23 @@ class PlanDialog(_Dialog):
         self.bar.configure(value=0, maximum=1)
         set_label(self.status, "Working...")
         self.after(100, self._poll)
-        plan, make_context, box = self.plan, self.make_context, self._box
+        plan, make_context, box, post = self.plan, self.make_context, self._box, self._post()
+
+        def job():
+            ctx = make_context()
+            outcome = execute(ctx, plan, confirmed, lambda p: setattr(box, "progress", p),
+                              note=note)
+            if post is not None and outcome.status == "done":
+                post(ctx, plan, outcome)
+            return outcome
         self.worker.submit(
-            lambda: execute(make_context(), plan, confirmed,
-                            lambda p: setattr(box, "progress", p), note=note),
+            job,
             on_done=finisher(weakref.ref(self), gen, self.on_done, self.on_recover),
             on_error=weak(self._failed, gen))
+
+    def _post(self):
+        """A job to run after a successful execute (a closure over plain data), or None."""
+        return None
 
     def _poll(self) -> None:
         if not self.winfo_exists() or not self.busy:

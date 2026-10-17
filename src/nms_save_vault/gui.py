@@ -21,6 +21,7 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 from . import __version__, theme, updates
 from .core import aliases, catalog, discover, locations, slotmap
 from .core import operations as ops
+from .core import liveops
 from .core.liveops import classic
 from .core import platform as host_platform
 from .core import playtime, savedir
@@ -32,6 +33,8 @@ from .ui.fmt import local_time as _fmt_ts
 from .ui.fmt import play_time as _fmt_play
 from .ui.redact import RedactingTreeview
 from .ui.tooltip import TOOLTIP_STYLE, Tooltip
+from .ui.organizer.ops import OpsLogWindow, PlanDialog, StepsWindow
+from .ui.organizer.panic import PanicDialog
 from .ui.organizer.vaultwin import VaultEnv, VaultWindow, needs_attention
 from .ui.organizer.view import OrganizerView
 from .ui.themeaware import ThemeRegistry
@@ -1158,6 +1161,16 @@ class App(tk.Tk):
             )
         )
 
+    def _backup_entries(self):
+        """The BACKUPS pane's rows: every entry of the vault through D3's one listing
+        (catalog and store, a folded entry once, a live folder never), catalog-shaped."""
+        from .core.store import classic as store_classic
+
+        try:
+            return store_classic.list_entries(self.vault)
+        except Exception:  # noqa: BLE001 - the pane must still show the catalog
+            return list(self.vault.entries)
+
     def _populate_backups(self) -> None:
         """BACKUPS pane: catalog entries, sortable by any column, optionally narrowed to
         the backups holding one save file -- and within each, to the slot(s) holding it."""
@@ -1165,7 +1178,7 @@ class App(tk.Tk):
         tree.delete(*tree.get_children())
         self._meta = {k: v for k, v in self._meta.items() if k[0] != str(tree)}
         shown = self._history_playthrough()
-        for e in self.vault.entries:
+        for e in self._backup_entries():
             only = None
             if shown is not None:
                 only = {slot for folder, slot in shown.locations if folder == str(Path(e.path))}
@@ -1583,6 +1596,10 @@ class App(tk.Tk):
 
         if live:
             menu.add_command(
+                label=f"Undo the last move into live slot {slot}...",
+                command=lambda: self.on_undo_slot(meta["dir"], slot),
+            )
+            menu.add_command(
                 label=f"Replace live slot {slot} with a save from anywhere...",
                 command=lambda: self.on_copy_slot(dest_dir=meta["dir"], dest_slot=slot),
             )
@@ -1758,18 +1775,8 @@ class App(tk.Tk):
             if not _askyesno("Restore", question):
                 return
         else:
-            question = (
-                f"Replace the live saves in {Path(self.live_dir).name} with backup '{entry.id}'?\n\n"
-                f"The backup holds {len(slots)} slot(s): {', '.join(map(str, slots)) or 'none'}.\n"
-                "Live slots the backup lacks are left as they are - nothing is removed.\n"
-                "The live folder keeps its own account data (unlocks, settings) unless you tick the box.\n"
-                "The current state is auto-snapshotted first."
-            )
-            xbox = savedir.platform_of(Path(self.live_dir)) == "xbox"
-            ok, with_account = _confirm(self, "Restore", question,
-                                        check=None if xbox else ACCOUNT_DATA_CHOICE)
-            if not ok:
-                return
+            self.open_panic_restore(entry)      # the whole-folder restore is the panic restore
+            return
         live_dir = self.live_dir
         self._run(
             lambda force: ops.restore_entry(
@@ -1778,6 +1785,25 @@ class App(tk.Tk):
             success="Restored.",
             message="Restoring - please wait...",
         )
+
+    def open_panic_restore(self, entry=None) -> PanicDialog | None:
+        """The whole-folder restore dialog (D5 4.3) for the active live folder, with ``entry``
+        (a backup or snapshot) pre-picked; the dialog names the folder it writes into."""
+        if not self._require_live():
+            return None
+        vault, live_dir = self.vault, Path(self.live_dir)
+        snapshot = (entry.id, f"{entry.label or entry.id}  ({entry.kind}, {entry.created})")             if entry is not None else None
+
+        def done(outcome) -> None:
+            self.status.set(f"Restored {live_dir.name}.")
+            self.last_change.set("Last change: whole folder restored")
+            self.refresh()
+            self.organizer_view.rescan()
+        self.panic_dialog = PanicDialog(
+            self, worker=self.worker, themed=self.themed,
+            open_context=lambda: classic.open_context(vault, live_dir),
+            folder_name=aliases.redact(live_dir.name), snapshot=snapshot, on_done=done)
+        return self.panic_dialog
 
     def on_extract(self, target: dict | None = None) -> None:
         """Lift a slot aside into the vault. Works from a slot row or either save in it."""
@@ -1834,7 +1860,7 @@ class App(tk.Tk):
                 _showerror("Keep a copy", "The copy could not be kept, so no steps are "
                            "shown and nothing was emptied:" + chr(10) + str(kept["error"]))
                 return
-        _showinfo("Empty a slot - steps", classic.guide_text(guide))
+        self.steps_window = StepsWindow(self, themed=self.themed, guide=guide)
 
     def on_copy_slot(self, source=None, dest_dir=None, dest_slot=None, ask: bool = True) -> None:
         """Copy one slot's saves into a live slot.
@@ -2020,6 +2046,35 @@ class App(tk.Tk):
             for e in aliased
         ]
         _showinfo("Discover", _with_warnings("\n\n".join(lines), warns))
+
+    def on_undo_slot(self, directory, slot: int) -> None:
+        """Undo the last move into one live slot: the live operations' own ``plan_undo`` of
+        the last finished op that touched it, confirmed in the plan dialog."""
+        vault, directory = self.vault, Path(directory)
+
+        def job():
+            ctx, ref = classic.open_context(vault, directory)
+            history = liveops.op_history(ctx, ref.target(slot))
+            last = next((s for s in history if s.status == "done"
+                         and s.kind not in ("keep", "undo")), None)
+            return None if last is None else liveops.plan_undo(ctx, last.op_id)
+
+        def planned(plan) -> None:
+            if plan is None:
+                _showinfo("Nothing to undo", f"No move into live slot {slot} can be undone.")
+                return
+            if any(w.code == "UNDO_WOULD_EMPTY" for w in plan.blocked) and plan.targets:
+                self.steps_window = StepsWindow(
+                    self, themed=self.themed,
+                    guide=classic.empty_guide(vault, directory, slot))
+                return
+            self.plan_dialog = PlanDialog(
+                self, worker=self.worker, themed=self.themed,
+                make_context=lambda: classic.open_context(vault, directory)[0], plan=plan,
+                title=f"Undo the last move into live slot {slot}",
+                on_done=lambda o: (self.refresh(), self.organizer_view.rescan()))
+        self.worker.submit(job, on_done=planned, on_error=lambda e: _showerror(
+            "Cannot undo", str(e)))
 
     def on_undo(self, directory=None) -> None:
         """Undo the last change to a live folder: the one whose menu was used, else the
