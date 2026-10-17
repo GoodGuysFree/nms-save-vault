@@ -27,7 +27,7 @@ from .model import EntryRef, LiveTarget
 from .notes import Notes, read_notes
 from .readmodel import FactsProvider, ReadModel
 from .scanner import ScanResult, live_refs, scan, with_live
-from .store import OrganizerStore, liveop_lock_path
+from .store import OrganizerStore, StoreBusy, StoreReadOnly, liveop_lock_path
 
 log = logging.getLogger(__name__)
 
@@ -59,12 +59,15 @@ class Organizer:
         self.clock = clock
         self.vault = Vault(self.vault_root, read_only=read_only)
         self.store = OrganizerStore(self.vault_root, create=False, read_only=read_only, clock=clock)
+        self._host = host
+        self._rekey = False
         if cache is None:
             if machine_cache is False or (machine_cache is None and read_only):
                 cache = ScanCache(None, self.store.vault_id)
             else:
                 path = cache_dir(self.vault_root, self.store.vault_id, host) / FILENAME
                 cache = ScanCache.load(path, self.store.vault_id)
+                self._rekey = self.store.vault_id is None
         self.cache = cache
         self.notes = Notes(self.store, clock)
         self.scan: ScanResult | None = None
@@ -93,6 +96,8 @@ class Organizer:
         self.vault.load()
         running = self.game_running()
         recording = record and not self.store.read_only
+        if recording:
+            self._adopt_vault_id()
         self.scan = scan(self.vault, self.sources, self.cache, game_running=running,
                          deep=deep, now=self.clock, progress=progress, cancel=cancel,
                          look_live=not recording)
@@ -117,6 +122,21 @@ class Organizer:
         self.locator = VaultLocator([FolderLocator(self.scan, self._folders())], None)
         self.request_facts()
         return self.model
+
+    def _adopt_vault_id(self) -> None:
+        """A vault with no store header yet gets one now, and the per-machine scan cache that
+        was keyed by location moves to the vault-id key, so the next launch finds it warm."""
+        if self.store.vault_id is None:
+            try:
+                with self.store.transaction():
+                    pass
+            except (StoreBusy, StoreReadOnly):
+                return
+        if self._rekey and self.store.vault_id is not None:
+            self._rekey = False
+            path = cache_dir(self.vault_root, self.store.vault_id, self._host) / FILENAME
+            self.cache.path, self.cache.vault_id = path, self.store.vault_id
+            self.cache._dirty = True
 
     def request_facts(self) -> None:
         """Ask the content index for what the view shows first (D4 2.10.2): the live members

@@ -44,7 +44,7 @@ def shown(widget: tk.Misc | None, text):
     """``text`` as it may appear on screen: redacted, and Latin-1 only on X11."""
     if not isinstance(text, str):
         return text
-    text = aliases.redact(text)
+    text = aliases.scrub(text)
     if widget is not None and needs_latin1(widget):
         text = _latin1(text)
     return text

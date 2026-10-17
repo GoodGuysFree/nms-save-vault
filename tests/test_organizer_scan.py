@@ -485,3 +485,39 @@ def test_progress_and_cancel(tmp_path):
     stop.set()
     with pytest.raises(scanner.ScanCancelled):
         _scan(vault, [_source(live)], cancel=stop)
+
+
+def test_a_fresh_vault_keeps_one_cache_dir_and_the_second_launch_hashes_nothing(
+        tmp_path, monkeypatch):
+    from nms_save_vault.core import safety
+    from nms_save_vault.core.catalog import Vault
+    from nms_save_vault.core.organizer import Organizer
+    from nms_save_vault.core.platform import Host
+    from nms_save_vault.core.state import Source
+
+    from .conftest import steam_save
+
+    host = Host("windows", tmp_path / "home", {"LOCALAPPDATA": str(tmp_path / "local")})
+    vault = Vault(tmp_path / "vault")
+    vault.ensure()
+    live = tmp_path / "NMS" / "st_76561198000000001"
+    live.mkdir(parents=True)
+    steam_save(live, 1, 0, "Run", 600, 0x1111222233334444, 1_790_000_000, extra="a")
+    sources = [Source(id="steam", platform="steam", account="st_76561198000000001",
+                      path=str(live), label="Steam")]
+
+    def launch() -> Organizer:
+        org = Organizer(vault.root, sources, host=host, game_running=lambda: False)
+        org.refresh(record=True)
+        return org
+
+    first = launch()
+    second_cache_path = None
+    hashed = []
+    real = safety.sha256_bytes
+    monkeypatch.setattr(safety, "sha256_bytes", lambda b: hashed.append(1) or real(b))
+    second = launch()
+    second_cache_path = second.cache.path
+    assert first.cache.path == second_cache_path and "nostore" not in str(second_cache_path)
+    assert second_cache_path.exists()
+    assert hashed == []

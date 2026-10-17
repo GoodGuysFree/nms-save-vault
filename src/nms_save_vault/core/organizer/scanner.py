@@ -171,7 +171,9 @@ def scan(vault: Vault | None, sources: Sequence[Source], cache: ScanCache, *,
     ordered += [(c, (c.observed_at, 0)) for f in live.values() for c in f.captures]
     versions, pairs = _registry(ordered, entry_scans)
     if vault is not None:          # only a full scan knows what is gone
-        cache.prune(run.seen_paths, set(entry_scans))
+        # Live files were not looked at when look_live is off: they are not stale.
+        cache.prune(run.seen_paths, set(entry_scans),
+                    under=None if look_live else vault.root)
     cache.save()
     timings["registry"] = time.perf_counter() - started
     return ScanResult(

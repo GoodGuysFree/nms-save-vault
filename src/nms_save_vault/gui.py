@@ -762,6 +762,9 @@ class App(tk.Tk):
                 _showwarning("Theme", f"Could not save your theme choice:\n{exc}")
 
     def destroy(self) -> None:
+        view = self.__dict__.get("organizer_view")
+        if view is not None and not view.confirm_close():
+            return                       # an unsaved note: the owner chose to keep editing
         worker = self.__dict__.get("worker")   # absent if __init__ failed early (no getattr:
         # Tk forwards unknown attributes to its interpreter, which is not there yet either)
         if worker is not None:

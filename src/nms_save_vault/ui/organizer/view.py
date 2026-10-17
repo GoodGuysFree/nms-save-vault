@@ -17,6 +17,7 @@ import tkinter as tk
 from collections.abc import Callable, MutableMapping
 from tkinter import ttk
 
+from ...core import aliases
 from ...core.organizer import Organizer
 from ...core.organizer.readmodel import BoardSlot, LiveSource, ReadModel
 from ..dpi import px, pxs
@@ -38,12 +39,15 @@ def summary_text(model: ReadModel, organizer: Organizer | None) -> str:
     versions = sum(len(model.versions(line.pid)) for line in lines)
     bits = [f"{len(lines)} save files, {versions} versions"]
     for source in model.live_board().sources:
-        used = sum(1 for s in source.slots if s.state != "empty")
+        used = sum(1 for s in source.slots if s.state in ("occupied", "partial"))
+        unreadable = sum(1 for s in source.slots if s.state == "unreadable")
         risky = sum(1 for s in source.slots if s.state in ("occupied", "partial")
                     and s.vault_copy != "durable")
         part = f"{source.label} {used}/{len(source.slots)} live"
         if risky:
             part += f", {risky} not in vault"
+        if unreadable:
+            part += f", {unreadable} unreadable"
         bits.append(part)
     running = organizer.scan.game_running if organizer and organizer.scan else False
     if running is True:
@@ -68,7 +72,7 @@ def scan_alerts(organizer: Organizer) -> dict[str, str]:
                     f"were. {why}".strip())
     for n, problem in enumerate(organizer.problems):
         out[f"store:{n}"] = f"Organizer: {problem}"
-    return out
+    return {key: aliases.scrub(text) for key, text in out.items()}
 
 
 class OrganizerView(ttk.Frame):
@@ -216,8 +220,16 @@ class OrganizerView(ttk.Frame):
         if bar is not None:
             bar.destroy()
 
+    def confirm_close(self) -> bool:
+        """False when the owner chose to keep editing an unsaved note (the main window's
+        close asks through here)."""
+        window = self.notes_window
+        if window is not None and window.winfo_exists():
+            return window.confirm_close()
+        return True
+
     def _worker_error(self, what: str):
-        return lambda error: self.alert(f"error:{what}", f"{what} failed: {error}")
+        return lambda error: self.alert(f"error:{what}", aliases.scrub(f"{what} failed: {error}"))
 
     # --- the selection hub -------------------------------------------------------------------
 

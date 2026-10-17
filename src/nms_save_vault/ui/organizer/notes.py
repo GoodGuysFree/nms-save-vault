@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import tkinter as tk
 from collections.abc import Callable
-from tkinter import ttk
+from tkinter import messagebox, ttk
 
 from ... import theme
 from ...core.organizer.notes import COMMENT_MAX, LABEL_MAX, NoteConflict, Notes
@@ -60,6 +60,8 @@ class NotesWindow(tk.Toplevel):
         self.head: str | None = None
         self.base_rev: int | None = None
         self.loaded_text = ""
+        self._sent: str | None = None      # the text of the save in flight
+        self.ask = messagebox.askyesnocancel   # Save / Discard / Cancel (tests replace it)
         self.protocol("WM_DELETE_WINDOW", self.close)
         self._build()
         themed.register(self)
@@ -213,15 +215,18 @@ class NotesWindow(tk.Toplevel):
     def dirty(self) -> bool:
         return self.editor.get("1.0", "end-1c") != self.loaded_text
 
-    def _load_note(self) -> None:
+    def _load_note(self, *, keep_text: bool = False) -> None:
+        """Show the stored note; ``keep_text`` leaves the editor alone (text typed while a
+        save was in flight is not the saved text and must not be replaced)."""
         note = self.notes.save_note(self.pid)
         self.loaded_text = note.text if note is not None else ""
         self.base_rev = note.rev if note is not None else None
-        self.editor.configure(state="normal")
-        self.editor.delete("1.0", "end")
-        self.editor.insert("1.0", self.loaded_text)
-        self.editor.edit_reset()
-        self.editor.edit_modified(False)
+        if not keep_text:
+            self.editor.configure(state="normal")
+            self.editor.delete("1.0", "end")
+            self.editor.insert("1.0", self.loaded_text)
+            self.editor.edit_reset()
+            self.editor.edit_modified(False)
         self.conflict.pack_forget()
         if cannot_show(self, self.loaded_text):
             self.editor.configure(state="disabled")
@@ -229,7 +234,11 @@ class NotesWindow(tk.Toplevel):
             set_label(self.status, CANNOT_SHOW)
         else:
             self.save_button.state(["!disabled"])
-            self._status_saved(note)
+            if keep_text:
+                set_label(self.status, f"Saved (revision {self.base_rev}); you kept typing - "
+                                       "not saved yet")
+            else:
+                self._status_saved(note)
         for child in self.revisions.get_children():
             self.revisions.delete(child)
         for rev in reversed(note.history if note is not None else ()):
@@ -272,6 +281,7 @@ class NotesWindow(tk.Toplevel):
         self._submit_note(text, self.base_rev)
 
     def _submit_note(self, text: str, base_rev: int | None) -> None:
+        self._sent = text
         self.save_button.state(["disabled"])
         set_label(self.status, "Saving...")
         self.worker.submit(self.notes.set_save_note, self.pid, text, base_rev=base_rev,
@@ -281,8 +291,9 @@ class NotesWindow(tk.Toplevel):
         self.save_button.state(["!disabled"])
         self.conflict.pack_forget()
         self.loaded_text, self.base_rev = note.text, note.rev
-        self._status_saved(note)
-        self._load_note()
+        typed = self.editor.get("1.0", "end-1c")
+        self._load_note(keep_text=self._sent is not None and typed != self._sent)
+        self._sent = None
         if self.on_saved is not None:
             self.on_saved()
 
@@ -390,8 +401,31 @@ class NotesWindow(tk.Toplevel):
         self.version_save.state(["!disabled"])
         set_label(self.version_status, f"Not saved: {error}")
 
-    def close(self) -> None:
-        if self.dirty():
+    def confirm_close(self) -> bool:
+        """True when the window may go: nothing unsaved, or the owner chose Save (and it
+        was saved) or Discard. Cancel, and a save that failed, keep it open."""
+        if not self.dirty():
+            return True
+        answer = self.ask("Notes", "The note has unsaved changes.\n\nSave them? (Yes = Save, "
+                          "No = Discard, Cancel = keep editing)", parent=self)
+        if answer is None:
             set_label(self.status, "Unsaved changes: Save note or Revert first, then close.")
-            return
-        self.destroy()
+            return False
+        if not answer:
+            return True
+        try:
+            self.notes.set_save_note(self.pid, self.editor.get("1.0", "end-1c"),
+                                     base_rev=self.base_rev)
+        except Exception as exc:  # noqa: BLE001 - a conflict or a write failure keeps it open
+            if isinstance(exc, NoteConflict):
+                self._note_failed(exc)
+            else:
+                set_label(self.status, f"Not saved: {exc}")
+            return False
+        if self.on_saved is not None:
+            self.on_saved()
+        return True
+
+    def close(self) -> None:
+        if self.confirm_close():
+            self.destroy()

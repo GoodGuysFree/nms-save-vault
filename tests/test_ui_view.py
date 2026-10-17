@@ -171,3 +171,32 @@ def test_the_app_has_the_organizer_tab_and_looks_again_on_coming_back(gui_app, m
     finally:
         gui_app.show_view(before)
         gui_app.update()
+
+
+def test_unreadable_slots_are_not_counted_as_live():
+    from types import SimpleNamespace as NS
+
+    def slot(state):
+        return NS(state=state, vault_copy="durable")
+
+    source = NS(label="Steam", slots=[slot("occupied")] * 3 + [slot("unreadable"), slot("empty")])
+    model = NS(lines=lambda: [], versions=lambda pid: [], live_board=lambda: NS(sources=[source]))
+    text = V.summary_text(model, None)
+    assert "Steam 3/5 live, 1 unreadable" in text
+
+
+def test_an_unaliased_account_id_and_the_home_path_never_reach_the_alerts(world, tmp_path,
+                                                                           monkeypatch):
+    from pathlib import Path
+
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path / "someone"))
+    from nms_save_vault.core import aliases
+
+    monkeypatch.setattr(aliases, "_HOME", None)
+    aliases.set_active(aliases.AliasMap({}))
+    path = tmp_path / "someone" / "NMS" / "st_76561198000000042"
+    world.organizer.store.problems.append(f"cannot read {path}: damaged")
+    world.organizer.store.problems.append("account 76561198000000043 is odd")
+    text = " | ".join(V.scan_alerts(world.organizer).values())
+    assert "76561198000000042" not in text and "76561198000000043" not in text
+    assert "someone" not in text and "~" in text and "<steam id>" in text

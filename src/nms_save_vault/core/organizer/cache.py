@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import re
 from pathlib import Path
 from typing import NamedTuple
@@ -143,10 +144,13 @@ class ScanCache:
 
     # --- upkeep ---------------------------------------------------------------
 
-    def prune(self, paths: set[str], entry_ids: set[str]) -> None:
+    def prune(self, paths: set[str], entry_ids: set[str], *, under: Path | None = None) -> None:
         """After a full scan: forget files and entries that were not seen. Ids stay: the id
-        of given bytes never changes."""
-        for key in [k for k in self._files if k not in paths]:
+        of given bytes never changes. ``under`` limits the forgetting to files below that
+        folder (a scan that did not look at the live folders)."""
+        root = str(under) if under is not None else None
+        for key in [k for k in self._files if k not in paths
+                    and (root is None or _below(k, root))]:
             del self._files[key]
             self._dirty = True
         for key in [k for k in self._entries if k not in entry_ids]:
@@ -167,6 +171,10 @@ class ScanCache:
             log.warning("scan cache not saved: %s", exc.strerror)
             return
         self._dirty = False
+
+
+def _below(path: str, root: str) -> bool:
+    return path == root or path.startswith(root.rstrip("\\/") + os.sep)
 
 
 def _file_ok(value: object) -> bool:

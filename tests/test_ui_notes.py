@@ -118,6 +118,7 @@ def test_the_label_stops_at_80_characters_and_the_counter_warns(window):
 
 
 def test_unsaved_text_is_never_dropped(window):
+    window.ask = lambda *a, **k: None                 # Cancel
     _type(window, "half a thought")
     assert window.show(PIDS["other"]) is False and window.pid == PIDS["main"]
     window.close()
@@ -141,3 +142,53 @@ def test_pin_and_unpin_in_the_worker(world, gui_app):
                  lambda: done.append(1), errors.append)
     _wait(gui_app, lambda: done or errors)
     assert not errors and not world.organizer.notes.save_note(PIDS["main"]).pinned
+
+
+def test_text_typed_while_a_save_is_in_flight_is_kept(window, world, gui_app):
+    _type(window, "first draft")
+    window.save_note()
+    _type(window, "first draft, and more")             # typed after Save, before it returned
+    _wait(gui_app, lambda: window._sent is None)
+    assert window.editor.get("1.0", "end-1c") == "first draft, and more"
+    assert window.dirty() and window.loaded_text == "first draft"
+    assert world.organizer.notes.save_note(PIDS["main"]).text == "first draft"
+    assert str(window.save_button.state()).find("disabled") < 0
+
+
+def test_closing_with_an_unsaved_note_asks_save_discard_or_cancel(window, world, gui_app):
+    answers = []
+    window.ask = lambda *a, **k: answers.pop(0)
+    _type(window, "keep me")
+    answers.append(None)                                  # Cancel
+    window.close()
+    assert window.winfo_exists() and window.dirty()
+    answers.append(True)                                  # Save
+    window.close()
+    assert not window.winfo_exists()
+    assert world.organizer.notes.save_note(PIDS["main"]).text == "keep me"
+
+
+def test_discarding_closes_without_saving(window, world):
+    window.ask = lambda *a, **k: False
+    _type(window, "throw away")
+    window.close()
+    assert not window.winfo_exists()
+    assert world.organizer.notes.save_note(PIDS["main"]).text != "throw away"
+
+
+def test_closing_the_main_window_asks_about_an_unsaved_note(gui_app, world, window):
+    from nms_save_vault.ui.organizer import view as V
+
+    answers = [None]
+    window.ask = lambda *a, **k: answers.pop(0)
+    _type(window, "unsaved")
+    holder = V.OrganizerView.__new__(V.OrganizerView)
+    holder.notes_window = window
+    gui_app.__dict__["organizer_view"], real = holder, gui_app.organizer_view
+    try:
+        gui_app.destroy()                                 # Cancel: the app stays
+        assert gui_app.winfo_exists() and not answers
+        answers.append(False)
+        assert holder.confirm_close() is True             # Discard: the close goes on
+    finally:
+        gui_app.__dict__["organizer_view"] = real

@@ -32,22 +32,9 @@ FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
 #: The loggers whose records go to the file: the app's own, and Python's warnings.
 LOGGER = "nms_save_vault"
 
-#: A SteamID64 (also inside ``st_<id>`` folder names) and an Xbox account folder name
-#: (``<xuid>_<title id>``), wherever they appear.
-STEAM_ID = re.compile(r"7656119\d{10}")
-XBOX_ACCOUNT = re.compile(r"\b[0-9A-Fa-f]{16}_[0-9A-Fa-f]{32}\b")
-
-
-def _home_pattern(home: Path) -> re.Pattern | None:
-    """The home folder however a message spells it: either slash, any case (where names
-    ignore case another spelling is the same folder; elsewhere redacting one more spelling
-    costs nothing)."""
-    text = str(home).rstrip("\\/")
-    if len(text) < 3:
-        return None
-    parts = [re.escape(p) for p in re.split(r"[\\/]+", text) if p]
-    prefix = "/" if text.startswith("/") else ""
-    return re.compile(prefix + r"[\\/]+".join(parts) + r"(?=[\\/]|$|\W)", re.IGNORECASE)
+STEAM_ID = aliases.STEAM_ID
+XBOX_ACCOUNT = aliases.XBOX_ACCOUNT
+_home_pattern = aliases.home_pattern
 
 
 class RedactingFormatter(logging.Formatter):
@@ -63,11 +50,7 @@ class RedactingFormatter(logging.Formatter):
             text = aliases.redact(text)          # configured names first, readable
         except Exception:  # noqa: BLE001 - a broken alias map must not cost the line
             pass
-        text = STEAM_ID.sub("<steam id>", text)
-        text = XBOX_ACCOUNT.sub("<xbox account>", text)
-        if self._home is not None:
-            text = self._home.sub("~", text)
-        return text
+        return aliases.scrub(text, self._home)
 
 
 class SafeRotatingFileHandler(logging.handlers.RotatingFileHandler):
