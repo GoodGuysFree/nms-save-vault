@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
 import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
@@ -252,18 +253,24 @@ class _Run:
         Steam ``save*.hg`` / ``mf_save*.hg``; Xbox ``containers.index`` and the blob folders."""
         xbox = savedir.platform_of(folder) == "xbox"
         lines = []
-        for path in sorted(folder.rglob("*")):
-            rel = path.relative_to(folder)
-            top = len(rel.parts) == 1
-            if xbox:
-                wanted = not top or rel.name == "containers.index"
-            else:
-                wanted = top and (rel.name.startswith("save") or rel.name.startswith("mf_save"))
-            if not wanted or not path.is_file():
-                continue
-            st = path.stat()
-            lines.append(f"{rel.as_posix()}|{st.st_size}|{st.st_mtime_ns}")
-            self.seen_paths.add(str(path))
+
+        def add(rel: str, entry: os.DirEntry) -> None:
+            st = entry.stat()          # from the directory listing on Windows: no extra call
+            lines.append(f"{rel}|{st.st_size}|{st.st_mtime_ns}")
+            self.seen_paths.add(entry.path)
+
+        # Only the save files are walked: a Steam backup's cache/ thumbnails are not.
+        with os.scandir(folder) as top:
+            for entry in sorted(top, key=lambda e: e.name):
+                if entry.is_file():
+                    if (entry.name == "containers.index" if xbox
+                            else entry.name.startswith(("save", "mf_save"))):
+                        add(entry.name, entry)
+                elif xbox and entry.is_dir():
+                    with os.scandir(entry.path) as blobs:
+                        for blob in sorted(blobs, key=lambda e: e.name):
+                            if blob.is_file():
+                                add(f"{entry.name}/{blob.name}", blob)
         return hashlib.sha256("\n".join(lines).encode("utf-8")).hexdigest()
 
     # --- slots and members ----------------------------------------------------

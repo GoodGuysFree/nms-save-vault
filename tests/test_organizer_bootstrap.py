@@ -288,3 +288,24 @@ def test_a_write_the_hook_recorded_is_not_imported_again(tmp_path):
     repopulates = [r for r in store2.journal_records()
                    if r["t"] == "op" and r["kind"] == "repopulate"]
     assert [r["src"] for r in repopulates] == ["app"]
+
+
+def test_restoring_a_one_slot_extract_whole_emptied_the_other_slots(tmp_path):
+    """Old versions let a one-slot extract be restored as a full backup: the mirror emptied
+    every other slot. The operation says so, so the empty slots that follow are expected
+    and not 'deleted outside the app'."""
+    vault, live = _history(tmp_path)
+    extract = "extract-steam-20260101-133000"
+    folder = vault.extracts_dir / extract
+    _put(folder, 9, "v3")
+    entry = vault.make_entry_from_dir(extract, "extract", extract, folder, managed=True,
+                                      source=ACCOUNT, slots=[9])
+    entry.created = "2026-01-01T13:30:00"
+    vault.upsert(entry)
+    _oplog(vault, "2026-01-01T13:40:00", "restore_full", "", entry_id=extract)
+    _entry(vault, "snapshot", "20260101-134500", "2026-01-01T13:45:00", {9: "v3"})
+    store, report = _run(vault, live)
+    ops = [r for r in store.journal_records() if r["t"] == "op" and r["kind"] == "restore_full"]
+    assert sorted(r["target"]["slot"] for r in ops) == list(range(1, 16))
+    assert next(r for r in ops if r["target"]["slot"] == 3)["pair"] == [None, None]
+    assert "deleted" not in report.events

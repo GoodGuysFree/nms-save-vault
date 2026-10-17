@@ -1322,7 +1322,8 @@ Runs once, automatically, the first time the organizer opens a writable vault (o
    `(xbox )?<source folder name> slot S -> slot D` -> the unique entry whose folder name matches
    (managed: the id; in-place: the folder basename) -> its slot S pair is the placed pair;
    zero or several matches -> unresolved (reported). `clear_slot` -> empty pair. `restore_full`
-   and `undo` -> the entry's / snapshot's 15 slot pairs. `promote_member` -> meta-only.
+   and `undo` -> the entry's / snapshot's 15 slot pairs; a slot the entry does not hold was
+   emptied by the mirror (old versions restored one-slot extracts whole). `promote_member` -> meta-only.
    `full_backup`, `extract_slot`, `import`, `import_vault` -> not live writes. Target folder:
    the unique live source of the op's platform (the oplog records no target; R1 2e E2),
    otherwise unresolved. Times: local naive -> UTC as in 2.5.

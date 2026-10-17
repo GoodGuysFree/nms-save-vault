@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any
 
 from .. import catalog, safety, savedir
+from ..formats import MAX_SAVE_SLOTS
 from ..catalog import CatalogEntry, Vault
 from ..state import Source
 from .cache import ScanCache
@@ -273,8 +274,12 @@ class _Plan:
         entry = self.catalog[entry_id]
         ref = self._target_ref(record, Vault.tag_of(entry.id)
                                or savedir.platform_of(Path(entry.path)))
-        return [(ref.target(c.slot), c.pair, {m.vid: m for m in c.members})
-                for c in scanned.captures]
+        # A full restore mirrored the folder: a slot the entry does not hold (a one-slot
+        # extract restored whole, as old versions allowed) was emptied.
+        held = {c.slot: c for c in scanned.captures}
+        return [(ref.target(slot), held[slot].pair if slot in held else EMPTY_PAIR,
+                 {m.vid: m for m in held[slot].members} if slot in held else {})
+                for slot in range(1, MAX_SAVE_SLOTS + 1)]
 
     def _target_ref(self, record: Mapping[str, Any], platform: str) -> LiveRef:
         """The live folder written: the record's own target when it has one, else the only
