@@ -46,7 +46,8 @@ from .context import context_for
 from .errors import SourceUnreadable
 from .execute import execute
 from .opjournal import busy_targets, liveop_lock
-from .planner import eviction_picker, plan_place, plan_promote
+from .guide import empty_slot_guide
+from .planner import eviction_picker, plan_keep, plan_place, plan_promote, plan_swap
 from .recovery import pending_recovery, resolve_recovery
 from .targets import resolve_target
 
@@ -60,5 +61,6 @@ __all__ = [
     "TargetPlan", "UndoOffer", "VerifyItem", "VersionStore", "Warning", "WriteError",
     "SourceUnreadable", "busy_targets", "context_for", "eviction_picker", "execute",
     "liveop_lock",
-    "pending_recovery", "plan_place", "plan_promote", "resolve_recovery", "resolve_target",
+    "empty_slot_guide", "pending_recovery", "plan_keep", "plan_place", "plan_promote",
+    "plan_swap", "resolve_recovery", "resolve_target",
 ]

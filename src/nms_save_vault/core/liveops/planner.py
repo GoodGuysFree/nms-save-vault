@@ -105,6 +105,8 @@ TEXTS = {
                            "one is used."),
     "SWAP_EMPTY_SIDE": ("block", "{slot} is empty, and the app never empties a slot. Use Move "
                         "to live to put a save into it."),
+    "NOTHING_TO_KEEP": ("block", "{slot} is empty: there is nothing to keep."),
+    "EMPTY_SLOT_MAY_REFILL": ("info", "{refill}"),
 }
 
 
@@ -230,19 +232,19 @@ def _candidate(ctx: OpContext, src: LoadedSource, acct: ResolvedAccount, now: Ac
     label = _slot_label(acct, slot.target.slot)
     kind = classify(src, slot)
     head = slot.head
-    durable = {m.vid: _durable(ctx, m.vid) for m in slot.present}
-    warnings = _slot_warnings(ctx, src, now, slot, kind, label, durable)
+    kept = {m.vid: durable(ctx, m.vid) for m in slot.present}
+    warnings = _slot_warnings(ctx, src, now, slot, kind, label, kept)
     blocked = next((w.code for w in warnings if w.severity == "block"), "")
     line = _line(ctx, head.pid) if head else None
     return SlotCandidate(
         target=slot.target, label=label, state=slot.state,
-        a=_facts(slot.a, durable), b=_facts(slot.b, durable), newer=slot.newer,
+        a=_facts(slot.a, kept), b=_facts(slot.b, kept), newer=slot.newer,
         pid=head.pid if head else None,
         line_name=(line.name if line else head.meta.name) if head else "",
         play_time=head.meta.play_time if head else 0,
         last_played=head.meta.meta_ts if head else 0,
-        durable=bool(slot.present) and all(durable.values()),
-        vault_copy=_vault_copy(slot, durable), pinned=bool(line and line.pinned),
+        durable=bool(slot.present) and all(kept.values()),
+        vault_copy=_vault_copy(slot, kept), pinned=bool(line and line.pinned),
         same_line=kind == "restore_older", suggested=False, suggest_reason="",
         kind=kind, outcome=outcome_text(kind, label, src, slot), warnings=tuple(warnings),
         blocked=blocked)
@@ -273,12 +275,12 @@ def outcome_text(kind: str, label: str, src: LoadedSource, slot: SlotNow) -> str
 
 
 def _slot_warnings(ctx: OpContext, src: LoadedSource, now: AccountNow, slot: SlotNow,
-                   kind: str, label: str, durable: dict) -> list[Warning]:
+                   kind: str, label: str, kept: dict) -> list[Warning]:
     out = []
     head = slot.head
     if kind == "noop":
         out.append(warning("ALREADY_LIVE", slot=label))
-    if any(not d for d in durable.values()):
+    if any(not d for d in kept.values()):
         out.append(warning("NOT_IN_VAULT"))
     if slot.state == "empty":
         out.append(warning("EMPTY_SLOT"))
@@ -405,7 +407,7 @@ def plan_place(ctx: OpContext, source: PairSource, target: LiveTarget) -> PlaceP
     kind = classify(src, slot)
     warnings = _plan_warnings(ctx, src, target.ref, now)
     warnings += _slot_warnings(ctx, src, now, slot, kind, rt.label,
-                               {m.vid: _durable(ctx, m.vid) for m in slot.present})
+                               {m.vid: durable(ctx, m.vid) for m in slot.present})
     if kind == "noop":
         kind = "place"
     return _plan(ctx, kind, [(rt, now, slot, src, source)], warnings,
@@ -440,6 +442,78 @@ def plan_promote(ctx: OpContext, target: LiveTarget, position: Position) -> Plac
     return _plan(ctx, "promote", [(rt, now, slot, src, source)], warnings,
                  f"Make the {'auto-save' if position == 'A' else 'restore point'} load in "
                  f"{rt.label}", source=_summary(src))
+
+
+def plan_swap(ctx: OpContext, first: LiveTarget, second: LiveTarget) -> PlacePlan:
+    """The plan to exchange two occupied slots of one platform (D5 2.4): each slot gets the
+    other's pair in its captured positions, stamped now. A swap with an empty side would
+    vacate a slot, which the app never does (F8): blocked."""
+    if first == second:
+        raise TargetError("BAD_TARGET", "a slot cannot be swapped with itself")
+    rts = [resolve_target(ctx, t) for t in (first, second)]
+    nows = [read_account(ctx, resolve_account(ctx, t.ref)) for t in (first, second)]
+    slots = [now.slots[t.slot] for now, t in zip(nows, (first, second))]
+    sources = [_live_pair(t, s) for t, s in zip((first, second), slots)]
+    if first.platform != second.platform:
+        return _refusal(ctx, rts[0], "swap", warning("CROSS_PLATFORM_GATED"), sources[1])
+    for rt, slot, source in zip(rts, slots, sources):
+        if not slot.present:
+            return _refusal(ctx, rt, "swap", warning("SWAP_EMPTY_SIDE", slot=rt.label), source)
+    try:
+        srcs = [load_source(ctx, s) for s in sources]
+    except SourceUnreadable:
+        return _refusal(ctx, rts[0], "swap", warning("SOURCE_UNREADABLE"), sources[1])
+    warnings = []
+    for rt, now, src in zip(rts, nows, (srcs[1], srcs[0])):
+        warnings += [w for w in _plan_warnings(ctx, src, rt.target.ref, now)
+                     if w.code not in ("LIVE_ELSEWHERE", "OTHER_ACCOUNT")]
+    if not _same_account(first.ref, second.ref):
+        warnings.append(warning("OTHER_ACCOUNT"))
+    for slot in slots:
+        code = {"mixed": "MIXED_SLOT", "partial": "PARTIAL_SLOT"}.get(slot.state)
+        if code:
+            warnings.append(warning(code))
+    parts = [(rts[0], nows[0], slots[0], srcs[1], sources[1]),
+             (rts[1], nows[1], slots[1], srcs[0], sources[0])]
+    return _plan(ctx, "swap", parts, warnings, f"Swap {rts[0].label} and {rts[1].label}",
+                 source=None)
+
+
+def plan_keep(ctx: OpContext, target: LiveTarget) -> PlacePlan:
+    """The plan to copy one live slot into the vault, writing nothing live (D5 2.4.1). The
+    game may run: the store refuses a file that changes while it is read."""
+    rt = resolve_target(ctx, target)
+    now = read_account(ctx, resolve_account(ctx, target.ref))
+    slot = now.slots[target.slot]
+    warnings = [warning("NOT_IN_VAULT") for m in slot.present if not durable(ctx, m.vid)][:1]
+    blocked = [w for w in (vault_problem(ctx),) if w is not None]
+    if not slot.present:
+        blocked.append(warning("NOTHING_TO_KEEP", slot=rt.label))
+    estimate = _estimate(ctx, [], [], 0)
+    try:
+        if shutil.disk_usage(ctx.vault.root).free < sum(m.meta.data_size for m in slot.present) \
+                * SPACE_FACTOR + SPACE_MARGIN:
+            blocked.append(warning("VAULT_SPACE"))
+    except OSError:
+        blocked.append(warning("VAULT_UNAVAILABLE"))
+    evictions = tuple(_eviction(ctx, m) for m in slot.present)
+    head = slot.head.meta.name if slot.head else ""
+    return PlacePlan(
+        plan_id=uuid.uuid4().hex, kind="keep",
+        targets=(TargetPlan(target, rt.label, rt.cloud_mode, slot.state, (), evictions),),
+        source=None, undo_of=None, warnings=tuple(warnings), confirmations=frozenset(),
+        blocked=tuple(_unique(blocked)), outcome=f"Keep '{head or '<unnamed>'}' from {rt.label} "
+        "in the vault", fingerprint=fingerprint([(rt.folder, target.platform, target.slot)], []),
+        estimate=estimate, created_at=ctx.clock())
+
+
+def _live_pair(target: LiveTarget, slot: SlotNow) -> PairSource:
+    """A live slot's own pair as a source: its members in their positions, the loading one
+    loading."""
+    head = slot.newer or "A"
+    vid = (slot.member(head).vid if slot.member(head) else "") or ""
+    return PairSource(slot.pair[0], slot.pair[1], slot.newer,
+                      Location(vid, "live", target.ref, target.slot, head, target.platform, False))
 
 
 def _plan(ctx: OpContext, kind: str, parts, warnings: list[Warning], outcome: str, *,
@@ -547,26 +621,26 @@ def _quota(parts, write_bytes: int) -> Warning | None:
 
 def _eviction(ctx: OpContext, m) -> Eviction:
     return Eviction(m.position, m.vid, m.pid, m.meta.name, m.meta.play_time, m.meta.meta_ts,
-                    _durable(ctx, m.vid))
+                    durable(ctx, m.vid))
 
 
-def _facts(m, durable: dict) -> MemberFacts | None:
+def _facts(m, kept: dict) -> MemberFacts | None:
     if m is None:
         return None
     meta = m.meta
     return MemberFacts(m.vid, m.pid, meta.name, meta.play_time, meta.meta_ts, meta.game_mode,
-                       meta.difficulty, meta.season, meta.data_size, durable.get(m.vid, False),
+                       meta.difficulty, meta.season, meta.data_size, kept.get(m.vid, False),
                        SYNC_NAMES.get(m.sync_state, "") if m.sync_state is not None else "")
 
 
-def _vault_copy(slot: SlotNow, durable: dict) -> str:
+def _vault_copy(slot: SlotNow, kept: dict) -> str:
     if not slot.present:
         return "none"
-    kept = sum(1 for v in durable.values() if v)
-    return "durable" if kept == len(durable) else "partial" if kept else "none"
+    n = sum(1 for v in kept.values() if v)
+    return "durable" if n == len(kept) else "partial" if n else "none"
 
 
-def _durable(ctx: OpContext, vid: str) -> bool:
+def durable(ctx: OpContext, vid: str) -> bool:
     try:
         return bool(ctx.locator.is_durable(vid))
     except Exception:  # noqa: BLE001 - shown as not kept; preserve will keep it first

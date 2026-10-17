@@ -74,6 +74,7 @@ class OpTarget:
     xbox: msstore.XboxPairPlan | None = None
     payload: dict = field(default_factory=dict)
     outside: dict = field(default_factory=dict)
+    excluded: tuple = (frozenset(), frozenset())      # (file names, record dirs) the op writes
 
     @property
     def folder(self) -> Path:
@@ -91,9 +92,10 @@ def execute(ctx: OpContext, plan: PlacePlan, confirmed: Iterable[str] = frozense
     missing = plan.confirmations - confirmed
     if missing:
         raise ConfirmationRequired(missing)
+    run = _keep if plan.kind == "keep" else _run
     try:
         with opjournal.liveop_lock(ctx, timeout=LIVEOP_TIMEOUT):
-            return _run(ctx, plan, confirmed, progress or (lambda p: None), note)
+            return run(ctx, plan, confirmed, progress or (lambda p: None), note)
     except LiveOpBusy:
         return refused(None, "BUSY", "Another operation is still running. Try again in a moment.")
 
@@ -185,6 +187,68 @@ def _run(ctx: OpContext, plan: PlacePlan, confirmed: frozenset[str],
                      undo_offer(plan, wts, op_id), "pending", None)
 
 
+def _keep(ctx: OpContext, plan: PlacePlan, confirmed: frozenset[str],
+          progress: Callable[[Progress], None], note: str) -> OpOutcome:
+    """Keep a copy (D5 2.4.1): one live slot into the vault as an ``extract`` entry; nothing
+    live is written, so the game may run and no op record goes to D1 (its scanner sees the
+    entry)."""
+    gate = vault_problem(ctx)
+    if gate is not None:
+        return refused(None, gate.code, gate.text)
+    (tp,) = plan.targets
+    rt = resolve_target(ctx, tp.target)
+    if fingerprint([(rt.folder, rt.target.platform, rt.target.slot)], []) != plan.fingerprint:
+        return OpOutcome(None, "stale", f"{rt.label} changed since you opened this. Please "
+                         "check again.", (), None, "n/a", None, "STALE",
+                         _replan_keep(ctx, tp.target))
+    op_id = new_op_id(ctx.clock)
+    try:
+        opjournal.append(ctx, op_id, "preparing", {
+            "kind": "keep", "app": ctx.app_version,
+            "targets": [opjournal.target_json(rt.target)], "note": note,
+            "confirmed": sorted(confirmed), "plan_digest": plan.fingerprint})
+    except (OrganizerBusy, StoreReadOnly) as exc:
+        return refused(None, "BUSY", f"The vault is busy. Try again. ({exc})")
+    progress(Progress("preserving", 0, 1))
+    try:
+        entry = ctx.versions.add_from_live(
+            rt.folder, platform=rt.target.platform, account_key=rt.target.account_key,
+            kind="extract", label=f"kept: {rt.label}",
+            scope=CaptureScope(slots=(rt.target.slot,)), op_id=op_id, reason="keep")
+    except (StoreError, OSError) as exc:
+        append_quietly(ctx, op_id, "abandoned", {"reason": "preserve_failed"})
+        return refused(op_id, "PRESERVE_FAILED", f"The save could not be kept in the vault "
+                       f"({exc}). Nothing was changed.")
+    name = next((m.name for m in entry.members if m.slot == rt.target.slot and m.name), "")
+    name = name or "<unnamed>"
+    utc = datetime.fromtimestamp(ctx.clock(), timezone.utc)
+    try:
+        ctx.vault.append_oplog({
+            "ts": utc.astimezone().replace(tzinfo=None).isoformat(timespec="seconds"),
+            "op": "keep", "entry_id": entry.id, "snapshot_id": None,
+            "detail": f"kept '{name}' from {rt.label}", "changed": [],
+            "v": 2, "op_id": op_id, "utc": utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "app": ctx.app_version, "kind": "keep", "status": "done", "undo_of": None,
+            "targets": [{"platform": rt.target.platform, "account_key": rt.target.account_key,
+                         "instance": rt.target.instance, "slot": rt.target.slot,
+                         "entry_id": entry.id}],
+            "confirmed": sorted(confirmed), "note": note, "error": None})
+    except OSError as exc:
+        log.warning("op %s: the oplog line was not written: %s", op_id, exc)
+    opjournal.append(ctx, op_id, "done", {"entry_id": entry.id})
+    return OpOutcome(op_id, "done", f"'{name}' from {rt.label} is in the vault.", (), None,
+                     "n/a", None)
+
+
+def _replan_keep(ctx: OpContext, target: LiveTarget) -> PlacePlan | None:
+    from . import planner
+
+    try:
+        return planner.plan_keep(ctx, target)
+    except LiveOpError:
+        return None
+
+
 def finish(ctx: OpContext, op_id: str, kind: str, undo_of: str | None, wts: list[OpTarget],
            confirmed: Iterable[str], note: str) -> list[Warning]:
     """After a verified write: the oplog line, D1's op records, D1's look at the result,
@@ -232,6 +296,7 @@ def _prepare(ctx: OpContext, plan: PlacePlan, rts: list[ResolvedTarget], op_id: 
     now = int(ctx.clock())
     for wt in wts:
         _prepare_writer(wt, now, tag)
+    set_containment(wts)
     return wts
 
 
@@ -288,8 +353,6 @@ def _prepare_writer(wt: OpTarget, now: int, tag: str) -> None:
             pre = wt.steam.pre.get(name)
             if pre is None or pre.sha256 != m.vid:
                 raise _Abandon("stale", "STALE")
-        names = {n for p in ("A", "B") for n in steamwrite.file_names(slot, p)}
-        wt.outside = outside_files(wt.folder, names, set())
     else:
         records = [msstore.XboxRecordWrite(identifier(slot, pm.write.position),
                                            data[pm.write.vid], pm.meta_disk, pm.write.disk_time)
@@ -303,8 +366,24 @@ def _prepare_writer(wt: OpTarget, now: int, tag: str) -> None:
         wt.payload = {r.identifier: (r.data, r.meta) for r in records}
         if _xbox_vids(wt.folder, slot) != {m.position: m.vid for m in wt.before.present}:
             raise _Abandon("stale", "STALE")
-        dirs = {b.dir_name for b in wt.xbox.blobs}
-        wt.outside = outside_files(wt.folder, {"containers.index"}, dirs)
+
+
+def set_containment(wts: list[OpTarget]) -> None:
+    """What validation compares afterwards: every file of each target folder outside the
+    slots the op writes there (a swap writes two slots of one folder)."""
+    for wt in wts:
+        names, dirs = set(), set()
+        for other in wts:
+            if other.folder != wt.folder:
+                continue
+            if other.steam is not None:
+                names |= {n for p in ("A", "B")
+                          for n in steamwrite.file_names(other.rt.target.slot, p)}
+            else:
+                names.add("containers.index")
+                dirs |= {b.dir_name for b in other.xbox.blobs}
+        wt.excluded = (frozenset(names), frozenset(dirs))
+        wt.outside = outside_files(wt.folder, names, dirs)
 
 
 def identifier(slot: int, position: str) -> str:
@@ -371,10 +450,8 @@ def validate(wt: OpTarget, tag: str) -> None:
         _validate_steam(wt, tag)
     else:
         _validate_xbox(wt)
-    dirs = {b.dir_name for b in wt.xbox.blobs} if wt.xbox is not None else set()
-    names = ({n for p in ("A", "B") for n in steamwrite.file_names(wt.rt.target.slot, p)}
-             if wt.steam is not None else {"containers.index"})
-    if outside_files(wt.folder, names, dirs) != wt.outside:
+    names, dirs = wt.excluded
+    if outside_files(wt.folder, set(names), set(dirs)) != wt.outside:
         raise ValidationError("a file of the folder outside the slot changed")
 
 
@@ -597,6 +674,8 @@ def _stale(ctx: OpContext, plan: PlacePlan, op_id: str | None = None) -> OpOutco
     try:
         if plan.kind == "promote" and tp is not None and tp.source is not None:
             replan = planner.plan_promote(ctx, tp.target, tp.source.load or "A")
+        elif plan.kind == "swap" and len(plan.targets) == 2:
+            replan = planner.plan_swap(ctx, plan.targets[0].target, plan.targets[1].target)
         elif tp is not None and tp.source is not None and len(plan.targets) == 1:
             replan = planner.plan_place(ctx, tp.source, tp.target)
     except LiveOpError as exc:
@@ -621,12 +700,16 @@ def outcome_text(plan: PlacePlan, wts: list[OpTarget]) -> str:
         return f"The {which} of {label} loads now."
     if plan.kind == "restore_older":
         return f"{label} holds this version of '{name}' now. The one it replaced is in the vault."
+    if plan.kind == "swap":
+        return f"Swapped {label} and {wts[1].rt.label}."
     text = f"Moved '{name}' into {label}."
     return text + (f" '{evicted}' is in the vault." if evicted else "")
 
 
 def undo_offer(plan: PlacePlan, wts: list[OpTarget], op_id: str) -> UndoOffer | None:
     wt = wts[0]
+    if plan.kind == "swap":
+        return UndoOffer(op_id, f"Undo: swap {wt.rt.label} and {wts[1].rt.label} back")
     if not wt.before.present:
         return None                       # undoing a fill would empty the slot (F8)
     name = wt.before.head.meta.name if wt.before.head is not None else ""

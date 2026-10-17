@@ -41,7 +41,7 @@ from .execute import (
     finalize,
     finish,
     identifier,
-    outside_files,
+    set_containment,
     record_lineage,
     record_oplog,
     refused,
@@ -302,6 +302,7 @@ def _open(ctx: OpContext, rec: opjournal.OpRecord) -> _Open:
     except (KeyError, TypeError, ValueError, TargetError) as exc:
         log.warning("op %s: its write-ahead record cannot be used: %s", rec.op_id, exc)
         return _Open(rec, targets, states, str(exc))
+    set_containment(targets)          # no baseline was journaled: the folder as it is now
     return _Open(rec, targets, states)
 
 
@@ -324,7 +325,6 @@ def _target(ctx: OpContext, op_id: str, t: dict) -> OpTarget:
                                                   op_id=op_id)
     else:
         wt.xbox = opjournal.xbox_plan_from_json(t["xbox"], rt.folder, slot=target.slot)
-    wt.outside = outside_files(rt.folder, _slot_names(wt), _blob_dirs(wt))
     return wt
 
 
@@ -475,16 +475,6 @@ def _local(utc: str) -> str:
     except ValueError:
         return utc
     return moment.astimezone().replace(tzinfo=None).isoformat(timespec="seconds")
-
-
-def _slot_names(wt: OpTarget) -> set[str]:
-    if wt.steam is None:
-        return {"containers.index"}
-    return {n for p in ("A", "B") for n in steamwrite.file_names(wt.rt.target.slot, p)}
-
-
-def _blob_dirs(wt: OpTarget) -> set[str]:
-    return {b.dir_name for b in wt.xbox.blobs} if wt.xbox is not None else set()
 
 
 def _sha_of(path: Path) -> str | None:
