@@ -24,7 +24,8 @@ from typing import Literal
 from ... import __version__
 from .. import safety
 from .errors import StoreNotUpgraded, StoreTooNew, StoreUnavailable
-from .objects import ObjectStore
+from .manifest import FileEntry
+from .objects import ObjectStore, sha256
 
 log = logging.getLogger(__name__)
 
@@ -164,6 +165,21 @@ class VersionStore:
     @property
     def read_only(self) -> bool:
         return self.read_only_reason is not None
+
+    def store_file(self, path: str, data: bytes, mtime_ns: int) -> FileEntry:
+        """The record of one captured file: kept inline when at most ``inline_max`` bytes, else
+        put as an object (deduplicated and verified)."""
+        digest = sha256(data)
+        if len(data) <= self.inline_max:
+            return FileEntry(path, len(data), digest, mtime_ns, inline=data)
+        self.objects.put(data, digest)
+        return FileEntry(path, len(data), digest, mtime_ns)
+
+    def file_bytes(self, fe: FileEntry) -> bytes:
+        """A file's bytes, verified against its record."""
+        if fe.inline is not None:
+            return fe.inline
+        return self.objects.get(fe.sha256, fe.size)
 
     @classmethod
     def open(cls, vault_root: str | Path, *, lock: Callable[[], AbstractContextManager],

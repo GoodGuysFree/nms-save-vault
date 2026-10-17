@@ -12,6 +12,7 @@ from .errors import (
     StoreTooNew,
     StoreUnavailable,
 )
+from .manifest import EntryKind, FileEntry, MemberRecord, StoreEntry
 from .objects import ObjectStore, PutResult
 from .versionstore import (
     INLINE_MAX,
