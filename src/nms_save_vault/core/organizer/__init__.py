@@ -25,7 +25,7 @@ from .lineage import read_lineage
 from .locator import VaultLocator
 from .model import EntryRef, LiveTarget
 from .notes import Notes, read_notes
-from .readmodel import ReadModel
+from .readmodel import FactsProvider, ReadModel
 from .scanner import ScanResult, live_refs, scan, with_live
 from .store import OrganizerStore, liveop_lock_path
 
@@ -47,8 +47,11 @@ class Organizer:
                  cache: ScanCache | None = None, machine_cache: bool | None = None,
                  game_running: Callable[[], bool | None] = safety.is_game_running,
                  busy_targets: Callable[[], frozenset[LiveTarget]] = frozenset,
-                 clock: Callable[[], float] = time.time, host: Host | None = None) -> None:
+                 clock: Callable[[], float] = time.time, host: Host | None = None,
+                 facts: FactsProvider | None = None) -> None:
         self.vault_root = Path(vault_root)
+        self.facts = facts                  # D4's content index, when it runs (phase 3)
+        self._facts_seen: set | None = None
         self.sources = list(sources)
         self.read_only = read_only
         self.game_running = game_running
@@ -106,9 +109,36 @@ class Organizer:
                         for ref, folder in self.scan.live.items() for c in folder.captures))
         journal = Journal(self.store, self.scan.versions)
         self.model = ReadModel.build(self.scan, journal.replay(), read_lineage(self.store),
-                                     read_notes(self.store), self.sources, now=int(self.clock()))
+                                     read_notes(self.store), self.sources, now=int(self.clock()),
+                                     facts=self.facts)
         self.locator = VaultLocator([FolderLocator(self.scan, self._folders())], None)
+        self.request_facts()
         return self.model
+
+    def request_facts(self) -> None:
+        """Ask the content index for what the view shows first (D4 2.10.2): the live members
+        at LIVE, each save file's representative and branch tips at TIP; then, on the first
+        refresh of the session, every other version at BACKFILL, and afterwards the versions
+        first seen since the last refresh at NEW. Queueing only: nothing waits."""
+        if self.facts is None or self.scan is None or self.model is None:
+            return
+        from ..index.pool import Priority
+
+        known = set(self.scan.versions)
+        live = [m.vid for f in self.scan.live.values() for c in f.captures for m in c.members
+                if m.vid in known]
+        lines = self.model.lines()
+        tips = [line.representative for line in lines]
+        tips += [r.head for line in lines for r in self.model.versions(line.pid) if "tip" in r.flags]
+        tips = [v for v in dict.fromkeys(tips) if v in known]
+        self.facts.request(live, Priority.LIVE)
+        self.facts.request(tips, Priority.TIP)
+        asked = set(live) | set(tips)
+        if self._facts_seen is None:
+            self.facts.request(sorted(known - asked), Priority.BACKFILL)
+        else:
+            self.facts.request(sorted(known - self._facts_seen - asked), Priority.NEW)
+        self._facts_seen = (self._facts_seen or set()) | known
 
     def bootstrap(self, *, dry_run: bool = False,
                   progress: Callable[[int, int], None] | None = None,

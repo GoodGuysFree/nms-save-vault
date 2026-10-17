@@ -1,0 +1,397 @@
+{
+ "container": {
+  "chunks": 1,
+  "decompressed_bytes": 11876,
+  "decompressed_sha256": "2d53f00a3f576708b0f91bb77f1d92f2e8da709c5123e7b4e4bdab55f974d7d5",
+  "json_bytes": 11875,
+  "kind": "chunked"
+ },
+ "contexts": {
+  "base": {
+   "archived_ships": [
+    {
+     "inv_class": "A",
+     "name": "Old Synth",
+     "ship_class": "Hauler"
+    }
+   ],
+   "bases": {
+    "external_cached": 1,
+    "orphan_corvette_layouts": 1,
+    "own": [
+     {
+      "address": "0x0000000900000123",
+      "galaxy": 9,
+      "id": "HomePlanetBa:f4acaa7aa4d1",
+      "layout": "15e597e35b7bf0d8",
+      "legacy_freighter": 0,
+      "legacy_structures": 4,
+      "name": "Synth Home",
+      "orig_version": 8,
+      "parts": 5,
+      "type": "HomePlanetBase"
+     },
+     {
+      "address": "0x0000000900000123",
+      "galaxy": 9,
+      "id": "HomePlanetBa:e901a7d6ee86",
+      "layout": "cc0be0ac7d14fcf5",
+      "legacy_freighter": 0,
+      "legacy_structures": 0,
+      "name": "Synth Outpost",
+      "orig_version": 8,
+      "parts": 2,
+      "type": "HomePlanetBase"
+     },
+     {
+      "address": "0x0000001400000777",
+      "galaxy": 20,
+      "id": "HomePlanetBa:f58191fe843c",
+      "layout": "9a18cc0ccc2aac48",
+      "legacy_freighter": 0,
+      "legacy_structures": 0,
+      "name": "Far Synth",
+      "orig_version": 8,
+      "parts": 1,
+      "type": "HomePlanetBase"
+     },
+     {
+      "address": "0x0000000900000555",
+      "galaxy": 9,
+      "id": "freighter",
+      "layout": "f7a6ea4b337ed765",
+      "legacy_freighter": 2,
+      "legacy_structures": 0,
+      "name": "Freighter",
+      "orig_version": 8,
+      "parts": 3,
+      "type": "FreighterBase"
+     },
+     {
+      "address": "0x0000000000000000",
+      "galaxy": 0,
+      "id": "corvette:2",
+      "layout": "61b2fc806d4b41ea",
+      "legacy_freighter": 0,
+      "legacy_structures": 0,
+      "name": "Big Synth",
+      "orig_version": 8,
+      "parts": 2,
+      "type": "PlayerShipBase"
+     }
+    ],
+    "ptk": [
+     "ST"
+    ],
+    "unknown_types": {}
+   },
+   "companions": [
+    {
+     "biome": "Lush",
+     "creature": "FLYINGLIZARD",
+     "name": "Biscuit",
+     "seed": "0x0000000000000010",
+     "slot": 0
+    },
+    {
+     "biome": "Toxic",
+     "creature": "QUAD_PET",
+     "name": "",
+     "seed": "0x0000000000000011",
+     "slot": 2
+    }
+   ],
+   "difficulty": {
+    "crafting_free": false,
+    "death": "ItemGrave",
+    "easiest": "Creative",
+    "hardest": "Normal",
+    "locked": false,
+    "preset": "Normal"
+   },
+   "eggs": 1,
+   "exocraft_bays": [
+    "GARAGE_M",
+    "SUMMON_GARAGE"
+   ],
+   "freighter": {
+    "cls": "S",
+    "has": true,
+    "model": "CAPITALFREIGHTER",
+    "name": "Synth Hauler"
+   },
+   "frigates": 2,
+   "galaxy": 9,
+   "game_mode": 1,
+   "glyphs": 16,
+   "inventories": {
+    "exosuit": {
+     "capacity": 32,
+     "digest": "a9d480acd043",
+     "slots": 3
+    },
+    "freighter": {
+     "capacity": 10,
+     "digest": "ebb13442ce10",
+     "slots": 1
+    },
+    "multitool:0": {
+     "capacity": 10,
+     "digest": "4f80dc4600ee",
+     "slots": 1
+    },
+    "ship:0": {
+     "capacity": 12,
+     "digest": "299b302e8a2b",
+     "slots": 2
+    },
+    "ship:2": {
+     "capacity": 10,
+     "digest": "5f3e503dc444",
+     "slots": 1
+    },
+    "storage": {
+     "capacity": 10,
+     "digest": "010715d6df44",
+     "slots": 1
+    },
+    "vehicles": {
+     "capacity": 20,
+     "digest": "44be7ee08b37",
+     "slots": 1
+    }
+   },
+   "known_products": 7,
+   "known_tech": 2,
+   "legacy_known": {
+    "freighter": 2,
+    "structures": 3
+   },
+   "missions": {
+    "current": "ACT1_STEP5",
+    "progress": {
+     "ACT1_STEP1": 6,
+     "ACT1_STEP5": 2,
+     "ATLAS_PATH1": 1,
+     "EPILOGUE_NEWGAL": 0
+    },
+    "version": 40
+   },
+   "multitools": [
+    {
+     "cls": "S",
+     "model": "STAFF",
+     "name": "Synth Staff"
+    }
+   ],
+   "nanites": 2500,
+   "nexus": true,
+   "pet_slots": 3,
+   "quicksilver": 1500,
+   "settlements": {
+    "claimed": 1,
+    "names": [
+     "Synth Haven"
+    ]
+   },
+   "ships": [
+    {
+     "cls": null,
+     "model_path": "MODELS/COMMON/SPACECRAFT/FIGHTERS/FIGHTER_PROC.SCENE.MBIN",
+     "name": "Synth Runner",
+     "primary": true,
+     "seed": "0x0000000000ABCDEF",
+     "slot": 0
+    },
+    {
+     "cls": null,
+     "model_path": "MODELS/COMMON/SPACECRAFT/BIGGS/BIGGS.SCENE.MBIN",
+     "name": "Big Synth",
+     "primary": false,
+     "seed": "0x0000000000000042",
+     "slot": 2
+    }
+   ],
+   "stats": {
+    "ATLAS_PATH": 0,
+    "DEATHS": 3,
+    "DISC_SYSTEMS": 12,
+    "MONEY": 1000000,
+    "TIME": 7200.5
+   },
+   "summary": "On Planet (Synthia)",
+   "teleporters": 3,
+   "timestamp": 1790000000,
+   "title": "T_SYNTH",
+   "units": 4294967295,
+   "words": {
+    "atlas": 1,
+    "autophage": 1,
+    "gek": 2,
+    "korvax": 1,
+    "vykeen": 1
+   }
+  },
+  "expedition": {
+   "archived_ships": [
+    {
+     "inv_class": "A",
+     "name": "Old Synth",
+     "ship_class": "Hauler"
+    }
+   ],
+   "bases": {
+    "external_cached": 0,
+    "orphan_corvette_layouts": 0,
+    "own": [],
+    "ptk": [],
+    "unknown_types": {}
+   },
+   "companions": [],
+   "difficulty": {
+    "crafting_free": false,
+    "death": "ItemGrave",
+    "easiest": "Creative",
+    "hardest": "Normal",
+    "locked": false,
+    "preset": "Normal"
+   },
+   "eggs": 1,
+   "exocraft_bays": [
+    "GARAGE_M",
+    "SUMMON_GARAGE"
+   ],
+   "freighter": {
+    "cls": "S",
+    "has": true,
+    "model": "CAPITALFREIGHTER",
+    "name": "Synth Hauler"
+   },
+   "frigates": 0,
+   "galaxy": 0,
+   "game_mode": 6,
+   "glyphs": 2,
+   "inventories": {
+    "exosuit": {
+     "capacity": 32,
+     "digest": "a9d480acd043",
+     "slots": 3
+    },
+    "freighter": {
+     "capacity": 10,
+     "digest": "ebb13442ce10",
+     "slots": 1
+    },
+    "multitool:0": {
+     "capacity": 10,
+     "digest": "4f80dc4600ee",
+     "slots": 1
+    },
+    "storage": {
+     "capacity": 10,
+     "digest": "010715d6df44",
+     "slots": 1
+    },
+    "vehicles": {
+     "capacity": 20,
+     "digest": "44be7ee08b37",
+     "slots": 1
+    }
+   },
+   "known_products": 7,
+   "known_tech": 2,
+   "legacy_known": {
+    "freighter": 2,
+    "structures": 3
+   },
+   "missions": {
+    "current": "ACT1_STEP5",
+    "progress": {},
+    "version": 40
+   },
+   "multitools": [
+    {
+     "cls": "S",
+     "model": "STAFF",
+     "name": "Synth Staff"
+    }
+   ],
+   "nanites": 2500,
+   "nexus": true,
+   "pet_slots": 3,
+   "quicksilver": 200,
+   "settlements": {
+    "claimed": 1,
+    "names": [
+     "Synth Haven"
+    ]
+   },
+   "ships": [],
+   "stats": {
+    "ATLAS_PATH": 0,
+    "DEATHS": 3,
+    "DISC_SYSTEMS": 12,
+    "MONEY": 1000000,
+    "TIME": 7200.5
+   },
+   "summary": "On Planet (Synthia)",
+   "teleporters": 3,
+   "timestamp": 1790000000,
+   "title": "T_SYNTH",
+   "units": 12345,
+   "words": {
+    "atlas": 1,
+    "autophage": 1,
+    "gek": 2,
+    "korvax": 1,
+    "vykeen": 1
+   }
+  }
+ },
+ "errors": [],
+ "extractor": 1,
+ "primary": "base",
+ "save": {
+  "active_context": "Season",
+  "discoveries": {
+   "by_type": {
+    "Animal": 1,
+    "Planet": 2,
+    "SolarSystem": 1
+   },
+   "total": 4
+  },
+  "json_version": 4720,
+  "layout": "context",
+  "pid_in_data": "0x5EED00000000000B",
+  "play_time_s": 50000,
+  "save_name": "Synth Expedition",
+  "season": {
+   "display": 22,
+   "final_reward": false,
+   "id": 46,
+   "milestones": [
+    [
+     1.0,
+     1.0,
+     false
+    ],
+    [
+     40.0,
+     150.0,
+     false
+    ],
+    [
+     3.0,
+     3.0,
+     true
+    ]
+   ],
+   "name_key": "UI_SEASON_22_NAME",
+   "number": 46,
+   "special_rewards": 1
+  }
+ },
+ "schema": 1,
+ "status": "ok"
+}

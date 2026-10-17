@@ -26,6 +26,7 @@ Examples:
     nmsvault pin S9 [--off]
     nmsvault scan                             # record what the live slots hold now
     nmsvault organizer bootstrap [--dry-run]  # read in the history of an existing vault
+    nmsvault index status | build | show <version> | changes <version>
 """
 from __future__ import annotations
 
@@ -877,6 +878,9 @@ def build_parser() -> argparse.ArgumentParser:
     b = org_sub.add_parser("bootstrap", help="read in the history of an existing vault")
     b.add_argument("--dry-run", action="store_true", help="compute and report; write nothing")
     b.set_defaults(func=cmd_organizer_bootstrap)
+
+    from . import index_cli
+    index_cli.add_arguments(sub.add_parser("index", help="the content index: facts read from every save version"))
     return p
 
 
