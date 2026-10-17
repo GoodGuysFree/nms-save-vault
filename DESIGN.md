@@ -75,6 +75,7 @@ src/nms_save_vault/
     aliases.py    account-id -> display-name filter (accounts.ini); display only
     organizer/    save-file organizer (docs/organizer/designs/D1-core-model.md)
       model.py    ids, value types and their JSON codecs (pure)
+      store.py    <vault>/organizer/: header, documents, journal, store lock, read-only mode
   theme.py        light/dark/system palettes + ttk restyling (front-end)
   updates.py      opt-in GitHub release check + in-place self-update (the only network access)
   cli.py          argparse front end
