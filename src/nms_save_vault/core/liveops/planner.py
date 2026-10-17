@@ -22,7 +22,7 @@ from ..organizer.locator import LiveMember, Location
 from ..organizer.model import LiveRef, LiveTarget
 from ..store import CaptureScope, vault_mode
 from ..store import capture as store_capture
-from . import opjournal, pairmeta
+from . import opjournal, pairmeta, steamcloud
 from .context import OpContext
 from .errors import SourceUnreadable, TargetError
 from .model import (
@@ -43,6 +43,7 @@ from .model import (
 )
 from .slots import AccountNow, SlotNow, read_account, slot_fingerprint
 from .source import LoadedSource, load_source
+from .steamwrite import file_names
 from .targets import (
     ResolvedAccount,
     account_label,
@@ -306,7 +307,7 @@ def _slot_warnings(ctx: OpContext, src: LoadedSource, now: AccountNow, slot: Slo
                   "unreadable": "UNREADABLE_MEMBER"}.get(slot.state)
     if state_code:
         out.append(warning(state_code))
-    if any(m.sync_state in SYNC_PENDING for m in slot.present):
+    if any(m.sync_state in SYNC_PENDING for m in slot.present) or _steam_pending(ctx, now, slot):
         out.append(warning("PENDING_UPLOAD"))
     if head is not None and head.meta.game_mode == EXPEDITION_MODE:
         out.append(warning("EXPEDITION_ACTIVE"))
@@ -316,6 +317,16 @@ def _slot_warnings(ctx: OpContext, src: LoadedSource, now: AccountNow, slot: Slo
         twin_label = _slot_label(now.account, twins[0].target.slot)
         out.append(warning("TWIN_LIVE", twin=twin_label, slot_number=twins[0].target.slot))
     return out
+
+
+def _steam_pending(ctx: OpContext, now: AccountNow, slot: SlotNow) -> bool:
+    """Steam Cloud account whose remotecache.vdf says this slot's files are not uploaded
+    (D5 2.12.2); False when the manifest is not found."""
+    if now.account.cloud_mode != "steam-cloud" or not slot.present:
+        return False
+    manifest = steamcloud.account_manifest(ctx.host, now.account.account.account_key)
+    names = [n for m in slot.present for n in file_names(slot.target.slot, m.position)]
+    return steamcloud.upload_state(manifest, now.account.folder, names) == "pending"
 
 
 def _plan_warnings(ctx: OpContext, src: LoadedSource, account: LiveRef,
@@ -461,7 +472,7 @@ def plan_promote(ctx: OpContext, target: LiveTarget, position: Position) -> Plac
                 if w.code not in ("OTHER_ACCOUNT", "LIVE_ELSEWHERE")]
     if slot.state == "mixed":
         warnings.append(warning("MIXED_SLOT"))
-    if any(m.sync_state in SYNC_PENDING for m in slot.present):
+    if any(m.sync_state in SYNC_PENDING for m in slot.present) or _steam_pending(ctx, now, slot):
         warnings.append(warning("PENDING_UPLOAD"))
     return _plan(ctx, "promote", [(rt, now, slot, src, source)], warnings,
                  f"Make the {'auto-save' if position == 'A' else 'restore point'} load in "
