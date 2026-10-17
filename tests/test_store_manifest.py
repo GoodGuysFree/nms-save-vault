@@ -136,6 +136,21 @@ def test_new_refuses_inconsistent_entries():
         _entry(xbox={"index": "containers.index", "index_kind": "verbatim"})
 
 
+@pytest.mark.parametrize("bad", [
+    dict(id="../escape"), dict(id="x" * 129), dict(kind="trash"),
+    dict(files=[FileEntry("../save.hg", 1, _sha(b"x"), 0, inline=b"x")], members=[], account={}),
+    dict(files=[FileEntry("C:/save.hg", 1, _sha(b"x"), 0, inline=b"x")], members=[], account={}),
+])
+def test_new_never_builds_an_entry_the_loader_refuses(bad):
+    with pytest.raises(vstore.EntryCorrupt):
+        _entry(**bad)
+
+
+def test_notes_round_trip():
+    entry = _entry(notes=["slot 4A: save7.hg kept without its partner"])
+    assert StoreEntry.from_bytes(entry.to_bytes()).notes == entry.notes
+
+
 def test_inline_threshold(tmp_path):
     store = open_vault_store(new_vault(tmp_path))
     small, big = b"s" * 8192, b"b" * 8193

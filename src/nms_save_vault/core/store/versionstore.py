@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from ... import __version__
-from .. import catalog, safety, savedir
+from .. import catalog, discover, safety, savedir
 from ..organizer.model import Platform
 from . import capture
 from .capture import CaptureScope
@@ -40,8 +40,8 @@ from .errors import (
     StoreTooNew,
     StoreUnavailable,
 )
-from .manifest import ENTRY_KINDS, EntryKind, FileEntry, StoreEntry, is_entry_id
-from .materialize import MaterializeResult, check_destination, select_files, write_entry
+from .manifest import ENTRY_KINDS, MAX_ENTRY_ID, EntryKind, FileEntry, StoreEntry, is_entry_id
+from .materialize import MaterializeResult, check_destination, files_to_write, write_entry
 from .objects import ObjectStore, sha256
 
 log = logging.getLogger(__name__)
@@ -146,8 +146,12 @@ def create_store(vault_root: str | Path, *, clock: Callable[[], datetime] = utc_
     root = store_root(vault_root)
     if (root / FORMAT_NAME).exists():
         raise StoreUnavailable("The vault already has a version store.")
+    created = not root.is_dir()
     for name in (OBJECTS, ENTRIES, QUARANTINE, TMP, STATE):
         (root / name).mkdir(parents=True, exist_ok=True)
+    safety.fsync_dir(root)                    # the folders exist before FORMAT says so
+    if created:
+        safety.fsync_dir(Path(vault_root))
     fmt = StoreFormat(STORE_VERSION, STORE_VERSION, STORE_VERSION, uuid.uuid4().hex, HASH_NAME,
                       FANOUT, INLINE_MAX, iso_utc(clock()))
     safety.atomic_write_bytes(root / FORMAT_NAME, fmt.to_bytes(), temp_prefix=".FORMAT.tmp_")
@@ -163,7 +167,7 @@ class VersionStore:
 
     def __init__(self, vault_root: Path, fmt: StoreFormat, *,
                  lock: Callable[[], AbstractContextManager], app_version: str,
-                 clock: Callable[[], datetime], live_roots: Sequence[Path],
+                 clock: Callable[[], datetime], live_roots: Sequence[Path] | None,
                  faults: FaultHook | None) -> None:
         self.vault_root = vault_root
         self.root = store_root(vault_root)
@@ -172,7 +176,8 @@ class VersionStore:
         self.inline_max = fmt.inline_max
         self.app_version = app_version
         self.clock = clock
-        self.live_roots = tuple(Path(p) for p in live_roots)
+        # None: discover the live folders on this machine whenever they are needed.
+        self._live_roots = None if live_roots is None else tuple(Path(p) for p in live_roots)
         self.read_only_reason: ReadOnlyReason | None = None
         self.warnings: list[str] = []
         self._lock = lock
@@ -235,7 +240,7 @@ class VersionStore:
         """Write an entry (or some of its slots) into ``dest``, an empty or absent folder outside
         the store and the live save folders; every file is verified after writing."""
         dest = Path(dest)
-        check_destination(dest, refuse_inside=(self.root, *self.live_roots))
+        check_destination(dest, refuse_inside=(self.root,), live=self.live_folders())
         return self._materialize(entry_id, dest, slots=slots, account_files=account_files,
                                  cache=cache, keep_mtimes=keep_mtimes)
 
@@ -243,18 +248,25 @@ class VersionStore:
     def materialized(self, entry_id: str, *, slots: Iterable[int] | None = None,
                      account_files: bool = True, cache: bool = True) -> Iterator[Path]:
         """A verified temporary folder holding the entry, on the store's volume; removed on
-        exit, also after an error. For reading only."""
+        exit, also after an error. For reading only. A lock on ``<folder>.lock`` is held for
+        as long as the folder is in use, so no other process's sweep removes it."""
         dest = self.root / TMP / f"mat-{entry_id}-{secrets.token_hex(4)}"
+        lock_file = _mat_lock(dest)
         try:
-            self._materialize(entry_id, dest, slots=slots, account_files=account_files,
-                              cache=cache, keep_mtimes=True)
-            yield dest
-        finally:
-            if dest.exists():
+            with safety.exclusive_lock(lock_file, timeout=0):
                 try:
-                    shutil.rmtree(dest)
-                except OSError as exc:
-                    log.warning("could not remove the temporary folder %s: %s", dest.name, exc)
+                    self._materialize(entry_id, dest, slots=slots, account_files=account_files,
+                                      cache=cache, keep_mtimes=True)
+                    yield dest
+                finally:
+                    if dest.exists():
+                        try:
+                            shutil.rmtree(dest)
+                        except OSError as exc:
+                            log.warning("could not remove the temporary folder %s: %s",
+                                        dest.name, exc)
+        finally:
+            _unlink_quietly(lock_file)
 
     def export_entry(self, entry_id: str, dest: str | Path, *, slots: Iterable[int] | None = None,
                      account_files: bool = True, cache: bool = True,
@@ -262,15 +274,23 @@ class VersionStore:
         """Materialize to a folder outside the vault (and the live save folders), for other
         tools or another machine."""
         dest = Path(dest)
-        check_destination(dest, refuse_inside=(self.vault_root, *self.live_roots))
+        check_destination(dest, refuse_inside=(self.vault_root,), live=self.live_folders())
         return self._materialize(entry_id, dest, slots=slots, account_files=account_files,
                                  cache=cache, keep_mtimes=keep_mtimes)
 
     def _materialize(self, entry_id: str, dest: Path, *, slots: Iterable[int] | None,
                      account_files: bool, cache: bool, keep_mtimes: bool) -> MaterializeResult:
         entry = self.entry(entry_id)
-        files = select_files(entry, slots=slots, account_files=account_files, cache=cache)
+        if slots is not None:
+            slots = tuple(slots)
+        files = files_to_write(self, entry, slots=slots, account_files=account_files, cache=cache)
         return write_entry(self, entry, files, dest, keep_mtimes=keep_mtimes)
+
+    def live_folders(self) -> discover.LiveFolders:
+        """The live save folders (with their xgs twins) nothing may be written into: the ones
+        given at open, else the ones discovered on this machine."""
+        roots = self._live_roots if self._live_roots is not None else discover.all_live_paths(None)
+        return discover.live_folders(roots)
 
     @property
     def corrupt_manifests(self) -> dict[str, str]:
@@ -350,26 +370,34 @@ class VersionStore:
         records: dict[str, FileEntry] = {}
         stats = {}
         total = len(plan.files) + len(plan.made)
-        for done, (rel, path) in enumerate(plan.files, start=1):
-            data, st = capture.read_stable(path, rel)
-            records[rel] = self.store_file(rel, data, st.st_mtime_ns)
-            if capture.wants_stats(platform, rel):
+        done = 0
+        sources = [(rel, path, None) for rel, path in plan.files]
+        made = [(rel, None, item) for rel, item in plan.made.items()]
+        for rel, path, item in sources + made:
+            if path is not None:
+                data, st = capture.read_stable(path, rel)
+                mtime_ns = st.st_mtime_ns
+            else:
+                data, mtime_ns = item
+            records[rel] = self.store_file(rel, data, mtime_ns)
+            if path is not None and capture.wants_stats(platform, rel):
                 stats[rel] = capture.stats_of(data)
             del data
+            done += 1
             if progress is not None:
                 progress(done, total)
             if cancel is not None and cancel():
                 raise Cancelled("Cancelled. Nothing was kept.")
-        for rel, (data, mtime_ns) in plan.made.items():
-            records[rel] = self.store_file(rel, data, mtime_ns)
-        plan.require_sources_unchanged()
-        members = capture.describe_members(folder, platform, records, stats, plan.slots)
+        members, notes = capture.describe_members(folder, platform, records, stats, plan.slots)
+        plan.require_consistent(records)
+        for note in notes:
+            log.warning("keeping a copy of %s: %s", folder.name, note)
         fields = dict(kind=kind, label=label, reason=reason, op_id=op_id,
                       app_version=self.app_version, platform=platform, account_key=account_key,
                       source=dict(source), scope=plan.scope,
                       origin=None if origin is None else dict(origin),
                       files=list(records.values()), members=members,
-                      account=capture.account_paths(plan, records), xbox=plan.xbox)
+                      account=capture.account_paths(plan, records), xbox=plan.xbox, notes=notes)
         return self._commit(fields, entry_id=entry_id, created_local=created_local)
 
     def _require_space(self, needed: int) -> None:
@@ -397,7 +425,8 @@ class VersionStore:
                     if existing is not None and _same_files(existing.files, fields["files"]):
                         return existing
                     if existing is not None or self._manifest_path(entry_id).exists():
-                        entry_id = self._free_id(f"{entry_id}-L", first_suffix="")
+                        entry_id = self._free_id(entry_id, suffix="-L", first_suffix="",
+                                                 catalog_ids=self._catalog_ids())
                 else:
                     stamp = f"{fields['kind']}-{fields['platform']}-{local:%Y%m%d-%H%M%S}"
                     entry_id = self._free_id(stamp, catalog_ids=self._catalog_ids())
@@ -408,19 +437,24 @@ class VersionStore:
         self._check_present(entry)
         return entry
 
-    def _free_id(self, base: str, *, catalog_ids: frozenset[str] = frozenset(),
+    def _free_id(self, stem: str, *, suffix: str = "", catalog_ids: frozenset[str] = frozenset(),
                  first_suffix: str = "-") -> str:
-        """``base``, else ``base-2``, ``base-3``... (``base2``... with ``first_suffix=""``)."""
+        """``stem + suffix``, else with ``-2``, ``-3``... after it (``2``... with
+        ``first_suffix=""``): the first not taken in the catalog or the store. The stem is
+        shortened as needed so no id is longer than an id may be."""
         def taken(candidate: str) -> bool:
             return (candidate in catalog_ids or candidate in self._index
                     or self._manifest_path(candidate).exists())
 
-        if not taken(base):
-            return base
+        def fit(end: str) -> str:
+            return stem[:MAX_ENTRY_ID - len(end)] + end
+
+        if not taken(fit(suffix)):
+            return fit(suffix)
         n = 2
-        while taken(f"{base}{first_suffix}{n}"):
+        while taken(fit(f"{suffix}{first_suffix}{n}")):
             n += 1
-        return f"{base}{first_suffix}{n}"
+        return fit(f"{suffix}{first_suffix}{n}")
 
     def _catalog_ids(self) -> frozenset[str]:
         try:
@@ -434,7 +468,8 @@ class VersionStore:
     def _write_manifest(self, entry: StoreEntry) -> None:
         raw = entry.to_bytes()
         dest = self._manifest_path(entry.id)
-        tmp = self.root / TMP / f"entry-{entry.id}.{os.getpid()}.{secrets.token_hex(4)}.part"
+        # Not named after the id: a long id would push the temp path past Windows' limit.
+        tmp = self.root / TMP / f"entry.{os.getpid()}.{secrets.token_hex(4)}.part"
         try:
             with open(tmp, "wb") as f:
                 f.write(raw)
@@ -462,11 +497,13 @@ class VersionStore:
     @classmethod
     def open(cls, vault_root: str | Path, *, lock: Callable[[], AbstractContextManager],
              app_version: str, clock: Callable[[], datetime] = utc_now,
-             live_roots: Sequence[Path] = (), faults: FaultHook | None = None) -> "VersionStore":
+             live_roots: Sequence[Path] | None = None,
+             faults: FaultHook | None = None) -> "VersionStore":
         """Open the store of a vault in store mode. Raises StoreUnavailable (vault gone, FORMAT
         unreadable), StoreNotUpgraded (legacy or upgrading vault), StoreTooNew (needs a newer
         app to read). Opens read-only when only writing needs a newer app, the medium cannot be
-        written, or the file system cannot lock."""
+        written, or the file system cannot lock. ``live_roots``: the live save folders nothing
+        is ever written into; None discovers them on this machine."""
         vault_root = Path(vault_root)
         if not vault_root.is_dir():
             raise StoreUnavailable("The vault is not reachable.")
@@ -499,19 +536,22 @@ class VersionStore:
             self._set_read_only("medium", f"The vault cannot be written here ({exc.strerror or exc}); "
                                 "it opens read-only.")
             return
-        self._sweep_tmp()
+        warning = None
         try:
             with self._lock() as handle:
                 warning = getattr(handle, "warning", None)
         except safety.LockTimeout:
-            return      # busy is not unsupported: a timeout never makes the store read-only
+            pass        # busy is not unsupported: a timeout never makes the store read-only
         if warning:
             self._set_read_only("no-lock", "The vault's drive does not support file locking; "
                                 "it opens read-only.")
+            return      # without locks the sweep could not tell a folder in use from a leftover
+        self._sweep_tmp()
 
     def _sweep_tmp(self) -> None:
         """Remove this app's leftovers in ``store/tmp`` older than an hour: ``*.part`` files and
-        ``mat-*`` folders. Younger ones may be another process's work in progress."""
+        ``mat-*`` folders. Younger ones may be another process's work in progress; a ``mat-*``
+        folder is removed only when its lock is free (no live :meth:`materialized` holds it)."""
         cutoff = time.time() - TMP_MAX_AGE
         try:
             items = list((self.root / TMP).iterdir())
@@ -525,7 +565,12 @@ class VersionStore:
                 if p.is_file() and p.name.endswith(".part"):
                     p.unlink()
                 elif p.is_dir() and not p.is_symlink() and p.name.startswith("mat-"):
-                    shutil.rmtree(p)
+                    if not _remove_if_unlocked(p, _mat_lock(p), shutil.rmtree):
+                        continue
+                elif p.is_file() and p.name.startswith("mat-") and p.name.endswith(".lock") \
+                        and not p.with_suffix("").exists():
+                    if not _remove_if_unlocked(None, p, None):
+                        continue
                 else:
                     continue
                 log.info("removed the stale store temp item %s", p.name)
@@ -545,6 +590,33 @@ class VersionStore:
     def _fault(self, point: str) -> None:
         if self._faults is not None:
             self._faults(point)
+
+
+def _mat_lock(folder: Path) -> Path:
+    return folder.with_name(folder.name + ".lock")
+
+
+def _remove_if_unlocked(item: Path | None, lock_file: Path,
+                        remove: Callable[[Path], None] | None) -> bool:
+    """Remove ``item`` (with ``remove``) and then ``lock_file``, only when the lock is free
+    now. False when someone holds it: the item is in use."""
+    try:
+        with safety.exclusive_lock(lock_file, timeout=0):
+            if item is not None and remove is not None:
+                remove(item)
+    except (safety.LockTimeout, RuntimeError):     # another process; or this very thread
+        return False
+    _unlink_quietly(lock_file)
+    return True
+
+
+def _unlink_quietly(path: Path) -> None:
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        pass
+    except OSError as exc:      # Windows: another process opened it meanwhile; harmless
+        log.info("could not remove the lock file %s: %s", path.name, exc)
 
 
 def _same_files(a: Sequence[FileEntry], b: Sequence[FileEntry]) -> bool:
@@ -568,7 +640,7 @@ def vault_lock(vault_root: str | Path) -> Callable[[], AbstractContextManager]:
     return lambda: safety.exclusive_lock(path)
 
 
-def open_store(vault_root: str | Path, *, live_roots: Sequence[Path] = (),
+def open_store(vault_root: str | Path, *, live_roots: Sequence[Path] | None = None,
                clock: Callable[[], datetime] = utc_now) -> VersionStore:
     """Open a vault's store with the app's defaults: D1's vault lock and this app's version."""
     return VersionStore.open(vault_root, lock=vault_lock(vault_root), app_version=__version__,

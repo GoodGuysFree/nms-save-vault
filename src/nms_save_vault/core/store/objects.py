@@ -56,11 +56,10 @@ class ObjectStore:
         return self.path_for(digest).is_file()
 
     def put(self, data: bytes, digest: str) -> PutResult:
-        """Store ``data`` under ``digest`` (its sha256). An existing object is re-hashed first:
-        a match deduplicates, a mismatch is quarantined and replaced. A new object is written
-        to a temp file, fsynced, renamed into place and read back."""
-        if sha256(data) != digest:
-            raise ValueError("put: the digest is not the sha256 of the bytes")
+        """Store ``data`` under ``digest``, the sha256 the caller already computed (not hashed
+        again here: a wrong one fails the read-back check below). An existing object is
+        re-hashed first: a match deduplicates, a mismatch is quarantined and replaced. A new
+        object is written to a temp file, fsynced, renamed into place and read back."""
         path = self.path_for(digest)
         healed = False
         if path.is_file():
@@ -68,7 +67,7 @@ class ObjectStore:
                 return PutResult(digest, len(data), written=False, healed=False)
             self._quarantine_if_present(digest, "re-hash mismatch on dedupe")
             healed = True
-        path.parent.mkdir(parents=True, exist_ok=True)
+        _ensure_dir(path.parent)
         tmp = self.tmp / f"{digest}.{os.getpid()}.{secrets.token_hex(4)}.part"
         try:
             with open(tmp, "wb") as f:
@@ -129,15 +128,26 @@ class ObjectStore:
                     yield p.name
 
     def quarantine(self, digest: str, reason: str) -> Path:
-        """Rename the object aside to ``quarantine/<sha256>.<n>``; never deleted."""
+        """Move the object aside to ``quarantine/<sha256>.<n>``; never deleted. The name is
+        claimed first with an exclusive create, so two processes never pick the same one and
+        nothing already quarantined is ever overwritten."""
         src = self.path_for(digest)
-        self.quarantine_dir.mkdir(parents=True, exist_ok=True)
+        _ensure_dir(self.quarantine_dir)
         n = 1
-        while (self.quarantine_dir / f"{digest}.{n}").exists():
-            n += 1
-        dest = self.quarantine_dir / f"{digest}.{n}"
-        os.rename(src, dest)
+        while True:
+            dest = self.quarantine_dir / f"{digest}.{n}"
+            try:
+                os.close(os.open(dest, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644))
+                break
+            except FileExistsError:
+                n += 1
+        try:
+            os.replace(src, dest)          # onto the empty placeholder this call created
+        except BaseException:
+            _silent_unlink(dest)
+            raise
         safety.fsync_dir(self.quarantine_dir)
+        safety.fsync_dir(src.parent)
         log.warning("quarantined the store object %s as %s: %s", digest[:12], dest.name, reason)
         return dest
 
@@ -150,6 +160,13 @@ class ObjectStore:
     def _fault(self, point: str) -> None:
         if self._faults is not None:
             self._faults(point)
+
+
+def _ensure_dir(folder: Path) -> None:
+    """Create ``folder`` if needed and make its entry in the parent durable."""
+    if not folder.is_dir():
+        folder.mkdir(parents=True, exist_ok=True)
+        safety.fsync_dir(folder.parent)
 
 
 def _hash_file(path: Path) -> str | None:

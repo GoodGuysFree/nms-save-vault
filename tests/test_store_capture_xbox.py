@@ -108,6 +108,55 @@ def test_an_index_changed_during_a_slot_capture_is_caught(tmp_path, make_wgs_acc
                   scope=vstore.CaptureScope(slots=(2,)))
 
 
+def test_a_whole_capture_catches_an_index_rewritten_meanwhile(tmp_path, make_wgs_account,
+                                                              monkeypatch):
+    vault = new_vault(tmp_path)
+    acct = wgs_live(make_wgs_account, tmp_path / "live")
+    index = acct / "containers.index"
+    real = capture._read_file
+    done = []
+
+    def xbox_app_rewrites_the_index(path):
+        data = real(path)
+        if path == index and not done:      # after the capture read it: same size and time
+            st = index.stat()
+            raw = bytearray(index.read_bytes())
+            at = raw.find("synchex".encode("utf-16-le"))
+            raw[at] ^= 0x01
+            index.write_bytes(bytes(raw))
+            os.utime(index, ns=(st.st_atime_ns, st.st_mtime_ns))
+            done.append(1)
+        return data
+
+    monkeypatch.setattr(capture, "_read_file", xbox_app_rewrites_the_index)
+    store = open_vault_store(vault)
+    with pytest.raises(vstore.SourceChanged, match="containers.index"):
+        _xbox_add(store, acct)
+    assert done and store.entries() == []
+
+
+def test_a_blob_missing_from_a_whole_capture_is_caught(tmp_path, make_wgs_account, monkeypatch):
+    vault = new_vault(tmp_path)
+    acct = wgs_live(make_wgs_account, tmp_path / "live")
+    real_walk = capture.walk
+    slot2 = next(m for m in msstore.scan(acct).slots[2].members if m.exists)
+    blob = slot2.data_path.relative_to(acct).as_posix()
+    monkeypatch.setattr(capture, "walk", lambda folder: [r for r in real_walk(folder) if r != blob])
+    with pytest.raises(vstore.SourceChanged, match=blob.split("/")[-1]):
+        _xbox_add(open_vault_store(vault), acct)
+
+
+def test_progress_reaches_the_total(tmp_path, make_wgs_account):
+    vault = new_vault(tmp_path)
+    acct = wgs_live(make_wgs_account, tmp_path / "live")
+    calls = []
+    entry = open_vault_store(vault).add_from_folder(
+        acct, kind="extract", label="x", source={"type": "folder", "name": acct.name},
+        scope=vstore.CaptureScope(slots=(1,)), progress=lambda d, t: calls.append((d, t)))
+    assert calls[-1] == (len(entry.files), len(entry.files))
+    assert [d for d, _ in calls] == list(range(1, len(entry.files) + 1))
+
+
 def test_an_empty_xbox_slot_has_nothing_to_keep(tmp_path, make_wgs_account):
     vault = new_vault(tmp_path)
     acct = wgs_live(make_wgs_account, tmp_path / "live")

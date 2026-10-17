@@ -596,7 +596,10 @@ def materialize(entry_id, dest, *, slots=None, account_files=True, cache=True, k
 - `materialized(entry_id, ...)` writes to `store/tmp/mat-<entry_id>-<rand>/` (same volume as the
   objects) and removes it on exit, also on an exception; stale `mat-*` folders older than 1 hour
   go at open.
-- Xbox slot filter: the entry's `containers.index` plus the GUID folders of the chosen slots.
+- Xbox slot filter: the GUID folders of the chosen slots plus a `containers.index` rebuilt from
+  the entry's index with just their records (and `AccountData`'s when the account files are
+  written), each record verbatim and the trailing bytes dropped, as the classic extract does; so
+  the folder never indexes a save it lacks.
 - `export_entry(id, dest)`: materialize to any folder outside the vault and the live roots. A Steam
   export is an `st_`-shaped folder that any tool reading plain save folders can open (NomNom,
   goatfungus, a manual copy); an Xbox export is a `wgs`-shaped folder (index + GUID folders).

@@ -2,8 +2,10 @@
 them stably, and describing the slot members from what was read.
 
 Captures only read their source. Member records come from the same scanners the rest of the
-app uses (``savedir.scan_any``), run after the bytes were read and cross-checked against them, so
-a store entry describes its slots exactly as the classic catalog describes a folder.
+app uses (``savedir.scan_any``), run after the bytes were read; then every file read must be
+unchanged and a wgs index must still be the one read first, so the files and the records are
+one state of the folder and a store entry describes its slots exactly as the classic catalog
+describes a folder.
 """
 from __future__ import annotations
 
@@ -21,6 +23,7 @@ from ..organizer.model import Platform, pid_from_id
 from ..slotmap import data_filename, meta_filename, parse_data_filename, slot_file_numbers
 from .errors import SourceChanged, StoreError
 from .manifest import FileEntry, MemberRecord
+from .objects import sha256
 
 log = logging.getLogger(__name__)
 
@@ -50,17 +53,31 @@ class CapturePlan:
     slots: tuple[int, ...] | None
     xbox: dict[str, str] | None = None
     made: dict[str, tuple[bytes, int]] = field(default_factory=dict)       # path -> (bytes, mtime_ns)
-    derived_from: list[tuple[str, Path, int, int]] = field(default_factory=list)  # rel, path, size, mtime_ns
     account: dict[str, str] = field(default_factory=dict)   # account-level files by role
+    index_sha: str | None = None    # wgs: the containers.index the plan was made from
 
     def object_bytes(self, inline_max: int) -> int:
         """The most the capture can add to the store: every file too big to be inline."""
         sizes = list(self.sizes.values()) + [len(b) for b, _ in self.made.values()]
         return sum(s for s in sizes if s > inline_max)
 
-    def require_sources_unchanged(self) -> None:
-        for rel, path, size, mtime_ns in self.derived_from:
-            require_unchanged(path, rel, size, mtime_ns)
+    def require_consistent(self, records: Mapping[str, FileEntry]) -> None:
+        """Run after the members were described (the folder scanned): every file read is still
+        what was read, and a wgs index is still the one the plan (and a verbatim capture of
+        it) holds, so the files and the member records describe one state of the folder."""
+        for rel, path in self.files:
+            require_unchanged(path, rel, records[rel].size, records[rel].mtime_ns)
+        if self.index_sha is None:
+            return
+        try:
+            now = sha256(_read_file(self.folder / INDEX_NAME))
+        except FileNotFoundError as exc:
+            raise SourceChanged(INDEX_NAME, vanished=True) from exc
+        captured = records.get(INDEX_NAME)
+        verbatim = self.xbox is not None and self.xbox.get("index_kind") == "verbatim"
+        if now != self.index_sha or (verbatim and (captured is None
+                                                   or captured.sha256 != self.index_sha)):
+            raise SourceChanged(INDEX_NAME)
 
 
 def plan(folder: Path, platform: Platform, *, kind: str, scope: CaptureScope,
@@ -77,12 +94,11 @@ def plan(folder: Path, platform: Platform, *, kind: str, scope: CaptureScope,
 def _plan_steam(folder: Path, *, kind: str, scope: CaptureScope, live: bool) -> CapturePlan:
     account_names = set(STEAM_ACCOUNT_FILES.values())
     if scope.slots is not None:
-        rels = []
-        for slot in scope.slots:
-            for fno in slot_file_numbers(slot):
-                pair = [data_filename(fno), meta_filename(fno)]
-                if all(_is_regular(folder / name) for name in pair):
-                    rels += pair
+        # Every save file of the slot, a data file without its meta (or the reverse) too:
+        # it is kept as a file with a note (D3 2.6.1), never dropped.
+        rels = [name for slot in scope.slots for fno in slot_file_numbers(slot)
+                for name in (data_filename(fno), meta_filename(fno))
+                if _is_regular(folder / name)]
         if not rels:
             raise StoreError(f"Slot {_slots_text(scope.slots)} holds no saves to keep.")
         record = {"slots": list(scope.slots), "account_files": False, "cache": "none"}
@@ -114,26 +130,28 @@ def _plan_xbox(folder: Path, *, scope: CaptureScope) -> CapturePlan:
     the classic extract does), so the entry is a self-contained wgs folder."""
     index = folder / INDEX_NAME
     wgs = _is_regular(index)
+    index_sha = None
+    if wgs:     # read first: the end of the capture checks the folder still has this index
+        index_bytes, index_stat = read_stable(index, INDEX_NAME)
+        index_sha = sha256(index_bytes)
     if scope.slots is None:
         rels = walk(folder)
         files = [(rel, folder.joinpath(*rel.split("/"))) for rel in rels]
         xbox = {"index": INDEX_NAME, "index_kind": "verbatim"} if wgs else None
         record = {"slots": "all", "account_files": True, "cache": "none"}
         return CapturePlan(folder, "xbox", files, _sizes(files), record, None, xbox=xbox,
-                           account=_xbox_account(folder, wgs))
+                           account=_xbox_account(folder, wgs), index_sha=index_sha)
     wanted = {f"Slot{s}{kind}" for s in scope.slots for kind in ("Auto", "Manual")}
     made: dict[str, tuple[bytes, int]] = {}
-    derived: list[tuple[str, Path, int, int]] = []
     if wgs:
-        st = os.stat(index)
         info, containers = _parse_index(folder)
         picked = [c for c in containers if c.identifier in wanted
                   and c.data_file is not None and c.data_file.is_file()]
         dirs = [c.directory for c in picked]
         if picked:
             subset = replace(info, trailer=b"")      # the source's trailing bytes are not ours
-            made[INDEX_NAME] = (msstore.build_containers_index(subset, picked), st.st_mtime_ns)
-            derived.append((INDEX_NAME, index, st.st_size, st.st_mtime_ns))
+            made[INDEX_NAME] = (msstore.build_containers_index(subset, picked),
+                                index_stat.st_mtime_ns)
         xbox = {"index": INDEX_NAME, "index_kind": "rebuilt"}
     else:
         dirs = [folder / name for name in sorted(wanted) if (folder / name / "data").is_file()]
@@ -144,7 +162,7 @@ def _plan_xbox(folder: Path, *, scope: CaptureScope) -> CapturePlan:
     files = [(rel, folder.joinpath(*rel.split("/"))) for rel in rels]
     record = {"slots": list(scope.slots), "account_files": False, "cache": "none"}
     return CapturePlan(folder, "xbox", files, _sizes(files), record, scope.slots, xbox=xbox,
-                       made=made, derived_from=derived)
+                       made=made, index_sha=index_sha)
 
 
 def _parse_index(folder: Path):
@@ -251,25 +269,34 @@ def stats_of(data: bytes) -> lz4_block.ContainerStats:
 
 def describe_members(folder: Path, platform: Platform, records: Mapping[str, FileEntry],
                      stats: Mapping[str, lz4_block.ContainerStats],
-                     slots: tuple[int, ...] | None) -> list[MemberRecord]:
-    """One record per slot member whose data and meta the capture holds. The folder is scanned
-    after it was read; every member file must still be what was read, else SourceChanged."""
+                     slots: tuple[int, ...] | None) -> tuple[list[MemberRecord], list[str]]:
+    """One record per slot member, from a scan of the folder made after it was read, and a
+    note per member file kept without its partner. A member the scan finds must be wholly in
+    the capture (else the folder changed meanwhile: SourceChanged); the caller then checks
+    that nothing read has changed (:meth:`CapturePlan.require_consistent`)."""
     view = savedir.scan_any(folder)
-    out = []
+    members, notes = [], []
     for slot in slots or range(1, MAX_SAVE_SLOTS + 1):
         for mv in view.slots[slot].members:
-            if not mv.exists:
-                continue
             data_rel, meta_rel = _rel(folder, mv.data_path), _rel(folder, mv.meta_path)
-            fd, fm = records.get(data_rel or ""), records.get(meta_rel or "")
-            if fd is None or fm is None:
+            if not mv.exists:
+                kept = [r for r in (data_rel, meta_rel) if r is not None and r in records]
+                if kept:
+                    notes.append(f"slot {slot}{mv.label}: {', '.join(kept)} kept without its "
+                                 f"partner ({mv.note or 'incomplete'})")
                 continue
-            require_unchanged(mv.data_path, fd.path, fd.size, fd.mtime_ns)
-            require_unchanged(mv.meta_path, fm.path, fm.size, fm.mtime_ns)
+            needed = [data_rel, meta_rel]
+            container = getattr(mv.xbox, "blob_container_file", None)
+            if container is not None:
+                needed.append(_rel(folder, container))
+            missing = [r for r in needed if r is None or r not in records]
+            if missing:
+                raise SourceChanged(missing[0] or mv.data_path.name)
+            fd, fm = records[data_rel], records[meta_rel]   # type: ignore[index]
             if platform == "xbox" and mv.meta_sha256 and mv.meta_sha256 != fm.sha256:
                 raise SourceChanged(fm.path)
-            out.append(_record(slot, mv, fd, fm, platform, stats.get(fd.path)))
-    return out
+            members.append(_record(slot, mv, fd, fm, platform, stats.get(fd.path)))
+    return members, notes
 
 
 def _record(slot: int, mv: savedir.MemberView, fd: FileEntry, fm: FileEntry, platform: Platform,

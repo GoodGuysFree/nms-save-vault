@@ -30,7 +30,8 @@ PLATFORMS: tuple[str, ...] = get_args(Platform)
 MEMBERS: tuple[str, ...] = get_args(Member)
 INDEX_KINDS = ("verbatim", "rebuilt")
 
-_ENTRY_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}")
+MAX_ENTRY_ID = 128
+_ENTRY_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,%d}" % (MAX_ENTRY_ID - 1))
 _PID = re.compile(r"[0-9A-F]{16}")
 _BAD_PATH_CHARS = frozenset('\\:\0')
 
@@ -171,7 +172,7 @@ class MemberRecord:
 
 _TOP_KEYS = ("format", "schema", "id", "kind", "label", "reason", "op_id", "created_utc",
              "created_local", "app_version", "platform", "account_key", "source", "scope",
-             "origin", "files", "slots", "account", "xbox")
+             "origin", "files", "slots", "account", "xbox", "notes")
 
 
 @dataclass(frozen=True)
@@ -194,18 +195,21 @@ class StoreEntry:
     account: Mapping[str, str]
     xbox: Mapping[str, Any] | None
     body_sha256: str
+    notes: tuple[str, ...] = ()  # capture diagnostics, e.g. a save file kept without its partner
     schema: int = ENTRY_SCHEMA   # a newer writer's schema number is kept as read
     extra: Mapping[str, Any] = field(default_factory=dict)
 
     @classmethod
     def new(cls, **fields: Any) -> "StoreEntry":
-        """Build an entry, sorting its files and members and computing ``body_sha256``."""
+        """Build an entry, sorting its files and members and computing ``body_sha256``. The
+        result is the entry parsed back from its own bytes by the strict loader, so the store
+        never commits a manifest it could not load (raises EntryCorrupt instead)."""
         fields["files"] = tuple(sorted(fields["files"], key=lambda f: f.path))
         fields["members"] = tuple(sorted(fields["members"], key=lambda m: (m.slot, m.member)))
+        fields["notes"] = tuple(fields.get("notes", ()))
         draft = cls(body_sha256="", **fields)
         entry = cls(body_sha256=sha256(canonical(draft.body())), **fields)
-        _check(entry)
-        return entry
+        return StoreEntry.from_bytes(entry.to_bytes())
 
     def body(self) -> Json:
         """Every key of the manifest except ``body_sha256``."""
@@ -221,7 +225,8 @@ class StoreEntry:
             "account_key": self.account_key, "source": dict(self.source),
             "scope": dict(self.scope), "origin": None if self.origin is None else dict(self.origin),
             "files": [f.to_json() for f in self.files], "slots": slots,
-            "account": dict(self.account), "xbox": None if self.xbox is None else dict(self.xbox)})
+            "account": dict(self.account), "xbox": None if self.xbox is None else dict(self.xbox),
+            "notes": list(self.notes)})
         return body
 
     def to_bytes(self) -> bytes:
@@ -275,7 +280,7 @@ class StoreEntry:
             origin=_opt(d, "origin", dict, what), files=files,
             members=tuple(sorted(members, key=lambda m: (m.slot, m.member))),
             account=_get(d, "account", dict, what), xbox=_opt(d, "xbox", dict, what),
-            body_sha256=claimed, schema=schema,
+            body_sha256=claimed, notes=_notes(d), schema=schema,
             extra={k: v for k, v in d.items() if k not in _TOP_KEYS})
         _check(entry)
         return entry
@@ -331,6 +336,13 @@ def _check(entry: StoreEntry) -> None:
 
 
 # --- validation helpers -----------------------------------------------------------------------
+
+
+def _notes(d: Mapping[str, Any]) -> tuple[str, ...]:
+    notes = _get(d, "notes", list, "manifest")
+    if not all(isinstance(n, str) for n in notes):
+        raise EntryCorrupt("manifest: a note is not text")
+    return tuple(notes)
 
 
 def _no_float(text: str) -> Any:

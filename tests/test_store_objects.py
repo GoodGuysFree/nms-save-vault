@@ -3,9 +3,11 @@ from __future__ import annotations
 
 import hashlib
 import os
+from pathlib import Path
 
 import pytest
 
+from nms_save_vault.core import safety
 from nms_save_vault.core import store as vstore
 from nms_save_vault.core.store.objects import ObjectStore
 
@@ -50,13 +52,62 @@ def test_get_of_an_absent_object_is_missing(tmp_path):
         _objects(tmp_path).get(_sha(b"nothing"))
 
 
-def test_put_refuses_a_digest_that_is_not_the_bytes_hash(tmp_path):
+def test_a_wrong_digest_fails_the_read_back(tmp_path):
     objs = _objects(tmp_path)
-    with pytest.raises(ValueError):
-        objs.put(DATA, _sha(b"other"))
+    wrong = _sha(b"other")
+    with pytest.raises(vstore.ObjectCorrupt):
+        objs.put(DATA, wrong)
+    assert list(objs.digests()) == []
+    assert (tmp_path / "quarantine" / f"{wrong}.1").read_bytes() == DATA
     with pytest.raises(ValueError):
         objs.path_for("../" + "a" * 61)
-    assert list(objs.digests()) == []
+
+
+def test_put_trusts_the_callers_digest_and_hashes_only_the_read_back(tmp_path, monkeypatch):
+    from nms_save_vault.core.store import objects as objects_module
+
+    def no_hashing(data):
+        raise AssertionError("the bytes were hashed again")
+
+    objs = _objects(tmp_path)
+    digest = _sha(DATA)
+    monkeypatch.setattr(objects_module, "sha256", no_hashing)
+    assert objs.put(DATA, digest).written
+    assert objs.path_for(digest).read_bytes() == DATA
+
+
+def test_quarantine_claims_its_name_and_never_overwrites(tmp_path, monkeypatch):
+    import pathlib
+
+    objs = _objects(tmp_path)
+    digest = _sha(DATA)
+    taken = tmp_path / "quarantine" / f"{digest}.1"
+    taken.write_bytes(b"quarantined earlier")
+    real_exists = pathlib.Path.exists
+    # Another process creates <digest>.1 right after any existence check would have run.
+    monkeypatch.setattr(pathlib.Path, "exists",
+                        lambda self: False if self == taken else real_exists(self))
+    objs.put(DATA, digest)
+    assert objs.quarantine(digest, "test").name == f"{digest}.2"
+    assert taken.read_bytes() == b"quarantined earlier"
+    assert (tmp_path / "quarantine" / f"{digest}.2").read_bytes() == DATA
+
+
+def test_new_folders_are_made_durable(tmp_path, monkeypatch):
+    synced = []
+    monkeypatch.setattr(safety, "fsync_dir", lambda p: synced.append(Path(p)))
+    objs = _objects(tmp_path)
+    digest = _sha(DATA)
+    objs.put(DATA, digest)
+    assert tmp_path / "objects" in synced                    # the new fan-out folder
+    (tmp_path / "quarantine").rmdir()
+    objs.quarantine(digest, "test")
+    assert tmp_path in synced                                # the new quarantine folder
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    synced.clear()
+    vstore.create_store(vault)
+    assert vault in synced and vault / "store" in synced     # store/ itself, then FORMAT
 
 
 def test_dedupe_hit_rehashes_and_heals(tmp_path):

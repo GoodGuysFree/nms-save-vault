@@ -2,8 +2,9 @@
 
 The folder is what was captured, byte for byte, with the captured modification times: a Steam
 entry gives an ``st_``-shaped folder, an Xbox entry a ``wgs``-shaped one (index + GUID
-folders), so the classic operations and any folder-reading tool can use it. Every written file
-is read back and checked against its sha256.
+folders), so the classic operations and any folder-reading tool can use it. A slot selection of
+an Xbox entry gets an index rebuilt for those slots. Every written file is read back and
+checked against its sha256.
 """
 from __future__ import annotations
 
@@ -15,6 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from .. import discover, msstore
 from ..formats import CACHE_DIR, MAX_SAVE_SLOTS
 from ..slotmap import data_filename, meta_filename, slot_file_numbers
 from .errors import StoreError
@@ -78,9 +80,40 @@ def _top(path: str) -> str | None:
     return path.split("/", 1)[0] if "/" in path else None
 
 
-def check_destination(dest: Path, *, refuse_inside: Sequence[Path]) -> None:
-    """``dest`` must be an empty or absent folder, not inside any of ``refuse_inside``."""
-    if any(_inside(dest, root) for root in refuse_inside):
+def files_to_write(store: "VersionStore", entry: StoreEntry, *, slots: Iterable[int] | None,
+                   account_files: bool, cache: bool) -> list[FileEntry]:
+    """:func:`select_files`, with the index of an Xbox entry rebuilt for a slot selection: just
+    the chosen slots' records (and AccountData's with the account files), as the classic
+    extract writes it, so the folder holds no record of a save it lacks."""
+    files = select_files(entry, slots=slots, account_files=account_files, cache=cache)
+    index = entry.xbox.get("index") if entry.xbox else None
+    if entry.platform != "xbox" or slots is None or index is None:
+        return files
+    chosen = set(slots)
+    keep = {m.xbox_identifier for m in entry.members if m.slot in chosen}
+    if account_files and entry.account:
+        keep.add("AccountData")
+    stored = entry.file(index)
+    rebuilt = rebuilt_index(store.file_bytes(stored), keep)
+    made = FileEntry(index, len(rebuilt), sha256(rebuilt), stored.mtime_ns, inline=rebuilt)
+    return [made if fe.path == index else fe for fe in files]
+
+
+def rebuilt_index(raw: bytes, identifiers: set[str | None]) -> bytes:
+    """``raw`` (a containers.index) with only the records of ``identifiers``, each verbatim; the
+    trailing bytes after the last record are dropped, as the classic extract drops them."""
+    try:
+        header, records, _trailer = msstore.split_index(raw)
+    except ValueError as exc:
+        raise StoreError(f"The stored Xbox save index cannot be read ({exc}).") from exc
+    return msstore.join_index(header, [(i, rec) for i, rec in records if i in identifiers])
+
+
+def check_destination(dest: Path, *, refuse_inside: Sequence[Path],
+                      live: Sequence[Path]) -> None:
+    """``dest`` must be an empty or absent folder, not inside any of ``refuse_inside`` nor in a
+    live save folder (``live``: :func:`discover.live_folders`, xgs twins included)."""
+    if any(_inside(dest, root) for root in refuse_inside) or discover.is_inside(dest, live):
         raise StoreError(BAD_DESTINATION)
     if dest.exists() and (not dest.is_dir() or any(dest.iterdir())):
         raise StoreError(BAD_DESTINATION)

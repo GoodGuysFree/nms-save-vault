@@ -16,7 +16,7 @@ from nms_save_vault.core import formats, meta, safety, slotmap
 from nms_save_vault.core import store as vstore
 from nms_save_vault.core.store import capture, versionstore
 
-from .conftest import chunked
+from .conftest import chunked, steam_save
 from .store_helpers import (
     FIXED_NOW,
     IDENT,
@@ -141,6 +141,51 @@ def test_invalid_members_are_flagged_not_dropped(tmp_path):
     assert not unreadable.valid and unreadable.ordinal is None and unreadable.pid is None
     assert unreadable.meta_plain_sha256 is None and unreadable.note.startswith("meta unreadable")
     assert entry.member(4, "A") is None and entry.has_file("save7.hg")
+    assert entry.notes == ("slot 4A: save7.hg kept without its partner "
+                           "(incomplete: missing meta file)",)
+
+
+def test_a_slot_scope_keeps_an_unpaired_file_with_a_note(tmp_path):
+    vault = new_vault(tmp_path)
+    live = steam_live(tmp_path / "live")
+    (live / "save7.hg").write_bytes(b"data without its meta")        # slot 4 A
+    (live / "mf_save8.hg").write_bytes(b"\x02" * 432)               # slot 4 B, meta only
+    entry = _live_add(open_vault_store(vault), live, kind="extract",
+                      scope=vstore.CaptureScope(slots=(4,)))
+    assert [f.path for f in entry.files] == ["mf_save8.hg", "save7.hg"]
+    assert entry.members == ()
+    assert [n.split(":")[0] for n in entry.notes] == ["slot 4A", "slot 4B"]
+
+
+def test_a_save_written_during_the_capture_is_caught(tmp_path, monkeypatch):
+    vault = new_vault(tmp_path)
+    live = steam_live(tmp_path / "live")
+    real = capture._read_file
+
+    def game_saves_slot_5(path):
+        if not (live / "save9.hg").exists():
+            steam_save(live, 5, 0, "New", 10, IDENT + 5, 1_790_000_100)
+        return real(path)
+
+    monkeypatch.setattr(capture, "_read_file", game_saves_slot_5)
+    with pytest.raises(vstore.SourceChanged, match="save9.hg"):
+        _live_add(open_vault_store(vault), live, kind="snapshot", scope=SNAP)
+
+
+def test_a_save_deleted_after_it_was_read_is_caught(tmp_path, monkeypatch):
+    vault = new_vault(tmp_path)
+    live = steam_live(tmp_path / "live")
+    store = open_vault_store(vault)
+    real = capture.savedir.scan_any
+
+    def game_deletes_slot_2(folder):
+        (live / "mf_save3.hg").unlink()
+        return real(folder)
+
+    monkeypatch.setattr(capture.savedir, "scan_any", game_deletes_slot_2)
+    with pytest.raises(vstore.SourceChanged, match="disappeared"):
+        _live_add(store, live, kind="snapshot", scope=SNAP)
+    assert store.entries() == []
 
 
 def test_ids_are_unique_across_catalog_and_store(tmp_path):
@@ -174,6 +219,36 @@ def test_a_given_id_is_kept_verified_on_rerun_and_suffixed_when_different(tmp_pa
     assert store.add_from_folder(folder, **kw).id == "full-steam-20260101-000000-L"
     (folder / "notes.txt").write_bytes(b"changed again")
     assert store.add_from_folder(folder, **kw).id == "full-steam-20260101-000000-L2"
+
+
+def test_a_suffixed_id_is_unique_across_the_catalog_too(tmp_path):
+    vault = new_vault(tmp_path)
+    folder = steam_live(tmp_path / "legacy")
+    store = open_vault_store(vault)
+    kw = dict(kind="imported", label="x", source={"type": "folder", "name": "x"},
+              entry_id="imported-steam-20260101-000000")
+    catalog = {"version": 1, "entries": [{
+        "id": "imported-steam-20260101-000000-L", "kind": "imported", "label": "", "path": "x",
+        "created": "2026-01-01T00:00:00", "managed": True, "slots": []}]}
+    (vault / "catalog.json").write_text(json.dumps(catalog), "utf-8")
+    store.add_from_folder(folder, **kw)
+    (folder / "notes.txt").write_bytes(b"changed")
+    assert store.add_from_folder(folder, **kw).id == "imported-steam-20260101-000000-L2"
+
+
+def test_a_long_id_keeps_its_suffix_within_the_id_limit(tmp_path):
+    vault = new_vault(tmp_path)
+    folder = steam_live(tmp_path / "legacy")
+    store = open_vault_store(vault)
+    long_id = "imported-" + "x" * 119
+    kw = dict(kind="imported", label="x", source={"type": "folder", "name": "x"},
+              entry_id=long_id)
+    assert store.add_from_folder(folder, **kw).id == long_id
+    (folder / "notes.txt").write_bytes(b"changed")
+    suffixed = store.add_from_folder(folder, **kw)
+    assert len(suffixed.id) == 128 and suffixed.id.endswith("-L")
+    assert open_vault_store(vault).entry(suffixed.id) == suffixed
+    assert open_vault_store(vault).corrupt_manifests == {}
 
 
 def test_source_changed_during_capture(tmp_path, monkeypatch):
