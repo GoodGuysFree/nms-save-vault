@@ -26,6 +26,9 @@ from .core import playtime, savedir
 from .core import state as appstate
 from .core.catalog import Vault
 from .ui import dpi, logfile
+from .ui.redact import RedactingTreeview
+from .ui.themeaware import ThemeRegistry
+from .ui.worker import UiWorker
 from .ui.dpi import px, pxs
 
 
@@ -434,21 +437,6 @@ class FlowBar(ttk.Frame):
             button.lift()                          # above the row frame made after it
 
 
-class RedactingTreeview(ttk.Treeview):
-    """A tree whose row text and cell values pass through the account-alias filter.
-
-    Filtering here rather than at each call site is what makes the guarantee structural:
-    no row added now or later can leak a real account id once an alias is configured.
-    """
-
-    def insert(self, parent, index, iid=None, **kw):
-        if "text" in kw:
-            kw["text"] = aliases.redact(kw["text"])
-        if "values" in kw:
-            kw["values"] = tuple(aliases.redact(v) for v in kw["values"])
-        return super().insert(parent, index, iid, **kw)
-
-
 #: The two tabs of the window (shell 10a) and their titles, in tab order.
 CLASSIC = "classic"
 ORGANIZER = "organizer"
@@ -504,6 +492,10 @@ class App(tk.Tk):
         self._history_key: str | None = None  # the save file the backups are narrowed to
         self._history_choices: dict[str, str] = {}  # dropdown label -> playthrough key
         self._dark = False
+        # The organizer's slow work runs here, one job at a time (D6 3.9); classic widgets
+        # and images drawn in code take each new palette from the registry (D6 3.12).
+        self.worker = UiWorker(self)
+        self.themed = ThemeRegistry()
         # Every window opened later gets the title bar of the current theme when it maps.
         for window_class in ("Toplevel", self.winfo_class()):
             self.bind_class(window_class, "<Map>", self._on_window_mapped, add="+")
@@ -835,11 +827,16 @@ class App(tk.Tk):
         self._dark = name == theme.DARK
         for window in self._windows():
             theme.dark_title_bar(window, self._dark)
+        self.themed.apply(p)
         if persist:
             try:
                 appstate.save(self.state, self.state_path)
             except OSError as exc:
                 _showwarning("Theme", f"Could not save your theme choice:\n{exc}")
+
+    def destroy(self) -> None:
+        self.worker.shutdown()
+        super().destroy()
 
     def _windows(self) -> list[tk.Misc]:
         """The main window and every open window of the app."""

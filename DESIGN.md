@@ -90,6 +90,10 @@ src/nms_save_vault/
   ui/             Tk building blocks for the views (docs/organizer/designs/D6-ui-tk.md)
     dpi.py        DPI awareness, px() for every pixel constant, first-start size, dialog fit
     logfile.py    the GUI's rotating log file (per-machine folder), stderr under pythonw
+    worker.py     UiWorker: one background thread, results delivered on the Tk thread
+    themeaware.py ThemeRegistry: classic widgets and drawn images follow the theme
+    redact.py     every shown string redacted (trees, texts, labels, canvas, titles)
+    raster.py     images drawn in code: chevrons, sort arrows, radio marks, dots
   theme.py        light/dark/system palettes (incl. the organizer keys) + ttk restyling,
                   dark title bar (front-end)
   updates.py      opt-in GitHub release check + in-place self-update (the only network access)
