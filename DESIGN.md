@@ -83,10 +83,19 @@ src/nms_save_vault/
       bootstrap.py history from before recording: backups (seen in backups) + old oplog
       notes.py    save-file notes with every revision, pins, version labels/comments/locks
       lineage.py  lineage.json: owner corrections, Combine aliases, the bootstrap record
-  theme.py        light/dark/system palettes + ttk restyling (front-end)
+      readmodel.py lines, version rows, live board, events, sort/filter; JSON with tokens
+      locator.py  where a version's bytes are (VersionLocator, VaultLocator, Location)
+      folders.py  FolderLocator: the read side over live and catalog folders
+      __init__.py Organizer facade: scan, record, build the model, bootstrap
+  ui/             Tk building blocks for the views (docs/organizer/designs/D6-ui-tk.md)
+    dpi.py        DPI awareness, px() for every pixel constant, first-start size, dialog fit
+    logfile.py    the GUI's rotating log file (per-machine folder), stderr under pythonw
+  theme.py        light/dark/system palettes (incl. the organizer keys) + ttk restyling,
+                  dark title bar (front-end)
   updates.py      opt-in GitHub release check + in-place self-update (the only network access)
   cli.py          argparse front end
-  gui.py          Tkinter app (two panes: live saves / backups)
+  gui.py          Tkinter app: menu bar, tabs "Live saves and backups" (the two panes) and
+                  "Organizer", status bar (shell 10a)
 ```
 
 ## Storage model (hybrid)

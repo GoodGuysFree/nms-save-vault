@@ -21,9 +21,12 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 from . import __version__, theme, updates
 from .core import aliases, catalog, discover, locations, slotmap
 from .core import operations as ops
+from .core import platform as host_platform
 from .core import playtime, savedir
 from .core import state as appstate
 from .core.catalog import Vault
+from .ui import dpi, logfile
+from .ui.dpi import px, pxs
 
 
 def _icon_path() -> Path | None:
@@ -174,11 +177,11 @@ class Tooltip:
             background=TOOLTIP_STYLE["background"],
             foreground=TOOLTIP_STYLE["foreground"],
             highlightbackground=TOOLTIP_STYLE["border"],
-            padx=8,
-            pady=6,
+            padx=px(8),
+            pady=px(6),
             font=theme.TIP_FONT,
         ).pack()
-        self.window.wm_geometry(f"+{x + 16}+{y + 18}")
+        self.window.wm_geometry(f"+{x + px(16)}+{y + px(18)}")
 
     def hide(self, _event=None) -> None:
         self.row = None
@@ -347,17 +350,17 @@ class ConfirmDialog(tk.Toplevel):
         self._check = tk.BooleanVar(value=False)
         # Buttons and checkbox first, from the bottom: a long message can then never push
         # them out of the window.
-        buttons = ttk.Frame(self, padding=(14, 0, 14, 12))
+        buttons = ttk.Frame(self, padding=pxs(14, 0, 14, 12))
         buttons.pack(side=tk.BOTTOM, fill=tk.X)
         ttk.Button(buttons, text="No", command=self.destroy).pack(side=tk.RIGHT)
         yes = ttk.Button(buttons, text="Yes", command=self._yes)
-        yes.pack(side=tk.RIGHT, padx=6)
+        yes.pack(side=tk.RIGHT, padx=px(6))
         if check:
             ttk.Checkbutton(self, text=check, variable=self._check).pack(
-                side=tk.BOTTOM, anchor="w", padx=14, pady=(0, 10)
+                side=tk.BOTTOM, anchor="w", padx=px(14), pady=pxs(0, 10)
             )
-        ttk.Label(self, text=message, justify="left", wraplength=620).pack(
-            side=tk.TOP, anchor="w", padx=14, pady=(14, 10)
+        ttk.Label(self, text=message, justify="left", wraplength=px(620)).pack(
+            side=tk.TOP, anchor="w", padx=px(14), pady=pxs(14, 10)
         )
         self.bind("<Escape>", lambda _e: self.destroy())
         # Enter presses the focused button (Yes to start with, No once tabbed to).
@@ -394,7 +397,7 @@ class FlowBar(ttk.Frame):
     a 120% font zoom one row needs about 1,400 px, and the buttons past the window edge,
     Undo among them, could not be reached)."""
 
-    PAD = 2
+    PAD = 2  # design pixels; px() at layout time
 
     def __init__(self, master, **kw):
         super().__init__(master, **kw)
@@ -413,7 +416,7 @@ class FlowBar(ttk.Frame):
         width = width or self.winfo_width()
         if width <= 1:
             return                                 # not laid out yet
-        self._place(_flow_rows([b.winfo_reqwidth() + 2 * self.PAD for b in self.buttons], width))
+        self._place(_flow_rows([b.winfo_reqwidth() + 2 * px(self.PAD) for b in self.buttons], width))
 
     def _place(self, layout: list[int]) -> None:
         if layout == self._layout:
@@ -427,7 +430,7 @@ class FlowBar(ttk.Frame):
         for frame in self._rows[:needed]:
             frame.pack(side=tk.TOP, fill=tk.X)
         for button, row in zip(self.buttons, layout):
-            button.pack(in_=self._rows[row], side=tk.LEFT, padx=self.PAD, pady=1)
+            button.pack(in_=self._rows[row], side=tk.LEFT, padx=px(self.PAD), pady=px(1))
             button.lift()                          # above the row frame made after it
 
 
@@ -446,11 +449,19 @@ class RedactingTreeview(ttk.Treeview):
         return super().insert(parent, index, iid, **kw)
 
 
+#: The two tabs of the window (shell 10a) and their titles, in tab order.
+CLASSIC = "classic"
+ORGANIZER = "organizer"
+VIEW_TITLES = {CLASSIC: "Live saves and backups", ORGANIZER: "Organizer"}
+
+
 class App(tk.Tk):
-    def __init__(self, live: str | Path | None = None, vault: str | Path | None = None):
+    def __init__(self, live: str | Path | None = None, vault: str | Path | None = None,
+                 state_path: str | Path | None = None):
         super().__init__()
+        # Where the config is read and written; None is the install dir's state.json.
+        self.state_path = Path(state_path) if state_path else None
         self.title(f"NMS Save Vault v{__version__}")
-        self.geometry("1000x640")
         # Whatever ttk chose for this OS; light mode restores it so the app keeps the
         # native look it has always had (see theme.apply).
         self._native_ttk_theme = ttk.Style(self).theme_use()
@@ -464,7 +475,16 @@ class App(tk.Tk):
 
         # Load the config (or build it on first run by auto-discovering save folders).
         self.state = self._load_or_bootstrap_state()
-        vault_root = Path(vault) if vault else (self.state.vault or locations.default_vault_dir())
+        # Every pixel constant goes through px(): this screen's DPI times the font zoom, so
+        # the zoom is known before the first widget is built.
+        dpi.configure(self, zoom=theme.clamp_font_scale(self.state.font_scale))
+        # The minimum is logical pixels at this DPI, not zoomed: a large font must not push
+        # the first window off a small screen.
+        width, height = dpi.first_start_size(
+            dpi.work_area(self), (dpi.screen_px(1000), dpi.screen_px(640)),
+            dpi.window_chrome(self))
+        self.geometry(f"{width}x{height}")
+        vault_root =Path(vault) if vault else (self.state.vault or locations.default_vault_dir())
         self.vault = Vault(vault_root)
         self.vault.ensure()
         self.vault.load()
@@ -483,8 +503,13 @@ class App(tk.Tk):
         self._report: playtime.PlaytimeReport | None = None
         self._history_key: str | None = None  # the save file the backups are narrowed to
         self._history_choices: dict[str, str] = {}  # dropdown label -> playthrough key
+        self._dark = False
+        # Every window opened later gets the title bar of the current theme when it maps.
+        for window_class in ("Toplevel", self.winfo_class()):
+            self.bind_class(window_class, "<Map>", self._on_window_mapped, add="+")
         self._build_widgets()
         self._apply_theme()
+        self._open_last_view()
         self.refresh()
         self.after(300, self._startup_update_check)  # after the window is on screen
         # Sweep up after a previous update. Deliberately late: when this run *is* the
@@ -494,11 +519,11 @@ class App(tk.Tk):
     # --- state ---------------------------------------------------------------
 
     def _load_or_bootstrap_state(self) -> appstate.AppState:
-        st = appstate.load()
+        st = appstate.load(self.state_path)
         if st is None:  # first run: discover everything and write state.json
             st = discover.bootstrap_state()
             try:
-                appstate.save(st)
+                appstate.save(st, self.state_path)
             except OSError:
                 pass  # read-only location; carry on with the in-memory state
         return st
@@ -567,9 +592,152 @@ class App(tk.Tk):
 
     # --- layout --------------------------------------------------------------
 
+    def _build_menubar(self) -> None:
+        """The native menu bar (D6 2.2): every action has a keyboard path (Alt, then the
+        underlined letter) whatever the window width or zoom, and the preferences that
+        are not actions (theme, zoom) live here instead of in the toolbar row."""
+        bar = tk.Menu(self, tearoff=False)
+        self.menubar = bar
+
+        def menu(label: str) -> tk.Menu:
+            sub = tk.Menu(bar, tearoff=False)
+            bar.add_cascade(label=label, menu=sub, underline=0)
+            return sub
+
+        file = menu("File")
+        file.add_command(label="Back up live folder now", command=self.on_backup, underline=0)
+        file.add_command(label="Restore whole folder from a backup...", command=self.on_restore,
+                         underline=0)
+        file.add_command(label="Import...", command=self.on_import, underline=0)
+        file.add_command(label="Discover backups", command=self.on_discover, underline=0)
+        file.add_separator()
+        file.add_command(label="Exit", command=self.destroy, underline=1)
+
+        edit = menu("Edit")
+        edit.add_command(label="Undo the last change to the active live folder",
+                         command=self.on_undo, underline=0)
+
+        view = menu("View")
+        for name, key in ((ORGANIZER, "Ctrl+1"), (CLASSIC, "Ctrl+2")):
+            view.add_radiobutton(label=VIEW_TITLES[name], variable=self.view_var, value=name,
+                                 command=lambda n=name: self.show_view(n), accelerator=key)
+        view.add_separator()
+        view.add_command(label="Refresh", command=self.refresh, accelerator="F5", underline=0)
+        view.add_separator()
+        themes = tk.Menu(view, tearoff=False)
+        for choice in theme.CHOICES:
+            themes.add_radiobutton(label=theme.CHOICE_LABELS[choice], variable=self.theme_var,
+                                   value=theme.CHOICE_LABELS[choice],
+                                   command=self._on_theme_changed)
+        view.add_cascade(label="Theme", menu=themes, underline=0)
+        view.add_command(label="Zoom in", command=lambda: self._zoom(1), accelerator="Ctrl++")
+        view.add_command(label="Zoom out", command=lambda: self._zoom(-1), accelerator="Ctrl+-")
+        view.add_command(label="Actual size", command=self._zoom_reset, accelerator="Ctrl+0")
+
+        live = menu("Live")
+        live.add_command(label="Accounts...", command=self.on_accounts, underline=0)
+        live.add_command(label="Rescan live folders", command=self.on_rescan, underline=0)
+        live.add_command(label="Extract a slot", command=self.on_extract, underline=0)
+        live.add_command(label="Clear a slot...", command=self.on_clear, underline=0)
+        live.add_command(label="Copy into a live slot...", command=self.on_copy_slot,
+                         underline=5)
+        live.add_command(label="Promote", command=self.on_promote, underline=0)
+
+        tools = menu("Tools")
+        tools.add_command(label="Play time...", command=self.on_playtime, underline=0)
+        tools.add_command(label="Check for updates...", command=self.on_check_updates,
+                          underline=0)
+
+        about = menu("Help")
+        about.add_command(label="Help", command=self.on_help, accelerator="F1", underline=0)
+        about.add_command(label="About NMS Save Vault", command=self.on_about, underline=0)
+        self.configure(menu=bar)
+        self.bind_all("<F1>", self._shortcut(self.on_help))
+        self.bind_all("<F5>", self._shortcut(self.refresh))
+        self.bind_all("<Control-Key-0>", self._shortcut(self._zoom_reset))
+
+    def _shortcut(self, action):
+        """A window-wide key. Ignored while a dialog or the "Please wait" window holds the
+        grab: F5 must not refresh the panes under an open dialog, nor zoom rebuild them."""
+        def run(_event=None):
+            if self.grab_current() is None:
+                action()
+            return "break"
+        return run
+
     def _build_widgets(self) -> None:
-        self.toolbar = FlowBar(self)
-        self.toolbar.pack(side=tk.TOP, fill=tk.X, padx=6, pady=4)
+        """Shell 10a (D6 2.11): the menu bar, the update banner, the tabs and the status bar;
+        the tabs hold today's window content (Live saves and backups) and the organizer."""
+        self.theme_var = tk.StringVar(value=theme.CHOICE_LABELS.get(self.state.theme, "System"))
+        self.view_var = tk.StringVar(value=CLASSIC)
+        self._build_menubar()
+
+        self.status = tk.StringVar(value="")
+        ttk.Label(
+            self, textvariable=self.status, anchor="w", relief="sunken", style="Status.TLabel"
+        ).pack(side=tk.BOTTOM, fill=tk.X)
+
+        # Shown only when a newer release is found; packed above the tabs at that point.
+        self.banner = ttk.Frame(self, style="Banner.TFrame", padding=pxs(8, 6))
+        self.banner_var = tk.StringVar(value="")
+        ttk.Label(self.banner, textvariable=self.banner_var, style="Banner.TLabel").pack(side=tk.LEFT)
+        ttk.Button(self.banner, text="Dismiss", command=self._hide_banner).pack(side=tk.RIGHT, padx=pxs(6, 0))
+        ttk.Button(self.banner, text="Open download page", command=self._open_releases).pack(side=tk.RIGHT)
+        # Packed only when this build can actually replace itself -- see _show_update_banner.
+        self.install_button = ttk.Button(
+            self.banner, text="Install update", command=self.on_install_update
+        )
+
+        self.notebook = ttk.Notebook(self)
+        self.notebook.pack(fill=tk.BOTH, expand=True, pady=pxs(2, 0))
+        # The classic tab: today's toolbar, "Active live" and the two panes, unchanged. Its
+        # handlers stay on the App until phase 2 re-routes them (D6 step 19).
+        self.classic_view = ttk.Frame(self.notebook)
+        self.organizer_view = ttk.Frame(self.notebook)
+        self.notebook.add(self.classic_view, text=VIEW_TITLES[CLASSIC])
+        self.notebook.add(self.organizer_view, text=VIEW_TITLES[ORGANIZER])
+        self._build_classic_view(self.classic_view)
+        self.notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
+        self.bind_all("<Control-Key-1>", self._shortcut(lambda: self.show_view(ORGANIZER)))
+        self.bind_all("<Control-Key-2>", self._shortcut(lambda: self.show_view(CLASSIC)))
+
+        # Both spellings of each key: Ctrl+= and Ctrl+- are what those keys report
+        # unshifted, Ctrl++ and Ctrl+_ what they report with Shift held, plus the keypad.
+        for seq in ("<Control-plus>", "<Control-equal>", "<Control-KP_Add>"):
+            self.bind_all(seq, self._shortcut(lambda: self._zoom(1)))
+        for seq in ("<Control-minus>", "<Control-underscore>", "<Control-KP_Subtract>"):
+            self.bind_all(seq, self._shortcut(lambda: self._zoom(-1)))
+
+    # --- the tabs --------------------------------------------------------------
+
+    def show_view(self, name: str) -> None:
+        """Bring a tab to the front: ``"organizer"`` or ``"classic"``."""
+        tab = self.organizer_view if name == ORGANIZER else self.classic_view
+        self.notebook.select(tab)
+
+    def _open_last_view(self) -> None:
+        """Open on the tab used last (the classic one the first time). Opening a tab is not
+        changing it: nothing is saved until the user switches."""
+        last = self.state.ui.get("last_view")
+        self.state.ui["last_view"] = last if last in VIEW_TITLES else CLASSIC
+        self.show_view(self.state.ui["last_view"])
+        self._on_tab_changed()
+
+    def current_view(self) -> str:
+        return ORGANIZER if self.notebook.select() == str(self.organizer_view) else CLASSIC
+
+    def _on_tab_changed(self, _event=None) -> None:
+        """Remember the tab (``ui.last_view``): the app opens in the one used last."""
+        name = self.current_view()
+        self.view_var.set(name)
+        self.title(f"NMS Save Vault v{__version__} - {VIEW_TITLES[name]}")
+        if self.state.ui.get("last_view") != name:
+            self.state.ui["last_view"] = name
+            self._save_state_quietly()
+
+    def _build_classic_view(self, parent: ttk.Frame) -> None:
+        self.toolbar = FlowBar(parent)
+        self.toolbar.pack(side=tk.TOP, fill=tk.X, padx=px(6), pady=px(4))
         for text, cmd in [
             ("Backup live", self.on_backup),
             ("Restore", self.on_restore),
@@ -588,46 +756,21 @@ class App(tk.Tk):
         ]:
             self.toolbar.add(text, cmd)
 
-        controls = ttk.Frame(self)
-        controls.pack(side=tk.TOP, fill=tk.X, padx=6, pady=(0, 4))
+        controls = ttk.Frame(parent)
+        controls.pack(side=tk.TOP, fill=tk.X, padx=px(6), pady=pxs(0, 4))
 
         # Active live (write target) selector -- the writable accounts (Steam + Xbox).
         self._source_choices: dict[str, str] = {}  # label -> source id
         self.active_var = tk.StringVar(value="")
         ttk.Label(controls, text="Active live:").pack(side=tk.LEFT)
         self.active_combo = ttk.Combobox(controls, textvariable=self.active_var, state="readonly", width=30)
-        self.active_combo.pack(side=tk.LEFT, padx=(4, 16))
+        self.active_combo.pack(side=tk.LEFT, padx=pxs(4, 16))
         self.active_combo.bind("<<ComboboxSelected>>", self._on_active_changed)
-
-        self.theme_var = tk.StringVar(value=theme.CHOICE_LABELS.get(self.state.theme, "System"))
-        self.theme_combo = ttk.Combobox(
-            controls, textvariable=self.theme_var, state="readonly", width=8,
-            values=[theme.CHOICE_LABELS[c] for c in theme.CHOICES],
-        )
-        self.theme_combo.pack(side=tk.RIGHT)
-        self.theme_combo.bind("<<ComboboxSelected>>", self._on_theme_changed)
-        ttk.Label(controls, text="Theme:").pack(side=tk.RIGHT, padx=(0, 4))
-
-        self.status = tk.StringVar(value="")
-        ttk.Label(
-            self, textvariable=self.status, anchor="w", relief="sunken", style="Status.TLabel"
-        ).pack(side=tk.BOTTOM, fill=tk.X)
 
         # Two independent trees, one per pane: live saves are browsed, backups are
         # searched and sorted, and mixing them in one tree made both worse.
-        # Shown only when a newer release is found; packed above the panes at that point.
-        self.banner = ttk.Frame(self, style="Banner.TFrame", padding=(8, 6))
-        self.banner_var = tk.StringVar(value="")
-        ttk.Label(self.banner, textvariable=self.banner_var, style="Banner.TLabel").pack(side=tk.LEFT)
-        ttk.Button(self.banner, text="Dismiss", command=self._hide_banner).pack(side=tk.RIGHT, padx=(6, 0))
-        ttk.Button(self.banner, text="Open download page", command=self._open_releases).pack(side=tk.RIGHT)
-        # Packed only when this build can actually replace itself -- see _show_update_banner.
-        self.install_button = ttk.Button(
-            self.banner, text="Install update", command=self.on_install_update
-        )
-
-        panes = ttk.PanedWindow(self, orient=tk.VERTICAL)
-        panes.pack(fill=tk.BOTH, expand=True, padx=6, pady=4)
+        panes = ttk.PanedWindow(parent, orient=tk.VERTICAL)
+        panes.pack(fill=tk.BOTH, expand=True, padx=px(6), pady=px(4))
         self._panes = panes
 
         self.live_tree = self._make_pane(
@@ -647,14 +790,14 @@ class App(tk.Tk):
         )
         body = self.backup_tree.master
         filter_row = ttk.Frame(body.master)
-        filter_row.pack(side=tk.TOP, fill=tk.X, pady=(0, 2), before=body)
+        filter_row.pack(side=tk.TOP, fill=tk.X, pady=pxs(0, 2), before=body)
         ttk.Label(filter_row, text="Save file:").pack(side=tk.LEFT)
         self.history_var = tk.StringVar(value=ALL_SAVES)
         self.history_combo = ttk.Combobox(
             filter_row, textvariable=self.history_var, state="readonly", width=80,
             values=[ALL_SAVES], postcommand=self._fill_history_combo,
         )
-        self.history_combo.pack(side=tk.LEFT, padx=(4, 0))
+        self.history_combo.pack(side=tk.LEFT, padx=pxs(4, 0))
         self.history_combo.bind("<<ComboboxSelected>>", self._on_history_changed)
         # Which tree the toolbar acts on: whichever the user last selected in.
         self._active_tree = self.live_tree
@@ -667,13 +810,6 @@ class App(tk.Tk):
             tree.bind("<<TreeviewSelect>>", self._on_tree_select)
             Tooltip(tree, self._tip_for_row)
 
-        # Both spellings of each key: Ctrl+= and Ctrl+- are what those keys report
-        # unshifted, Ctrl++ and Ctrl+_ what they report with Shift held, plus the keypad.
-        for seq in ("<Control-plus>", "<Control-equal>", "<Control-KP_Add>"):
-            self.bind_all(seq, lambda _e: self._zoom(1))
-        for seq in ("<Control-minus>", "<Control-underscore>", "<Control-KP_Subtract>"):
-            self.bind_all(seq, lambda _e: self._zoom(-1))
-
     # --- theme ---------------------------------------------------------------
 
     def _apply_theme(self, *, persist: bool = False) -> None:
@@ -683,6 +819,7 @@ class App(tk.Tk):
         light-mode green and amber are unreadable on a dark tree background.
         """
         self.state.font_scale = theme.apply_font_scale(self, self.state.font_scale)
+        self._rezoom_pixels(self.state.font_scale)
         self.after_idle(self.toolbar.reflow)       # the buttons' widths follow the font
         name = theme.apply(self, self.state.theme, self._native_ttk_theme)
         p = theme.PALETTES[name]
@@ -695,21 +832,63 @@ class App(tk.Tk):
         TOOLTIP_STYLE.update(
             background=p["tip_bg"], foreground=p["tip_fg"], border=p["tip_border"]
         )
+        self._dark = name == theme.DARK
+        for window in self._windows():
+            theme.dark_title_bar(window, self._dark)
         if persist:
             try:
-                appstate.save(self.state)
+                appstate.save(self.state, self.state_path)
             except OSError as exc:
                 _showwarning("Theme", f"Could not save your theme choice:\n{exc}")
+
+    def _windows(self) -> list[tk.Misc]:
+        """The main window and every open window of the app."""
+        out: list[tk.Misc] = [self]
+        stack = list(self.winfo_children())
+        while stack:
+            widget = stack.pop()
+            if isinstance(widget, tk.Toplevel):
+                out.append(widget)
+            stack.extend(widget.winfo_children())
+        return out
+
+    def _on_window_mapped(self, event) -> None:
+        if self._dark and isinstance(event.widget, (tk.Tk, tk.Toplevel)):
+            theme.dark_title_bar(event.widget, True)
+
+    def _rezoom_pixels(self, zoom: float) -> None:
+        """Move px() to ``zoom`` and stretch the tree columns by the same ratio.
+
+        By ratio rather than back to the design widths, so a column the user dragged wider
+        stays wider. Paddings of widgets already built keep their size until rebuilt;
+        styles (theme.apply) and every dialog opened from now on use the new factor.
+        """
+        before = dpi.zoom()
+        if zoom == before:
+            return
+        dpi.configure(zoom=zoom)
+        ratio = zoom / before
+        for tree in (self.live_tree, self.backup_tree):
+            for column in ("#0", *tree["columns"]):
+                width = int(tree.column(column, "width"))
+                tree.column(column, width=max(1, int(round(width * ratio))))
 
     def _zoom(self, steps: int) -> None:
         """Ctrl+/Ctrl-: step the font zoom; does nothing at the ends of the range.
 
         Saved quietly: a keystroke should not raise a modal because the install folder
-        is read-only, and the theme dropdown already reports that failure loudly.
+        is read-only, and the theme menu already reports that failure loudly.
         """
         wanted = theme.clamp_font_scale(
             self.state.font_scale + steps * theme.FONT_SCALE_STEP
         )
+        self._set_zoom(wanted)
+
+    def _zoom_reset(self) -> None:
+        """Ctrl+0 / View > Actual size."""
+        self._set_zoom(1.0)
+
+    def _set_zoom(self, wanted: float) -> None:
         if wanted == self.state.font_scale:
             return
         self.state.font_scale = wanted
@@ -721,9 +900,9 @@ class App(tk.Tk):
     def _save_state_quietly(self) -> None:
         """Persist preferences. A read-only install dir is not worth a modal at startup;
         the setting simply will not stick, and the user is told if they try to change it
-        from the theme dropdown (which reports the same failure loudly)."""
+        from the theme menu (which reports the same failure loudly)."""
         try:
-            appstate.save(self.state)
+            appstate.save(self.state, self.state_path)
         except OSError:
             pass
 
@@ -801,10 +980,10 @@ class App(tk.Tk):
         # Windows, and a release with a zip attached. Offering a button that can only
         # apologise is worse than not offering it.
         if updates.can_install(release)[0]:
-            self.install_button.pack(side=tk.RIGHT, padx=(0, 6))
+            self.install_button.pack(side=tk.RIGHT, padx=pxs(0, 6))
         else:
             self.install_button.pack_forget()
-        self.banner.pack(side=tk.TOP, fill=tk.X, padx=6, pady=(0, 4), before=self._panes)
+        self.banner.pack(side=tk.TOP, fill=tk.X, padx=px(6), pady=pxs(0, 4), before=self.notebook)
 
     def _hide_banner(self) -> None:
         self.banner.pack_forget()
@@ -914,10 +1093,10 @@ class App(tk.Tk):
         win.title("Installing update")
         win.transient(self)
         win.resizable(False, False)
-        label = ttk.Label(win, text=f"Contacting GitHub for version {version}...", padding=(24, 18, 24, 8))
+        label = ttk.Label(win, text=f"Contacting GitHub for version {version}...", padding=pxs(24, 18, 24, 8))
         label.pack()
-        bar = ttk.Progressbar(win, mode="indeterminate", length=320)
-        bar.pack(padx=24, pady=(0, 20))
+        bar = ttk.Progressbar(win, mode="indeterminate", length=px(320))
+        bar.pack(padx=px(24), pady=pxs(0, 20))
         bar.start(12)
         win.update_idletasks()
         x = self.winfo_rootx() + (self.winfo_width() - win.winfo_width()) // 2
@@ -943,20 +1122,20 @@ class App(tk.Tk):
         frame = ttk.Frame(panes)
         panes.add(frame, weight=weight)
         ttk.Label(frame, text=title, font=theme.HEADING_FONT, anchor="w").pack(
-            side=tk.TOP, fill=tk.X, pady=(0, 2)
+            side=tk.TOP, fill=tk.X, pady=pxs(0, 2)
         )
         body = ttk.Frame(frame)
         body.pack(fill=tk.BOTH, expand=True)
         tree = RedactingTreeview(body, columns=[c.key for c in columns], show="tree headings")
         tree.heading("#0", text=tree_heading)
-        tree.column("#0", width=300, anchor="w")
+        tree.column("#0", width=px(300), anchor="w")
         for col in columns:
             if sortable:
                 tree.heading(col.key, text=col.title,
                              command=lambda k=col.key: self._sort_backups(k))
             else:
                 tree.heading(col.key, text=col.title)
-            tree.column(col.key, width=col.width, anchor="w")
+            tree.column(col.key, width=px(col.width), anchor="w")
         vsb = ttk.Scrollbar(body, orient="vertical", command=tree.yview)
         tree.configure(yscrollcommand=vsb.set)
         tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
@@ -1540,9 +1719,9 @@ class App(tk.Tk):
         win.title("Please wait")
         win.transient(self)
         win.resizable(False, False)
-        ttk.Label(win, text=message, padding=(24, 18, 24, 8)).pack()
-        pb = ttk.Progressbar(win, mode="indeterminate", length=260)
-        pb.pack(padx=24, pady=(0, 20))
+        ttk.Label(win, text=message, padding=pxs(24, 18, 24, 8)).pack()
+        pb = ttk.Progressbar(win, mode="indeterminate", length=px(260))
+        pb.pack(padx=px(24), pady=pxs(0, 20))
         pb.start(12)
         win.update_idletasks()
         # centre over the main window
@@ -1832,7 +2011,7 @@ class App(tk.Tk):
         """Re-scan AppData for live sources and merge any new accounts into the config."""
         added = discover.merge_live_sources(self.state)
         try:
-            appstate.save(self.state)
+            appstate.save(self.state, self.state_path)
         except OSError as exc:
             _showwarning("Rescan", f"Found sources but could not save config:\n{exc}")
         # If we had no active writable source yet, adopt the first one found.
@@ -1931,17 +2110,26 @@ class App(tk.Tk):
                 f"Could not read the account display names.\n\nFix or delete this file:\n{exc}",
             )
 
+    def on_about(self) -> None:
+        _showinfo(
+            "About NMS Save Vault",
+            f"NMS Save Vault {__version__}\n\n"
+            "Backs up, catalogs and re-slots No Man's Sky saves (Steam and Xbox / Game "
+            "Pass).\n\n"
+            "GPL-3.0. Parts are a port of libNOM.io and NomNom; see the README for the "
+            "credits.",
+        )
+
     def on_help(self) -> None:
         win = tk.Toplevel(self)
         win.title("NMS Save Vault - Help")
-        win.geometry("760x620")
-        ttk.Button(win, text="Close", command=win.destroy).pack(side=tk.BOTTOM, pady=6)
+        ttk.Button(win, text="Close", command=win.destroy).pack(side=tk.BOTTOM, pady=px(6))
         vsb = ttk.Scrollbar(win, orient="vertical")
         vsb.pack(side=tk.RIGHT, fill=tk.Y)
         p = theme.palette(self.state.theme)  # tk.Text is a classic widget: no ttk style
         win.configure(background=p["bg"])
         txt = tk.Text(
-            win, wrap="word", padx=10, pady=10, yscrollcommand=vsb.set,
+            win, wrap="word", padx=px(10), pady=px(10), yscrollcommand=vsb.set,
             background=p["field"], foreground=p["fg"], insertbackground=p["fg"],
             relief="flat",
         )
@@ -1949,6 +2137,7 @@ class App(tk.Tk):
         vsb.config(command=txt.yview)
         txt.insert("1.0", HELP_TEXT)
         txt.configure(state="disabled")
+        dpi.fit_to_content(win, 760, 620)
 
 
 class PlaytimeDialog(tk.Toplevel):
@@ -1962,13 +2151,12 @@ class PlaytimeDialog(tk.Toplevel):
     def __init__(self, master, report) -> None:
         super().__init__(master)
         self.title("NMS Save Vault - Play time")
-        self.geometry("720x460")
         self.transient(master)
 
         total = ops.format_duration(report.total_play_time)
         ttk.Label(
             self, text=f"{len(report.playthroughs)} playthroughs, {total} of play time in total.",
-            font=theme.HEADING_FONT, padding=(12, 10, 12, 2),
+            font=theme.HEADING_FONT, padding=pxs(12, 10, 12, 2),
         ).pack(side=tk.TOP, anchor="w")
         ttk.Label(
             self,
@@ -1976,10 +2164,10 @@ class PlaytimeDialog(tk.Toplevel):
                 f"Counted once each across {report.saves} save files in {report.folders} "
                 "folders (live saves + vault backups)."
             ),
-            padding=(12, 0, 12, 8),
+            padding=pxs(12, 0, 12, 8),
         ).pack(side=tk.TOP, anchor="w")
 
-        ttk.Button(self, text="Close", command=self.destroy).pack(side=tk.BOTTOM, pady=8)
+        ttk.Button(self, text="Close", command=self.destroy).pack(side=tk.BOTTOM, pady=px(8))
         if report.unidentified:
             ttk.Label(
                 self,
@@ -1987,10 +2175,10 @@ class PlaytimeDialog(tk.Toplevel):
                     f"{report.unidentified} save(s) predate the id the game now writes and are "
                     "counted by name, so two runs sharing a name would merge."
                 ),
-                padding=(12, 0, 12, 6),
+                padding=pxs(12, 0, 12, 6),
             ).pack(side=tk.BOTTOM, anchor="w")
 
-        frame = ttk.Frame(self, padding=(12, 0, 12, 0))
+        frame = ttk.Frame(self, padding=pxs(12, 0, 12, 0))
         frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
         vsb = ttk.Scrollbar(frame, orient="vertical")
         vsb.pack(side=tk.RIGHT, fill=tk.Y)
@@ -2005,7 +2193,7 @@ class PlaytimeDialog(tk.Toplevel):
             ("name", "Save", 400, "w"),
         ):
             tree.heading(cid, text=text)
-            tree.column(cid, width=width, anchor=anchor, stretch=(cid == "name"))
+            tree.column(cid, width=px(width), anchor=anchor, stretch=(cid == "name"))
         tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         vsb.config(command=tree.yview)
         for row in report.playthroughs:
@@ -2014,6 +2202,7 @@ class PlaytimeDialog(tk.Toplevel):
                 "", "end",
                 values=(ops.format_duration(row.play_time), ", ".join(row.platforms), row.copies, name),
             )
+        dpi.fit_to_content(self, 720, 460)
 
 
 class AccountsDialog(tk.Toplevel):
@@ -2034,7 +2223,7 @@ class AccountsDialog(tk.Toplevel):
 
         ttk.Label(
             self,
-            padding=(14, 12, 14, 8),
+            padding=pxs(14, 12, 14, 8),
             justify="left",
             text=(
                 "Show a name of your choosing instead of the real account id.\n"
@@ -2044,29 +2233,29 @@ class AccountsDialog(tk.Toplevel):
             ),
         ).pack(anchor="w")
 
-        grid = ttk.Frame(self, padding=(14, 0, 14, 8))
+        grid = ttk.Frame(self, padding=pxs(14, 0, 14, 8))
         grid.pack(fill=tk.X)
         accounts = self._known_accounts()
         if not accounts:
             ttk.Label(grid, text="No accounts found yet -- use Rescan first.").grid(sticky="w")
         for column, heading in enumerate(("Platform", "Real account id", "Shows as")):
             ttk.Label(grid, text=heading, font=theme.BOLD_FONT).grid(
-                row=0, column=column, sticky="w", padx=(0, 10), pady=(0, 4)
+                row=0, column=column, sticky="w", padx=pxs(0, 10), pady=pxs(0, 4)
             )
         for row, (platform, account) in enumerate(accounts, start=1):
-            ttk.Label(grid, text=platform).grid(row=row, column=0, sticky="w", padx=(0, 10), pady=2)
+            ttk.Label(grid, text=platform).grid(row=row, column=0, sticky="w", padx=pxs(0, 10), pady=px(2))
             real = ttk.Entry(grid, width=52)  # fits a 49-char Xbox <xuid>_<titleid> whole
             real.insert(0, account)
             real.configure(state="readonly")  # selectable so it can be copied, not edited
-            real.grid(row=row, column=1, sticky="w", padx=(0, 10), pady=2)
+            real.grid(row=row, column=1, sticky="w", padx=pxs(0, 10), pady=px(2))
             var = tk.StringVar(value=self.amap.alias_for(account))
             self._vars[account] = var
-            ttk.Entry(grid, textvariable=var, width=26).grid(row=row, column=2, sticky="w", pady=2)
+            ttk.Entry(grid, textvariable=var, width=26).grid(row=row, column=2, sticky="w", pady=px(2))
 
-        buttons = ttk.Frame(self, padding=(14, 0, 14, 12))
+        buttons = ttk.Frame(self, padding=pxs(14, 0, 14, 12))
         buttons.pack(fill=tk.X)
         ttk.Button(buttons, text="Cancel", command=self.destroy).pack(side=tk.RIGHT)
-        ttk.Button(buttons, text="Save", command=self._save).pack(side=tk.RIGHT, padx=6)
+        ttk.Button(buttons, text="Save", command=self._save).pack(side=tk.RIGHT, padx=px(6))
 
         self.update_idletasks()
         x = app.winfo_rootx() + (app.winfo_width() - self.winfo_width()) // 2
@@ -2102,23 +2291,22 @@ class ChooseSourceDialog(tk.Toplevel):
         self.result: SlotSource | None = None
         self.title("Choose the save to copy from")
         self.transient(app)
-        self.geometry("760x460")
 
         ttk.Label(
-            self, padding=(14, 12, 14, 6), justify="left",
+            self, padding=pxs(14, 12, 14, 6), justify="left",
             text="Pick the slot you want to copy. Both of its saves (the Auto-Save and the\n"
                  "Restore-Point) are copied together.",
         ).pack(anchor="w")
 
-        body = ttk.Frame(self, padding=(14, 0, 14, 8))
+        body = ttk.Frame(self, padding=pxs(14, 0, 14, 8))
         body.pack(fill=tk.BOTH, expand=True)
         self.tree = RedactingTreeview(body, columns=("name", "saved"), show="tree headings")
         self.tree.heading("#0", text="Folder / Slot")
-        self.tree.column("#0", width=330, anchor="w")
+        self.tree.column("#0", width=px(330), anchor="w")
         self.tree.heading("name", text="Save name")
-        self.tree.column("name", width=230, anchor="w")
+        self.tree.column("name", width=px(230), anchor="w")
         self.tree.heading("saved", text="Saved")
-        self.tree.column("saved", width=130, anchor="w")
+        self.tree.column("saved", width=px(130), anchor="w")
         vsb = ttk.Scrollbar(body, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=vsb.set)
         self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
@@ -2128,11 +2316,12 @@ class ChooseSourceDialog(tk.Toplevel):
         self._sources: dict[str, SlotSource] = {}
         self._populate()
 
-        buttons = ttk.Frame(self, padding=(14, 0, 14, 12))
+        buttons = ttk.Frame(self, padding=pxs(14, 0, 14, 12))
         buttons.pack(fill=tk.X)
         ttk.Button(buttons, text="Cancel", command=self.destroy).pack(side=tk.RIGHT)
-        ttk.Button(buttons, text="Use this slot", command=self._accept).pack(side=tk.RIGHT, padx=6)
+        ttk.Button(buttons, text="Use this slot", command=self._accept).pack(side=tk.RIGHT, padx=px(6))
 
+        dpi.fit_to_content(self, 760, 460)
         self.grab_set()
         self.wait_window()
 
@@ -2196,8 +2385,8 @@ class CopySlotDialog(tk.Toplevel):
             _showerror("No writable live folder", "There is no live save folder to copy into.")
             return
 
-        frame = ttk.LabelFrame(self, text=" Copy from ", padding=(12, 8))
-        frame.pack(fill=tk.X, padx=14, pady=(12, 6))
+        frame = ttk.LabelFrame(self, text=" Copy from ", padding=pxs(12, 8))
+        frame.pack(fill=tk.X, padx=px(14), pady=pxs(12, 6))
         self.source_var = tk.StringVar()
         # The button first: a long caption is then what gets cut, never the button.
         ttk.Button(frame, text="Change...", command=self._choose_source).pack(side=tk.RIGHT)
@@ -2207,20 +2396,20 @@ class CopySlotDialog(tk.Toplevel):
 
         # The buttons and the rule go in from the bottom BEFORE the slot list: when the
         # window is short (a large font zoom), pack then shrinks the list, never them (P10).
-        buttons = ttk.Frame(self, padding=(14, 0, 14, 12))
+        buttons = ttk.Frame(self, padding=pxs(14, 0, 14, 12))
         buttons.pack(side=tk.BOTTOM, fill=tk.X)
         ttk.Button(buttons, text="Cancel", command=self.destroy).pack(side=tk.RIGHT)
-        ttk.Button(buttons, text="Copy", command=self._accept).pack(side=tk.RIGHT, padx=6)
-        rule = ttk.Label(self, padding=(14, 0, 14, 6), justify="left", text=COPY_RULE.replace("\n", " "))
+        ttk.Button(buttons, text="Copy", command=self._accept).pack(side=tk.RIGHT, padx=px(6))
+        rule = ttk.Label(self, padding=pxs(14, 0, 14, 6), justify="left", text=COPY_RULE.replace("\n", " "))
         rule.pack(side=tk.BOTTOM, fill=tk.X)
         # Wrapped to the window, however narrow: the caption grows taller, not wider.
-        rule.bind("<Configure>", lambda e: rule.configure(wraplength=max(200, e.width - 28)))
-        rule.configure(wraplength=640)
+        rule.bind("<Configure>", lambda e: rule.configure(wraplength=max(px(200), e.width - px(28))))
+        rule.configure(wraplength=px(640))
 
-        frame = ttk.LabelFrame(self, text=" Into this live slot ", padding=(12, 8))
-        frame.pack(fill=tk.BOTH, expand=True, padx=14, pady=6)
+        frame = ttk.LabelFrame(self, text=" Into this live slot ", padding=pxs(12, 8))
+        frame.pack(fill=tk.BOTH, expand=True, padx=px(14), pady=px(6))
         picker = ttk.Frame(frame)
-        picker.pack(fill=tk.X, pady=(0, 6))
+        picker.pack(fill=tk.X, pady=pxs(0, 6))
         ttk.Label(picker, text="Live folder:").pack(side=tk.LEFT)
         self._target_labels = {_source_caption(s): s for s in self._targets}
         self.target_var = tk.StringVar()
@@ -2228,7 +2417,7 @@ class CopySlotDialog(tk.Toplevel):
             picker, textvariable=self.target_var, state="readonly",
             values=list(self._target_labels), width=40,
         )
-        self.target_combo.pack(side=tk.LEFT, padx=6)
+        self.target_combo.pack(side=tk.LEFT, padx=px(6))
         self.target_combo.bind("<<ComboboxSelected>>", lambda _e: self._reload_slots())
         if len(self._targets) == 1:
             self.target_combo.configure(state="disabled")
@@ -2239,11 +2428,11 @@ class CopySlotDialog(tk.Toplevel):
             holder, columns=("name", "saved"), show="tree headings", height=12
         )
         self.slots.heading("#0", text="Slot")
-        self.slots.column("#0", width=70, anchor="w")
+        self.slots.column("#0", width=px(70), anchor="w")
         self.slots.heading("name", text="What is in it now")
-        self.slots.column("name", width=330, anchor="w")
+        self.slots.column("name", width=px(330), anchor="w")
         self.slots.heading("saved", text="Saved")
-        self.slots.column("saved", width=130, anchor="w")
+        self.slots.column("saved", width=px(130), anchor="w")
         vsb = ttk.Scrollbar(holder, orient="vertical", command=self.slots.yview)
         self.slots.configure(yscrollcommand=vsb.set)
         self.slots.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
@@ -2260,10 +2449,7 @@ class CopySlotDialog(tk.Toplevel):
 
         # Big enough for what it holds at the current font size, at least the old 700x540,
         # and never wider or taller than the screen.
-        self.update_idletasks()
-        width = min(max(700, self.winfo_reqwidth()), int(self.winfo_screenwidth() * 0.95))
-        height = min(max(540, self.winfo_reqheight()), int(self.winfo_screenheight() * 0.9))
-        self.geometry(f"{width}x{height}")
+        dpi.fit_to_content(self, 700, 540)
         self.grab_set()
         self.wait_window()
 
@@ -2414,7 +2600,7 @@ BUTTONS
   Only actions that WRITE into the live folder can be undone -- Backup, Extract and
   Import merely add to the vault, so after one of those there is nothing to put back.
 - Refresh: Re-scan the live folder and the catalog.
-- Theme (top right): Light, Dark, or System, which follows your Windows light/dark
+- View > Theme: Light, Dark, or System, which follows your Windows light/dark
   setting. Your choice is remembered in the config.
 - Accounts: Give each account a display name to show instead of its real id (the Steam
   st_<steamid64> folder, the Xbox <xuid>_<titleid> folder). Once a name is set, the app
@@ -2423,10 +2609,17 @@ BUTTONS
   accounts.ini next to state.json; clearing a name shows the real id again.
 - Help: This dialog.
 
+MENUS
+Every button is also in the menu bar (File, Edit, View, Live, Tools, Help), so Alt and
+the underlined letter reach it whatever the window size.
+
 KEYBOARD
 - Ctrl+plus / Ctrl+minus make every font in the window bigger or smaller, from 70% to
-  200% of your system's own size. The tree rows grow with the text, and the size is
-  remembered in the config just like the theme is.
+  200% of your system's own size; Ctrl+0 goes back to 100%. The tree rows grow with the
+  text, and the size is remembered in the config just like the theme is.
+- F1 opens this help, F5 refreshes.
+- Ctrl+1 shows the Organizer tab, Ctrl+2 the Live saves and backups tab. The app opens
+  on the tab you used last.
 
 RIGHT-CLICK
 Every row offers exactly what makes sense for it:
@@ -2484,6 +2677,11 @@ SAFETY
 
 
 def main(argv=None) -> int:
+    # First: under pythonw there is no console, so warnings and tracebacks go to a file.
+    logfile.configure(host_platform.user_cache_dir() / "logs")
+    # Before the first tk.Tk(): Tk reads the DPI once, when the root is made. Without this
+    # Windows stretches a 96-dpi bitmap of the window, which is blurry at 150 %.
+    dpi.enable_awareness()
     try:
         aliases.active()  # fail before any window shows a real id we were told to hide
     except aliases.AliasConfigError as exc:

@@ -16,11 +16,22 @@ Examples:
     nmsvault accounts --set 7656119...=Main    # hide the real account ids
     nmsvault undo
     nmsvault verify [live|<entry-id>|<path>]
+
+  The organizer (every save file, its versions and history):
+    nmsvault saves [--sort play_time] [--live-only] [--find TEXT] [--json]
+    nmsvault versions "Main Save" [--all]     # or a live slot: S9, X4
+    nmsvault board
+    nmsvault note "Main Save" --set "Next: Atlas path"
+    nmsvault note S9 --label "before the Atlas" --lock
+    nmsvault pin S9 [--off]
+    nmsvault scan                             # record what the live slots hold now
+    nmsvault organizer bootstrap [--dry-run]  # read in the history of an existing vault
 """
 from __future__ import annotations
 
 import argparse
 import builtins
+import json
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -29,6 +40,18 @@ from .core import aliases, catalog, discover, locations, operations as ops
 from .core import playtime, savedir, slotmap
 from .core import state as appstate
 from .core.catalog import Vault
+from .core.organizer import Organizer
+from .core.organizer.notes import NoteConflict
+from .core.organizer.readmodel import (
+    SORT_KEYS,
+    LineFilter,
+    RefError,
+    filter_lines,
+    resolve_save,
+    resolve_version,
+    sort_lines,
+)
+from .core.organizer.store import StoreBusy, StoreReadOnly
 
 _print = builtins.print
 
@@ -506,6 +529,208 @@ def cmd_accounts(args) -> int:
     return 0
 
 
+# --- the organizer -----------------------------------------------------------
+
+_METHOD_WORDS = {"journal": "seen in the slot", "capture-sequence": "seen in backups",
+                 "op": "put live by the app", "oplog": "put live by the app",
+                 "owner": "set by you"}
+
+
+def _organizer(args, *, writable: bool = False) -> Organizer:
+    """The organizer over the configured vault. Only the commands that write (scan, note and
+    pin changes, bootstrap) open it ``writable``; everything else opens it read-only, so not
+    even the catalog is tidied (D1 2.14.2) - the per-machine scan cache is still kept."""
+    st = appstate.load()
+    if args.vault:
+        root = Path(args.vault)
+    else:
+        root = Path(st.vault) if (st and st.vault) else locations.default_vault_dir()
+    sources = st.live_sources if st is not None else discover.discover_live_sources()
+    keep_cache = not getattr(args, "no_cache", False)
+    org = Organizer(root, sources, read_only=not writable, machine_cache=keep_cache)
+    for problem in org.problems:
+        print(f"note: {problem}", file=sys.stderr)
+    return org
+
+
+def _model(args, *, writable: bool = False):
+    """Listings look and never record (D1 O-D1-3): only the per-machine cache is written."""
+    org = _organizer(args, writable=writable)
+    return org, org.refresh(record=False)
+
+
+def _print_json(data) -> None:
+    print(json.dumps(data, ensure_ascii=False, indent=1))
+
+
+def _resolve(fn, model, ref):
+    try:
+        return fn(model, ref)
+    except RefError as exc:
+        _die(f"error: {exc}")
+
+
+def cmd_saves(args) -> int:
+    _, model = _model(args)
+    wanted = LineFilter(live=True if args.live_only else None, platform=args.platform,
+                        text=args.find or "")
+    lines = sort_lines(filter_lines(model.lines(), wanted), args.sort)
+    if args.json:
+        _print_json(model.to_dict(lines))
+        return 0
+    if not lines:
+        print("(no save files found)")
+        return 0
+    print(f"{'Name':<30}{'Live':<12}{'Versions':<10}{'Play':<9}{'Last played':<18}"
+          f"{'Difficulty':<12}Note")
+    print("-" * 110)
+    for line in lines:
+        live = ",".join(b.label for b in line.live) or "-"
+        versions = f"{line.version_count}" + (f"+{line.gone_count}" if line.gone_count else "")
+        mark = "*" if line.pinned else " "
+        print(f"{mark}{line.name[:28]:<29}{live:<12}{versions:<10}"
+              f"{_fmt_playtime(line.play_time):<9}{_fmt_ts(line.last_played):<18}"
+              f"{line.difficulty[:11]:<12}{line.note_preview[:40]}")
+    return 0
+
+
+def cmd_versions(args) -> int:
+    _, model = _model(args)
+    pid = _resolve(resolve_save, model, args.save)
+    rows = model.versions(pid)
+    if not args.all:
+        rows = tuple(r for r in rows if r.key)
+    if args.json:
+        _print_json(model.to_dict(rows))
+        return 0
+    line = model.line(pid)
+    shown = "" if args.all else f" ({len(rows)} key versions; --all for every one)"
+    print(f"{line.name}: {line.version_count} versions{shown}")
+    print(f"{'Saved':<18}{'Play':<9}{'Version':<10}{'Parent':<22}{'Where':<34}Notes")
+    print("-" * 110)
+    for r in rows:
+        parent = _METHOD_WORDS.get(r.parent_method or "", "") if r.parent else "by date"
+        where = r.locations[0].label if r.locations else ("gone" if "gone" in r.flags else "-")
+        flags = sorted(r.flags & {"live", "tip", "fork", "edited", "locked", "placed", "evicted"})
+        notes = " ".join(filter(None, [r.label, ",".join(flags)]))
+        print(f"{_fmt_ts(r.saved_at):<18}{_fmt_playtime(r.play_time):<9}{r.head[:8]:<10}"
+              f"{parent:<22}{where[:33]:<34}{notes}")
+    return 0
+
+
+def cmd_board(args) -> int:
+    _, model = _model(args)
+    board = model.live_board()
+    if args.json:
+        _print_json(model.to_dict(board))
+        return 0
+    for source in board.sources:
+        cloud = {True: "  (Steam Cloud: on)", False: "", None: ""}[source.steam_cloud]
+        print(f"{source.label}{cloud}")
+        print(f"  {'Slot':<7}{'Save':<30}{'Play':<9}{'Saved':<18}{'In vault':<15}Free first")
+        for slot in source.slots:
+            name = {"empty": "<empty>", "unreadable": "<cannot be read>"}.get(slot.state,
+                                                                                slot.name)
+            pin = " (pinned)" if slot.pinned else ""
+            rank = "" if slot.suggest_rank is None else str(slot.suggest_rank + 1)
+            print(f"  {slot.label:<7}{(name + pin)[:29]:<30}{_fmt_playtime(slot.play_time):<9}"
+                  f"{_fmt_ts(slot.saved_at):<18}{slot.vault_copy:<15}{rank}")
+    return 0
+
+
+def cmd_note(args) -> int:
+    version_flags = (args.label is not None or args.comment is not None or args.lock
+                     or args.unlock)
+    writes = version_flags or args.set is not None or args.append is not None
+    org, model = _model(args, writable=writes)
+    try:
+        if version_flags:
+            row = _resolve(resolve_version, model, args.ref)
+            note = org.notes.set_version_note(
+                row.head, pair=row.pair, pid=row.pid, label=args.label, comment=args.comment,
+                locked=True if args.lock else (False if args.unlock else None))
+            state = "locked" if note.locked else "not locked"
+            print(f"Version {row.head[:8]}: label {note.label!r}, {state}")
+            return 0
+        pid = _resolve(resolve_save, model, args.ref)
+        current = org.notes.save_note(pid)
+        if args.history:
+            for rev in (current.history if current else ()):
+                print(f"--- revision {rev.rev}, {_fmt_ts(rev.at)}")
+                print(rev.text)
+            if current and current.rev:
+                print(f"--- revision {current.rev} (now), {_fmt_ts(current.at)}")
+                print(current.text)
+            return 0
+        if args.set is None and args.append is None:
+            print(current.text if current and current.text else "(no note)")
+            return 0
+        before = current.text if current else ""
+        text = args.set if args.set is not None else "\n".join(filter(None, [before, args.append]))
+        saved = org.notes.set_save_note(pid, text, base_rev=current.rev if current else None)
+        print(f"Note saved (revision {saved.rev}).")
+        return 0
+    except (NoteConflict, StoreBusy, StoreReadOnly, ValueError) as exc:
+        _die(f"error: {exc}")
+
+
+def cmd_pin(args) -> int:
+    org, model = _model(args, writable=True)
+    pid = _resolve(resolve_save, model, args.save)
+    try:
+        org.notes.set_pinned(pid, not args.off)
+    except (StoreBusy, StoreReadOnly) as exc:
+        _die(f"error: {exc}")
+    state = "no longer pinned" if args.off else "pinned: never suggested for eviction"
+    print(f"{model.line(pid).name}: {state}")
+    return 0
+
+
+def cmd_scan(args) -> int:
+    org = _organizer(args, writable=True)
+    try:
+        model = org.refresh(record=True)
+    except (StoreBusy, StoreReadOnly) as exc:
+        _die(f"error: {exc}")
+    observed = org.observed
+    if observed is None:
+        why = "; ".join(org.problems) or "the vault cannot be written"
+        _die(f"error: nothing was recorded - the organizer is read-only here ({why})")
+    labels = {slot.target: slot.label for src in model.live_board().sources for slot in src.slots}
+    print(f"Journaled {observed.written} live slot(s).")
+    for event in observed.events:
+        if event.kind != "first-seen":
+            print(f"  {labels.get(event.target, '?'):<6}{event.kind}")
+    reasons: dict[str, int] = {}
+    for _, reason in observed.skipped:
+        reasons[reason] = reasons.get(reason, 0) + 1
+    for reason, count in sorted(reasons.items()):
+        print(f"  not recorded ({reason}): {count} slot(s)")
+    return 0
+
+
+def cmd_organizer_bootstrap(args) -> int:
+    org = _organizer(args, writable=not args.dry_run)
+    try:
+        report = org.bootstrap(dry_run=args.dry_run)
+    except (StoreBusy, StoreReadOnly) as exc:
+        _die(f"error: {exc}")
+    edges = report.edges_by_method
+    print(("Would build" if report.dry_run else "Built") +
+          f" the history of {report.lines} save files from {report.folders_scanned} folders "
+          f"({report.versions} versions) in {report.seconds:.1f} s.")
+    print(f"  links seen in backups: {edges.get('capture-sequence', 0)}; put live by the app: "
+          f"{edges.get('oplog', 0) + edges.get('op', 0)}; branch points: {len(report.forks)}")
+    print(f"  journal records: {report.journal_records}; old log lines placed: "
+          f"{report.ops_resolved}, not placed: {len(report.ops_unresolved)}")
+    print(f"  live saves with no copy in the vault: {report.at_risk_live}")
+    for line, reason in report.ops_unresolved:
+        print(f"  not placed - {line}: {reason}")
+    for entry, reason in report.entries_skipped:
+        print(f"  backup {entry}: {reason}")
+    return 0
+
+
 # --- argument parser ---------------------------------------------------------
 
 
@@ -606,6 +831,54 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("verify", help="scan and validate a folder (live/entry/path)")
     s.add_argument("target", nargs="?")
     s.set_defaults(func=cmd_verify)
+
+    s = sub.add_parser("saves", help="every save file, live and in the vault, one line each")
+    s.add_argument("--sort", choices=SORT_KEYS, default="last_played")
+    s.add_argument("--live-only", action="store_true", help="only save files that are live")
+    s.add_argument("--platform", choices=["steam", "xbox"])
+    s.add_argument("--find", help="text in the name, a former name or the note")
+    s.add_argument("--json", action="store_true")
+    s.add_argument("--no-cache", action="store_true", help="hash everything; keep no cache")
+    s.set_defaults(func=cmd_saves)
+
+    s = sub.add_parser("versions", help="the versions of one save file")
+    s.add_argument("save", help="its name, 6+ hex digits of its id, or a live slot like S9")
+    s.add_argument("--all", action="store_true", help="every version, not only the key ones")
+    s.add_argument("--json", action="store_true")
+    s.add_argument("--no-cache", action="store_true")
+    s.set_defaults(func=cmd_versions)
+
+    s = sub.add_parser("board", help="the 15 slots of every live folder")
+    s.add_argument("--json", action="store_true")
+    s.add_argument("--no-cache", action="store_true")
+    s.set_defaults(func=cmd_board)
+
+    s = sub.add_parser("note", help="show or write the note of a save file or a version")
+    s.add_argument("ref", help="a save file, or with --label/--comment/--lock a version")
+    group = s.add_mutually_exclusive_group()
+    group.add_argument("--set", help="replace the save file's note")
+    group.add_argument("--append", help="add a line to the save file's note")
+    group.add_argument("--history", action="store_true", help="every revision of the note")
+    s.add_argument("--label", help="a version's label")
+    s.add_argument("--comment", help="a version's comment")
+    lock = s.add_mutually_exclusive_group()
+    lock.add_argument("--lock", action="store_true", help="mark the version to keep")
+    lock.add_argument("--unlock", action="store_true")
+    s.set_defaults(func=cmd_note)
+
+    s = sub.add_parser("pin", help="never suggest a save file's slot for another save")
+    s.add_argument("save")
+    s.add_argument("--off", action="store_true")
+    s.set_defaults(func=cmd_pin)
+
+    s = sub.add_parser("scan", help="record what the live slots hold now")
+    s.set_defaults(func=cmd_scan)
+
+    s = sub.add_parser("organizer", help="organizer upkeep")
+    org_sub = s.add_subparsers(dest="organizer_command", required=True)
+    b = org_sub.add_parser("bootstrap", help="read in the history of an existing vault")
+    b.add_argument("--dry-run", action="store_true", help="compute and report; write nothing")
+    b.set_defaults(func=cmd_organizer_bootstrap)
     return p
 
 

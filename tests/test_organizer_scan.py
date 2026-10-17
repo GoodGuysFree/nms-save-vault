@@ -47,6 +47,9 @@ def _source(folder: Path, platform: str = "steam") -> Source:
 
 def _scan(vault, sources, cache=None, **kw):
     kw.setdefault("game_running", False)
+    # Every capture is stamped with the scan's time: a fixed clock keeps two scans of the
+    # same folders equal across a second boundary.
+    kw.setdefault("now", lambda: T0 + 3600)
     return scanner.scan(vault, sources, cache or ScanCache(None, None), **kw)
 
 
@@ -294,9 +297,9 @@ def test_entries_give_captures_by_kind(tmp_path):
     inplace = operations.import_backup(vault, hand_made, warnings=[])
     assert inplace.kind == KIND_INPLACE
 
-    result = _scan(vault, [_source(live)])
-    entries = result.entries
     created = int(datetime.fromisoformat(full.created).astimezone(timezone.utc).timestamp())
+    result = _scan(vault, [_source(live)], now=lambda: created + 60)   # after the backups
+    entries = result.entries
     full_scan = entries[full.id]
     assert len(full_scan.captures) == 15 and full_scan.created == created
     assert {(c.where, c.observed_at, c.time_quality, c.src) for c in full_scan.captures} == {

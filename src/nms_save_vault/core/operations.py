@@ -13,6 +13,7 @@ import functools
 import inspect
 import logging
 import os
+import threading
 import shutil
 import struct
 import warnings as pywarnings
@@ -119,6 +120,10 @@ LIVE_OP_BUSY = (
     "Another NMS Save Vault window is changing live saves. Try again when it has finished."
 )
 
+# The game check of the write in progress on this thread (_guard_game sets it): the hook
+# journals the live slots only when the game is known not to be running.
+_game_check = threading.local()
+
 
 def _recorded(kind: str, slot_arg: str | None = None):
     """The organizer's phase-1 hook (D1 2.6.7) around a live write: the write runs under the
@@ -138,10 +143,20 @@ def _recorded(kind: str, slot_arg: str | None = None):
             vault = arguments["vault"]
             try:
                 with recorder.classic_write(vault.root, Path(arguments["live_dir"]), kind) as hook:
-                    result = fn(*args, **kwargs)
-                    if hook is not None:
-                        hook.done(result, slot=arguments[slot_arg] if slot_arg else None,
-                                  source=_op_source(vault, arguments))
+                    if hook is None:                  # part of an outer write
+                        return fn(*args, **kwargs)
+                    _game_check.state = None          # unknown until the write checks
+                    record = functools.partial(
+                        hook.done, slot=arguments[slot_arg] if slot_arg else None,
+                        source=lambda: _op_source(vault, arguments))
+                    try:
+                        result = fn(*args, **kwargs)
+                    except BaseException as exc:
+                        # A write that failed after changing the folder is still recorded.
+                        record(getattr(exc, "result", None), game_running=_game_check.state,
+                               error=exc)
+                        raise
+                    record(result, game_running=_game_check.state)
                     return result
             except recorder.LiveOpBusy as exc:
                 raise OperationError(LIVE_OP_BUSY) from exc
@@ -184,6 +199,7 @@ def _member_paths(folder: Path, file_no: int) -> tuple[Path, Path]:
 
 def _guard_game(allow_game_running: bool, warnings: list[str]) -> None:
     running = safety.is_game_running()
+    _game_check.state = running    # what the organizer hook may journal depends on it
     if running is True and not allow_game_running:
         raise GameRunningError("No Man's Sky appears to be running. Close the game first.")
     if running is None:
@@ -591,7 +607,7 @@ def extract_slot(
     source_dir = Path(source_dir)
     _check_slot(slot)
     collected: list[str] = []
-    live = any(_same_folder(source_dir, Path(d)) for d in live_dirs)
+    live = any(safety.same_path(source_dir, d) for d in live_dirs)
     if _is_xbox(source_dir):
         entry = _extract_slot_xbox(vault, source_dir, slot, label, collected, live)
     else:
@@ -1287,7 +1303,7 @@ def _best_vault_copy(
     for entry in vault.entries:
         folder = Path(entry.path)
         try:
-            if not folder.is_dir() or any(_same_folder(folder, d) for d in lives):
+            if not folder.is_dir() or any(safety.same_path(folder, d) for d in lives):
                 continue
             view = savedir.scan_any(folder)
             entry_platform = savedir.platform_of(folder)
@@ -1759,7 +1775,7 @@ def _changed_folder(
     known live folder of that platform shares cannot place it."""
     target = record.get("target")
     if target:
-        return _same_folder(Path(target), live_dir)
+        return safety.same_path(target, live_dir)
     snap = entries.get(record.get("snapshot_id"))
     if snap is None or not snap.source:
         return None
@@ -1772,13 +1788,9 @@ def _changed_folder(
     if not could_be(live_dir):
         return False
     this = msstore.with_xgs_twins([live_dir])          # its xgs mirror is the same save
-    if any(could_be(d) and not any(_same_folder(d, t) for t in this) for d in others):
+    if any(could_be(d) and not any(safety.same_path(d, t) for t in this) for d in others):
         return None
     return True
-
-
-def _same_folder(a: Path, b: Path) -> bool:
-    return os.path.normcase(str(a.resolve())) == os.path.normcase(str(b.resolve()))
 
 
 # --- validation helpers ------------------------------------------------------

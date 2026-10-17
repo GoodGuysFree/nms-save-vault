@@ -25,4 +25,5 @@ packages = ["src/nms_save_vault"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-q"
+addopts = "-q -m 'not slow'"
+markers = ["slow: long checks (the real-data smoke test, the time budget); run with -m slow"]

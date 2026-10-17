@@ -181,8 +181,11 @@ class OplogRead(list):
 class Vault:
     """Managed storage root + catalog of all known backups."""
 
-    def __init__(self, root: str | Path):
+    def __init__(self, root: str | Path, *, read_only: bool = False):
         self.root = Path(root)
+        # A read-only vault is only looked at: loading tidies nothing and nothing is saved
+        # (the organizer's read-only mode and its checks against a real vault).
+        self.read_only = read_only
         self.backups_dir = self.root / "backups"
         self.snapshots_dir = self.root / "snapshots"
         self.extracts_dir = self.root / "extracts"
@@ -192,11 +195,14 @@ class Vault:
         self._loaded = False
 
     def ensure(self) -> None:
+        if self.read_only:
+            raise PermissionError(f"the vault at {self.root.name} is opened read-only")
         for d in (self.root, self.backups_dir, self.snapshots_dir, self.extracts_dir):
             d.mkdir(parents=True, exist_ok=True)
 
     def load(self) -> "Vault":
-        self._remove_stale_temp_files()
+        if not self.read_only:
+            self._remove_stale_temp_files()
         if self.catalog_path.is_file():
             data = json.loads(self.catalog_path.read_text("utf-8"))
             self._entries = [_entry_from_dict(e) for e in data.get("entries", [])]

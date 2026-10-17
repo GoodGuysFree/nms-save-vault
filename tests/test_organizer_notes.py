@@ -177,7 +177,7 @@ def test_the_bootstrap_writes_the_skeleton(tmp_path):
     vault = Vault(tmp_path / "vault")
     vault.ensure()
     store = OrganizerStore(vault.root, create=False)
-    bootstrap(vault, store, [], ScanCache(None, None), game_running=False, clock=lambda: 7)
+    bootstrap(vault, store, [], ScanCache(None, None), game_running=lambda: False, clock=lambda: 7)
     raw = json.loads((vault.root / "organizer" / LINEAGE).read_text(encoding="ascii"))
     assert (raw["corrections"], raw["aliases"], raw["splits"]) == ([], [], [])
     info = read_lineage(store).bootstrap

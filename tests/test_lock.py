@@ -307,3 +307,19 @@ def test_einval_means_no_locking_only_on_windows(tmp_path, monkeypatch):
             with exclusive_lock(tmp_path / ".lock", timeout=1):
                 pytest.fail("ran the body after a real locking error")
         assert raised.value.errno == errno.EINVAL
+
+
+# --- one path identity for the core ---------------------------------------------------------
+
+
+def test_same_path_resolves_and_compares_as_the_os_does(tmp_path):
+    from nms_save_vault.core.safety import same_path
+
+    folder = tmp_path / "st_76561198000000001"
+    folder.mkdir()
+    assert same_path(folder, tmp_path / "x" / ".." / "st_76561198000000001")
+    assert same_path(str(folder), folder)
+    assert not same_path(folder, tmp_path / "st_76561198000000002")
+    if sys.platform == "win32":
+        assert same_path(folder, str(folder).upper())
+    assert same_path(tmp_path / "missing" / "a", tmp_path / "missing" / "b" / ".." / "a")

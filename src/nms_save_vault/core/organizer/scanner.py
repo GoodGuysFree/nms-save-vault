@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
 import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
@@ -85,6 +86,7 @@ class EntryScan:
     created: int                    # UTC unix
     source: str | None              # the live folder name the entry was taken from
     captures: tuple[Capture, ...]
+    label: str = ""                 # the owner's name for it (user text)
 
 
 @dataclass(frozen=True)
@@ -102,6 +104,23 @@ class ScanResult:
 
 class ScanCancelled(Exception):
     pass
+
+
+def with_live(result: ScanResult, fresh: ScanResult) -> ScanResult:
+    """``result`` (a full scan) with its live folders as ``fresh`` (a live-only scan made
+    after it) saw them: the entries are kept, the registry is rebuilt from both, and the
+    game state and the live folders' problems are the fresh ones."""
+    ordered = [(c, (c.observed_at, -1)) for e in result.entries.values() for c in e.captures]
+    ordered += [(c, (c.observed_at, 0)) for f in fresh.live.values() for c in f.captures]
+    versions, pairs = _registry(ordered, result.entries)
+    problems = tuple(p for p in result.problems
+                     if p.where is not None and not isinstance(p.where, LiveRef))
+    return ScanResult(
+        at=fresh.at, live=fresh.live, entries=result.entries,
+        captures=tuple(c for c, _ in ordered), versions=versions, pairs=pairs,
+        problems=problems + fresh.problems, game_running=fresh.game_running,
+        timings={**result.timings, "live": fresh.timings.get("live", 0.0)},
+    )
 
 
 def scan(vault: Vault | None, sources: Sequence[Source], cache: ScanCache, *,
@@ -136,7 +155,7 @@ def scan(vault: Vault | None, sources: Sequence[Source], cache: ScanCache, *,
 
     started = time.perf_counter()
     live: dict[LiveRef, LiveFolderScan] = {}
-    for source, ref in zip(sources, _live_refs(sources)):
+    for source, ref in zip(sources, live_refs(sources)):
         _check(cancel)
         live[ref] = run.scan_live(source, ref)
         done += 1
@@ -225,7 +244,8 @@ class _Run:
                     self.pids.setdefault(m.vid, (m.pid, m.pid_src))
                     if m.pid_src == "legacy" and self.cache.legacy_pid(m.vid) is None:
                         self.cache.put_legacy_pid(m.vid, m.pid)
-        return EntryScan(entry.id, entry.kind, entry.managed, created or 0, entry.source, captures)
+        return EntryScan(entry.id, entry.kind, entry.managed, created or 0, entry.source, captures,
+                         entry.label)
 
     def _entry_captures(self, entry: CatalogEntry, folder: Path, where: EntryRef,
                         created: int) -> tuple[Capture, ...] | None:
@@ -250,18 +270,26 @@ class _Run:
         Steam ``save*.hg`` / ``mf_save*.hg``; Xbox ``containers.index`` and the blob folders."""
         xbox = savedir.platform_of(folder) == "xbox"
         lines = []
-        for path in sorted(folder.rglob("*")):
-            rel = path.relative_to(folder)
-            top = len(rel.parts) == 1
-            if xbox:
-                wanted = not top or rel.name == "containers.index"
-            else:
-                wanted = top and (rel.name.startswith("save") or rel.name.startswith("mf_save"))
-            if not wanted or not path.is_file():
-                continue
-            st = path.stat()
-            lines.append(f"{rel.as_posix()}|{st.st_size}|{st.st_mtime_ns}")
-            self.seen_paths.add(str(path))
+
+        def add(rel: str, entry: os.DirEntry) -> None:
+            # The file itself, not the directory listing's copy: on Windows a listing can
+            # lag a write still being flushed, and then a changed entry looks unchanged.
+            st = os.stat(entry.path)
+            lines.append(f"{rel}|{st.st_size}|{st.st_mtime_ns}")
+            self.seen_paths.add(entry.path)
+
+        # Only the save files are walked: a Steam backup's cache/ thumbnails are not.
+        with os.scandir(folder) as top:
+            for entry in sorted(top, key=lambda e: e.name):
+                if entry.is_file():
+                    if (entry.name == "containers.index" if xbox
+                            else entry.name.startswith(("save", "mf_save"))):
+                        add(entry.name, entry)
+                elif xbox and entry.is_dir():
+                    with os.scandir(entry.path) as blobs:
+                        for blob in sorted(blobs, key=lambda e: e.name):
+                            if blob.is_file():
+                                add(f"{entry.name}/{blob.name}", blob)
         return hashlib.sha256("\n".join(lines).encode("utf-8")).hexdigest()
 
     # --- slots and members ----------------------------------------------------
@@ -424,21 +452,21 @@ def _created_utc(entry: CatalogEntry) -> int | None:
         return None
 
 
-def _live_refs(sources: Sequence[Source]) -> list[LiveRef]:
+def live_refs(sources: Sequence[Source]) -> list[LiveRef]:
     """One LiveRef per source: its folder name, plus an instance tag only when two live
     folders of one platform share that name here (two Proton prefixes)."""
     def platform_of(s: Source) -> Platform:
         return "xbox" if s.platform == "xbox" else "steam"
 
     names = [(platform_of(s), Path(s.path).name) for s in sources]
-    refs = []
-    for source, key in zip(sources, names):
-        instance = ""
-        if names.count(key) > 1:
-            parent = str(Path(source.path).resolve().parent)
-            instance = hashlib.sha1(parent.encode("utf-8")).hexdigest()[:8]
-        refs.append(LiveRef(key[0], key[1], instance))
-    return refs
+    return [LiveRef(key[0], key[1], instance_of(source.path) if names.count(key) > 1 else "")
+            for source, key in zip(sources, names)]
+
+
+def instance_of(folder: str | Path) -> str:
+    """The tag that tells apart two live folders of one name: their location's hash."""
+    parent = str(Path(folder).resolve().parent)
+    return hashlib.sha1(parent.encode("utf-8")).hexdigest()[:8]
 
 
 def _registry(ordered: list[tuple[Capture, ObsOrder]], entries: Mapping[str, EntryScan]

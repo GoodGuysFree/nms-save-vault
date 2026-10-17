@@ -1,8 +1,4 @@
-"""A verbatim copy of D1's ``core/organizer/locator.py`` (only its import of the model is
-spelled from here), used by :mod:`.d1` when D1's module is absent. Never edit it on its own:
-D1's module is the source.
-
-Where a version's bytes are (D1 2.11, C28): the organizer asks "where is this version",
+"""Where a version's bytes are (D1 2.11, C28): the organizer asks "where is this version",
 never "which folder".
 
 ``VersionLocator`` is the interface the read model, the content index and the live
@@ -16,7 +12,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from ..organizer.model import LiveTarget, Member, Platform, SourceRef, Vid, source_to_json
+from .model import Member, Platform, SourceRef, Vid, LiveTarget, source_to_json
 
 
 class VersionUnavailable(Exception):

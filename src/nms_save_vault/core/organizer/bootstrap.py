@@ -14,6 +14,7 @@ backups imported later). A dry run computes everything and writes nothing.
 """
 from __future__ import annotations
 
+import logging
 import re
 import threading
 import time
@@ -24,7 +25,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .. import catalog, savedir
+from .. import catalog, safety, savedir
+from ..formats import MAX_SAVE_SLOTS
 from ..catalog import CatalogEntry, Vault
 from ..state import Source
 from .cache import ScanCache
@@ -50,10 +52,14 @@ from .model import (
 )
 from .lineage import ensure_skeleton
 from .scanner import EntryScan, ScanProblem, ScanResult, scan
-from .store import APP, LINEAGE, OrganizerStore
+from .recorder import LIVEOP_TIMEOUT
+from .store import APP, LINEAGE, OrganizerStore, liveop_lock_path
+
+log = logging.getLogger(__name__)
 
 ALGO = 1
 TIMELINE_KINDS = (catalog.KIND_FULL, catalog.KIND_SNAPSHOT)
+HOOK_WINDOW = 300       # seconds between an oplog line and the hook's record of the same write
 LIVE_SRCS = ("scan", "verify", "app")
 
 _REPOPULATE = re.compile(r"(xbox )?(.+) slot (\d+) -> slot (\d+)", re.DOTALL)
@@ -97,19 +103,24 @@ class _Item:
 
 
 def bootstrap(vault: Vault, store: OrganizerStore, sources: Sequence[Source],
-              cache: ScanCache, *, game_running: bool | None, dry_run: bool = False,
-              clock: Callable[[], float] = time.time,
+              cache: ScanCache, *, game_running: Callable[[], bool | None],
+              dry_run: bool = False, clock: Callable[[], float] = time.time,
               progress: Callable[[int, int], None] | None = None,
               cancel: threading.Event | None = None) -> BootstrapReport:
+    """``game_running`` is asked twice: for the deep scan, and again just before the live
+    slots are journaled at the end (the game may have started meanwhile)."""
     started = time.perf_counter()
-    result = scan(vault, sources, cache, game_running=game_running, deep=True, now=clock,
+    begun = int(clock())
+    result = scan(vault, sources, cache, game_running=game_running(), deep=True, now=clock,
                   progress=progress, cancel=cancel)
     existing, problems = decode_all(store.journal_records())
     lineage = store.document(LINEAGE)
     done_at = (lineage.get("bootstrap") or {}).get("done_at")
     live_starts = [r.at for r in existing if isinstance(r, ObsRecord) and r.src in LIVE_SRCS]
     live_starts += [r.at for r in existing if isinstance(r, OpRecord) and r.src == "app"]
-    cutoff = done_at if isinstance(done_at, int) else min(live_starts, default=None)
+    # From here on the journal and the operation hook record what happens: older evidence
+    # only is the bootstrap's to add, now and in every later run.
+    cutoff = done_at if isinstance(done_at, int) else min(live_starts, default=begun)
 
     plan = _Plan(vault, result, existing, cutoff)
     plan.entries()
@@ -124,18 +135,36 @@ def bootstrap(vault: Vault, store: OrganizerStore, sources: Sequence[Source],
         with store.transaction() as tx:
             for record, at in fields:
                 tx.append(record, at=at)
-        journal = Journal(store, result.versions)
-        observed = journal.observe(result, src="scan", skip=frozenset())
-        written = len(fields) + observed.written
+        journal, observed = _observe_now(vault, store, sources, cache, result, game_running,
+                                         clock)
+        written = len(fields) + observed
         with store.transaction() as tx:
             doc = tx.doc(LINEAGE)
             ensure_skeleton(doc)
             block = dict(doc.get("bootstrap") or {})
-            block.setdefault("done_at", int(clock()))
+            block.setdefault("done_at", cutoff)
             block.update(app=APP, algo=ALGO, report=_counts(plan, result, written))
             doc["bootstrap"] = block
         state = journal.replay()
     return _report(plan, result, state, written, time.perf_counter() - started, dry_run)
+
+
+def _observe_now(vault: Vault, store: OrganizerStore, sources: Sequence[Source],
+                 cache: ScanCache, deep: ScanResult,
+                 game_running: Callable[[], bool | None],
+                 clock: Callable[[], float]) -> tuple[Journal, int]:
+    """Journal the live slots as they are now, not as the deep scan found them seconds or
+    minutes ago: a quick second look under the live-op lock, so no write is under way, and
+    a fresh game check (a running game's slots are never journaled)."""
+    try:
+        with safety.exclusive_lock(liveop_lock_path(vault.root), timeout=LIVEOP_TIMEOUT):
+            fresh = scan(None, sources, cache, game_running=game_running(), now=clock)
+            journal = Journal(store, {**deep.versions, **fresh.versions})
+            return journal, journal.observe(fresh, src="scan", skip=frozenset()).written
+    except safety.LockTimeout:
+        log.warning("bootstrap: a live write is under way; the live slots are journaled at "
+                    "the next refresh")
+        return Journal(store, deep.versions), 0
 
 
 class _Plan:
@@ -150,6 +179,8 @@ class _Plan:
         self.resolved = 0
         self.represented = {r.entry for r in existing if isinstance(r, ObsRecord) and r.entry}
         self.known_ops = {(r.op_id, r.target) for r in existing if isinstance(r, OpRecord)}
+        self.app_ops = [(r.target, r.pair, r.at) for r in existing
+                        if isinstance(r, OpRecord) and r.src == "app"]
         self.catalog = {e.id: e for e in vault.entries}
         self.refs = list(result.live)
 
@@ -179,8 +210,9 @@ class _Plan:
         if len(named) == 1:
             return named[0]
         if not named and len(same_platform) == 1:
-            self.skipped.append((entry.id, f"taken of {scanned.source!r}; mapped to the only "
-                                           f"{platform} live folder"))
+            # Never the folder's own name: it carries the account id.
+            self.skipped.append((entry.id, f"taken of another {platform} folder; mapped to "
+                                           f"the only {platform} live folder"))
             return same_platform[0]
         self.skipped.append((entry.id, "entry-unmapped: no single live folder it was taken of"))
         return None
@@ -213,10 +245,16 @@ class _Plan:
                 continue
             kind = {"repopulate_slot": "repopulate", "clear_slot": "clear"}.get(op, op)
             for target, pair, members in placed:
-                if (op_id, target) not in self.known_ops:
+                if (op_id, target) not in self.known_ops and not self._hook_recorded(
+                        target, pair, when):
                     self.items.append(_Item(when, 1, target, pair, members, op_id=op_id,
                                             kind=kind))
             self.resolved += 1
+
+    def _hook_recorded(self, target: LiveTarget, pair: PairKey, when: int) -> bool:
+        """The operation hook recorded this write already (its own id, the same content)."""
+        return any(t == target and p == pair and abs(at - when) <= HOOK_WINDOW
+                   for t, p, at in self.app_ops)
 
     def _placements(self, op: str, record: Mapping[str, Any]):
         detail = str(record.get("detail") or "")
@@ -241,8 +279,12 @@ class _Plan:
         entry = self.catalog[entry_id]
         ref = self._target_ref(record, Vault.tag_of(entry.id)
                                or savedir.platform_of(Path(entry.path)))
-        return [(ref.target(c.slot), c.pair, {m.vid: m for m in c.members})
-                for c in scanned.captures]
+        # A full restore mirrored the folder: a slot the entry does not hold (a one-slot
+        # extract restored whole, as old versions allowed) was emptied.
+        held = {c.slot: c for c in scanned.captures}
+        return [(ref.target(slot), held[slot].pair if slot in held else EMPTY_PAIR,
+                 {m.vid: m for m in held[slot].members} if slot in held else {})
+                for slot in range(1, MAX_SAVE_SLOTS + 1)]
 
     def _target_ref(self, record: Mapping[str, Any], platform: str) -> LiveRef:
         """The live folder written: the record's own target when it has one, else the only
@@ -250,7 +292,7 @@ class _Plan:
         written = record.get("target")
         if written:
             for ref, folder in self.result.live.items():
-                if _same_path(folder.source.path, written):
+                if safety.same_path(folder.source.path, written):
                     return ref
             raise _Unresolved("the folder it wrote is not a live folder here")
         candidates = [r for r in self.refs if r.platform == platform]
@@ -262,7 +304,8 @@ class _Plan:
         matches = [e for e in self.catalog.values() if e.id in self.result.entries and (
             (e.managed and e.id == name) or (not e.managed and Path(e.path).name == name))]
         if len(matches) != 1:
-            raise _Unresolved(f"{len(matches)} vault entries match the source {name!r}")
+            # Not the name: a live folder's name carries the account id.
+            raise _Unresolved(f"{len(matches)} vault entries match the folder it copied from")
         return matches[0]
 
     # --- records ----------------------------------------------------------------------
@@ -323,13 +366,6 @@ def _followed_by_its_undo(records: list, index: int) -> bool:
     after = records[index + 1][1]
     return (after.get("op") == "undo" and not after.get("entry_id")
             and after.get("snapshot_id") == records[index][1].get("entry_id"))
-
-
-def _same_path(a: str, b: str) -> bool:
-    try:
-        return Path(a).resolve() == Path(b).resolve()
-    except OSError:
-        return False
 
 
 def _utc(local: object) -> int | None:
