@@ -292,7 +292,7 @@ def store_status(vault_root: Path, store: "VersionStore | None", *,
                    and statuses.get(e.id, {}).get("status") == "verified")
     return StoreStatus(
         mode=vault_mode(vault_root), copy_aside=_copy_aside(vault_root, migration),
-        fold_total=len(statuses),
+        fold_total=sum(1 for v in statuses.values() if v.get("status") != "skipped"),
         fold_done=sum(1 for v in statuses.values() if v.get("status") in ("folded", "verified")),
         fold_failed=tuple(sorted((k, str(v.get("reason", ""))) for k, v in statuses.items()
                                  if v.get("status") == "failed")),

@@ -58,6 +58,19 @@ shortcuts? `install.bat` in the zip adds them. Full details under
 * Every auto-snapshot is kept, so each live write adds a full copy of the live folder
   (roughly 40-65 MB); a later deduplicated store will reclaim that space.
 
+## The vault format and the upgrade
+
+A new vault keeps each backup as a plain folder. **Vault > Upgrade the vault** (or
+`nmsvault store upgrade`) moves it to the version store: files are kept once by content, so a
+backup that changed one file costs only that file. It only runs when you ask, first makes a
+verified copy of the whole vault next to it (`<vault>.pre-store-<UTC>`, so you need that much
+free space), and never touches your live saves.
+
+* **Older app versions cannot open an upgraded vault.** Update every PC that uses it first.
+* **Undo the vault upgrade** (`nmsvault store rollback`) goes back to plain folders with
+  everything made since, and moves the store next to the vault; the copy is not changed.
+* Delete the copy and the moved store yourself, when you no longer need them.
+
 See [DESIGN.md](DESIGN.md) for the architecture and the verified save-format details.
 
 ## Platform support

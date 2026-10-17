@@ -25,6 +25,9 @@ STALE_TEMP_SECONDS = 5 * 60
 
 CATALOG_VERSION = 1
 
+# Marks the copy of a vault made before its upgrade to the version store (D3 4.1).
+PRE_UPGRADE_COPY = "PRE-UPGRADE-COPY.txt"
+
 # Entry kinds
 KIND_FULL = "full"          # app-created full snapshot (managed)
 KIND_SNAPSHOT = "snapshot"  # auto pre-operation snapshot (managed)
@@ -372,6 +375,11 @@ def discover_save_dirs(root: str | Path, exclude=(), max_depth: int = 3) -> list
         if depth >= max_depth:
             dirnames[:] = []
         if here.resolve() in excluded:
+            dirnames[:] = []
+            continue
+        if here != root and (looks_like_vault_dir(here) or (here / PRE_UPGRADE_COPY).is_file()):
+            # A vault's own folders (or a pre-upgrade copy of one, D3 4.1) are its entries,
+            # never backups of their own.
             dirnames[:] = []
             continue
         if savedir.looks_like_save_dir(here):

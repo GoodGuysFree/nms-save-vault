@@ -3,16 +3,19 @@ from .capture import CaptureScope
 from .errors import (
     Cancelled,
     EntryCorrupt,
+    FoldVerifyError,
     InsufficientSpace,
     ObjectCorrupt,
     ObjectMissing,
     PreserveMismatch,
+    RollbackError,
     SourceChanged,
     StoreBusy,
     StoreError,
     StoreNotUpgraded,
     StoreTooNew,
     StoreUnavailable,
+    UpgradeError,
 )
 from .damage import DamageRecord
 from .fsck import FsckProblem, FsckReport
@@ -26,6 +29,32 @@ from .listing import (
     store_status,
 )
 from .locator import StoreLocator
+from .migrate import (
+    CopyInReport,
+    FoldProgress,
+    FoldReport,
+    copy_in,
+    fold_pending,
+    not_copied_in,
+    run_fold,
+)
+from .rollback import (
+    RollbackPlan,
+    RollbackResult,
+    keep_upgrade,
+    plan_rollback,
+    rollback_interrupted,
+    run_rollback,
+)
+from .upgrade import (
+    UpgradePlan,
+    UpgradeProgress,
+    UpgradeResult,
+    cleanup_interrupted_upgrade,
+    plan_upgrade,
+    run_upgrade,
+    upgrade_needed,
+)
 from .manifest import EntryKind, FileEntry, MemberRecord, StoreEntry
 from .materialize import MaterializeResult
 from .objects import ObjectStore, PutResult
