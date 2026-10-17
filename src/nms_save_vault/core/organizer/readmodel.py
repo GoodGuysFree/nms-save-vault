@@ -355,8 +355,9 @@ class _Builder:
         for pid, line_pairs in by_line.items():
             line_rows = [self._row(pid, p, pairs, parent, display, display_children, forks,
                                    marked, live, edited) for p in line_pairs]
-            line_rows = self._mark_keys(sorted(line_rows, key=lambda r: self.order(r.head),
-                                               reverse=True))
+            line_rows = _fold(self._mark_keys(sorted(line_rows,
+                                                     key=lambda r: self.order(r.head),
+                                                     reverse=True)))
             rows[pid] = tuple(line_rows)
             lines[pid] = self._line(pid, rows[pid], live_by_pid.get(pid, []), display_children)
         board = self._board(live, lines)
@@ -992,6 +993,42 @@ def _mode(meta: MetaSnap | None) -> str:
     if meta is None or meta.game_mode != EXPEDITION_MODE:
         return ""
     return f"Expedition {meta.season}" if meta.season else "Expedition"
+
+
+#: What keeps a version from being folded away: it is worth a row of its own.
+_UNFOLDABLE = frozenset({"live", "fork", "noted", "locked", "placed", "evicted"})
+
+
+def _fold(rows: list[VersionRow]) -> list[VersionRow]:
+    """D1 2.10.4 rule 4 (default mode, C5), on rows newest first: a tree node reached by a
+    re-save without play (``touch``) or an edit outside the game, with at most one child and
+    nothing else to say for itself, folds into its parent; a dated row folds into the next
+    older dated row of the same platform with the same play time (a re-save without play -
+    a marker only, never a link). ``folded_into`` names the row that stays: chains end at
+    a row that is not folded."""
+    heads = {r.head for r in rows}
+    into: dict[Vid, Vid] = {}
+    for r in rows:
+        if (r.in_tree and r.parent in heads and r.parent_kind in ("touch", "edit")
+                and r.children <= 1 and not r.flags & _UNFOLDABLE):
+            into[r.head] = r.parent
+    dated = [r for r in rows if not r.in_tree]
+    for n, r in enumerate(dated):
+        if r.flags & {"live", "noted", "locked"}:
+            continue
+        older = next((o for o in dated[n + 1:] if o.platform == r.platform), None)
+        if older is not None and older.play_time == r.play_time:
+            into[r.head] = older.head
+
+    def final(vid: Vid) -> Vid:
+        seen = set()
+        while vid in into and vid not in seen:
+            seen.add(vid)
+            vid = into[vid]
+        return vid
+
+    return [dataclasses.replace(r, folded_into=final(r.head)) if r.head in into else r
+            for r in rows]
 
 
 def _durable(loc: RawLocation) -> bool:

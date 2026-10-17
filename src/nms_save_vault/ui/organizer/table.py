@@ -13,6 +13,7 @@ status is a word (D6 4.3: one adapter to change when Tk 9 brings per-cell tags).
 from __future__ import annotations
 
 import tkinter as tk
+from collections import Counter
 from collections.abc import Callable, Collection, Iterable, MutableMapping
 from dataclasses import dataclass
 from tkinter import ttk
@@ -25,13 +26,14 @@ from ...core.organizer.readmodel import (
     filter_lines,
     sort_lines,
 )
+from ... import theme
 from .. import dpi, raster
 from ..dpi import px, pxs
 from ..fmt import local_time, play_time
 from ..redact import RedactingTreeview
 from ..themeaware import ThemeRegistry
 from ..tooltip import Tooltip
-from .words import line_name
+from .words import line_name, version_numbers
 
 STYLE = "Organizer.Treeview"
 FIND_DELAY_MS = 150
@@ -174,23 +176,47 @@ class RowSpec:
     head: str | None = None     # the version the row is
 
 
-def _dot(row: VersionRow) -> tuple[str, str]:
-    kind = "live" if row.live_in else ("member" if row.partner is None and
-                                       "live-partner" in row.flags else "dot")
-    return kind, (row.platform if row.live_in else "muted")
+def _dot(row: VersionRow, linked: bool) -> tuple[str, str]:
+    """A live version: a disc in its platform colour; a linked one: the main lane's colour;
+    one listed by date: grey (lanes arrive with the history view, phase 4)."""
+    if row.live_in:
+        return "live", row.platform
+    return "dot", "lane0" if linked else "muted"
+
+
+def _version_spec(row: VersionRow, number: int, folded: int, live_labels: dict,
+                  linked: bool) -> RowSpec:
+    values = version_values(row, live_labels)
+    if folded:
+        marker = f"+{folded} re-save{'s' if folded > 1 else ''} folded"
+        values["state"] = f"{values['state']}; {marker}" if values["state"] else marker
+    return RowSpec(("v", row.head), f"#{number}", tuple(values[c.key] for c in COLUMNS),
+                   ("ver",), _dot(row, linked), row.head)
 
 
 def version_specs(model: ReadModel, pid: str, live_labels: dict) -> list[RowSpec]:
-    """The rows of an open line: its versions, newest first, numbered from the oldest."""
+    """The rows of an open line (D6 2.3): first the linked history - versions joined by a
+    move the app recorded, by the live journal or by consecutive app backups - newest
+    first; then, under a separator, every other version by date, nothing guessed. Re-saves
+    without play fold into the version they repeat ("+1 re-save folded")."""
     rows = model.versions(pid)
-    out = []
-    for number, row in zip(range(len(rows), 0, -1), rows):
-        values = version_values(row, live_labels)
-        out.append(RowSpec(("v", row.head), f"#{number}",
-                           tuple(values[c.key] for c in COLUMNS), ("ver",), _dot(row),
-                           row.head))
     if not rows:
-        out.append(RowSpec(("none",), "(no versions)", (), ("muted",)))
+        return [RowSpec(("none",), "(no versions)", (), ("muted",))]
+    numbers = version_numbers(model, pid)
+    folded = Counter(r.folded_into for r in rows if r.folded_into)
+    shown = [r for r in rows if not r.folded_into]
+    linked = [r for r in shown if r.in_tree]
+    dated = [r for r in shown if not r.in_tree]
+    out = [_version_spec(r, numbers[r.head], folded[r.head], live_labels, True)
+           for r in linked]
+    if dated:
+        count = f"{len(dated)} version{'s' if len(dated) != 1 else ''}"
+        note = {c.key: "" for c in COLUMNS}
+        note["note"] = "no recorded move or app backup links them; no links are guessed"
+        out.append(RowSpec(("sep",), f"Not linked, by date - {count}",
+                           tuple(note[c.key] for c in COLUMNS), ("sep",)))
+        out += [_version_spec(r, numbers[r.head], folded[r.head], live_labels, False)
+                for r in dated]
     return out
 
 
@@ -386,7 +412,8 @@ class OrganizerTable(ttk.Frame):
         tree.tag_configure("odd", background=p["zebra"])
         tree.tag_configure("ver", background=p["group_bg"])
         tree.tag_configure("dim", foreground=p["dim"])
-        tree.tag_configure("sep", foreground=p["muted"])
+        tree.tag_configure("sep", foreground=p["muted"], background=p["group_bg"],
+                           font=theme.ITALIC_FONT)
         tree.tag_configure("muted", foreground=p["muted"])
         tree.tag_configure("risk", foreground=p["warn"])
         self._draw_images()
@@ -423,7 +450,7 @@ class OrganizerTable(ttk.Frame):
         p = self._palette
         out = {}
         for kind in raster.DOT_KINDS:
-            for colour in ("muted", "steam", "xbox"):
+            for colour in ("muted", "steam", "xbox", "lane0"):
                 out[(kind, colour)] = raster.version_dot(
                     px(18), h, kind, colour=p[colour], scale=scale).image(self)
         return out

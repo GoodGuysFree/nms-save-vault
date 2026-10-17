@@ -290,3 +290,40 @@ def test_the_json_form_has_tokens_and_no_account_key(tmp_path):
     target = model.target_of(badge)
     assert isinstance(target, LiveTarget) and model.token(target) == badge
     assert model.target_of("steam:7:1") is None and model.target_of("xbox:0:1") is None
+
+
+# --- folding (D1 2.10.4 rule 4) ---------------------------------------------------------------
+
+
+def test_a_re_save_without_play_folds_into_its_parent(tmp_path):
+    world = World(tmp_path)
+    steam_save(world.steam, 9, 0, "Main", 100, MAIN, T0, extra="v1")
+    world.refresh()
+    v1 = _vid(world.steam, 9)
+    steam_save(world.steam, 9, 0, "Main", 100, MAIN, T0 + 60, extra="v2")    # re-saved, no play
+    world.refresh()
+    v2 = _vid(world.steam, 9)
+    model = world.refresh()
+    assert next(r for r in model.versions(PID) if r.head == v2).folded_into is None   # live
+    steam_save(world.steam, 9, 0, "Main", 300, MAIN, T0 + 120, extra="v3")   # played on
+    model = world.refresh()
+    rows = {r.head: r for r in model.versions(PID)}
+    assert rows[v2].parent == v1 and rows[v2].parent_kind == "touch"
+    assert rows[v2].folded_into == v1 and rows[v1].folded_into is None
+    v3 = _vid(world.steam, 9)
+    assert rows[v3].folded_into is None
+
+
+def test_a_dated_re_save_folds_into_the_older_one_without_a_link(tmp_path):
+    world = World(tmp_path)
+    for n, extra in enumerate(("a", "b", "c")):
+        folder = tmp_path / f"copy-{n}"
+        steam_save(folder, 2, 0, "Old", 500 if n < 2 else 900, OTHER, T0 + n * 60, extra=extra)
+        operations.import_backup(world.vault, folder, warnings=[])
+    model = world.refresh()
+    rows = model.versions(OTHER_PID)                     # newest first
+    assert [r.in_tree for r in rows] == [False, False, False]
+    newest, middle, oldest = rows
+    assert newest.folded_into is None                    # more play: its own row
+    assert middle.folded_into == oldest.head and middle.parent is None
+    assert oldest.folded_into is None

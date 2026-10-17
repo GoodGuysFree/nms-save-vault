@@ -315,3 +315,35 @@ def test_column_widths_follow_the_zoom(table, gui_app, monkeypatch):
     finally:
         gui_app.state.font_scale = original
         gui_app._apply_theme()
+
+
+# --- U10: version rows ------------------------------------------------------------------------
+
+
+def test_linked_versions_first_then_the_dated_list_under_a_separator(tmp_path, monkeypatch):
+    from nms_save_vault.core import operations
+    from nms_save_vault.core.organizer.readmodel import ReadModel
+
+    from .test_organizer_readmodel import World, steam_save as save
+
+    world = World(tmp_path)
+    save(world.steam, 9, 0, "Main", 100, 0x1234, 1_790_000_000, extra="v1")
+    world.refresh()
+    save(world.steam, 9, 0, "Main", 100, 0x1234, 1_790_000_060, extra="v2")   # re-save
+    world.refresh()
+    save(world.steam, 9, 0, "Main", 300, 0x1234, 1_790_000_120, extra="v3")   # played on
+    world.refresh()
+    hand = tmp_path / "my copy"
+    save(hand, 2, 0, "Main", 50, 0x1234, 1_789_000_000, extra="old")          # by hand
+    operations.import_backup(world.vault, hand, warnings=[])
+    model: ReadModel = world.refresh()
+    specs = T.version_specs(model, "0000000000001234", {})
+    texts = [s.text for s in specs]
+    assert texts[:2] == ["#4", "#2"]                     # linked: v3, v1 (v2 folded into v1)
+    assert texts[2].startswith("Not linked, by date - 1 version")
+    assert texts[3] == "#1" and specs[2].tags == ("sep",)
+    state = dict(zip([c.key for c in T.COLUMNS], specs[1].values))["state"]
+    assert "+1 re-save folded" in state
+    assert specs[0].image == ("live", "steam") and specs[1].image == ("dot", "lane0")
+    assert specs[3].image == ("dot", "muted")
+    assert all(s.head is None for s in specs if s.key == ("sep",))
