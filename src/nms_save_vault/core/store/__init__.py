@@ -15,6 +15,7 @@ from .errors import (
     StoreUnavailable,
 )
 from .damage import DamageRecord
+from .fsck import FsckProblem, FsckReport
 from .listing import (
     CopyAsideInfo,
     StoreStatus,

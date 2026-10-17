@@ -514,6 +514,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--live", help="path to the live st_<id> save folder")
     p.add_argument("--vault", help="path to the vault folder")
     sub = p.add_subparsers(dest="command", required=True)
+    from . import cli_store
+    cli_store.add_commands(sub)
 
     sub.add_parser("status", help="show the live folder and slot table").set_defaults(func=cmd_status)
     sub.add_parser("list", help="list catalog entries").set_defaults(func=cmd_list)

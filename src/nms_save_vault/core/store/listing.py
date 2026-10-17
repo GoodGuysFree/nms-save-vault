@@ -259,7 +259,7 @@ def store_status(vault_root: Path, store: "VersionStore | None", *,
     ``store/state/migration.json``, written by the upgrade and the fold), hand-made folders not
     copied in, the space freeing would give, damage, and the store's size."""
     vault_root = Path(vault_root)
-    migration = _read_migration(vault_root)
+    migration = read_migration(vault_root)
     fold = migration.get("fold") if isinstance(migration.get("fold"), dict) else {}
     states = fold.get("entries") if isinstance(fold.get("entries"), dict) else {}
     statuses = {k: v for k, v in states.items() if isinstance(v, dict)}
@@ -284,7 +284,7 @@ def store_status(vault_root: Path, store: "VersionStore | None", *,
         store_bytes=_store_bytes(store) if store is not None else 0)
 
 
-def _read_migration(vault_root: Path) -> dict:
+def read_migration(vault_root: Path) -> dict:
     path = store_root(vault_root) / STATE / MIGRATION_JSON
     try:
         d = json.loads(path.read_bytes().decode("utf-8"))

@@ -369,6 +369,14 @@ class VersionStore:
     def damage(self) -> list[DamageRecord]:
         return read_damage(self.root)
 
+    def fsck(self, *, deep: bool = False, repair: bool = False,
+             fallbacks: Sequence[Path] = ()) -> "FsckReport":
+        """Check the store (D3 2.11): quick, ``deep`` (re-hash everything), ``repair``
+        (re-store damaged files from good copies elsewhere). Nothing is ever deleted."""
+        from .fsck import fsck
+
+        return fsck(self, deep=deep, repair=repair, fallbacks=fallbacks)
+
     # --- writing ------------------------------------------------------------------------------
 
     def add_from_folder(self, folder: str | Path, *, kind: EntryKind, label: str,
