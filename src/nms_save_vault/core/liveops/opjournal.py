@@ -99,6 +99,17 @@ def utc_text(at: float) -> str:
     return moment.strftime("%Y-%m-%dT%H:%M:%S.") + f"{moment.microsecond // 1000:03d}Z"
 
 
+def parse_utc(text: str) -> float | None:
+    """The epoch seconds of a journal ``utc`` stamp (with or without milliseconds)."""
+    for form in ("%Y-%m-%dT%H:%M:%S.%f", "%Y-%m-%dT%H:%M:%S"):
+        try:
+            return datetime.strptime(text.rstrip("Z"), form).replace(
+                tzinfo=timezone.utc).timestamp()
+        except ValueError:
+            continue
+    return None
+
+
 def _append_line(path: Path, data: bytes) -> None:
     """One fsynced write; a line torn by an earlier crash is sealed off first, so it can
     never merge with this one. The first append also makes the new file's directory entry
@@ -290,12 +301,9 @@ def last_activity(ctx: OpContext, ref: LiveRef) -> float | None:
         for e in rec.events:
             if e["event"] == "verify":
                 continue
-            try:
-                at = datetime.strptime(e["utc"].rstrip("Z"), "%Y-%m-%dT%H:%M:%S.%f").replace(
-                    tzinfo=timezone.utc).timestamp()
-            except ValueError:
-                continue
-            latest = at if latest is None else max(latest, at)
+            at = parse_utc(e["utc"])
+            if at is not None:
+                latest = at if latest is None else max(latest, at)
     return latest
 
 

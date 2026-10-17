@@ -50,6 +50,7 @@ from .guide import empty_slot_guide
 from .planner import eviction_picker, plan_keep, plan_place, plan_promote, plan_swap
 from .recovery import pending_recovery, resolve_recovery
 from .undo import op_history, plan_undo
+from .verify import dismiss_verification, update_verification
 from .targets import resolve_target
 
 __all__ = [
@@ -62,6 +63,6 @@ __all__ = [
     "TargetPlan", "UndoOffer", "VerifyItem", "VersionStore", "Warning", "WriteError",
     "SourceUnreadable", "busy_targets", "context_for", "eviction_picker", "execute",
     "liveop_lock",
-    "empty_slot_guide", "op_history", "pending_recovery", "plan_undo", "plan_keep", "plan_place", "plan_promote",
-    "plan_swap", "resolve_recovery", "resolve_target",
+    "dismiss_verification", "empty_slot_guide", "op_history", "pending_recovery", "plan_undo", "plan_keep", "plan_place", "plan_promote",
+    "plan_swap", "resolve_recovery", "resolve_target", "update_verification",
 ]

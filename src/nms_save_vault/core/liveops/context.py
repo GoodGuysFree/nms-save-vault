@@ -57,13 +57,17 @@ def context_for(organizer: Organizer, *, host: Host, machine_id: str, app_versio
 
     if organizer.model is None or organizer.locator is None or organizer.scan is None:
         organizer.refresh()
-    return OpContext(
+    from .verify import recording_probe
+
+    ctx = OpContext(
         vault=organizer.vault, versions=organizer.version_store, store=organizer.store,
         locator=organizer.locator,
         lineage=LineageRecorder(organizer.store, Journal(organizer.store, organizer.scan.versions)),
         readmodel=organizer.model, sources=list(organizer.sources),
         policies=policies or Policies(), host=host, app_version=app_version,
         machine_id=machine_id, game_probe=game_probe, clock=clock, faults=faults)
+    ctx.game_probe = recording_probe(game_probe, lambda: ctx)      # D5 2.12: game sessions seen
+    return ctx
 
 
 @dataclass
