@@ -98,6 +98,7 @@ src/nms_save_vault/
     tooltip.py    hover text for tree rows and canvas items, built on hover
     organizer/    the Organizer tab
       table.py    OrganizerTable: lines with > / v, chips, Find, sort, column chooser
+      live.py     LiveArea: one or two live folders as canvas lists, markers, refill warning
   theme.py        light/dark/system palettes (incl. the organizer keys) + ttk restyling,
                   dark title bar (front-end)
   updates.py      opt-in GitHub release check + in-place self-update (the only network access)

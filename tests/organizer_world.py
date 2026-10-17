@@ -51,6 +51,8 @@ def build_world(tmp_path: Path, make_wgs_account) -> World:
     vault = Vault(tmp_path / "vault")
     vault.ensure()
     steam = tmp_path / "NMS" / STEAM_ACCOUNT
+    steam.mkdir(parents=True)
+    (steam / "steam_autocloud.vdf").write_text('"steam_autocloud.vdf"\n{\n}\n', encoding="ascii")
     steam_save(steam, 4, 0, "Old Run", 900, OLD, T0 - 90_000, extra="old")
     steam_save(steam, 9, 0, "Main Save", 7200, MAIN, T0, extra="main")
     steam_save(steam, 9, 1, "Main Save", 7100, MAIN, T0 - 60, extra="main-rp")
