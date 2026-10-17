@@ -247,6 +247,7 @@ def test_the_window_shows_the_diff_with_green_and_struck_red_text(world, gui_app
                         worker=gui_app.worker, themed=gui_app.themed, pid=PIDS["main"])
     win.withdraw()
     try:
+        _wait(gui_app, lambda: win.snapshot.get("1.0", "end-1c"))
         text = win.snapshot.get("1.0", "end-1c")
         assert "Vesper" in text
         assert win.snapshot.tag_ranges("add") and win.snapshot.tag_ranges("del")
@@ -254,6 +255,6 @@ def test_the_window_shows_the_diff_with_green_and_struck_red_text(world, gui_app
         oldest = model.versions(PIDS["main"])[-1]
         assert oldest.note_rev is None
         win.pick_version(oldest.head)
-        assert N.NO_SNAPSHOT in win.snapshot.get("1.0", "end")
+        _wait(gui_app, lambda: N.NO_SNAPSHOT in win.snapshot.get("1.0", "end"))
     finally:
         win.destroy()

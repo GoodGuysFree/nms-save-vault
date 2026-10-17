@@ -242,8 +242,10 @@ class ReadModel:
                  trees: Mapping[Pid, tuple] | None = None, graph: LineageGraph | None = None,
                  vid_pid: Mapping[Vid, Pid] | None = None,
                  vid_raw: Mapping[Vid, Pid] | None = None,
-                 problems: tuple[str, ...] = ()) -> None:
-        self.problems = problems
+                 problems: tuple[str, ...] = (),
+                 line_problems: Mapping[Pid, tuple[str, ...]] | None = None) -> None:
+        self.problems = problems                    # the whole vault's, in plain words
+        self._line_problems = line_problems or {}
         self._vid_raw = vid_raw or {}
         self._trees = trees or {}
         self.graph = graph
@@ -291,7 +293,11 @@ class ReadModel:
         folds re-saves without play, "all" folds nothing, "key" keeps the key versions."""
         nodes, links = self._trees.get(pid, ((), ()))
         graph = project(pid, mode, self._versions.get(pid, ()), nodes, links)
-        return dataclasses.replace(graph, problems=self.problems)
+        return dataclasses.replace(graph, problems=self.problems_for(pid))
+
+    def problems_for(self, pid: Pid) -> tuple[str, ...]:
+        """The corrections left out and the conflicting evidence of one save file."""
+        return self._line_problems.get(pid, ())
 
     def events(self, pid: Pid) -> tuple[LineEvent, ...]:
         """Newest first."""
@@ -421,12 +427,10 @@ class _Builder:
         board = self._board(live, lines)
         events = self._events(lines)
         trees = self._trees(rows, display, candidates)
-        self.problems = tuple(
-            [f"correction {cid[:19]} was left out: {why}" for cid, why in self.graph.dropped]
-            + [f"version {child[:8]} has conflicting evidence of where it comes from"
-               for child, _ in self.graph.conflicts])
+        by_pid, texts = self._problems(rows)
+        self.problems = tuple(texts)
         return ReadModel(lines, rows, board, events, self.tokens, self.notes, trees=trees,
-                         problems=self.problems,
+                         problems=self.problems, line_problems=by_pid,
                          graph=self.graph, vid_pid=dict(self._effective or {}),
                          vid_raw={v: self.raw_pid(v) for v in (self._effective or {})
                                   if self.raw_pid(v)})
@@ -507,6 +511,35 @@ class _Builder:
         if self.facts is None or parent is None:
             return False
         return self.facts.is_milestone(vid, parent) is True
+
+    def _problems(self, rows) -> tuple[dict[Pid, tuple[str, ...]], list[str]]:
+        """Corrections that were left out and versions with conflicting evidence, in plain
+        words, by the save file they belong to."""
+        def stamp(unix) -> str:
+            return datetime.fromtimestamp(unix, timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+        def saved(pid, vid) -> str:
+            row = next((r for r in rows.get(pid, ()) if vid in r.pair), None)
+            return f"the version saved {stamp(row.saved_at)}" if row else "a version"
+
+        by_corr = {c.get("id"): c for c in self.lineage.corrections}
+        found: list[tuple[Pid | None, str]] = []
+        for cid, why in self.graph.dropped:
+            c = by_corr.get(cid, {})
+            child = c.get("child")
+            pid = self.pid(child) if isinstance(child, str) else None
+            when = f" of {stamp(c['at'])}" if type(c.get("at")) is int else ""
+            found.append((pid, f"your correction{when} for {saved(pid, child)} was left out: "
+                               f"{why}"))
+        for child, _ in self.graph.conflicts:
+            pid = self.pid(child)
+            found.append((pid, f"{saved(pid, child)} has conflicting evidence of where it "
+                               "comes from"))
+        by_pid: dict[Pid, list[str]] = {}
+        for pid, text in found:
+            if pid is not None:
+                by_pid.setdefault(pid, []).append(text)
+        return {k: tuple(v) for k, v in by_pid.items()}, [t for _, t in found]
 
     @staticmethod
     def _display_parent(vid: Vid, parent: Mapping[Vid, Vid], candidates: set[Vid]) -> Vid | None:

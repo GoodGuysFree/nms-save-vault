@@ -128,7 +128,7 @@ def test_dropped_corrections_are_noted(host, gui_app, forked):
     win = H.HistoryWindow(host, model=model, themed=gui_app.themed, pid=PID)
     try:
         assert model.history(PID, "all").problems
-        assert win.problems.winfo_manager() and "Left out" in win.problems.cget("text")
+        assert win.problems.winfo_manager() and "left out" in win.problems.cget("text")
     finally:
         win.destroy()
 
@@ -317,9 +317,12 @@ def test_comes_from_is_drawn_then_undone_through_remove_correction(host, gui_app
         _wait(gui_app, lambda: win.state["done"] == 2)
         assert next(r for r in win.state["model"].versions(PID) if r.head == e).parent is None
         assert len(_texts(win)) == 3
-        win.parent_box.set("(nothing - it has no known parent)")
+        win.parent_box.set(next(lbl for lbl, h in win._parents.items() if h == b))
         win.apply_parent()
         _wait(gui_app, lambda: win.state["done"] == 3)
+        win.parent_box.set("(nothing - it has no known parent)")
+        win.apply_parent()
+        _wait(gui_app, lambda: win.state["done"] == 4)
         assert any("has no known parent" in t for t in _texts(win))
     finally:
         win.destroy()
@@ -345,7 +348,7 @@ def test_a_refused_correction_says_why_and_changes_nothing(host, gui_app, forked
     win = _dialog(host, gui_app, w, cor, a)
     try:
         assert all(h not in (b, c, d) for h in win._parents.values())     # they come after a
-        win.parent_box.set("(nothing - it has no known parent)")
+        win.parent_box.set(next(lbl for lbl, h in win._parents.items() if h == e))
         win.corrections = type("X", (), {"set_parent": staticmethod(
             lambda *a, **k: (_ for _ in ()).throw(ValueError("that version comes after this one")
                                                   )), "state": cor.state})()

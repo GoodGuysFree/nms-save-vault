@@ -26,19 +26,46 @@ from ..worker import UiWorker
 from .words import line_name, version_numbers
 
 NO_PARENT = "(nothing - it has no known parent)"
+CURRENT_LINK = "(the link it has now)"
 
 
 def candidate_parents(model: ReadModel, pid: str, head: str) -> list[tuple[str, str]]:
-    """(label, head) of the versions ``head`` could come from: every other version of the
-    save file that does not come after it, newest first."""
+    """(label, version id) of what ``head`` could come from: every other version of the save
+    file that does not come after it (newest first), and the fork points that are no head -
+    restore points the branches start from."""
     numbers = version_numbers(model, pid)
     out = []
+    points = [n for n in model.history(pid, "all").nodes if n.kind == "fork-member"]
+
+    def label(row, extra: str = "") -> str:
+        return (f"#{numbers[row.head]}  {local_time(row.saved_at)}  "
+                f"{play_time(row.play_time) or '0h00'}{extra}")
+
     for row in model.versions(pid):
         if row.head == head or model.graph.descends_from(row.head, head):
             continue
-        out.append((f"#{numbers[row.head]}  {local_time(row.saved_at)}  "
-                    f"{play_time(row.play_time) or '0h00'}", row.head))
+        out.append((label(row), row.head))
+        for node in points:
+            if node.version.head == row.head                     and not model.graph.descends_from(node.vid, head):
+                out.append((label(row, "  (restore point)"), node.vid))
     return out
+
+
+def into_labels(model: ReadModel, pid: str) -> dict[str, str]:
+    """Label -> effective save file for the Combine box. Names that collide get the
+    platform, the last played date and the start of the id, so every entry is one save
+    file."""
+    others = [line for line in model.lines() if line.pid != pid]
+    names = [line_name(line) for line in others]
+    out = {}
+    for line in others:
+        name = line_name(line)
+        if names.count(name) > 1:
+            plat = "/".join("Steam" if p == "steam" else "Xbox" for p in line.platforms)
+            name = (f"{name} ({plat}, last played {local_time(line.last_played)}, "
+                    f"{line.pid[-6:]})")
+        out[name] = line.pid
+    return dict(sorted(out.items()))
 
 
 def branch_of(model: ReadModel, pid: str, head: str) -> list[str]:
@@ -62,6 +89,7 @@ def correction_rows(model: ReadModel, pid: str, state) -> list[tuple[tuple, str]
         other = model.line(mine) if mine else None
         return f"a version of {line_name(other)}" if other is not None else "a missing version"
 
+    dropped = dict(model.graph.dropped)
     out: list[tuple[tuple, str]] = []
     for c in state.corrections:
         cid = c.get("id")
@@ -70,12 +98,13 @@ def correction_rows(model: ReadModel, pid: str, state) -> list[tuple[tuple, str]
         vids = [v for v in (c.get("child"), c.get("parent"), c.get("a"), c.get("b")) if v]
         if not any(model.line_of(v) == pid for v in vids):
             continue
+        off = "" if cid not in dropped else " - not in effect (" + dropped[cid] + ")"
         if c.get("kind") == "set_parent":
             words = (f"{ver(c.get('child'))} comes from {ver(c.get('parent'))}"
                      if c.get("parent") else f"{ver(c.get('child'))} has no known parent")
         else:
             words = f"{ver(c.get('a'))} and {ver(c.get('b'))} are not related"
-        out.append((("cor", cid), words))
+        out.append((("cor", cid), words + off))
     for a in state.aliases:
         if a.get("pid") in raw or a.get("into") in raw:
             out.append((("alias", a["pid"]),
@@ -104,6 +133,7 @@ class CorrectDialog(tk.Toplevel):
         self._busy = False
         self._undo_keys: dict[str, tuple] = {}
         self._parents: dict[str, str | None] = {}
+        self._current_parent: str | None = None
         self._into: dict[str, str] = {}
         self._build()
         themed.register(self)
@@ -188,15 +218,20 @@ class CorrectDialog(tk.Toplevel):
         self._parents = {NO_PARENT: None, **{label: h for label, h in options}}
         self.parent_box.configure(values=list(self._parents))
         shown = NO_PARENT
-        if current is not None and current.parent is not None:
-            shown = next((lbl for lbl, h in options if h == current.parent), NO_PARENT)
+        self._current_parent = current.parent if current is not None else None
+        if self._current_parent is not None:
+            shown = next((lbl for lbl, h in options if h == self._current_parent), None)
+            if shown is None:           # a real link that cannot be listed: never erase it
+                shown = CURRENT_LINK
+                self._parents[CURRENT_LINK] = self._current_parent
+                self.parent_box.configure(values=list(self._parents))
         self.parent_box.set(shown)
         branch = branch_of(model, pid, head)
         row_count = sum(1 for r in model.versions(pid) if any(v in branch for v in r.pair if v))
         set_label(self.split_info, f"This version and the {max(row_count - 1, 0)} after it become "
                                    "a save file of their own.")
-        self._into = {line_name(other): other.pid for other in model.lines() if other.pid != pid}
-        self.combine_box.configure(values=sorted(self._into))
+        self._into = into_labels(model, pid)
+        self.combine_box.configure(values=list(self._into))
         self.combine_box.set("")
         self._fill_existing()
         self._enable()
@@ -229,12 +264,11 @@ class CorrectDialog(tk.Toplevel):
 
         def finished(_result) -> None:
             self._busy = False
-            if not self.winfo_exists():
-                return
-            set_label(self.status, done)
-            self._enable()
-            self._fill_existing()
-            if self.on_done is not None:
+            if self.winfo_exists():
+                set_label(self.status, done)
+                self._enable()
+                self._fill_existing()
+            if self.on_done is not None:        # written: the view reloads, closed or not
                 self.on_done()
 
         def failed(error: BaseException) -> None:
@@ -249,6 +283,9 @@ class CorrectDialog(tk.Toplevel):
     def apply_parent(self) -> None:
         parent = self._parents.get(self.parent_box.get())
         model, head = self.model, self.head
+        if parent == self._current_parent:
+            set_label(self.status, "It already comes from that.")
+            return
         self._run(lambda: self.corrections.set_parent(head, parent, graph=model.graph,
                                                       line_of=model.line_of),
                   "Saved: this version comes from "
@@ -276,13 +313,12 @@ class CorrectDialog(tk.Toplevel):
             return
         pid = self.pid
         line = self.model.line(pid)
-        names = {raw: line_name(line) for raw in (line.raw_pids if line else (pid,))}
         if not self.ask("Combine", f"Combine this save file into {self.combine_box.get()}?\n\n"
                                    "Their notes are merged into one; you can undo it below.",
                         parent=self):
             return
-        raws = list(line.raw_pids) if line is not None else [pid]
-        self._run(lambda: self.corrections.combine(raws, into, names=names),
+        names = {pid: line_name(line) if line is not None else pid[:8]}
+        self._run(lambda: self.corrections.combine([pid], into, names=names),
                   f"Combined into {self.combine_box.get()}.")
 
     def undo(self) -> None:

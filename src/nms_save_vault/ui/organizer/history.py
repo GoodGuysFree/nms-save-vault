@@ -108,10 +108,10 @@ def key_counts(model: ReadModel, pid: str) -> tuple[int, int]:
 
 
 def _ver_row(row: VersionRow, number: int, how: str, line: Line | None, image, *,
-             tags: tuple = ("ver",), since: str = "") -> HRow:
+             tags: tuple = ("ver",), since: str = "", key: tuple | None = None) -> HRow:
     parts, bases = _facts(row)
     bold = ("recorded",) if how == "recorded move" else ()
-    return HRow(("v", row.head), "ver", row.head, f"#{number}",
+    return HRow(key or ("v", row.head), "ver", row.head, f"#{number}",
                 (local_time(row.saved_at), play_time(row.play_time) or "0h00",
                  where_text(row, line), how, parts, bases, _note(row, since)),
                 tags + bold + (("locked",) if row.locked else ()), image)
@@ -147,7 +147,8 @@ def history_rows(model: ReadModel, pid: str, mode: str, open_runs: Collection[tu
     edge_into = {e.child: e for e in graph.edges}
     out: list[HRow] = []
 
-    nodes = [n for n in graph.nodes if n.kind == "version"]
+    nodes = list(graph.nodes)          # a fork point that is no head is the row of its pair
+    points = {n.version.head for n in nodes if n.kind == "fork-member"}
     if nodes:
         tips = sum(1 for n in full.nodes if "tip" in n.flags and n.kind == "version")
         out.append(HRow(("sec", "linked"), "sec", None, "LINKED HISTORY",
@@ -156,6 +157,10 @@ def history_rows(model: ReadModel, pid: str, mode: str, open_runs: Collection[tu
                          f"{'s' if tips != 1 else ''}"), ("sec",)))
     for n in nodes:
         row, e = n.version, edge_into.get(n.vid)
+        if n.kind == "fork-member":
+            out.append(_ver_row(row, numbers[row.head], "restore point - branches start here",
+                                line, ("lane", cells[n.vid]), key=("m", n.vid)))
+            continue
         if e is not None:
             how = HOW.get(e.method, "linked")
         else:
@@ -186,7 +191,8 @@ def history_rows(model: ReadModel, pid: str, mode: str, open_runs: Collection[tu
                         out.append(_ver_row(h, numbers[h.head], HOW.get(
                             _edge_method(full, h.head), "linked"), line, ("lane", dot)))
 
-    dated = [r for r in graph.dated if mode == "all" or r.folded_into is None]
+    dated = [r for r in graph.dated if r.head not in points
+             and (mode == "all" or r.folded_into is None)]
     if dated:
         title = "NOT LINKED - BY DATE" if nodes else "NO RECORDED HISTORY - BY DATE"
         out.append(HRow(("sec", "dated"), "sec", None, title,
@@ -271,6 +277,18 @@ def branch_tips(model: ReadModel, pid: str) -> list[Tip]:
                        play_time(row.play_time) or "0h00", where_text(row, line),
                        f"from {local_time(by_vid[origin].version.saved_at)}, {count} "
                        f"version{'s' if count != 1 else ''} since", bool(row.live_in)))
+    # Each platform's live copy is its own tip; one that lags is "behind".
+    shown = {t.head for t in out}
+    rows = {r.head: r for r in model.versions(pid)}
+    for badge in (line.live if line else ()):
+        row = rows.get(badge.head)
+        if row is None or badge.head in shown:
+            continue
+        shown.add(badge.head)
+        behind = f"behind by {play_time(badge.behind_by) or '0h00'}" if badge.behind_by             else "not the newest"
+        out.append(Tip(row.head, 0, f"live {badge.label}", local_time(row.saved_at),
+                       play_time(row.play_time) or "0h00", where_text(row, line),
+                       f"this platform's copy, {behind}", True))
     return out
 
 
@@ -283,16 +301,17 @@ def panel_segments(model: ReadModel, pid: str, head: str) -> list[Segment]:
     if row is None:
         return []
     numbers = version_numbers(model, pid)
-    rows = {r.head: r for r in model.versions(pid)}
+    by_member = {v: r for r in model.versions(pid) for v in r.pair if v}
     out: list[Segment] = []
     if row.label:
         out += [(f"{row.label}\n", ("callout", "b")), ("label\n", ("k",))]
-    kids = [r for r in model.versions(pid) if r.parent == head]
+    kids = [r for r in model.versions(pid)
+            if r.parent is not None and r.parent in row.pair and r.head != head]
     if len(kids) > 1:
         names = ", ".join(f"#{numbers[r.head]} {local_time(r.saved_at)}" for r in kids)
         out += [(f"{len(kids)} branches continue from here\n", ("branch", "b")),
                 (f"{names}\n", ("branch",))]
-    parent = rows.get(row.parent) if row.parent else None
+    parent = by_member.get(row.parent) if row.parent else None
     out.append((f"WHAT CHANGED SINCE #{numbers[parent.head]}\n" if parent
                 else "WHAT CHANGED\n", ("h",)))
     if parent is None:
@@ -394,7 +413,17 @@ class HistoryWindow(tk.Toplevel):
 
         tips = ttk.Labelframe(left, text="Branch tips", padding=px(6))
         tips.pack(side=tk.BOTTOM, fill=tk.X, pady=pxs(6, 0))
-        self.tips_frame = tips
+        self.tips_canvas = tk.Canvas(tips, height=px(96), highlightthickness=0, borderwidth=0)
+        tips_bar = ttk.Scrollbar(tips, orient=tk.VERTICAL, command=self.tips_canvas.yview)
+        self.tips_canvas.configure(yscrollcommand=tips_bar.set)
+        tips_bar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.tips_canvas.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self.tips_frame = ttk.Frame(self.tips_canvas)         # the grid, in a window of the canvas
+        self._tips_window = self.tips_canvas.create_window((0, 0), window=self.tips_frame,
+                                                           anchor="nw")
+        self.tips_frame.bind("<Configure>", self._tips_resized)
+        self.tips_canvas.bind("<Configure>", lambda e: self.tips_canvas.itemconfigure(
+            self._tips_window, width=e.width))
         wrap = ttk.Frame(left)
         wrap.pack(fill=tk.BOTH, expand=True)
         keys = [c[0] for c in COLUMNS]
@@ -442,6 +471,9 @@ class HistoryWindow(tk.Toplevel):
                              ("<k>", self.toggle_mode)):
             self.bind(seq, lambda _e, c=command: (c(), "break")[1])
 
+    def _tips_resized(self, _event=None) -> None:
+        self.tips_canvas.configure(scrollregion=self.tips_canvas.bbox("all"))
+
     def apply_palette(self, p) -> None:
         self._palette = dict(p)
         self.panel.configure(background=p["card"], foreground=p["fg"],
@@ -466,7 +498,7 @@ class HistoryWindow(tk.Toplevel):
         tree.tag_configure("recorded", font=theme.BOLD_FONT)
         self._draw_legend()
         self._images = {}
-        self._fill()
+        self._fill(select=self.head)          # a new theme or zoom keeps the selection
 
     def _draw_legend(self) -> None:
         p, c, s = self._palette, self.legend, dpi.factor()
@@ -558,11 +590,17 @@ class HistoryWindow(tk.Toplevel):
             self.problems.pack(side=tk.TOP, fill=tk.X, padx=px(12), before=self.body)
         else:
             self.problems.pack_forget()
+        rows = history_rows(self.model, self.pid, self.mode, self.open_runs)
+        if select is not None and not any(r.head == select for r in rows):
+            hider = next((r for r in rows if r.kind == "run" and select in r.run), None)
+            if hider is not None:          # the version is folded: unfold it, never pick another
+                self.open_runs.add(hider.key)
+                rows = history_rows(self.model, self.pid, self.mode, self.open_runs)
         tree = self.tree
         tree.delete(*tree.get_children(""))
         self.rows.clear()
         self._iid_of_head.clear()
-        for n, row in enumerate(history_rows(self.model, self.pid, self.mode, self.open_runs)):
+        for n, row in enumerate(rows):
             iid = f"H{n}"
             tree.insert("", "end", iid, text=row.text, values=row.values, tags=row.tags,
                         image=self._image(row.image))
@@ -570,12 +608,11 @@ class HistoryWindow(tk.Toplevel):
             if row.head is not None:
                 self._iid_of_head.setdefault(row.head, iid)
         self._fill_tips(tips)
-        target = select if select in self._iid_of_head else None
-        if target is None and self._iid_of_head:
-            target = next(r.head for r in self.rows.values() if r.head)
-        if target is not None:
-            self._select_head(target)
-        else:
+        if select is None and self._iid_of_head:
+            select = next(r.head for r in rows if r.head)
+        if select in self._iid_of_head:
+            self._select_head(select)
+        else:                              # gone from this save file: nothing is selected
             self.head = None
             self._show_panel()
 
@@ -725,5 +762,5 @@ class HistoryWindow(tk.Toplevel):
 
 
 def shown_problems(problems: Collection[str]) -> str:
-    """The notes about corrections that were left out (``HistoryGraph.problems``)."""
-    return "Left out of the history: " + " ".join(f"{p.rstrip('.')}." for p in problems)
+    """What the app could not use for this save file (``HistoryGraph.problems``)."""
+    return "Note: " + "; ".join(p[:1].upper() + p[1:].rstrip(".") + "." for p in problems)

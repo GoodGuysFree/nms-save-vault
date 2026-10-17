@@ -123,11 +123,20 @@ def _hm(seconds: int) -> str:
 
 
 def common_ancestor(model: ReadModel, pid: str, a: str, b: str) -> Ancestor:
-    """The nearest version both come from, over the drawn edges only."""
+    """The nearest version both come from, over the drawn edges only. A fork point that is
+    no head (a restore point) counts as its pair."""
     graph = model.history(pid, "all")
     parent = {e.child: e.parent for e in graph.edges}
-    rows = {r.head: r for r in model.versions(pid)}
+    in_tree = {n.vid for n in graph.nodes}
+    by_member = {v: r for r in model.versions(pid) for v in r.pair if v}
     numbers = version_numbers(model, pid)
+    if a == b:
+        return Ancestor(a, "the same version")
+    if a not in by_member or b not in by_member:
+        return Ancestor(None, "no common ancestor recorded - the two are not linked")
+
+    def start(head: str) -> str:
+        return next((v for v in by_member[head].pair if v in in_tree), head)
 
     def chain(vid: str) -> list[str]:
         out = [vid]
@@ -135,22 +144,22 @@ def common_ancestor(model: ReadModel, pid: str, a: str, b: str) -> Ancestor:
             out.append(parent[out[-1]])
         return out
 
-    if a == b:
-        return Ancestor(a, "the same version")
-    ca, cb = chain(a), chain(b)
+    ca, cb = chain(start(a)), chain(start(b))
     common = next((v for v in ca if v in cb), None)
-    if common is None or common not in rows or a not in rows or b not in rows:
+    if common is None or common not in by_member:
         return Ancestor(None, "no common ancestor recorded - the two are not linked")
     ia, ib = ca.index(common), cb.index(common)
-    if common == a:
+    top = by_member[common]
+    if top.head == a:
         text = f"A (#{numbers[a]}) is an ancestor of B"
-    elif common == b:
+    elif top.head == b:
         text = f"B (#{numbers[b]}) is an ancestor of A"
     else:
-        base = rows[common].play_time
-        text = (f"#{numbers[common]}, branch point; A played +{_hm(rows[a].play_time - base)}, "
-                f"B +{_hm(rows[b].play_time - base)} since" if ia and ib else "")
-    return Ancestor(common, text, ia, ib)
+        base = top.play_time
+        ra, rb = by_member[a], by_member[b]
+        text = (f"#{numbers[top.head]}, branch point; A played +{_hm(ra.play_time - base)}, "
+                f"B +{_hm(rb.play_time - base)} since")
+    return Ancestor(top.head, text, ia, ib)
 
 
 def card_text(model: ReadModel, pid: str, row: VersionRow) -> tuple[str, str]:

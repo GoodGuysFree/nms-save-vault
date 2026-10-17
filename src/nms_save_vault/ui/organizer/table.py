@@ -186,12 +186,12 @@ def _dot(row: VersionRow, linked: bool) -> tuple[str, str]:
 
 
 def _version_spec(row: VersionRow, number: int, folded: int, live_labels: dict,
-                  linked: bool, cell=None) -> RowSpec:
+                  linked: bool, cell=None, key: tuple | None = None) -> RowSpec:
     values = version_values(row, live_labels)
     if folded:
         marker = f"+{folded} re-save{'s' if folded > 1 else ''} folded"
         values["state"] = f"{values['state']}; {marker}" if values["state"] else marker
-    return RowSpec(("v", row.head), f"#{number}", tuple(values[c.key] for c in COLUMNS),
+    return RowSpec(key or ("v", row.head), f"#{number}", tuple(values[c.key] for c in COLUMNS),
                    ("ver",),
                    ("lane", cell) if cell is not None else _dot(row, linked), row.head)
 
@@ -207,14 +207,16 @@ def version_specs(model: ReadModel, pid: str, live_labels: dict) -> list[RowSpec
     numbers = version_numbers(model, pid)
     folded = Counter(r.folded_into for r in rows if r.folded_into)
     shown = [r for r in rows if not r.folded_into]
-    dated = [r for r in shown if not r.in_tree]
     graph = model.history(pid, "default")        # the linked rows, in the lanes' order
     cells = lane_cells(graph)
-    linked = [n.version for n in graph.nodes if n.kind == "version"]
-    seen = {r.head for r in linked}
-    linked += [r for r in shown if r.in_tree and r.head not in seen]   # no drawn lane
-    out = [_version_spec(r, numbers[r.head], folded[r.head], live_labels, True,
-                         cells.get(r.head)) for r in linked]
+    # A fork point that is no head is drawn as the row of its pair, so no line dangles.
+    linked = [(n.version, cells[n.vid], ("m", n.vid) if n.kind == "fork-member" else None)
+              for n in graph.nodes]
+    seen = {r.head for r, _, k in linked if k is None} | {r.head for r, _, k in linked}
+    linked += [(r, None, None) for r in shown if r.in_tree and r.head not in seen]
+    dated = [r for r in shown if not r.in_tree and r.head not in seen]
+    out = [_version_spec(r, numbers[r.head], folded[r.head], live_labels, True, cell, key)
+           for r, cell, key in linked]
     if dated:
         count = f"{len(dated)} version{'s' if len(dated) != 1 else ''}"
         note = {c.key: "" for c in COLUMNS}

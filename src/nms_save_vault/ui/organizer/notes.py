@@ -54,7 +54,9 @@ def note_diff(notes: Notes, model: ReadModel, pid: str, head: str) -> list[tuple
     row = next((r for r in model.versions(pid) if r.head == head), None)
     if row is None or row.note_rev is None:
         return [(NO_SNAPSHOT, "note")]
-    text = notes.note_text_at(pid, row.note_rev)
+    # ``note_rev`` is a revision of the raw save file's note (the id the game wrote), which is
+    # not the line's id after a Combine or a Split.
+    text = notes.note_text_at(model.raw_pid_of(head) or pid, row.note_rev)
     if text is None:
         return [(NO_SNAPSHOT, "note")]
     parent = None
@@ -62,7 +64,7 @@ def note_diff(notes: Notes, model: ReadModel, pid: str, head: str) -> list[tuple
         parent = next((r for r in model.versions(pid) if r.head == row.parent), None)
     before = None
     if parent is not None and parent.note_rev is not None:
-        before = notes.note_text_at(pid, parent.note_rev)
+        before = notes.note_text_at(model.raw_pid_of(parent.head) or pid, parent.note_rev)
     if before is None:
         out = [(NO_PARENT_SNAPSHOT, "note")]
         return out + [("\n" + text, "")] if text else out
@@ -97,6 +99,7 @@ class NotesWindow(tk.Toplevel):
         self.notes = notes
         self.model = model
         self.worker = worker
+        self._snap_seq = 0
         self.on_saved = on_saved
         self.pid = pid
         self.head: str | None = None
@@ -258,13 +261,36 @@ class NotesWindow(tk.Toplevel):
         return True
 
     def set_model(self, model: ReadModel) -> None:
-        """A newer read model: the lists follow; text being edited stays."""
+        """A newer read model: the lists follow; text being edited stays. When a Combine
+        took this save file away, the window follows it to the save file it joined."""
         self.model = model
+        if model.line(self.pid) is None:
+            self._follow_combine()
+            return
         if not self.dirty():
             self._load_note()
         self._fill_versions()
         if self.head is not None:
             self._show_version_heading()
+
+    def _follow_combine(self) -> None:
+        """The shown save file is gone (combined into another): show that one. Unsaved text
+        is kept - added at the end of the other note - and never saved under the gone id."""
+        target = next((line.pid for line in self.model.lines() if self.pid in line.raw_pids),
+                      None)
+        if target is None:
+            self.destroy()
+            return
+        typed = self.editor.get("1.0", "end-1c") if self.dirty() else ""
+        head = self.head
+        self.pid = target
+        self.show(target, head if head in {r.head for r in self.model.versions(target)} else None)
+        if typed:
+            self.editor.configure(state="normal")
+            gap = "\n\n" if self.editor.get("1.0", "end-1c") else ""
+            self.editor.insert("end", gap + typed)
+            set_label(self.status, "This save file was combined into another; your unsaved text "
+                                   "was added at the end - Save note to keep it.")
 
     def dirty(self) -> bool:
         return self.editor.get("1.0", "end-1c") != self.loaded_text
@@ -400,13 +426,27 @@ class NotesWindow(tk.Toplevel):
 
     def _show_snapshot(self) -> None:
         """The note as it was when the shown version was captured, diffed against its
-        parent's (U26)."""
+        parent's (U26); the diff is made in the worker."""
+        self._snap_seq += 1
+        seq = self._snap_seq
+        self._write_snapshot([])
+        if self.head is None:
+            return
+        self.worker.submit(note_diff, self.notes, self.model, self.pid, self.head,
+                           on_done=lambda pieces: self._snapshot_ready(seq, pieces),
+                           on_error=lambda e: self._snapshot_ready(
+                               seq, [(f"The note snapshot could not be read: {e}", "note")]))
+
+    def _snapshot_ready(self, seq: int, pieces: list) -> None:
+        if seq == self._snap_seq and self.winfo_exists():
+            self._write_snapshot(pieces)
+
+    def _write_snapshot(self, pieces: list) -> None:
         t = self.snapshot
         t.configure(state="normal")
         t.delete("1.0", "end")
-        if self.head is not None:
-            for text, tag in note_diff(self.notes, self.model, self.pid, self.head):
-                rtext(t, "end", text, *((tag,) if tag else ()))
+        for text, tag in pieces:
+            rtext(t, "end", text, *((tag,) if tag else ()))
         t.configure(state="disabled")
 
     def _show_version_heading(self) -> None:
