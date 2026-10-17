@@ -323,7 +323,7 @@ class VersionStore:
                       source=dict(source), scope=plan.scope,
                       origin=None if origin is None else dict(origin),
                       files=list(records.values()), members=members,
-                      account=capture.account_paths(platform, records), xbox=plan.xbox)
+                      account=capture.account_paths(plan, records), xbox=plan.xbox)
         return self._commit(fields, entry_id=entry_id, created_local=created_local)
 
     def _require_space(self, needed: int) -> None:

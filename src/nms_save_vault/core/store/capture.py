@@ -9,12 +9,13 @@ from __future__ import annotations
 
 import logging
 import os
+import struct
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Literal
 
-from .. import lz4_block, savedir
+from .. import lz4_block, msstore, savedir
 from ..formats import ACCOUNT_DATA_NAME, ACCOUNT_META_NAME, CACHE_DIR, MAX_SAVE_SLOTS, STEAM_AUTOCLOUD
 from ..organizer.model import Platform, pid_from_id
 from ..slotmap import data_filename, meta_filename, parse_data_filename, slot_file_numbers
@@ -24,6 +25,7 @@ from .manifest import FileEntry, MemberRecord
 log = logging.getLogger(__name__)
 
 STABLE_TRIES = 3
+INDEX_NAME = "containers.index"
 STEAM_ACCOUNT_FILES = {"data": ACCOUNT_DATA_NAME, "meta": ACCOUNT_META_NAME,
                        "autocloud": STEAM_AUTOCLOUD}
 
@@ -49,6 +51,7 @@ class CapturePlan:
     xbox: dict[str, str] | None = None
     made: dict[str, tuple[bytes, int]] = field(default_factory=dict)       # path -> (bytes, mtime_ns)
     derived_from: list[tuple[str, Path, int, int]] = field(default_factory=list)  # rel, path, size, mtime_ns
+    account: dict[str, str] = field(default_factory=dict)   # account-level files by role
 
     def object_bytes(self, inline_max: int) -> int:
         """The most the capture can add to the store: every file too big to be inline."""
@@ -68,7 +71,7 @@ def plan(folder: Path, platform: Platform, *, kind: str, scope: CaptureScope,
             raise StoreError(f"Not a slot: {bad or 'none given'}.")
     if platform == "steam":
         return _plan_steam(folder, kind=kind, scope=scope, live=live)
-    raise StoreError("Xbox folders cannot be kept in the store yet.")
+    return _plan_xbox(folder, scope=scope)
 
 
 def _plan_steam(folder: Path, *, kind: str, scope: CaptureScope, live: bool) -> CapturePlan:
@@ -99,7 +102,68 @@ def _plan_steam(folder: Path, *, kind: str, scope: CaptureScope, live: bool) -> 
         record = {"slots": "all", "account_files": scope.account_files,
                   "cache": "included" if scope.cache == "include" else "omitted"}
     files = [(rel, folder.joinpath(*rel.split("/"))) for rel in sorted(rels)]
-    return CapturePlan(folder, "steam", files, _sizes(files), record, scope.slots)
+    account = {k: name for k, name in STEAM_ACCOUNT_FILES.items() if name in rels}
+    return CapturePlan(folder, "steam", files, _sizes(files), record, scope.slots,
+                       account=account)
+
+
+def _plan_xbox(folder: Path, *, scope: CaptureScope) -> CapturePlan:
+    """A wgs account folder (``containers.index`` + one folder per save), or an xgs account
+    folder (one folder per identifier, no index). The whole folder is taken verbatim; a slot
+    scope takes the slot's folders and, for wgs, an index rebuilt from just their records (as
+    the classic extract does), so the entry is a self-contained wgs folder."""
+    index = folder / INDEX_NAME
+    wgs = _is_regular(index)
+    if scope.slots is None:
+        rels = walk(folder)
+        files = [(rel, folder.joinpath(*rel.split("/"))) for rel in rels]
+        xbox = {"index": INDEX_NAME, "index_kind": "verbatim"} if wgs else None
+        record = {"slots": "all", "account_files": True, "cache": "none"}
+        return CapturePlan(folder, "xbox", files, _sizes(files), record, None, xbox=xbox,
+                           account=_xbox_account(folder, wgs))
+    wanted = {f"Slot{s}{kind}" for s in scope.slots for kind in ("Auto", "Manual")}
+    made: dict[str, tuple[bytes, int]] = {}
+    derived: list[tuple[str, Path, int, int]] = []
+    if wgs:
+        st = os.stat(index)
+        info, containers = _parse_index(folder)
+        picked = [c for c in containers if c.identifier in wanted
+                  and c.data_file is not None and c.data_file.is_file()]
+        dirs = [c.directory for c in picked]
+        if picked:
+            subset = replace(info, trailer=b"")      # the source's trailing bytes are not ours
+            made[INDEX_NAME] = (msstore.build_containers_index(subset, picked), st.st_mtime_ns)
+            derived.append((INDEX_NAME, index, st.st_size, st.st_mtime_ns))
+        xbox = {"index": INDEX_NAME, "index_kind": "rebuilt"}
+    else:
+        dirs = [folder / name for name in sorted(wanted) if (folder / name / "data").is_file()]
+        xbox = None
+    if not dirs:
+        raise StoreError(f"Slot {_slots_text(scope.slots)} holds no saves to keep.")
+    rels = sorted(f"{d.name}/{rel}" for d in dirs for rel in walk(d))
+    files = [(rel, folder.joinpath(*rel.split("/"))) for rel in rels]
+    record = {"slots": list(scope.slots), "account_files": False, "cache": "none"}
+    return CapturePlan(folder, "xbox", files, _sizes(files), record, scope.slots, xbox=xbox,
+                       made=made, derived_from=derived)
+
+
+def _parse_index(folder: Path):
+    try:
+        return msstore.parse_containers_index(folder)
+    except (OSError, ValueError, IndexError, struct.error) as exc:
+        raise StoreError(f"The Xbox save index cannot be read ({exc}).") from exc
+
+
+def _xbox_account(folder: Path, wgs: bool) -> dict[str, str]:
+    """Where the account-level save (``AccountData``) of a whole Xbox folder lives."""
+    if not wgs:
+        return {"data": "AccountData/data", "meta": "AccountData/meta"}
+    _info, containers = _parse_index(folder)
+    for c in containers:
+        if c.identifier == "AccountData":
+            return {k: f"{c.dir_guid}/{p.name}"
+                    for k, p in (("data", c.data_file), ("meta", c.meta_file)) if p is not None}
+    return {}
 
 
 def walk(folder: Path) -> list[str]:
@@ -240,7 +304,6 @@ def _rel(folder: Path, path: Path) -> str | None:
         return None
 
 
-def account_paths(platform: Platform, records: Mapping[str, FileEntry]) -> dict[str, str]:
-    if platform == "steam":
-        return {k: name for k, name in STEAM_ACCOUNT_FILES.items() if name in records}
-    return {}
+def account_paths(plan: CapturePlan, records: Mapping[str, FileEntry]) -> dict[str, str]:
+    """The entry's ``account`` record: the account-level files it holds, by role."""
+    return {k: rel for k, rel in plan.account.items() if rel in records}
