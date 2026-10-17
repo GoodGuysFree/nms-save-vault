@@ -47,9 +47,11 @@ class FileHit(NamedTuple):
 class ScanCache:
     """``path`` None keeps the cache in memory only (``--no-cache``)."""
 
-    def __init__(self, path: Path | None, vault_id: str | None) -> None:
+    def __init__(self, path: Path | None, vault_id: str | None, *,
+                 read_only: bool = False) -> None:
         self.path = path
         self.vault_id = vault_id
+        self.read_only = read_only     # used, never saved (the operation hook)
         self._files: dict[str, list] = {}        # path -> [size, mtime_ns, vid, whole, meta_sha]
         self._entries: dict[str, dict] = {}      # entry id -> {"fp", "captures"}
         self._ids: dict[str, str] = {}           # vid -> data id hex, "0" for none
@@ -57,8 +59,8 @@ class ScanCache:
         self._dirty = False
 
     @classmethod
-    def load(cls, path: Path, vault_id: str | None) -> ScanCache:
-        cache = cls(path, vault_id)
+    def load(cls, path: Path, vault_id: str | None, *, read_only: bool = False) -> ScanCache:
+        cache = cls(path, vault_id, read_only=read_only)
         try:
             raw = path.read_bytes()
         except FileNotFoundError:
@@ -154,7 +156,7 @@ class ScanCache:
     def save(self) -> None:
         """Write the cache if anything changed. A failure is logged, never raised: the cache
         is only an optimisation."""
-        if self.path is None or not self._dirty:
+        if self.path is None or self.read_only or not self._dirty:
             return
         data = {"schema": SCHEMA, "vault_id": self.vault_id, "files": self._files,
                 "entries": self._entries, "ids": self._ids, "legacy": self._legacy}

@@ -239,3 +239,52 @@ def test_hand_made_copies_are_not_timeline_evidence(tmp_path):
     assert "inplace-20260101-113000" not in {r.get("entry") for r in store.journal_records()}
     v25 = _vid("v25", tmp_path)
     assert all(v25 not in (e.parent, e.child) for e in Journal(store, {}).replay().edges)
+
+
+
+def test_the_live_slots_are_journaled_as_they_are_when_the_bootstrap_ends(tmp_path, monkeypatch):
+    """The game may save while the deep scan runs: the final look is a fresh one."""
+    from nms_save_vault.core.organizer import bootstrap as boot
+    vault, live = _history(tmp_path)
+    real_scan = boot.scan
+    calls = []
+
+    def scan_then_play(*args, **kwargs):
+        result = real_scan(*args, **kwargs)
+        if not calls:                               # the deep scan: the game saves after it
+            _put(live, 9, "v25")
+        calls.append(1)
+        return result
+
+    monkeypatch.setattr(boot, "scan", scan_then_play)
+    store, _ = _run(vault, live)
+    last9 = [r for r in store.journal_records() if r["target"]["slot"] == 9][-1]
+    assert last9["src"] == "scan" and last9["pair"][0] == _vid("v25", tmp_path)
+
+
+def test_done_at_is_the_cutoff_the_run_used(tmp_path):
+    from datetime import datetime, timezone
+    vault, live = _history(tmp_path)
+    store = OrganizerStore(vault.root, create=True)
+    start = int(datetime.fromisoformat("2026-01-01T12:30:00").astimezone(timezone.utc).timestamp())
+    with store.transaction() as tx:
+        tx.append(obs_fields("scan", LiveTarget("steam", ACCOUNT, 1), (None, None), {}, {}),
+                  at=start)
+    _run(vault, live, now=1_900_000_000)
+    assert store.document(LINEAGE)["bootstrap"]["done_at"] == start
+
+
+def test_a_write_the_hook_recorded_is_not_imported_again(tmp_path):
+    """Matched by what it did - slot, saves, time - not by its id."""
+    from datetime import datetime, timezone
+    from nms_save_vault.core.organizer.journal import op_fields
+    vault, live = _history(tmp_path)
+    when = int(datetime.fromisoformat("2026-01-01T13:00:00").astimezone(timezone.utc).timestamp())
+    store = OrganizerStore(vault.root, create=True)
+    with store.transaction() as tx:     # the hook's record, a minute after the log line
+        tx.append(op_fields("app", "op-20260101T130100Z-abcd", "repopulate", T9,
+                            (_vid("v1", tmp_path), None), None), at=when + 60)
+    store2, _ = _run(vault, live)
+    repopulates = [r for r in store2.journal_records()
+                   if r["t"] == "op" and r["kind"] == "repopulate"]
+    assert [r["src"] for r in repopulates] == ["app"]

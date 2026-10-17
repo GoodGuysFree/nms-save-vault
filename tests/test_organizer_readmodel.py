@@ -27,6 +27,12 @@ from nms_save_vault.core.state import Source
 
 from .conftest import steam_save
 
+
+@pytest.fixture(autouse=True)
+def game_not_running(monkeypatch):
+    from nms_save_vault.core import safety
+    monkeypatch.setattr(safety, "is_game_running", lambda: False)
+
 ACCOUNT = "st_76561198000000001"
 MAIN = 0xDDDAD1BDD39F9C72
 OTHER = 0x9E8385F0AB12CD34

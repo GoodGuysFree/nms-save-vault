@@ -13,6 +13,7 @@ import functools
 import inspect
 import logging
 import os
+import threading
 import shutil
 import struct
 import warnings as pywarnings
@@ -119,6 +120,10 @@ LIVE_OP_BUSY = (
     "Another NMS Save Vault window is changing live saves. Try again when it has finished."
 )
 
+# The game check of the write in progress on this thread (_guard_game sets it): the hook
+# journals the live slots only when the game is known not to be running.
+_game_check = threading.local()
+
 
 def _recorded(kind: str, slot_arg: str | None = None):
     """The organizer's phase-1 hook (D1 2.6.7) around a live write: the write runs under the
@@ -138,10 +143,20 @@ def _recorded(kind: str, slot_arg: str | None = None):
             vault = arguments["vault"]
             try:
                 with recorder.classic_write(vault.root, Path(arguments["live_dir"]), kind) as hook:
-                    result = fn(*args, **kwargs)
-                    if hook is not None:
-                        hook.done(result, slot=arguments[slot_arg] if slot_arg else None,
-                                  source=_op_source(vault, arguments))
+                    if hook is None:                  # part of an outer write
+                        return fn(*args, **kwargs)
+                    _game_check.state = None          # unknown until the write checks
+                    record = functools.partial(
+                        hook.done, slot=arguments[slot_arg] if slot_arg else None,
+                        source=lambda: _op_source(vault, arguments))
+                    try:
+                        result = fn(*args, **kwargs)
+                    except BaseException as exc:
+                        # A write that failed after changing the folder is still recorded.
+                        record(getattr(exc, "result", None), game_running=_game_check.state,
+                               error=exc)
+                        raise
+                    record(result, game_running=_game_check.state)
                     return result
             except recorder.LiveOpBusy as exc:
                 raise OperationError(LIVE_OP_BUSY) from exc
@@ -184,6 +199,7 @@ def _member_paths(folder: Path, file_no: int) -> tuple[Path, Path]:
 
 def _guard_game(allow_game_running: bool, warnings: list[str]) -> None:
     running = safety.is_game_running()
+    _game_check.state = running    # what the organizer hook may journal depends on it
     if running is True and not allow_game_running:
         raise GameRunningError("No Man's Sky appears to be running. Close the game first.")
     if running is None:

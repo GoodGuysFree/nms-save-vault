@@ -433,14 +433,14 @@ def live_refs(sources: Sequence[Source]) -> list[LiveRef]:
         return "xbox" if s.platform == "xbox" else "steam"
 
     names = [(platform_of(s), Path(s.path).name) for s in sources]
-    refs = []
-    for source, key in zip(sources, names):
-        instance = ""
-        if names.count(key) > 1:
-            parent = str(Path(source.path).resolve().parent)
-            instance = hashlib.sha1(parent.encode("utf-8")).hexdigest()[:8]
-        refs.append(LiveRef(key[0], key[1], instance))
-    return refs
+    return [LiveRef(key[0], key[1], instance_of(source.path) if names.count(key) > 1 else "")
+            for source, key in zip(sources, names)]
+
+
+def instance_of(folder: str | Path) -> str:
+    """The tag that tells apart two live folders of one name: their location's hash."""
+    parent = str(Path(folder).resolve().parent)
+    return hashlib.sha1(parent.encode("utf-8")).hexdigest()[:8]
 
 
 def _registry(ordered: list[tuple[Capture, ObsOrder]], entries: Mapping[str, EntryScan]

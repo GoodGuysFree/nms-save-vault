@@ -527,6 +527,8 @@ two with the same `op_id`; idempotent on `(op_id, target)`):
 
 `m` (as in `obs`) describes the placed vids the journal has not described yet, so a
 recorded step can be drawn from the journal alone once the source entry is gone.
+`snapshot` names the entry the app kept the folder in before it wrote (the classic
+pre-operation snapshot), which is how a classic undo finds the operation it undid.
 
 `src`: `app` (D5 or the phase-1 hook) or `oplog` (bootstrap, from a legacy `oplog.jsonl`
 line; `op_id` = `legacy-<line index>`). `kind` for app ops is D5's (`place`,
@@ -716,10 +718,13 @@ From phase 1, every classic operation that writes a live folder (today `repopula
 "Another NMS Save Vault window is changing live saves"), so GUI, CLI and a second app instance
 never write one live folder at once. Inside the lock the hook observes the folder before the
 write (journals the state about to be replaced); after a successful write it calls `record_op`
-per written slot with the classic kind, the written pair and, as `evicted`, the journal's
-previous state, then observes the folder again. Classic backups (`full_backup`,
-`snapshot_live`) call `observe` on the folder they read, which narrows the journal's gaps (risk
-1). A failure to record is logged as a warning and never fails the operation. D5 replaces the
+per written slot with the classic kind, the written pair and, as `evicted`, what its own
+look before the write found, all in one transaction, then observes the folder again. The
+slots are journaled only when the operation's own game check said the game is not
+running; when it may be (allowed by the user, or unknown) only the operation is recorded.
+A write that fails after changing the folder is recorded where it changed it. A full
+backup calls `observe` on the folder it read when the game is known not to be running,
+which narrows the journal's gaps (risk 1). A failure to record is logged as a warning and never fails the operation. D5 replaces the
 live-write calls in phase 2 (the hook touches `operations.py`, which D5 owns; D5 takes the same
 lock).
 

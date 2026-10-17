@@ -14,6 +14,7 @@ backups imported later). A dry run computes everything and writes nothing.
 """
 from __future__ import annotations
 
+import logging
 import re
 import threading
 import time
@@ -24,7 +25,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .. import catalog, savedir
+from .. import catalog, safety, savedir
 from ..catalog import CatalogEntry, Vault
 from ..state import Source
 from .cache import ScanCache
@@ -50,10 +51,14 @@ from .model import (
 )
 from .lineage import ensure_skeleton
 from .scanner import EntryScan, ScanProblem, ScanResult, scan
-from .store import APP, LINEAGE, OrganizerStore
+from .recorder import LIVEOP_TIMEOUT
+from .store import APP, LINEAGE, OrganizerStore, liveop_lock_path
+
+log = logging.getLogger(__name__)
 
 ALGO = 1
 TIMELINE_KINDS = (catalog.KIND_FULL, catalog.KIND_SNAPSHOT)
+HOOK_WINDOW = 300       # seconds between an oplog line and the hook's record of the same write
 LIVE_SRCS = ("scan", "verify", "app")
 
 _REPOPULATE = re.compile(r"(xbox )?(.+) slot (\d+) -> slot (\d+)", re.DOTALL)
@@ -102,6 +107,7 @@ def bootstrap(vault: Vault, store: OrganizerStore, sources: Sequence[Source],
               progress: Callable[[int, int], None] | None = None,
               cancel: threading.Event | None = None) -> BootstrapReport:
     started = time.perf_counter()
+    begun = int(clock())
     result = scan(vault, sources, cache, game_running=game_running, deep=True, now=clock,
                   progress=progress, cancel=cancel)
     existing, problems = decode_all(store.journal_records())
@@ -109,7 +115,9 @@ def bootstrap(vault: Vault, store: OrganizerStore, sources: Sequence[Source],
     done_at = (lineage.get("bootstrap") or {}).get("done_at")
     live_starts = [r.at for r in existing if isinstance(r, ObsRecord) and r.src in LIVE_SRCS]
     live_starts += [r.at for r in existing if isinstance(r, OpRecord) and r.src == "app"]
-    cutoff = done_at if isinstance(done_at, int) else min(live_starts, default=None)
+    # From here on the journal and the operation hook record what happens: older evidence
+    # only is the bootstrap's to add, now and in every later run.
+    cutoff = done_at if isinstance(done_at, int) else min(live_starts, default=begun)
 
     plan = _Plan(vault, result, existing, cutoff)
     plan.entries()
@@ -124,18 +132,34 @@ def bootstrap(vault: Vault, store: OrganizerStore, sources: Sequence[Source],
         with store.transaction() as tx:
             for record, at in fields:
                 tx.append(record, at=at)
-        journal = Journal(store, result.versions)
-        observed = journal.observe(result, src="scan", skip=frozenset())
-        written = len(fields) + observed.written
+        journal, observed = _observe_now(vault, store, sources, cache, result, game_running,
+                                         clock)
+        written = len(fields) + observed
         with store.transaction() as tx:
             doc = tx.doc(LINEAGE)
             ensure_skeleton(doc)
             block = dict(doc.get("bootstrap") or {})
-            block.setdefault("done_at", int(clock()))
+            block.setdefault("done_at", cutoff)
             block.update(app=APP, algo=ALGO, report=_counts(plan, result, written))
             doc["bootstrap"] = block
         state = journal.replay()
     return _report(plan, result, state, written, time.perf_counter() - started, dry_run)
+
+
+def _observe_now(vault: Vault, store: OrganizerStore, sources: Sequence[Source],
+                 cache: ScanCache, deep: ScanResult, game_running: bool | None,
+                 clock: Callable[[], float]) -> tuple[Journal, int]:
+    """Journal the live slots as they are now, not as the deep scan found them seconds or
+    minutes ago: a quick second look under the live-op lock, so no write is under way."""
+    try:
+        with safety.exclusive_lock(liveop_lock_path(vault.root), timeout=LIVEOP_TIMEOUT):
+            fresh = scan(None, sources, cache, game_running=game_running, now=clock)
+            journal = Journal(store, {**deep.versions, **fresh.versions})
+            return journal, journal.observe(fresh, src="scan", skip=frozenset()).written
+    except safety.LockTimeout:
+        log.warning("bootstrap: a live write is under way; the live slots are journaled at "
+                    "the next refresh")
+        return Journal(store, deep.versions), 0
 
 
 class _Plan:
@@ -150,6 +174,8 @@ class _Plan:
         self.resolved = 0
         self.represented = {r.entry for r in existing if isinstance(r, ObsRecord) and r.entry}
         self.known_ops = {(r.op_id, r.target) for r in existing if isinstance(r, OpRecord)}
+        self.app_ops = [(r.target, r.pair, r.at) for r in existing
+                        if isinstance(r, OpRecord) and r.src == "app"]
         self.catalog = {e.id: e for e in vault.entries}
         self.refs = list(result.live)
 
@@ -213,10 +239,16 @@ class _Plan:
                 continue
             kind = {"repopulate_slot": "repopulate", "clear_slot": "clear"}.get(op, op)
             for target, pair, members in placed:
-                if (op_id, target) not in self.known_ops:
+                if (op_id, target) not in self.known_ops and not self._hook_recorded(
+                        target, pair, when):
                     self.items.append(_Item(when, 1, target, pair, members, op_id=op_id,
                                             kind=kind))
             self.resolved += 1
+
+    def _hook_recorded(self, target: LiveTarget, pair: PairKey, when: int) -> bool:
+        """The operation hook recorded this write already (its own id, the same content)."""
+        return any(t == target and p == pair and abs(at - when) <= HOOK_WINDOW
+                   for t, p, at in self.app_ops)
 
     def _placements(self, op: str, record: Mapping[str, Any]):
         detail = str(record.get("detail") or "")
