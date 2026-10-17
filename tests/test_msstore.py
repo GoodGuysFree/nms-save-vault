@@ -101,6 +101,15 @@ def test_parse_ms_meta_fields(length):
     assert info["meta_format"] == formats.META_FORMAT_4
 
 
+def test_a_pre_worlds_meta_has_no_playthrough_id():
+    """A 360-B meta of format 0 ("Voyagers") holds a non-zero u64 at 0x118 that its data
+    does not: it is not the save's id, so the save falls back to its name."""
+    blob = xbox_meta("Voyagers", play=3600, pid=0x1122334455667788, ts=1782240635, fmt=0)
+    info = msstore.parse_ms_meta(blob)
+    assert info["slot_id"] == 0 and info["meta_format"] == 0
+    assert info["name"] == "Voyagers" and info["timestamp"] == 1782240635
+
+
 def test_parse_ms_meta_waypoint_has_names_and_a_one_byte_difficulty():
     """280 B (Waypoint) ends at 0x118: names and a single difficulty byte, no id or time."""
     info = msstore.parse_ms_meta(xbox_meta("Hello", "On Planet", play=3600, difficulty=3, length=280))
@@ -195,7 +204,10 @@ def test_real_xbox_metas_carry_id_and_time(live_wgs_dir, tmp_path):
             continue
         fields = msstore.parse_ms_meta(raw)
         assert NMS_RELEASE < fields["timestamp"] < time.time() + 86400, c.identifier
-        assert fields["slot_id"] != 0, c.identifier
+        if fields["meta_format"]:
+            assert fields["slot_id"] != 0, c.identifier
+        else:                     # pre-Worlds: the u64 at 0x118 is not an id
+            assert fields["slot_id"] == 0, c.identifier
         assert fields["meta_format"] in (0, formats.META_FORMAT_3, formats.META_FORMAT_4), c.identifier
         data_id = playtime._id_from_bytes(data_copy.read_bytes(), fields["size_field"])
         if data_id is not None:   # pre-Worlds data has no id to compare with

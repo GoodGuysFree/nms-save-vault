@@ -6,6 +6,7 @@ back to auto-detection and flags the mismatch).
 """
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -37,6 +38,9 @@ class MemberView:
     # future writer can rewrite the save in place. None for Steam saves. Typed loosely to
     # avoid a circular import with msstore.
     xbox: object | None = None
+    # sha256 hex of the decrypted meta (Xbox: the meta as stored); "" when it is unreadable.
+    # One save's data can sit beside several metas (promote and moves re-stamp them).
+    meta_sha256: str = ""
 
     @property
     def slot(self) -> int:
@@ -183,6 +187,8 @@ def _load_member(folder: Path, file_no: int) -> MemberView:
             ordinal, plain = meta.decrypt_autodetect(blob, ref.storage_ordinal)
         mv.ordinal_used = ordinal
         mv.info = meta.parse(plain, ordinal)
+        if mv.info.valid:
+            mv.meta_sha256 = hashlib.sha256(plain).hexdigest()
         if ordinal != ref.storage_ordinal:
             mv.note = f"meta keyed for ordinal {ordinal} (moved without re-key)"
     except Exception as exc:  # noqa: BLE001 - report, never raise during a scan

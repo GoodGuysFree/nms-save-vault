@@ -84,7 +84,8 @@ def wgs_playthrough_id(identifier: str) -> int:
 
 
 def xbox_meta(name: str = "", summary: str = "", *, play: int = 0, size: int = 0, pid: int = 0,
-              ts: int = 0, difficulty: int = 0, length: int = 360) -> bytes:
+              ts: int = 0, difficulty: int = 0, length: int = 360,
+              fmt: int = formats.META_FORMAT_4) -> bytes:
     """A plaintext Xbox meta at a real length: 360 B (Worlds II), 296 B (Worlds I) or 280 B
     (Waypoint). From 296 B it carries the playthrough id at 0x118 and the save time at
     0x120, as the game writes them; 280 B ends at 0x118 with a one-byte difficulty."""
@@ -104,7 +105,7 @@ def xbox_meta(name: str = "", summary: str = "", *, play: int = 0, size: int = 0
     struct.pack_into("<I", b, 0x114, difficulty)
     struct.pack_into("<Q", b, 0x118, pid)                 # playthrough id
     struct.pack_into("<I", b, 0x120, ts)                  # save time (unix seconds)
-    struct.pack_into("<I", b, 0x124, formats.META_FORMAT_4)
+    struct.pack_into("<I", b, 0x124, fmt)
     return bytes(b)
 
 
@@ -169,11 +170,19 @@ def make_wgs_account():
 # --- synthetic Steam saves ---------------------------------------------------------------
 
 
-def steam_save(folder: Path, slot: int, member: int, name: str, play: int, ident: int, ts: int) -> None:
-    """Write one Steam save pair (data + encrypted meta) into ``folder``."""
+def steam_save(folder: Path, slot: int, member: int, name: str, play: int, ident: int, ts: int,
+               *, extra: str = "", data_ident: int | None = None) -> None:
+    """Write one Steam save pair (data + encrypted meta) into ``folder``. ``extra`` goes into
+    the data, so two saves alike in every meta field still differ in bytes; ``data_ident`` is
+    the id the data carries when it differs from the meta's (None: the same; 0: none)."""
     folder.mkdir(parents=True, exist_ok=True)
     fno = slotmap.slot_file_numbers(slot)[member]
-    payload = b'{"F2P":4737,"<h0":{"Pk4":"' + name.encode("utf-8") + b'","WmU":"0x%X"}}' % ident
+    if data_ident is None:
+        id_field = b',"WmU":"0x%X"' % ident
+    else:
+        id_field = b',"WmU":"0x%X"' % data_ident if data_ident else b""
+    payload = (b'{"F2P":4737,"<h0":{"Pk4":"' + name.encode("utf-8") + b'"' + id_field + b"}"
+               + (b',"x":"' + extra.encode("utf-8") + b'"' if extra else b"") + b"}")
     (folder / slotmap.data_filename(fno)).write_bytes(chunked(payload))
 
     plain = bytearray(formats.META_LEN_WORLDS_II)

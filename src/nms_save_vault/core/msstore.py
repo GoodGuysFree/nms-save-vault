@@ -29,6 +29,7 @@ https://github.com/zencq/libNOM.io, licensed GPL-3.0. See LICENSE and README.md 
 """
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import shutil
@@ -421,9 +422,12 @@ def parse_ms_meta(disk: bytes) -> dict:
         out["summary"] = _ms_string(disk, MS_OFF_SUMMARY)
     if _has_save_time(L):
         out["difficulty"] = _u(disk, MS_OFF_DIFFICULTY, "<I", 4)
-        out["slot_id"] = _u(disk, MS_OFF_SLOT_ID, "<Q", 8)
         out["timestamp"] = _u(disk, MS_OFF_TIMESTAMP, "<I", 4)
         out["meta_format"] = _u(disk, MS_OFF_META_FORMAT, "<I", 4)
+        # A pre-Worlds meta of this length (format 0, e.g. "Voyagers") holds a non-zero u64
+        # here that is not a playthrough id.
+        if out["meta_format"] >= formats.META_FORMAT_3:
+            out["slot_id"] = _u(disk, MS_OFF_SLOT_ID, "<Q", 8)
     elif L == MS_META_LEN_WAYPOINT:
         out["difficulty"] = disk[MS_OFF_DIFFICULTY]
     return out
@@ -492,7 +496,9 @@ def _build_member(slot: int, member: int, c: _Container) -> MemberView:
         mv.note = "Xbox save: blob missing" if c.sync_state != SYNC_STATE_DELETED else "Xbox save: deleted"
         return mv
     data = data_file.read_bytes()
-    fields = parse_ms_meta(meta_file.read_bytes())
+    meta_bytes = meta_file.read_bytes()
+    fields = parse_ms_meta(meta_bytes)
+    mv.meta_sha256 = hashlib.sha256(meta_bytes).hexdigest()
     mv.data_size = len(data)
     mv.data_mtime = c.last_write or data_file.stat().st_mtime
     mv.ordinal_used = None  # not Steam-keyed
