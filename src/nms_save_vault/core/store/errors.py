@@ -3,6 +3,7 @@ show its message; messages are ASCII and written for the owner (D3 2.14)."""
 from __future__ import annotations
 
 from ..operations import OperationError
+from .d1 import PreserveFailed, VersionUnavailable
 
 
 class StoreError(OperationError):
@@ -44,16 +45,22 @@ class Cancelled(StoreError):
     """The caller cancelled; nothing was committed."""
 
 
-class ObjectMissing(StoreError):
+class ObjectMissing(StoreError, VersionUnavailable):
     def __init__(self, digest: str, detail: str = "missing") -> None:
         super().__init__(f"A stored copy ({digest[:12]}) is damaged ({detail}). Run Check vault.")
         self.digest = digest
+        self.detail = detail
 
 
-class ObjectCorrupt(StoreError):
+class ObjectCorrupt(StoreError, VersionUnavailable):
     def __init__(self, digest: str, detail: str = "its bytes do not match") -> None:
         super().__init__(f"A stored copy ({digest[:12]}) is damaged ({detail}). Run Check vault.")
         self.digest = digest
+        self.detail = detail
+
+
+class PreserveMismatch(StoreError, PreserveFailed):
+    """A live slot no longer holds the version the caller planned to keep: re-plan."""
 
 
 class EntryCorrupt(StoreError):

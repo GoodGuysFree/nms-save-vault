@@ -6,6 +6,7 @@ from .errors import (
     InsufficientSpace,
     ObjectCorrupt,
     ObjectMissing,
+    PreserveMismatch,
     SourceChanged,
     StoreBusy,
     StoreError,
@@ -13,6 +14,8 @@ from .errors import (
     StoreTooNew,
     StoreUnavailable,
 )
+from .damage import DamageRecord
+from .locator import StoreLocator
 from .manifest import EntryKind, FileEntry, MemberRecord, StoreEntry
 from .materialize import MaterializeResult
 from .objects import ObjectStore, PutResult

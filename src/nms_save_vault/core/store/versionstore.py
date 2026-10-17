@@ -29,6 +29,8 @@ from .. import catalog, discover, safety, savedir
 from ..organizer.model import Platform
 from . import capture
 from .capture import CaptureScope
+from .damage import DamageRecord, read_damage, write_damage
+from .damage import merge as merge_damage
 from .errors import (
     Cancelled,
     EntryCorrupt,
@@ -185,6 +187,7 @@ class VersionStore:
         self.objects = ObjectStore(self.root / OBJECTS, self.root / TMP, self.root / QUARANTINE,
                                    faults=faults)
         self._index: dict[str, StoreEntry] = {}
+        self._vids: dict[str, list[tuple[str, int, str]]] = {}   # vid -> (entry, slot, member)
         self._corrupt: dict[str, str] = {}          # manifest file name -> why it is unreadable
         self._index_guard = threading.Lock()
 
@@ -321,7 +324,42 @@ class VersionStore:
                     log.warning("the store manifest %s is damaged: %s", name, exc)
                     self._corrupt[name] = str(exc)
                     continue
-                self._index[entry.id] = entry
+                self._index_entry(entry)
+
+    def _index_entry(self, entry: StoreEntry) -> None:
+        """Add an entry to the in-memory index (call under ``_index_guard``)."""
+        if entry.id in self._index:
+            return
+        self._index[entry.id] = entry
+        for m in entry.members:
+            self._vids.setdefault(m.vid, []).append((entry.id, m.slot, m.member))
+
+    def vid_refs(self, vid: str) -> tuple[tuple[str, int, str], ...]:
+        """Every (entry id, slot, member) holding ``vid``, newest entry first. In memory."""
+        self._refresh()
+        with self._index_guard:
+            refs = list(self._vids.get(vid, ()))
+        return tuple(sorted(refs, key=lambda r: (self._index[r[0]].created_utc, r[0], r[1], r[2]),
+                            reverse=True))
+
+    def record_damage(self, entry_id: str, fe: FileEntry | None, problem: str,
+                      detail: str) -> None:
+        """Note in ``state/damage.json`` that a file of an entry (or, with ``fe`` None, its
+        manifest) could not be read back intact. Best effort: a read-only store or a busy lock
+        only logs it."""
+        record = DamageRecord(entry_id, fe.path if fe else "", fe.sha256 if fe else "",
+                              problem, detail, iso_utc(self.clock()), iso_utc(self.clock()))
+        log.warning("damaged store entry %s %s: %s (%s)", entry_id, record.path, problem, detail)
+        if self.read_only:
+            return
+        try:
+            with self._lock():
+                write_damage(self.root, merge_damage(read_damage(self.root), record))
+        except (safety.LockTimeout, OSError, RuntimeError) as exc:
+            log.warning("could not record the damage in the store's damage list: %s", exc)
+
+    def damage(self) -> list[DamageRecord]:
+        return read_damage(self.root)
 
     # --- writing ------------------------------------------------------------------------------
 
@@ -484,7 +522,7 @@ class VersionStore:
             except FileNotFoundError:
                 pass
         with self._index_guard:
-            self._index[entry.id] = entry
+            self._index_entry(entry)
         self._fault("entry.after_replace")
 
     def _check_present(self, entry: StoreEntry) -> None:
