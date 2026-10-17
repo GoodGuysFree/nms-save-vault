@@ -28,7 +28,15 @@ from .listing import (
     store_status,
 )
 from .locator import StoreLocator
-from .migrate import FoldProgress, FoldReport, fold_pending, run_fold
+from .migrate import (
+    CopyInReport,
+    FoldProgress,
+    FoldReport,
+    copy_in,
+    fold_pending,
+    not_copied_in,
+    run_fold,
+)
 from .upgrade import (
     UpgradePlan,
     UpgradeProgress,

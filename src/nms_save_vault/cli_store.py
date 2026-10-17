@@ -35,6 +35,12 @@ def add_commands(sub: argparse._SubParsersAction) -> None:
                                           "upgrade; resumes a fold that stopped)")
     f.set_defaults(func=cmd_store_fold)
 
+    c = store_sub.add_parser("copy-in", help="copy backup folders you made by hand into the "
+                                             "vault (the folders are not changed)")
+    c.add_argument("entry_ids", nargs="*", metavar="ID", help="the in-place entries to copy in")
+    c.add_argument("--all", action="store_true", help="every one not copied in yet")
+    c.set_defaults(func=cmd_store_copy_in)
+
 
 def _vault_root(args, state) -> Path:
     if args.vault:
@@ -81,6 +87,29 @@ def cmd_store_upgrade(args) -> int:
 def cmd_store_fold(args) -> int:
     state = appstate.load()
     return _fold(_vault_root(args, state), state)
+
+
+def cmd_store_copy_in(args) -> int:
+    from .core import aliases
+
+    state = appstate.load()
+    store = vstore.open_store(_vault_root(args, state), app_state=state)
+    waiting = vstore.not_copied_in(store)
+    ids = [e.id for e in waiting] if args.all else list(args.entry_ids)
+    if not ids:
+        if not waiting:
+            print("Every backup folder you made by hand is in the vault already.")
+            return 0
+        print("Backup folders you made by hand, outside the vault (copy them in with "
+              "'nmsvault store copy-in ID ...' or '--all'):")
+        for e in waiting:
+            print(f"  {e.id:<34}{aliases.redact(e.label)}")
+        return 0
+    report = vstore.copy_in(store, ids)
+    for entry_id, why in report.skipped:
+        print(f"  skipped {entry_id}: {why}")
+    print(report.message)
+    return 1 if report.failed else 0
 
 
 def _fold(root: Path, state) -> int:

@@ -191,3 +191,76 @@ def _report(statuses: dict, waiting: int, cancelled: bool, fsck_ok: bool | None)
         message += f" {len(failed)} stayed as folders: " + "; ".join(
             f"{k} ({why})" for k, why in failed)
     return FoldReport(len(todo), verified, skipped, failed, waiting, cancelled, fsck_ok, message)
+
+
+# --- copy-in of hand-made in-place folders (D3 4.3) --------------------------------------------
+
+
+@dataclass(frozen=True)
+class CopyInReport:
+    copied: tuple[str, ...]
+    skipped: tuple[tuple[str, str], ...]     # (entry id, ASCII reason)
+    failed: tuple[tuple[str, str], ...]
+    message: str
+
+
+def not_copied_in(store: VersionStore, *, live_roots: Sequence[Path] | None = None
+                  ) -> list[CatalogEntry]:
+    """The hand-made folders the catalog lists in place that the store does not hold yet (the
+    live folder catalogued in place is not one of them)."""
+    vault = Vault(store.vault_root).load()
+    live = discover.live_folders(live_roots) if live_roots is not None else store.live_folders()
+    return [e for e in vault.entries if e.kind == catalog.KIND_INPLACE
+            and not store.has_entry(e.id)
+            and not discover.is_inside(entry_folder(vault, e), live)]
+
+
+def copy_in(store: VersionStore, entry_ids: Sequence[str], *,
+            live_roots: Sequence[Path] | None = None,
+            cancel: threading.Event | None = None) -> CopyInReport:
+    """Copy hand-made in-place backup folders into the store, each under its catalog id and
+    checked against its folder. The folders and their catalog entries are never changed; the
+    listing then shows the store entry in their place. Only when the owner asks (default off)."""
+    vault = Vault(store.vault_root).load()
+    candidates = {e.id: e for e in not_copied_in(store, live_roots=live_roots)}
+    copied, skipped, failed = [], [], []
+    records: dict[str, dict] = {}
+    for entry_id in entry_ids:
+        if cancel is not None and cancel.is_set():
+            break
+        entry = candidates.get(entry_id)
+        if entry is None:
+            known = vault.get(entry_id)
+            why = ("already in the store" if store.has_entry(entry_id)
+                   else "not a folder kept outside the vault" if known is None
+                   or known.kind != catalog.KIND_INPLACE else "a live save folder, not a backup")
+            skipped.append((entry_id, why))
+            continue
+        folder = Path(entry.path)
+        try:
+            if not folder.is_dir():
+                raise StoreError("its folder is missing")
+            kept = store.add_from_folder(
+                folder, kind="imported", label=entry.label, entry_id=entry.id,
+                created_local=entry.created, source={"type": "folder", "name": folder.name},
+                scope=CaptureScope(cache="include"),
+                origin={"inplace_entry": entry.id, "copied_utc": iso_utc(store.clock())})
+            problem = verify_folded(store, kept.id, folder)
+            if problem:
+                raise StoreError(problem)
+        except (StoreError, OSError) as exc:
+            failed.append((entry_id, str(exc)))
+            records[entry_id] = {"status": "failed", "reason": str(exc)}
+            continue
+        copied.append(entry_id)
+        records[entry_id] = {"status": "copied"}
+    if records:
+        with store._lock():
+            body = read_migration(store.vault_root)
+            body.setdefault("copy_in", {}).update(records)
+            write_migration(store.vault_root, body)
+    message = (f"{len(copied)} folder(s) you made by hand are now in the vault. The folders "
+               "themselves were not changed.")
+    if failed:
+        message += " Not copied: " + "; ".join(f"{k} ({why})" for k, why in failed)
+    return CopyInReport(tuple(copied), tuple(skipped), tuple(failed), message)
