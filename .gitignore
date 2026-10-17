@@ -31,3 +31,4 @@ accounts.ini
 Thumbs.db
 .idea/
 .vscode/
+.claude/worktrees/
