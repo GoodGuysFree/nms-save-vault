@@ -86,7 +86,7 @@ def load_source(ctx: OpContext, source: PairSource) -> LoadedSource:
     model_pids = _model_pids(ctx)
     members = {}
     for pos, (data, plain, origin, slot) in read.items():
-        pid = model_pids.get(wanted[pos]) or _pid_of(platform, wanted[pos], plain, data, slot)
+        pid = _pid_of(platform, wanted[pos], plain, data, slot, model_pids.get(wanted[pos]))
         members[pos] = SourceMember(pos, wanted[pos], pid, plain, origin)
     a, b = members.get("A"), members.get("B")
     try:
@@ -203,9 +203,12 @@ def _model_pids(ctx: OpContext) -> dict[str, str]:
     return out
 
 
-def _pid_of(platform: Platform, vid: str, plain: bytes, data: bytes, slot: int) -> str:
-    """D1 2.2 for a version the read model does not know: the meta's id, else the id in
-    the data, else the legacy key, else unknown."""
+def _pid_of(platform: Platform, vid: str, plain: bytes, data: bytes, slot: int,
+            model_pid: str | None) -> str:
+    """D1 2.2: the id in the meta the version was captured with, else the id in its data;
+    for a save with no id, the read model's line (a legacy key fixed when first seen), else
+    the legacy key, else unknown. The captured meta comes first: the read model may have
+    seen these bytes beside another meta (a slot torn by a crash)."""
     if platform == "steam":
         info = meta.parse(plain, 0)
         ident, name, size = info.slot_identifier, info.save_name, info.size_decompressed
@@ -218,6 +221,8 @@ def _pid_of(platform: Platform, vid: str, plain: bytes, data: bytes, slot: int) 
                 return pid_from_id(candidate)
             except ModelError:
                 pass
+    if model_pid:
+        return model_pid
     return legacy_pid(platform, slot, name) if name else unknown_pid(vid)
 
 

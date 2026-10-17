@@ -1172,6 +1172,24 @@ def pair_xgs_states(plan: XboxPairPlan) -> dict[str, str]:
     return states
 
 
+def complete_pair(plan: XboxPairPlan, payload: Mapping[str, tuple[bytes, bytes]]) -> None:
+    """Finish a write interrupted after its index write: mirror into xgs whatever is not
+    there yet. Refuses (IndexChanged) unless the index is exactly as the write left it."""
+    if pair_index_state(plan) != "post":
+        raise IndexChanged("containers.index is not as the interrupted write left it")
+    twin = xgs_twin(plan.folder) if plan.xgs else None
+    if twin is None:
+        return
+    states = pair_xgs_states(plan)
+    if "other" in states.values():
+        raise IndexChanged("an xgs copy changed since the interrupted write")
+    for b in plan.blobs:
+        if states.get(b.identifier) != "post":
+            _xgs_write(twin, b.identifier, *payload[b.identifier])
+            safety.fsync_dir(_xgs_identifier_dir(twin, b.identifier))
+    safety.fsync_dir(twin)
+
+
 def rollback_pair(plan: XboxPairPlan) -> None:
     """Put the slot back exactly: the index gets its old header and the op's records their
     old bytes (records the op added are dropped), the new blobs and dirs go, and the xgs

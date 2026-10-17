@@ -60,7 +60,7 @@ class _Abandon(Exception):
 
 
 @dataclass
-class _Target:
+class OpTarget:
     """One target slot of a running op."""
 
     tp: TargetPlan
@@ -86,7 +86,7 @@ def execute(ctx: OpContext, plan: PlacePlan, confirmed: Iterable[str] = frozense
     :class:`ConfirmationRequired` (the caller did not echo a confirmation) and
     ``TargetError`` (a target no write may use)."""
     if plan.blocked:
-        return _refused(None, plan.blocked[0].code, plan.blocked[0].text)
+        return refused(None, plan.blocked[0].code, plan.blocked[0].text)
     confirmed = frozenset(confirmed)
     missing = plan.confirmations - confirmed
     if missing:
@@ -95,7 +95,7 @@ def execute(ctx: OpContext, plan: PlacePlan, confirmed: Iterable[str] = frozense
         with opjournal.liveop_lock(ctx, timeout=LIVEOP_TIMEOUT):
             return _run(ctx, plan, confirmed, progress or (lambda p: None), note)
     except LiveOpBusy:
-        return _refused(None, "BUSY", "Another operation is still running. Try again in a moment.")
+        return refused(None, "BUSY", "Another operation is still running. Try again in a moment.")
 
 
 def _run(ctx: OpContext, plan: PlacePlan, confirmed: frozenset[str],
@@ -103,7 +103,7 @@ def _run(ctx: OpContext, plan: PlacePlan, confirmed: frozenset[str],
     progress(Progress("checking", 0, 1))
     gate = vault_problem(ctx)
     if gate is not None:
-        return _refused(None, gate.code, gate.text)
+        return refused(None, gate.code, gate.text)
     rts = [resolve_target(ctx, tp.target) for tp in plan.targets]
     if fingerprint([(rt.folder, rt.target.platform, rt.target.slot) for rt in rts],
                    [tp.source for tp in plan.targets]) != plan.fingerprint:
@@ -111,10 +111,10 @@ def _run(ctx: OpContext, plan: PlacePlan, confirmed: frozenset[str],
     accounts = {rt.target.ref for rt in rts}
     if recovery_pending(ctx, accounts):
         w = warning("RECOVERY_PENDING")
-        return _refused(None, w.code, w.text)
+        return refused(None, w.code, w.text)
     game = _game_problem(ctx, confirmed)
     if game is not None:
-        return _refused(None, game.code, game.text)
+        return refused(None, game.code, game.text)
     _observe(ctx, accounts, "scan", opjournal.busy_targets(ctx))
 
     op_id = new_op_id(ctx.clock)
@@ -128,30 +128,30 @@ def _run(ctx: OpContext, plan: PlacePlan, confirmed: frozenset[str],
             "undo_of": plan.undo_of, "note": note, "confirmed": sorted(confirmed),
             "plan_digest": plan.fingerprint})
     except (OrganizerBusy, StoreReadOnly) as exc:
-        return _refused(None, "BUSY", f"The vault is busy. Try again. ({exc})")
+        return refused(None, "BUSY", f"The vault is busy. Try again. ({exc})")
     at(ctx.faults, "after_preparing")
     try:
         wts = _prepare(ctx, plan, rts, op_id, tag, progress)
     except _Abandon as why:
-        _append_quietly(ctx, op_id, "abandoned", {"reason": why.reason})
+        append_quietly(ctx, op_id, "abandoned", {"reason": why.reason})
         if why.reason == "stale":
             return _stale(ctx, plan, op_id)
-        return _refused(op_id, why.code, why.text or warning_text(why.code))
+        return refused(op_id, why.code, why.text or warning_text(why.code))
     try:
         opjournal.append(ctx, op_id, "writing", {"targets": [_writing(wt) for wt in wts]})
     except (OrganizerBusy, StoreReadOnly) as exc:
-        _append_quietly(ctx, op_id, "abandoned", {"reason": "not_started"})
-        return _refused(op_id, "BUSY", f"The vault is busy. Try again. ({exc})")
+        append_quietly(ctx, op_id, "abandoned", {"reason": "not_started"})
+        return refused(op_id, "BUSY", f"The vault is busy. Try again. ({exc})")
     at(ctx.faults, "after_writing")
     opjournal.write_marker(ctx, op_id, [wt.rt.label for wt in wts])
     game = _game_problem(ctx, confirmed)
     if game is not None:
-        _append_quietly(ctx, op_id, "abandoned", {"reason": "game_started"})
+        append_quietly(ctx, op_id, "abandoned", {"reason": "game_started"})
         opjournal.remove_marker(ctx, op_id)
-        return _refused(op_id, game.code, game.text)
+        return refused(op_id, game.code, game.text)
 
     progress(Progress("writing", 0, len(wts)))
-    applied: list[_Target] = []
+    applied: list[OpTarget] = []
     try:
         for i, wt in enumerate(wts, 1):
             applied.append(wt)
@@ -162,7 +162,7 @@ def _run(ctx: OpContext, plan: PlacePlan, confirmed: frozenset[str],
             validate(wt, tag)
     except (LiveChanged, msstore.IndexChanged) as exc:
         if len(applied) == 1:           # the first target changed: nothing was written at all
-            _append_quietly(ctx, op_id, "abandoned", {"reason": "stale"})
+            append_quietly(ctx, op_id, "abandoned", {"reason": "stale"})
             opjournal.remove_marker(ctx, op_id)
             return _stale(ctx, plan, op_id)
         return rollback_and_report(ctx, op_id, plan, applied, exc, "apply", confirmed, note)
@@ -185,7 +185,7 @@ def _run(ctx: OpContext, plan: PlacePlan, confirmed: frozenset[str],
                      undo_offer(plan, wts, op_id), "pending", None)
 
 
-def finish(ctx: OpContext, op_id: str, kind: str, undo_of: str | None, wts: list[_Target],
+def finish(ctx: OpContext, op_id: str, kind: str, undo_of: str | None, wts: list[OpTarget],
            confirmed: Iterable[str], note: str) -> list[Warning]:
     """After a verified write: the oplog line, D1's op records, D1's look at the result,
     ``done``. A failure here leaves the op ``validated``; recovery finishes it."""
@@ -209,7 +209,7 @@ def finish(ctx: OpContext, op_id: str, kind: str, undo_of: str | None, wts: list
 
 
 def _prepare(ctx: OpContext, plan: PlacePlan, rts: list[ResolvedTarget], op_id: str, tag: str,
-             progress: Callable[[Progress], None]) -> list[_Target]:
+             progress: Callable[[Progress], None]) -> list[OpTarget]:
     wts = []
     for tp, rt in zip(plan.targets, rts):
         try:
@@ -217,7 +217,7 @@ def _prepare(ctx: OpContext, plan: PlacePlan, rts: list[ResolvedTarget], op_id: 
         except SourceUnreadable as exc:
             raise _Abandon("not_started", "SOURCE_UNREADABLE", str(exc)) from exc
         before = read_account(ctx, resolve_account(ctx, rt.target.ref)).slots[rt.target.slot]
-        wts.append(_Target(tp, rt, src, before))
+        wts.append(OpTarget(tp, rt, src, before))
     progress(Progress("preserving", 0, len(wts)))
     for wt in wts:
         wt.preserved = _preserve(ctx, wt, op_id, plan.kind)
@@ -235,7 +235,7 @@ def _prepare(ctx: OpContext, plan: PlacePlan, rts: list[ResolvedTarget], op_id: 
     return wts
 
 
-def _preserve(ctx: OpContext, wt: _Target, op_id: str, kind: str) -> list[Location]:
+def _preserve(ctx: OpContext, wt: OpTarget, op_id: str, kind: str) -> list[Location]:
     members = [LiveMember(wt.rt.target, m.position, m.vid) for m in wt.before.present]
     if not members:
         return []
@@ -260,7 +260,7 @@ def _preserve(ctx: OpContext, wt: _Target, op_id: str, kind: str) -> list[Locati
                        "Nothing was changed.") from exc
 
 
-def _snapshot(ctx: OpContext, wt: _Target, op_id: str, kind: str) -> str:
+def _snapshot(ctx: OpContext, wt: OpTarget, op_id: str, kind: str) -> str:
     try:
         entry = ctx.versions.add_from_live(
             wt.folder, platform=wt.rt.target.platform, account_key=wt.rt.target.account_key,
@@ -273,7 +273,7 @@ def _snapshot(ctx: OpContext, wt: _Target, op_id: str, kind: str) -> str:
     return entry.id
 
 
-def _prepare_writer(wt: _Target, now: int, tag: str) -> None:
+def _prepare_writer(wt: OpTarget, now: int, tag: str) -> None:
     """The writes stamped now (F5b), the writer's plan, its payload; the slot as the writer
     sees it must still be what was preserved."""
     wt.writes = pairmeta.compute(wt.src.pair, wt.rt, now)
@@ -289,7 +289,7 @@ def _prepare_writer(wt: _Target, now: int, tag: str) -> None:
             if pre is None or pre.sha256 != m.vid:
                 raise _Abandon("stale", "STALE")
         names = {n for p in ("A", "B") for n in steamwrite.file_names(slot, p)}
-        wt.outside = _outside(wt.folder, names, set())
+        wt.outside = outside_files(wt.folder, names, set())
     else:
         records = [msstore.XboxRecordWrite(identifier(slot, pm.write.position),
                                            data[pm.write.vid], pm.meta_disk, pm.write.disk_time)
@@ -304,7 +304,7 @@ def _prepare_writer(wt: _Target, now: int, tag: str) -> None:
         if _xbox_vids(wt.folder, slot) != {m.position: m.vid for m in wt.before.present}:
             raise _Abandon("stale", "STALE")
         dirs = {b.dir_name for b in wt.xbox.blobs}
-        wt.outside = _outside(wt.folder, {"containers.index"}, dirs)
+        wt.outside = outside_files(wt.folder, {"containers.index"}, dirs)
 
 
 def identifier(slot: int, position: str) -> str:
@@ -317,7 +317,7 @@ def _xbox_vids(folder: Path, slot: int) -> dict:
             for mv in view.present_members}
 
 
-def _outside(folder: Path, names: set[str], dirs: set[str]) -> dict:
+def outside_files(folder: Path, names: set[str], dirs: set[str]) -> dict:
     """size and mtime_ns of every file the op must not touch (containment, D5 2.9.1)."""
     out = {}
     for p in folder.rglob("*"):
@@ -331,7 +331,7 @@ def _outside(folder: Path, names: set[str], dirs: set[str]) -> dict:
     return out
 
 
-def _writing(wt: _Target) -> dict:
+def _writing(wt: OpTarget) -> dict:
     """The write-ahead record of one target."""
     before = {m.position: {"vid": m.vid, "pid": m.pid, "name": m.meta.name,
                            "play_time": m.meta.play_time, "meta_ts": m.meta.meta_ts}
@@ -357,7 +357,7 @@ def _writing(wt: _Target) -> dict:
 # --- writing, checking, putting back ---------------------------------------------------------
 
 
-def _apply(ctx: OpContext, wt: _Target) -> None:
+def _apply(ctx: OpContext, wt: OpTarget) -> None:
     if wt.steam is not None:
         steamwrite.stage(wt.steam, wt.payload, ctx.faults)
         steamwrite.swap(wt.steam, ctx.faults)
@@ -365,7 +365,7 @@ def _apply(ctx: OpContext, wt: _Target) -> None:
         msstore.apply_pair(wt.xbox, wt.payload, ctx.faults)
 
 
-def validate(wt: _Target, tag: str) -> None:
+def validate(wt: OpTarget, tag: str) -> None:
     """D5 2.9.1: bytes, metas, order, mirror, containment. Raises ValidationError."""
     if wt.steam is not None:
         _validate_steam(wt, tag)
@@ -374,11 +374,11 @@ def validate(wt: _Target, tag: str) -> None:
     dirs = {b.dir_name for b in wt.xbox.blobs} if wt.xbox is not None else set()
     names = ({n for p in ("A", "B") for n in steamwrite.file_names(wt.rt.target.slot, p)}
              if wt.steam is not None else {"containers.index"})
-    if _outside(wt.folder, names, dirs) != wt.outside:
+    if outside_files(wt.folder, names, dirs) != wt.outside:
         raise ValidationError("a file of the folder outside the slot changed")
 
 
-def _validate_steam(wt: _Target, tag: str) -> None:
+def _validate_steam(wt: OpTarget, tag: str) -> None:
     folder, slot = wt.folder, wt.rt.target.slot
     for pm in wt.writes:
         mw = pm.write
@@ -408,7 +408,7 @@ def _validate_steam(wt: _Target, tag: str) -> None:
         raise ValidationError("temporary files were left behind")
 
 
-def _validate_xbox(wt: _Target) -> None:
+def _validate_xbox(wt: OpTarget) -> None:
     plan, slot = wt.xbox, wt.rt.target.slot
     if msstore.pair_index_state(plan) != "post":
         raise ValidationError("containers.index is not what was written")
@@ -430,14 +430,14 @@ def _validate_xbox(wt: _Target) -> None:
         raise ValidationError("the xgs copy does not match")
 
 
-def finalize(wt: _Target) -> None:
+def finalize(wt: OpTarget) -> None:
     if wt.xbox is not None:
         msstore.finalize_pair(wt.xbox)
     elif wt.steam is not None:
         steamwrite.sweep(wt.folder, wt.steam.op_tag)
 
 
-def rollback_and_report(ctx: OpContext, op_id: str, plan: PlacePlan, applied: list[_Target],
+def rollback_and_report(ctx: OpContext, op_id: str, plan: PlacePlan, applied: list[OpTarget],
                         exc: BaseException, stage: str, confirmed: Iterable[str],
                         note: str) -> OpOutcome:
     """D5 2.9.2: put every target the op touched back exactly; journal, oplog and D1 say
@@ -451,14 +451,14 @@ def rollback_and_report(ctx: OpContext, op_id: str, plan: PlacePlan, applied: li
             log.error("op %s: %s could not be put back: %s", op_id, wt.rt.label, rollback_exc)
             problems.append(f"{wt.rt.label}: {rollback_exc}")
     if problems:
-        _append_quietly(ctx, op_id, "failed", {"stage": stage, "error": str(exc),
+        append_quietly(ctx, op_id, "failed", {"stage": stage, "error": str(exc),
                                                "rollback_error": "; ".join(problems)})
         _oplog_quietly(ctx, op_id, plan, applied, "failed", confirmed, note, str(exc))
         return OpOutcome(op_id, "failed",
                          f"The move failed and {labels} could not be put back automatically. "
                          "Use Recover (recommended) or restore the folder from the safety "
                          "snapshot.", (), None, "n/a", str(exc), "ROLLBACK_FAILED")
-    _append_quietly(ctx, op_id, "rolled_back", {"stage": stage, "error": str(exc),
+    append_quietly(ctx, op_id, "rolled_back", {"stage": stage, "error": str(exc),
                                                 "restored": True})
     _oplog_quietly(ctx, op_id, plan, applied, "rolled_back", confirmed, note, str(exc))
     try:
@@ -471,7 +471,7 @@ def rollback_and_report(ctx: OpContext, op_id: str, plan: PlacePlan, applied: li
                      str(exc), "ROLLED_BACK")
 
 
-def rollback_target(ctx: OpContext, wt: _Target) -> None:
+def rollback_target(ctx: OpContext, wt: OpTarget) -> None:
     if wt.steam is not None:
         pre = {name: ctx.versions.read_file(wt.snapshot_id, name)
                for name, state in wt.steam.pre.items() if state is not None}
@@ -484,7 +484,7 @@ def rollback_target(ctx: OpContext, wt: _Target) -> None:
 
 
 def record_oplog(ctx: OpContext, op_id: str, kind: str, undo_of: str | None,
-                 wts: list[_Target], status: str, confirmed: Iterable[str], note: str,
+                 wts: list[OpTarget], status: str, confirmed: Iterable[str], note: str,
                  error: str | None) -> None:
     """One v2 line in the vault's oplog.jsonl (D5 2.13.1): today's six keys first. Written
     once per op: a retry finds its line and writes none."""
@@ -513,7 +513,7 @@ def record_oplog(ctx: OpContext, op_id: str, kind: str, undo_of: str | None,
         "note": note, "error": error})
 
 
-def _oplog_target(wt: _Target) -> dict:
+def _oplog_target(wt: OpTarget) -> dict:
     t = wt.rt.target
     preserved = {loc.vid: loc for loc in wt.preserved}
     return {
@@ -528,7 +528,7 @@ def _oplog_target(wt: _Target) -> dict:
 
 
 def record_lineage(ctx: OpContext, op_id: str, kind: str, undo_of: str | None,
-                   wts: list[_Target], status: str, note: str) -> None:
+                   wts: list[OpTarget], status: str, note: str) -> None:
     """D1's op record per target (idempotent on op id and target)."""
     recs = []
     for wt in wts:
@@ -565,7 +565,7 @@ def _oplog_quietly(ctx, op_id, plan, wts, status, confirmed, note, error) -> Non
         log.warning("op %s: the oplog line was not written: %s", op_id, exc)
 
 
-def _append_quietly(ctx: OpContext, op_id: str, event: str, payload: Mapping) -> None:
+def append_quietly(ctx: OpContext, op_id: str, event: str, payload: Mapping) -> None:
     try:
         opjournal.append(ctx, op_id, event, payload)
     except (OSError, OrganizerBusy, StoreReadOnly) as exc:
@@ -583,7 +583,7 @@ def _game_problem(ctx: OpContext, confirmed: frozenset[str]) -> Warning | None:
     return w
 
 
-def _refused(op_id: str | None, code: str, text: str) -> OpOutcome:
+def refused(op_id: str | None, code: str, text: str) -> OpOutcome:
     return OpOutcome(op_id, "refused", text, (), None, "n/a", text, code)
 
 
@@ -610,7 +610,7 @@ def warning_text(code: str) -> str:
     return TEXTS[code][1] if code in TEXTS else code
 
 
-def outcome_text(plan: PlacePlan, wts: list[_Target]) -> str:
+def outcome_text(plan: PlacePlan, wts: list[OpTarget]) -> str:
     wt = wts[0]
     label, name = wt.rt.label, wt.src.name or "<unnamed>"
     evicted = wt.before.head.meta.name if wt.before.head is not None else ""
@@ -625,7 +625,7 @@ def outcome_text(plan: PlacePlan, wts: list[_Target]) -> str:
     return text + (f" '{evicted}' is in the vault." if evicted else "")
 
 
-def undo_offer(plan: PlacePlan, wts: list[_Target], op_id: str) -> UndoOffer | None:
+def undo_offer(plan: PlacePlan, wts: list[OpTarget], op_id: str) -> UndoOffer | None:
     wt = wts[0]
     if not wt.before.present:
         return None                       # undoing a fill would empty the slot (F8)
