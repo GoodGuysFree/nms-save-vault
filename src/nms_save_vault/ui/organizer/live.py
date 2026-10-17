@@ -45,6 +45,14 @@ MARKERS = {
 }
 
 
+def text_on(colour: str) -> str:
+    """White or near-black, whichever reads better on ``colour`` (the dark palette's
+    platform colours are light)."""
+    r, g, b = (int(colour[i:i + 2], 16) / 255 for i in (1, 3, 5))
+    luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b
+    return "#ffffff" if luminance < 0.5 else "#1a1a1a"
+
+
 def source_key(source: LiveSource) -> str:
     """A live folder's name in the preferences: stable across runs on this machine."""
     ref = source.ref
@@ -347,7 +355,7 @@ class LiveArea(ttk.Frame):
                                 fill=p["slot_empty"] if empty else colour,
                                 outline=p["muted"] if empty else colour, tags=(tag,))
         ctext(canvas, x0 + px(3) + chip_w / 2, cy, text=slot.label, font=bold,
-              fill=p["muted"] if empty else "#ffffff", tags=(tag,))
+              fill=p["muted"] if empty else text_on(colour), tags=(tag,))
         x = x0 + chip_w + px(10)
         right = x1 - px(6)
         markers = slot_markers(slot, source)

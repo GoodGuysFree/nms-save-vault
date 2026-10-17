@@ -327,6 +327,17 @@ panes described above, as they have always been) and **Organizer**. **Ctrl+1** a
 **Ctrl+2** (or **View**) switch, and the app reopens the tab you used last (`state.json`,
 `ui.last_view`).
 
+**The Organizer tab** shows every save file once - live or only in the vault - with its
+versions under a `>`: first the ones the app saw connected (its own moves, the live slot,
+consecutive backups), then the rest by date; nothing is guessed. Filter chips (Live, Vault
+only, Steam, Xbox, On both, Has note, Pinned, Not in vault, Expedition), Find, sortable
+columns and a column chooser. On the right, your live slots as one or two lists (any of
+your Steam accounts and Xbox, chosen in the selectors); an empty slot warns that Steam Cloud
+or Xbox sync may fill it again (the app never empties a slot). Below them, the selection's
+details; **Notes...** keeps a note per save file (with every earlier revision) and a label,
+comment and lock per version, in the vault and never in the save files. Moving a version
+into a live slot from this tab comes with the next phase; until then use the classic tab.
+
 **Theme.** **View > Theme** offers **Light**, **Dark**, or **System**, which
 follows your Windows light/dark setting. Your choice is remembered in `state.json`. (Light
 keeps the native Windows widget styling the app has always had; dark switches to a
@@ -466,7 +477,7 @@ The vault lives outside `st_<id>`, so it is never scanned by the game or synced 
 ## Status
 
 Working. Core format/crypto and all operations are verified against the real save files and
-in a temp sandbox (1206 tests). Xbox / Game Pass saves are supported for reading **and**
+in a temp sandbox (1221 tests). Xbox / Game Pass saves are supported for reading **and**
 same-platform writing — verified against a real install (reads) and synthetic `wgs` fixtures
 (writes). A full file-copy safety backup of the live folder was made before development
 (`C:\Devel\NMS-SaveBackup-SAFETY-2026-06-24`).

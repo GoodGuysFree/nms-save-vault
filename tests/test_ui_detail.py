@@ -69,11 +69,11 @@ def test_the_version_card_names_its_recorded_parent(world):
     newest, oldest = _heads(world, "main")
     card = D.version_card(world.model, PIDS["main"], newest)
     text = _plain(card)
-    assert "Comes from #1 (seen in the live slot)" in text
+    assert "Comes from\t#1 (seen in the live slot)" in text
     assert ("#1", ("link", oldest)) in card
     assert "Live: Steam slot 9" in text and "NOT IN VAULT" in text
     first = _plain(D.version_card(world.model, PIDS["main"], oldest))
-    assert "Led to     #2" in first and "Vault: backup" in first
+    assert "Led to\t#2" in first and "Vault: backup" in first
 
 
 def test_a_version_without_a_recorded_parent_says_so(world):
@@ -119,7 +119,7 @@ def test_showing_a_line_a_version_and_a_slot(pane, world):
     newest, oldest = _heads(world, "main")
     pane.show_version(world.model, PIDS["main"], newest)
     assert pane.title.cget("text") == "Main Save #2"
-    assert "Comes from #1" in pane.text_of("summary")
+    assert "Comes from\t#1" in pane.text_of("summary")
     assert not pane.pin_button.winfo_manager() and pane.notes_button.winfo_manager()
     source = world.model.live_board().sources[0]
     pane.show_slot(world.model, source, source.slots[0])

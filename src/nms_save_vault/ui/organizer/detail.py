@@ -33,7 +33,8 @@ NO_PARENT = "no recorded parent - not linked; listed by date, nothing to compare
 
 
 def _row(key: str, *parts: Segment) -> list[Segment]:
-    return [(f"{key:<11}", ("k",)), *parts, ("\n", ())]
+    """A "Key<tab>value" line: the pages set one tab stop, so values line up in any font."""
+    return [(f"{key}\t", ("k",)), *parts, ("\n", ())]
 
 
 # --- what the pages say (pure) ------------------------------------------------------------
@@ -61,8 +62,8 @@ def line_summary(model: ReadModel, pid: str) -> list[Segment]:
     vault = {s.target: s.vault_copy for src in model.live_board().sources for s in src.slots}
     out: list[Segment] = []
     for badge in line.live:
-        parts: list[Segment] = [(slot_words(badge.label), ("b",)),
-                                (f"  #{numbers.get(badge.head, '?')}", ("link", badge.head))]
+        parts: list[Segment] = [(slot_words(badge.label), ("b",)), ("  ", ()),
+                                (f"#{numbers.get(badge.head, '?')}", ("link", badge.head))]
         row = find_row(model, pid, badge.head)
         if row is not None:
             parts.append((f", saved {local_time(row.saved_at)}", ()))
@@ -308,7 +309,8 @@ class DetailPane(ttk.Frame):
 
     def _text(self, parent) -> tk.Text:
         text = tk.Text(parent, wrap="word", height=12, relief="flat", borderwidth=0,
-                       highlightthickness=0, padx=px(10), pady=px(8), cursor="arrow")
+                       highlightthickness=0, padx=px(10), pady=px(8), cursor="arrow",
+                       font="TkDefaultFont", tabs=(px(96),), spacing1=px(1), spacing3=px(1))
         bar = ttk.Scrollbar(parent, orient=tk.VERTICAL, command=text.yview)
         text.configure(yscrollcommand=bar.set, state="disabled")
         bar.pack(side=tk.RIGHT, fill=tk.Y)
@@ -331,6 +333,7 @@ class DetailPane(ttk.Frame):
             text.tag_configure("note", font=theme.ITALIC_FONT)
             text.tag_configure("event", foreground=p["event"])
             text.tag_configure("link", foreground=p["accent"], underline=True)
+            text.tag_configure("hang", lmargin2=px(96))    # wrapped values stay indented
 
     # --- showing ----------------------------------------------------------------------------
 
@@ -399,9 +402,9 @@ class DetailPane(ttk.Frame):
                 pid = tags[2] if len(tags) > 2 else self.pid
                 text.tag_bind(name, "<Button-1>",
                               lambda _e, h=tags[1], p=pid: self._follow(p, h))
-                rtext(text, "end", part, "link", name)
+                rtext(text, "end", part, "link", name, "hang")
             else:
-                rtext(text, "end", part, *tags)
+                rtext(text, "end", part, *tags, "hang")
         text.configure(state="disabled")
 
     # --- actions ----------------------------------------------------------------------------

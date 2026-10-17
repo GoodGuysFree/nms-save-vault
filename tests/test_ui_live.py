@@ -244,3 +244,13 @@ def test_hover_tints_one_slot_without_redrawing(host, gui_app, world, monkeypatc
     assert redraws == []
     assert c.itemcget(area.drawn[second].bg, "fill") == area._p["hl_bg"]
     assert c.itemcget(area.drawn[first].bg, "fill") == area._p["field"]
+
+
+def test_chip_text_reads_on_both_palettes():
+    from nms_save_vault import theme
+
+    from .test_theme import contrast
+
+    for p in theme.PALETTES.values():
+        for key in ("steam", "xbox"):
+            assert contrast(L.text_on(p[key]), p[key]) >= 4.5, (key, p[key])

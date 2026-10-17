@@ -26,10 +26,12 @@ from .core import playtime, savedir
 from .core import state as appstate
 from .core.catalog import Vault
 from .ui import dpi, logfile
+from .core.organizer import Organizer
 from .ui.fmt import local_time as _fmt_ts
 from .ui.fmt import play_time as _fmt_play
 from .ui.redact import RedactingTreeview
 from .ui.tooltip import TOOLTIP_STYLE, Tooltip
+from .ui.organizer.view import OrganizerView
 from .ui.themeaware import ThemeRegistry
 from .ui.worker import UiWorker
 from .ui.dpi import px, pxs
@@ -360,7 +362,7 @@ VIEW_TITLES = {CLASSIC: "Live saves and backups", ORGANIZER: "Organizer"}
 
 class App(tk.Tk):
     def __init__(self, live: str | Path | None = None, vault: str | Path | None = None,
-                 state_path: str | Path | None = None):
+                 state_path: str | Path | None = None, scan_on_start: bool = True):
         super().__init__()
         # Where the config is read and written; None is the install dir's state.json.
         self.state_path = Path(state_path) if state_path else None
@@ -417,6 +419,8 @@ class App(tk.Tk):
         self._build_widgets()
         self._apply_theme()
         self._open_last_view()
+        if scan_on_start:          # the organizer's first look, in the worker (D6 U12)
+            self.after(200, self.organizer_view.rescan)
         self.refresh()
         self.after(300, self._startup_update_check)  # after the window is on screen
         # Sweep up after a previous update. Deliberately late: when this run *is* the
@@ -600,7 +604,9 @@ class App(tk.Tk):
         # The classic tab: today's toolbar, "Active live" and the two panes, unchanged. Its
         # handlers stay on the App until phase 2 re-routes them (D6 step 19).
         self.classic_view = ttk.Frame(self.notebook)
-        self.organizer_view = ttk.Frame(self.notebook)
+        self.organizer_view = OrganizerView(
+            self.notebook, worker=self.worker, themed=self.themed, prefs=self.state.ui,
+            save_prefs=self._save_state_quietly, make_organizer=self._make_organizer)
         self.notebook.add(self.classic_view, text=VIEW_TITLES[CLASSIC])
         self.notebook.add(self.organizer_view, text=VIEW_TITLES[ORGANIZER])
         self._build_classic_view(self.classic_view)
@@ -641,6 +647,12 @@ class App(tk.Tk):
         if self.state.ui.get("last_view") != name:
             self.state.ui["last_view"] = name
             self._save_state_quietly()
+            if name == ORGANIZER:           # back on the tab: look again unless fresh
+                self.organizer_view.shown()
+
+    def _make_organizer(self) -> Organizer:
+        """The organizer over this vault and the configured live folders (worker thread)."""
+        return Organizer(self.vault.root, self.state.live_sources)
 
     def _build_classic_view(self, parent: ttk.Frame) -> None:
         self.toolbar = FlowBar(parent)

@@ -301,8 +301,12 @@ class OrganizerTable(ttk.Frame):
 
     def __init__(self, master, *, themed: ThemeRegistry, prefs: MutableMapping,
                  save_prefs: Callable[[], None],
-                 on_select: Callable[[str | None, str | None], None] | None = None) -> None:
+                 on_select: Callable[[str | None, str | None], None] | None = None,
+                 bar_parent: tk.Misc | None = None) -> None:
+        """``bar_parent``: where the chips, Find and Columns... go (the Organizer tab
+        gives them the whole width); by default above the table."""
         super().__init__(master)
+        self._bar_parent = bar_parent
         self.prefs = prefs
         self.save_prefs = save_prefs
         self.on_select = on_select
@@ -329,8 +333,9 @@ class OrganizerTable(ttk.Frame):
     # --- building -----------------------------------------------------------------
 
     def _build(self) -> None:
-        bar = ttk.Frame(self)
+        bar = ttk.Frame(self._bar_parent or self)
         bar.pack(side=tk.TOP, fill=tk.X, pady=pxs(0, 4))
+        self.bar = bar
         self.chip_vars: dict[str, tk.BooleanVar] = {}
         self.chip_buttons: dict[str, tk.Checkbutton] = {}
         self.all_var = tk.BooleanVar(value=not self.chips)

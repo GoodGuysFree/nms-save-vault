@@ -434,4 +434,6 @@ def _build_app(gui, tmp_path):
         })
     vault_root.mkdir(parents=True)
     (vault_root / "catalog.json").write_text(json.dumps(payload), "utf-8")
-    return gui.App(vault=vault_root, state_path=tmp_path / "install" / "state.json")
+    # No start-up scan: the organizer tests start theirs when they want one.
+    return gui.App(vault=vault_root, state_path=tmp_path / "install" / "state.json",
+                   scan_on_start=False)
