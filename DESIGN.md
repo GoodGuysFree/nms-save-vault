@@ -80,6 +80,7 @@ src/nms_save_vault/
       scanner.py  captures of every live slot and vault entry; version and pair registry
       journal.py  live journal: observe (obs records), replay -> edges, events, op outcomes
       recorder.py op records; the phase-1 hook: classic live writes under the live-op lock
+      bootstrap.py history from before recording: backups (seen in backups) + old oplog
   theme.py        light/dark/system palettes + ttk restyling (front-end)
   updates.py      opt-in GitHub release check + in-place self-update (the only network access)
   cli.py          argparse front end

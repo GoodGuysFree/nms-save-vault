@@ -236,7 +236,7 @@ class Journal:
 
     def records(self) -> tuple[tuple[Record, ...], tuple[str, ...]]:
         """The decodable records in file order, and a note for each one that is not."""
-        return _decode_all(self.store.journal_records())
+        return decode_all(self.store.journal_records())
 
     def observe(self, scan, *, src: Literal["scan", "verify"],
                 skip: frozenset[LiveTarget]) -> ObserveResult:
@@ -264,7 +264,7 @@ class Journal:
         written: list[dict] = []
         try:
             with self.store.transaction() as tx:
-                records, problems = _decode_all(tx.journal())
+                records, problems = decode_all(tx.journal())
                 last = _last_pairs(records)
                 described = {vid for r in records for vid in r.members}
                 notes = tx.doc(NOTES).get("save_files", {}) if wanted else {}
@@ -281,7 +281,7 @@ class Journal:
         except StoreReadOnly:
             reason = [(target, SKIP_READ_ONLY) for target, _ in wanted]
             return ObserveResult(0, (), tuple(skipped + reason))
-        new, _ = _decode_all(written)
+        new, _ = decode_all(written)
         state = replay(records + new, self.registry, problems)   # no second read and decode
         events = tuple(e for rec in written for e in state.events_by_seq.get(rec["seq"], ()))
         return ObserveResult(len(written), events, tuple(skipped))
@@ -501,7 +501,7 @@ class _Replay:
 # --- helpers ------------------------------------------------------------------
 
 
-def _decode_all(raw: tuple[dict, ...] | list[dict]) -> tuple[tuple[Record, ...], tuple[str, ...]]:
+def decode_all(raw: tuple[dict, ...] | list[dict]) -> tuple[tuple[Record, ...], tuple[str, ...]]:
     records, problems = [], []
     for d in raw:
         try:
