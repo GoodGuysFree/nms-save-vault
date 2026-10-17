@@ -8,8 +8,10 @@ from pathlib import Path
 import pytest
 
 from nms_save_vault.core import operations as ops
-from nms_save_vault.core import safety, savedir
+from nms_save_vault.core import msstore, safety, savedir
 from nms_save_vault.core.catalog import Vault
+
+from .conftest import xbox_meta
 
 
 def _vault(tmp_path) -> Vault:
@@ -39,7 +41,7 @@ def test_repopulate_xbox_to_xbox(make_wgs_account, tmp_path):
 
 
 def test_promote_member_xbox(make_wgs_account, tmp_path):
-    # Manual (B) is newer than Auto (A) initially (FILETIME 2000 vs 1000).
+    # Manual (B) is newer than Auto (A) initially (saved at 2000 vs 1000).
     live = make_wgs_account(tmp_path, [
         ("Slot2Auto", '{"a":1}', "Auto save", "", 100, 1000),
         ("Slot2Manual", '{"b":2}', "Manual save", "", 100, 2000),
@@ -53,6 +55,128 @@ def test_promote_member_xbox(make_wgs_account, tmp_path):
 
     ops.undo_last(vault, live, allow_game_running=True)
     assert savedir.scan_any(live).slots[2].newest.label == "B"
+
+
+@pytest.mark.parametrize("meta_len", [296, 360])
+def test_promote_xbox_moves_the_meta_time_and_the_index_time(make_wgs_account, tmp_path, meta_len):
+    """B is newer by save time although A reached the disk later (index 5000 vs 4000).
+    Promoting A must make it newer by both clocks, and change only the save time in its meta."""
+    live = make_wgs_account(tmp_path, [
+        ("Slot2Auto", '{"a":1}', "Run", "", 100, 5000, 7, 1000),
+        ("Slot2Manual", '{"b":2}', "Run", "", 144, 4000, 7, 1044),
+    ], meta_len=meta_len)
+    vault = _vault(tmp_path)
+    before = savedir.scan_any(live).slots[2]
+    assert before.newest.label == "B"
+    meta_before = Path(before.a.meta_path).read_bytes()
+
+    ops.promote_member(vault, live, 2, 0, allow_game_running=True)
+
+    after = savedir.scan_any(live).slots[2]
+    assert after.newest.label == "A"
+    assert after.a.timestamp == 1045
+    assert after.a.data_mtime == 5001          # past its own 5000: the index time never goes back
+    meta_after = Path(after.a.meta_path).read_bytes()
+    assert meta_after[:0x120] + meta_after[0x124:] == meta_before[:0x120] + meta_before[0x124:]
+
+    ops.undo_last(vault, live, allow_game_running=True)
+    assert savedir.scan_any(live).slots[2].newest.label == "B"
+
+
+def test_promote_xbox_without_a_meta_time_moves_the_index_time(make_wgs_account, tmp_path):
+    """A 280-byte meta has no save time to set, so the index time alone orders the pair; the
+    meta is written back unchanged."""
+    live = make_wgs_account(tmp_path, [
+        ("Slot2Auto", '{"a":1}', "Run", "", 100, 4000),
+        ("Slot2Manual", '{"b":2}', "Run", "", 144, 5000),
+    ])
+    old_a = savedir.scan_any(live).slots[2].a
+    waypoint_meta = xbox_meta("Run", play=100, length=280)
+    Path(old_a.meta_path).write_bytes(waypoint_meta)
+    assert savedir.scan_any(live).slots[2].newest.label == "B"
+
+    ops.promote_member(_vault(tmp_path), live, 2, 0, allow_game_running=True)
+
+    after = savedir.scan_any(live).slots[2]
+    assert after.newest.label == "A"
+    assert Path(after.a.meta_path).read_bytes() == waypoint_meta
+
+
+@pytest.mark.parametrize("op", ["snapshot", "backup"])
+def test_xbox_copies_keep_empty_folders(make_wgs_account, tmp_path, op):
+    """A mirror restore deletes whatever the copy lacks, so an Xbox copy keeps the account
+    folder exactly, empty GUID folders included."""
+    live = make_wgs_account(tmp_path, [("Slot1Auto", '{"a":1}', "Run", "", 100, 1000)])
+    empty = live / ("0" * 31 + "E")
+    empty.mkdir()
+    vault = _vault(tmp_path)
+
+    if op == "snapshot":
+        entry = ops.snapshot_live(vault, live, reason="x")
+    else:
+        entry = ops.create_full_backup(vault, live, include_cache=False)
+
+    copied = Path(entry.path) / empty.name
+    assert copied.is_dir() and not any(copied.iterdir())
+
+
+def test_a_promote_that_does_not_take_is_still_undoable(make_wgs_account, tmp_path, monkeypatch):
+    """When the result check fails the live folder has already been written, so the op-log
+    record must be there for undo to go back to the pre-promote snapshot."""
+    live = make_wgs_account(tmp_path, [
+        ("Slot2Auto", '{"a":1}', "Run", "", 100, 1000),
+        ("Slot2Manual", '{"b":2}', "Run", "", 144, 2000),
+    ])
+    vault = _vault(tmp_path)
+    monkeypatch.setattr(msstore, "set_ms_meta_timestamp", lambda meta, ts: meta)  # the old no-op
+
+    with pytest.raises(ops.WrittenButInvalidError) as failed:
+        ops.promote_member(vault, live, 2, 0, allow_game_running=True)
+    assert savedir.scan_any(live).slots[2].a.data_mtime == 2001     # it did write
+
+    record = vault.read_oplog()[-1]
+    assert record["op"] == "promote_member" and vault.get(record["snapshot_id"]) is not None
+    # The caller still gets the result: which snapshot undo will use, and that it failed.
+    assert failed.value.result.snapshot_id == record["snapshot_id"]
+    assert not failed.value.result.ok and "Undo restores it" in str(failed.value)
+    ops.undo_last(vault, live, allow_game_running=True)
+    assert savedir.scan_any(live).slots[2].a.data_mtime == 1000
+
+
+def test_promote_xbox_refuses_an_unreadable_save_before_touching_anything(make_wgs_account, tmp_path, monkeypatch):
+    live = make_wgs_account(tmp_path, [
+        ("Slot2Auto", '{"a":1}', "Run", "", 100, 1000),
+        ("Slot2Manual", '{"b":2}', "Run", "", 144, 2000),
+    ])
+    view = savedir.scan_any(live)
+    view.slots[2].a.info = None                       # what an unreadable meta looks like
+    monkeypatch.setattr(ops.savedir, "scan_any", lambda path: view)
+    index_before = (live / "containers.index").read_bytes()
+    vault = _vault(tmp_path)
+
+    with pytest.raises(ops.OperationError, match="unreadable"):
+        ops.promote_member(vault, live, 2, 0, allow_game_running=True)
+
+    assert vault.entries == [] and vault.read_oplog() == []
+    assert (live / "containers.index").read_bytes() == index_before
+
+
+def test_xbox_repopulate_keeps_the_order_of_a_mixed_pair(make_wgs_account, tmp_path):
+    """A 296-byte and a 280-byte member are ordered by index time, since only one has a meta
+    time. Writing the meta time into the destination's index would flip the pair."""
+    live = make_wgs_account(tmp_path, [
+        ("Slot1Auto", '{"a":1}', "Run", "", 100, 4000, 7, 9000),
+        ("Slot1Manual", '{"b":2}', "Run", "", 144, 5000),
+    ], meta_len=296)
+    b = savedir.scan_any(live).slots[1].b
+    Path(b.meta_path).write_bytes(xbox_meta("Run", play=144, length=280))
+    assert savedir.scan_any(live).slots[1].newest.label == "B"
+
+    ops.repopulate_slot(_vault(tmp_path), live, 1, live, 3, allow_game_running=True)
+
+    dest = savedir.scan_any(live).slots[3]
+    assert dest.newest.label == "B"
+    assert (dest.a.data_mtime, dest.b.data_mtime) == (4000, 5000)
 
 
 def test_restore_full_xbox(make_wgs_account, tmp_path):

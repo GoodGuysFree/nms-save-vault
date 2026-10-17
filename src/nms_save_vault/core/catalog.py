@@ -98,7 +98,7 @@ def _member_summary(mv) -> MemberSummary:
         ms.game_mode = mv.info.game_mode
         ms.season = mv.info.season
         ms.play_time = mv.info.total_play_time
-        ms.timestamp = mv.effective_timestamp  # falls back to mtime for Xbox saves
+        ms.timestamp = mv.effective_timestamp  # falls back to mtime when the meta has none
         ms.base_version = mv.info.base_version
         ms.difficulty = mv.info.difficulty
     return ms
@@ -192,25 +192,40 @@ class Vault:
     def upsert(self, entry: CatalogEntry) -> None:
         if not self._loaded:
             self.load()
-        self._entries = [e for e in self._entries if e.id != entry.id]
-        self._entries.append(entry)
-        self.save()
+        self._commit([e for e in self._entries if e.id != entry.id] + [entry])
 
     def remove(self, entry_id: str) -> None:
         if not self._loaded:
             self.load()
-        self._entries = [e for e in self._entries if e.id != entry_id]
-        self.save()
+        self._commit([e for e in self._entries if e.id != entry_id])
 
-    def new_id(self, kind: str, when: datetime | None = None, tag: str | None = None) -> str:
+    def _commit(self, entries: list[CatalogEntry]) -> None:
+        """Make ``entries`` the catalog and save it. If the save fails, memory goes back to
+        what the file still says, so the two never disagree."""
+        before = self._entries
+        self._entries = entries
+        try:
+            self.save()
+        except BaseException:
+            self._entries = before
+            raise
+
+    def new_id(
+        self, kind: str, when: datetime | None = None, tag: str | None = None, folder: Path | None = None
+    ) -> str:
+        """A fresh entry id; with ``folder``, also one that names no existing ``folder/<id>``."""
         when = when or datetime.now()
         stamp = f"{when:%Y%m%d-%H%M%S}"
         base = f"{kind}-{tag}-{stamp}" if tag else f"{kind}-{stamp}"
         existing = {e.id for e in self.entries}
-        if base not in existing:
+
+        def taken(candidate: str) -> bool:
+            return candidate in existing or (folder is not None and (folder / candidate).exists())
+
+        if not taken(base):
             return base
         i = 2
-        while f"{base}-{i}" in existing:
+        while taken(f"{base}-{i}"):
             i += 1
         return f"{base}-{i}"
 

@@ -5,15 +5,18 @@ save directory is never modified.
 """
 from __future__ import annotations
 
+import logging
 import os
 import shutil
 import time
+from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from nms_save_vault.core import operations as ops
-from nms_save_vault.core import formats, savedir, slotmap
+from nms_save_vault.core import catalog, formats, savedir, slotmap
 from nms_save_vault.core.catalog import CatalogEntry, Vault
 
 from .conftest import steam_save
@@ -235,6 +238,75 @@ def test_import_vault_preview_and_guards(tmp_path):
         ops.import_vault(cur, cur.root, copy_into_vault=True)
 
 
+def test_steam_promote_beats_a_sibling_without_a_meta_time(tmp_path):
+    """With no meta time on the sibling the pair is ordered by file time, so promote has to
+    move the target's file time past the sibling's as well, not only its meta time."""
+    live = tmp_path / "live"
+    steam_save(live, 1, 0, "Run", 3600, 0x1234, 1_700_000_000)
+    steam_save(live, 1, 1, "Run", 3700, 0x1234, 0)
+    for member, when in ((0, 1_700_000_000), (1, 1_700_005_000)):
+        fno = slotmap.slot_file_numbers(1)[member]
+        for name in (slotmap.data_filename(fno), slotmap.meta_filename(fno)):
+            os.utime(live / name, (when, when))
+    vault = Vault(tmp_path / "vault")
+    assert savedir.scan(live).slots[1].newest.label == "B"
+
+    ops.promote_member(vault, live, 1, 0, allow_game_running=True)
+
+    assert savedir.scan(live).slots[1].newest.label == "A"
+
+
+def _steam_pair(live: Path, a_file_time: float, b_file_time: float) -> None:
+    """Slot 1: A saved at 1000, B at 2000 (meta times), with the given file times."""
+    steam_save(live, 1, 0, "Run", 3600, 0x1234, 1000)
+    steam_save(live, 1, 1, "Run", 3700, 0x1234, 2000)
+    for member, when in ((0, a_file_time), (1, b_file_time)):
+        fno = slotmap.slot_file_numbers(1)[member]
+        for name in (slotmap.data_filename(fno), slotmap.meta_filename(fno)):
+            os.utime(live / name, (when, when))
+
+
+def test_steam_promote_never_moves_a_file_time_back(tmp_path):
+    """A's files were last written long after its meta time; promoting it must not stamp
+    them with the (much older) new meta time."""
+    live = tmp_path / "live"
+    _steam_pair(live, 1_700_000_000, 2000)
+
+    ops.promote_member(Vault(tmp_path / "vault"), live, 1, 0, allow_game_running=True)
+
+    a = savedir.scan(live).slots[1].a
+    assert a.timestamp == 2001 and a.data_mtime >= 1_700_000_000
+
+
+def test_steam_promote_beats_a_sibling_whose_data_is_missing(tmp_path):
+    """A half-present sibling (meta, no data) has no data time; its meta file's time still
+    counts, so the promoted files end up later than it."""
+    live = tmp_path / "live"
+    _steam_pair(live, 1000, 2000)
+    b_fno = slotmap.slot_file_numbers(1)[1]
+    (live / slotmap.data_filename(b_fno)).unlink()
+    b_meta = live / slotmap.meta_filename(b_fno)
+    os.utime(b_meta, (1_700_000_000, 1_700_000_000))
+
+    ops.promote_member(Vault(tmp_path / "vault"), live, 1, 0, allow_game_running=True)
+
+    assert savedir.scan(live).slots[1].a.data_mtime > b_meta.stat().st_mtime
+
+
+def test_steam_promote_under_cloud_stamps_the_write_time(tmp_path):
+    """Steam Cloud judges by file time: an old time would let its copy win on next launch."""
+    live = tmp_path / "live"
+    _steam_pair(live, 1000, 2000)
+    (live / formats.STEAM_AUTOCLOUD).write_text("cloud", "utf-8")
+    before = time.time()
+
+    ops.promote_member(Vault(tmp_path / "vault"), live, 1, 0, allow_game_running=True)
+
+    a = savedir.scan(live).slots[1].a
+    assert a.timestamp == 2001 and a.data_mtime >= int(before)
+    assert a.meta_path.stat().st_mtime >= int(before)
+
+
 def test_snapshot_live_never_deletes_snapshots(make_wgs_account, tmp_path):
     """Every auto-snapshot is kept: some versions exist only in a snapshot, so deleting one
     loses that version for good. 25 is more than the 20 the old pruning kept."""
@@ -284,6 +356,204 @@ def test_failed_snapshot_leaves_no_orphan_folder_or_entry(tmp_path, monkeypatch)
     assert [p.name for p in vault.snapshots_dir.iterdir()] == [kept.id]
     assert [e.id for e in Vault(vault.root).load().entries] == [kept.id]
     assert savedir.scan_any(kept.path).occupied_slots
+
+
+def test_a_snapshot_the_catalog_cannot_record_is_removed(tmp_path):
+    """The catalog write really fails (its staging file is blocked by a folder): the copied
+    snapshot goes, and the in-memory catalog does not keep an entry the file never got."""
+    live = tmp_path / "live"
+    steam_save(live, 1, 0, "Steam Run", 3600, 0x1234, 1_700_000_000)
+    vault = Vault(tmp_path / "vault")
+    kept = ops.snapshot_live(vault, live, reason="good")
+    blocker = vault.catalog_path.with_name(vault.catalog_path.name + ".tmp")
+    blocker.mkdir()
+
+    with pytest.raises(OSError):
+        ops.snapshot_live(vault, live, reason="cannot be catalogued")
+
+    assert [e.id for e in vault.entries] == [kept.id]
+    assert [p.name for p in vault.snapshots_dir.iterdir()] == [kept.id]
+    assert [e.id for e in Vault(vault.root).load().entries] == [kept.id]
+
+
+class FrozenClock(datetime):
+    """``datetime`` whose now() is fixed, so the next entry id is known in advance."""
+
+    @classmethod
+    def now(cls, tz=None):
+        return cls(2026, 10, 17, 12, 0, 0)
+
+
+def test_a_snapshot_never_reuses_a_leftover_folder(tmp_path, monkeypatch):
+    """A folder left behind by an earlier failure may hold anything, so a new snapshot goes
+    into a folder of its own and the leftover is not touched."""
+    monkeypatch.setattr(catalog, "datetime", FrozenClock)
+    live = tmp_path / "live"
+    steam_save(live, 1, 0, "Steam Run", 3600, 0x1234, 1_700_000_000)
+    vault = Vault(tmp_path / "vault")
+    vault.ensure()
+    leftover = vault.snapshots_dir / "snapshot-steam-20261017-120000"
+    leftover.mkdir()
+    (leftover / "save.hg").write_bytes(b"half")
+
+    snap = ops.snapshot_live(vault, live, reason="after a crash")
+
+    assert snap.id == "snapshot-steam-20261017-120000-2"
+    assert [(p.name, p.read_bytes()) for p in leftover.iterdir()] == [("save.hg", b"half")]
+    assert savedir.scan_any(snap.path).occupied_slots
+
+
+def test_an_extract_never_reuses_a_leftover_folder(tmp_path, monkeypatch):
+    """Same protection for the other managed kinds: an extract that found a leftover folder
+    under its id would have mixed into it, and on 'no saves' deleted it."""
+    monkeypatch.setattr(catalog, "datetime", FrozenClock)
+    live = tmp_path / "live"
+    steam_save(live, 1, 0, "Steam Run", 3600, 0x1234, 1_700_000_000)
+    vault = Vault(tmp_path / "vault")
+    vault.ensure()
+    leftover = vault.extracts_dir / "extract-steam-20261017-120000"
+    leftover.mkdir()
+    (leftover / "save.hg").write_bytes(b"half")
+
+    entry = ops.extract_slot(vault, live, 1)
+
+    assert entry.id == "extract-steam-20261017-120000-2"
+    assert [(p.name, p.read_bytes()) for p in leftover.iterdir()] == [("save.hg", b"half")]
+
+
+def test_a_failed_cleanup_is_logged_and_the_original_error_raised(tmp_path, monkeypatch, caplog):
+    live = tmp_path / "live"
+    steam_save(live, 1, 0, "Steam Run", 3600, 0x1234, 1_700_000_000)
+    vault = Vault(tmp_path / "vault")
+
+    def copy_fails(*args, **kwargs):
+        raise OSError("disk full")
+
+    def rmtree_fails(path, *args, **kwargs):
+        raise PermissionError("folder is locked")
+
+    monkeypatch.setattr(ops.shutil, "copy2", copy_fails)
+    monkeypatch.setattr(ops.shutil, "rmtree", rmtree_fails)
+    with caplog.at_level(logging.WARNING, logger=ops.__name__):
+        with pytest.raises(OSError, match="disk full"):
+            ops.snapshot_live(vault, live, reason="dies")
+    monkeypatch.undo()
+
+    [left] = list(vault.snapshots_dir.iterdir())
+    [record] = [r for r in caplog.records if r.name == ops.__name__]
+    assert record.levelno == logging.WARNING
+    assert str(left) in record.getMessage() and "folder is locked" in record.getMessage()
+
+
+def test_a_snapshot_is_refused_when_the_vault_drive_is_too_full(tmp_path, monkeypatch):
+    live = tmp_path / "live"
+    steam_save(live, 1, 0, "Steam Run", 3600, 0x1234, 1_700_000_000)
+    vault = Vault(tmp_path / "vault")
+    needed = sum(p.stat().st_size for p in live.glob("*.hg")) + ops.SPACE_MARGIN
+
+    monkeypatch.setattr(ops.shutil, "disk_usage", lambda path: SimpleNamespace(free=needed - 1))
+    with pytest.raises(ops.OperationError, match="free space"):
+        ops.snapshot_live(vault, live, reason="no room")
+    assert list(vault.snapshots_dir.iterdir()) == [] and vault.entries == []
+
+    monkeypatch.setattr(ops.shutil, "disk_usage", lambda path: SimpleNamespace(free=needed))
+    assert ops.snapshot_live(vault, live, reason="just enough room").kind == "snapshot"
+
+
+_MANAGED_COPIES = {
+    "full backup": lambda vault, live: ops.create_full_backup(vault, live, label="x"),
+    "extract": lambda vault, live: ops.extract_slot(vault, live, 1),
+    "copied import": lambda vault, live: ops.import_backup(vault, live, copy_into_vault=True),
+}
+
+
+@pytest.mark.parametrize("make", list(_MANAGED_COPIES.values()), ids=list(_MANAGED_COPIES))
+def test_a_failed_vault_copy_leaves_nothing_behind(tmp_path, monkeypatch, make):
+    """Every managed copy goes through the same guard: a copy that dies part-way leaves no
+    folder and no catalog entry."""
+    live = tmp_path / "live"
+    steam_save(live, 1, 0, "Run", 3600, 0x1234, 1_700_000_000)
+    vault = Vault(tmp_path / "vault")
+    real_copy2, real_copytree = shutil.copy2, shutil.copytree
+    wrote = []
+
+    def copy2_then_fail(src, dst, *args, **kwargs):
+        if wrote:
+            raise OSError("disk full")
+        wrote.append(dst)
+        return real_copy2(src, dst, *args, **kwargs)
+
+    def copytree_then_fail(src, dst, *args, **kwargs):
+        wrote.append(real_copytree(src, dst, *args, **kwargs))
+        raise OSError("disk full")
+
+    monkeypatch.setattr(ops.shutil, "copy2", copy2_then_fail)
+    monkeypatch.setattr(ops.shutil, "copytree", copytree_then_fail)
+    with pytest.raises(OSError, match="disk full"):
+        make(vault, live)
+    monkeypatch.undo()
+
+    assert wrote, "the failure must happen after something was written"
+    assert [p for d in (vault.backups_dir, vault.extracts_dir) for p in d.iterdir()] == []
+    assert vault.entries == [] and Vault(vault.root).load().entries == []
+
+
+@pytest.mark.parametrize("make", list(_MANAGED_COPIES.values()), ids=list(_MANAGED_COPIES))
+def test_every_vault_copy_checks_free_space(tmp_path, monkeypatch, make):
+    live = tmp_path / "live"
+    steam_save(live, 1, 0, "Run", 3600, 0x1234, 1_700_000_000)
+    vault = Vault(tmp_path / "vault")
+    monkeypatch.setattr(ops.shutil, "disk_usage", lambda path: SimpleNamespace(free=ops.SPACE_MARGIN))
+
+    with pytest.raises(ops.OperationError, match="free space"):
+        make(vault, live)
+    assert vault.entries == []
+
+
+def test_a_save_file_vanishing_before_the_copy_is_reported_plainly(tmp_path, monkeypatch):
+    """Listed, then gone before it could be measured: a clear OperationError, and no vault
+    folder was ever made."""
+    live = tmp_path / "live"
+    steam_save(live, 1, 0, "Run", 3600, 0x1234, 1_700_000_000)
+    vault = Vault(tmp_path / "vault")
+    listed = ops._save_state_files(live) + [live / "save9.hg"]
+    monkeypatch.setattr(ops, "_save_state_files", lambda src: listed)
+
+    with pytest.raises(ops.OperationError, match="save9.hg disappeared"):
+        ops.snapshot_live(vault, live, reason="x")
+    assert list(vault.snapshots_dir.iterdir()) == [] and vault.entries == []
+
+
+def test_a_save_file_vanishing_during_the_copy_is_reported_plainly(tmp_path, monkeypatch):
+    live = tmp_path / "live"
+    steam_save(live, 1, 0, "Run", 3600, 0x1234, 1_700_000_000)
+    vault = Vault(tmp_path / "vault")
+
+    def game_deletes_it(src, dst, *args, **kwargs):
+        Path(src).unlink()
+        raise FileNotFoundError(2, "No such file or directory", str(src))
+
+    monkeypatch.setattr(ops.shutil, "copy2", game_deletes_it)
+    with pytest.raises(ops.OperationError, match="disappeared while it was being copied"):
+        ops.snapshot_live(vault, live, reason="x")
+    monkeypatch.undo()
+    assert list(vault.snapshots_dir.iterdir()) == [] and vault.entries == []
+
+
+def test_a_catalog_removal_that_cannot_be_saved_is_not_half_done(tmp_path):
+    """Vault.remove mirrors upsert: if the catalog file cannot be written, the entry stays
+    in memory as it stays in the file."""
+    live = tmp_path / "live"
+    steam_save(live, 1, 0, "Run", 3600, 0x1234, 1_700_000_000)
+    vault = Vault(tmp_path / "vault")
+    kept = ops.snapshot_live(vault, live, reason="x")
+    vault.catalog_path.with_name(vault.catalog_path.name + ".tmp").mkdir()
+
+    with pytest.raises(OSError):
+        vault.remove(kept.id)
+
+    assert [e.id for e in vault.entries] == [kept.id]
+    assert [e.id for e in Vault(vault.root).load().entries] == [kept.id]
 
 
 # --- Steam Cloud: mtimes on writes into the live folder ----------------------

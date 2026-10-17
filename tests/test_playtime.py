@@ -11,10 +11,10 @@ from pathlib import Path
 
 import pytest
 
-from nms_save_vault.core import playtime, slotmap
+from nms_save_vault.core import playtime, savedir, slotmap
 from nms_save_vault.core.catalog import Vault
 
-from .conftest import chunked, lz4_literals, steam_save
+from .conftest import chunked, lz4_literals, steam_save, xbox_meta
 
 
 def _vault(tmp_path) -> Vault:
@@ -27,7 +27,7 @@ def _vault(tmp_path) -> Vault:
 
 
 def test_the_playthrough_id_is_read_out_of_the_data_blob():
-    """Xbox metas leave the id field 0, so the id has to come from the save data."""
+    """The fallback for a meta without an id: the id has to come from the save data."""
     raw = chunked(b'{"F2P":4737,"<h0":{"WmU":"0xDDDAD1BDD39F9C72"}}')
     assert playtime._id_from_bytes(raw, 0) == 0xDDDAD1BDD39F9C72
 
@@ -135,14 +135,13 @@ def test_a_renamed_save_is_found_in_every_backup_under_every_name(tmp_path):
 
 
 def test_the_same_run_on_two_platforms_is_one_playthrough(tmp_path, make_wgs_account, monkeypatch):
-    """An NMS cloud save carried to another platform keeps its id, so it must not double."""
+    """An NMS cloud save carried to another platform keeps its id, so it must not double.
+    The Xbox meta carries the id, so no blob is decoded for it."""
     ident = 0xDECA9E5054EFD19E
     live = tmp_path / "steam"
     steam_save(live, 3, 0, "The Cartographers", 30000, ident, 4000)
-    xbox = make_wgs_account(tmp_path / "xb", [("Slot3Auto", '{"a":1}', "The Cartographers", "", 29000, 3000)])
-    # The wgs meta carries no id; the real one lives in the blob, which the fixture cannot
-    # build at this size -- so stand in for the decode with the id that save would hold.
-    monkeypatch.setattr(playtime, "_id_from_data", lambda path, expected: ident)
+    xbox = make_wgs_account(tmp_path / "xb", [("Slot3Auto", '{"a":1}', "The Cartographers", "", 29000, 3000, ident)])
+    monkeypatch.setattr(playtime, "_id_from_data", lambda path, expected: pytest.fail("decoded a blob"))
 
     report = playtime.collect(_vault(tmp_path), [live, xbox], use_cache=False)
 
@@ -152,10 +151,46 @@ def test_the_same_run_on_two_platforms_is_one_playthrough(tmp_path, make_wgs_acc
     assert p.play_time == 30000
 
 
+def test_an_xbox_meta_without_an_id_falls_back_to_the_data_blob(tmp_path, make_wgs_account):
+    ident = 0xDECA9E5054EFD19E
+    live = tmp_path / "steam"
+    steam_save(live, 3, 0, "The Cartographers", 30000, ident, 4000)
+    data = '{"F2P":4737,"<h0":{"Pk4":"The Cartographers","WmU":"0xDECA9E5054EFD19E"}}'
+    xbox = make_wgs_account(tmp_path / "xb", [("Slot3Auto", data, "The Cartographers", "", 29000, 3000, 0)])
+
+    report = playtime.collect(_vault(tmp_path), [live, xbox], use_cache=False)
+
+    assert len(report.playthroughs) == 1 and report.playthroughs[0].cross_platform
+
+
+def test_copies_on_two_platforms_are_compared_by_their_save_times(tmp_path, make_wgs_account):
+    """The newest copy of a run is judged on each save's own time. The Xbox pair is ordered
+    by its index time (B has a 280-byte meta), but an index time is a local write or sync
+    time: A reached the disk at 9000 although it was saved at 2000, before the Steam copy."""
+    ident = 0xDECA9E5054EFD19E
+    steam = tmp_path / "steam"
+    steam_save(steam, 3, 0, "Steam Name", 30000, ident, 3000)
+    data = '{"F2P":4737,"<h0":{"WmU":"0xDECA9E5054EFD19E"}}'
+    xbox = make_wgs_account(tmp_path / "xb", [
+        ("Slot3Auto", data, "Xbox Name", "", 29000, 9000, ident, 2000),
+        ("Slot3Manual", data, "Xbox Name", "", 28000, 2500),
+    ])
+    b = savedir.scan_any(xbox).slots[3].b
+    Path(b.meta_path).write_bytes(xbox_meta("Xbox Name", play=28000, length=280))
+    assert savedir.scan_any(xbox).slots[3].newest.label == "A"
+
+    report = playtime.collect(_vault(tmp_path), [steam, xbox], use_cache=False)
+
+    [p] = report.playthroughs
+    assert p.cross_platform
+    assert p.name == "Steam Name" and p.newest == 3000
+    assert p.former_names == ["Xbox Name"]
+
+
 def test_saves_without_an_id_fall_back_to_name_and_are_flagged(tmp_path, make_wgs_account, monkeypatch):
     xbox = make_wgs_account(tmp_path / "xb", [
-        ("Slot1Auto", '{"a":1}', "Voyagers", "", 30865, 1000),
-        ("Slot2Auto", '{"b":2}', "Singularity", "", 21623, 1000),
+        ("Slot1Auto", '{"a":1}', "Voyagers", "", 30865, 1000, 0),
+        ("Slot2Auto", '{"b":2}', "Singularity", "", 21623, 1000, 0),
     ])
     monkeypatch.setattr(playtime, "_id_from_data", lambda path, expected: None)
 

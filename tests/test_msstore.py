@@ -5,12 +5,19 @@ blob + a 0xFEEDA1E5 data blob + a plaintext MS meta, then assert the reader deco
 """
 from __future__ import annotations
 
+import shutil
 import struct
+import time
 import uuid
+from pathlib import Path
 
 import pytest
 
-from nms_save_vault.core import formats, msstore, savedir
+from nms_save_vault.core import catalog, formats, msstore, playtime, savedir
+
+from .conftest import chunked, xbox_meta
+
+NMS_RELEASE = 1470960000  # 2016-08-12: no real save can be older
 
 
 def _lp_utf16(s: str) -> bytes:
@@ -28,30 +35,6 @@ def _guid_bytes(seed: int) -> bytes:
 
 def _guid_name(raw: bytes) -> str:
     return uuid.UUID(bytes_le=raw).hex.upper()
-
-
-def _data_blob(payload: bytes) -> bytes:
-    """A valid single-chunk 0xFEEDA1E5 stream (current Worlds format)."""
-    block = bytes([len(payload) << 4]) + payload  # LZ4 literals-only block
-    return struct.pack("<4I", formats.SAVE_MAGIC, len(block), len(payload), 0) + block
-
-
-def _ms_meta_worlds(name: str, summary: str, *, play: int, size: int, timestamp: int) -> bytes:
-    b = bytearray(formats.META_LEN_WORLDS_II)  # 360
-    struct.pack_into("<I", b, 0, 4700)        # base version
-    struct.pack_into("<H", b, 4, 1)           # game mode
-    struct.pack_into("<H", b, 6, 0)           # season
-    struct.pack_into("<Q", b, 8, play)        # total play time
-    struct.pack_into("<I", b, 16, size)       # decompressed size
-    nm = name.encode("utf-8")                 # meta strings are UTF-8 (NUL-terminated)
-    b[20 : 20 + len(nm)] = nm
-    sm = summary.encode("utf-8")
-    b[148 : 148 + len(sm)] = sm
-    struct.pack_into("<I", b, 276, 1)         # difficulty
-    struct.pack_into("<Q", b, 280, 0)         # slot identifier
-    struct.pack_into("<I", b, 288, timestamp)
-    struct.pack_into("<I", b, 292, formats.META_FORMAT_4)
-    return bytes(b)
 
 
 def _build_wgs(tmp_path, saves):
@@ -73,10 +56,10 @@ def _build_wgs(tmp_path, saves):
         blobdir.mkdir()
         data_guid, meta_guid = _guid_bytes(1 + i * 2), _guid_bytes(2 + i * 2)
 
-        data = _data_blob(payload.encode())
+        data = chunked(payload.encode())
         (blobdir / _guid_name(data_guid)).write_bytes(data)
         (blobdir / _guid_name(meta_guid)).write_bytes(
-            _ms_meta_worlds(name, summary, play=play, size=len(payload), timestamp=ts)
+            xbox_meta(name, summary, play=play, size=len(payload), ts=ts)
         )
 
         container = struct.pack("<ii", msstore.BLOBCONTAINER_HEADER, 2)
@@ -102,14 +85,122 @@ def test_guid_name_matches_dotnet_n_format():
     assert len(_guid_name(raw)) == 32 and _guid_name(raw).isupper()
 
 
-def test_parse_ms_meta_fields():
-    blob = _ms_meta_worlds("Hello", "On Planet", play=3600, size=2048, timestamp=1782240635)
+@pytest.mark.parametrize("length", [296, 360])
+def test_parse_ms_meta_fields(length):
+    """Both real Worlds-era Xbox lengths carry names, a u32 difficulty, the playthrough id,
+    the save time and the format. They were once gated on the Steam lengths (384/432)."""
+    blob = xbox_meta("Hello", "On Planet", play=3600, size=2048, ts=1782240635,
+                     length=length, pid=0xDECA9E5054EFD19E, difficulty=3)
     info = msstore.parse_ms_meta(blob)
     assert info["name"] == "Hello"
     assert info["summary"] == "On Planet"
     assert info["total_play_time"] == 3600
+    assert info["difficulty"] == 3
+    assert info["slot_id"] == 0xDECA9E5054EFD19E
     assert info["timestamp"] == 1782240635
     assert info["meta_format"] == formats.META_FORMAT_4
+
+
+def test_parse_ms_meta_waypoint_has_names_and_a_one_byte_difficulty():
+    """280 B (Waypoint) ends at 0x118: names and a single difficulty byte, no id or time."""
+    info = msstore.parse_ms_meta(xbox_meta("Hello", "On Planet", play=3600, difficulty=3, length=280))
+    assert (info["name"], info["summary"], info["difficulty"]) == ("Hello", "On Planet", 3)
+    assert info["slot_id"] == 0 and info["timestamp"] == 0 and info["meta_format"] == 0
+
+
+@pytest.mark.parametrize("meta_len", [296, 360])
+def test_xbox_newest_follows_the_meta_time_not_the_index_time(make_wgs_account, tmp_path, meta_len):
+    """The index FILETIME is the local write or sync time (a sync bumps it for both
+    members); the save time is in the meta. Here A reached the disk last but was saved first."""
+    pid = 0xDECA9E5054EFD19E
+    acct = make_wgs_account(tmp_path, [
+        ("Slot3Auto", '{"a":1}', "Run", "", 100, 5000, pid, 1000),
+        ("Slot3Manual", '{"b":2}', "Run", "", 144, 4000, pid, 1044),
+    ], meta_len=meta_len)
+    sv = msstore.scan(acct).slots[3]
+    assert sv.newest.label == "B"
+    assert (sv.a.timestamp, sv.b.timestamp) == (1000, 1044)
+    assert sv.a.info.slot_identifier == sv.b.info.slot_identifier == pid
+    assert sv.display_name == "Run"
+
+
+def test_xbox_newest_never_compares_a_meta_time_with_an_index_time(make_wgs_account, tmp_path):
+    """A 280-byte meta has no save time. Then both members are compared by the index time,
+    not one by its meta time and the other by its index time."""
+    acct = make_wgs_account(tmp_path, [
+        ("Slot2Auto", '{"a":1}', "Run", "", 100, 5000),
+        ("Slot2Manual", '{"b":2}', "Run", "", 90, 4000, 7, 9000),
+    ])
+    a = msstore.scan(acct).slots[2].a
+    Path(a.meta_path).write_bytes(xbox_meta("Run", play=100, length=280))
+
+    view = msstore.scan(acct)
+    sv = view.slots[2]
+    assert sv.a.timestamp == 0 and sv.b.timestamp == 9000
+    assert sv.newest.label == "A"            # index time 5000 > 4000; B's meta 9000 ignored
+    assert (sv.order_time(sv.a), sv.order_time(sv.b)) == (5000, 4000)
+    # What is shown and stored is each save's own time: the meta time where there is one.
+    assert (sv.a.effective_timestamp, sv.b.effective_timestamp) == (5000, 9000)
+    [summary] = catalog.summarize(view, [2])
+    assert summary.newest_label == "A"
+    assert [m.timestamp for m in summary.members] == [5000, 9000]
+
+
+@pytest.mark.parametrize("length", [296, 360])
+def test_set_ms_meta_timestamp_changes_exactly_the_save_time(length):
+    before = xbox_meta("Run", play=100, pid=7, ts=1000, length=length)
+    after = msstore.set_ms_meta_timestamp(before, 1782240635)
+    assert len(after) == length
+    assert after[:0x120] + after[0x124:] == before[:0x120] + before[0x124:]
+    assert msstore.parse_ms_meta(after)["timestamp"] == 1782240635
+
+
+@pytest.mark.parametrize("length", [280, 300])
+def test_set_ms_meta_timestamp_refuses_a_meta_without_a_save_time(length):
+    """280 B has no time field; 300 B is no known layout."""
+    with pytest.raises(ValueError):
+        msstore.set_ms_meta_timestamp(bytes(length), 1782240635)
+
+
+def test_a_meta_longer_than_360_bytes_keeps_the_360_layout():
+    """A longer meta is taken to extend the newest layout; an unknown shorter one is not
+    guessed at, beyond the names every layout from 280 bytes on shares."""
+    longer = xbox_meta("Run", play=100, pid=7, ts=1000, difficulty=3) + bytes(40)
+    fields = msstore.parse_ms_meta(longer)
+    assert (fields["slot_id"], fields["timestamp"], fields["difficulty"]) == (7, 1000, 3)
+    assert msstore.parse_ms_meta(msstore.set_ms_meta_timestamp(longer, 2000))["timestamp"] == 2000
+
+    unknown = xbox_meta("Run", play=100, pid=7, ts=1000, difficulty=3, length=296) + bytes(4)
+    fields = msstore.parse_ms_meta(unknown)
+    assert fields["name"] == "Run"
+    assert (fields["slot_id"], fields["timestamp"], fields["difficulty"]) == (0, 0, 0)
+
+
+def test_real_xbox_metas_carry_id_and_time(live_wgs_dir, tmp_path):
+    """Read-only check of the offsets against the real Game Pass saves (skips when there
+    are none). The blobs are copied out first; the live folder is only read."""
+    _info, containers = msstore.parse_containers_index(live_wgs_dir)
+    checked = 0
+    for c in containers:
+        if msstore._slot_member(c.identifier) is None or not (c.meta_file and c.data_file):
+            continue
+        if not (c.meta_file.is_file() and c.data_file.is_file()):
+            continue
+        meta_copy = shutil.copyfile(c.meta_file, tmp_path / f"{c.identifier}.meta")
+        data_copy = shutil.copyfile(c.data_file, tmp_path / f"{c.identifier}.data")
+        raw = meta_copy.read_bytes()
+        if len(raw) not in (msstore.MS_META_LEN_WORLDS_I, msstore.MS_META_LEN_WORLDS_II):
+            continue
+        fields = msstore.parse_ms_meta(raw)
+        assert NMS_RELEASE < fields["timestamp"] < time.time() + 86400, c.identifier
+        assert fields["slot_id"] != 0, c.identifier
+        assert fields["meta_format"] in (0, formats.META_FORMAT_3, formats.META_FORMAT_4), c.identifier
+        data_id = playtime._id_from_bytes(data_copy.read_bytes(), fields["size_field"])
+        if data_id is not None:   # pre-Worlds data has no id to compare with
+            assert fields["slot_id"] == data_id, c.identifier
+        checked += 1
+    if not checked:
+        pytest.skip("no Worlds-era Xbox metas in the live folder")
 
 
 def test_scan_microsoft_reads_slots(tmp_path):
@@ -260,10 +351,10 @@ def test_write_save_updates_in_place(tmp_path):
     old_data_guid, old_meta_guid, old_ext = before.data_local_guid, before.meta_local_guid, before.extension
 
     payload = b'{"new":42}'
-    new_data = _data_blob(payload)
+    new_data = chunked(payload)
     msstore.write_save(
         acct, "Slot1Auto", new_data,
-        _ms_meta_worlds("New Name", "new summary", play=2000, size=len(payload), timestamp=999),
+        xbox_meta("New Name", "new summary", play=2000, size=len(payload), ts=999),
         when=123456.0,
     )
 
@@ -288,13 +379,13 @@ def test_write_save_second_write_rotates_and_cleans(tmp_path):
     """A second write advances the extension again, deletes the FIRST write's blobs, and
     bumps the index last-write time."""
     acct = _build_wgs(tmp_path, [("Slot1Auto", '{"a":1}', "One", "", 1, 1)])
-    msstore.write_save(acct, "Slot1Auto", _data_blob(b'{"v":1}'),
-                       _ms_meta_worlds("V1", "", play=1, size=7, timestamp=1), when=100.0)
+    msstore.write_save(acct, "Slot1Auto", chunked(b'{"v":1}'),
+                       xbox_meta("V1", "", play=1, size=7, ts=1), when=100.0)
     x1 = msstore.scan(acct).slots[1].a.xbox            # ext now 2
 
-    d2 = _data_blob(b'{"v":2}')
+    d2 = chunked(b'{"v":2}')
     msstore.write_save(acct, "Slot1Auto", d2,
-                       _ms_meta_worlds("V2", "", play=2, size=7, timestamp=2), when=200.0)
+                       xbox_meta("V2", "", play=2, size=7, ts=2), when=200.0)
     view = msstore.scan(acct)
     x2 = view.slots[1].a.xbox
     assert x2.extension == x1.extension + 1            # 2 -> 3
@@ -310,8 +401,8 @@ def test_write_save_creates_new_slot(tmp_path):
     acct = _build_wgs(tmp_path, [("Slot1Auto", '{"a":1}', "Existing", "", 100, 5)])
     payload = b'{"z":9}'
     msstore.write_save(
-        acct, "Slot5Manual", _data_blob(payload),
-        _ms_meta_worlds("Fresh", "", play=10, size=len(payload), timestamp=1),
+        acct, "Slot5Manual", chunked(payload),
+        xbox_meta("Fresh", "", play=10, size=len(payload), ts=1),
         when=222.0, create_if_missing=True,
     )
     view = msstore.scan(acct)
@@ -330,8 +421,8 @@ def test_write_save_undeletes_a_deleted_record(tmp_path):
     (acct / "containers.index").write_bytes(msstore.build_containers_index(info, conts))
 
     payload = b'{"back":1}'
-    msstore.write_save(acct, "Slot2Manual", _data_blob(payload),
-                       _ms_meta_worlds("Back", "", play=5, size=len(payload), timestamp=9), when=300.0)
+    msstore.write_save(acct, "Slot2Manual", chunked(payload),
+                       xbox_meta("Back", "", play=5, size=len(payload), ts=9), when=300.0)
     view = msstore.scan(acct)
     assert view.slots[2].occupied and view.slots[2].b.save_name == "Back"
     assert view.slots[2].b.xbox.sync_state == msstore.BLOB_SYNC_MODIFIED
@@ -346,8 +437,8 @@ def test_write_save_new_save_mirrors_double_identifier(tmp_path):
     (acct / "containers.index").write_bytes(msstore.build_containers_index(info, conts))
 
     payload = b'{"n":1}'
-    msstore.write_save(acct, "Slot4Auto", _data_blob(payload),
-                       _ms_meta_worlds("New", "", play=1, size=len(payload), timestamp=1),
+    msstore.write_save(acct, "Slot4Auto", chunked(payload),
+                       xbox_meta("New", "", play=1, size=len(payload), ts=1),
                        when=10.0, create_if_missing=True)
     _info, conts2 = msstore.parse_containers_index(acct)
     new_rec = next(c for c in conts2 if c.identifier == "Slot4Auto")
@@ -357,4 +448,4 @@ def test_write_save_new_save_mirrors_double_identifier(tmp_path):
 def test_write_save_missing_without_create_raises(tmp_path):
     acct = _build_wgs(tmp_path, [("Slot1Auto", '{"a":1}', "X", "", 1, 1)])
     with pytest.raises(ValueError):
-        msstore.write_save(acct, "Slot9Auto", _data_blob(b"{}"), b"\x00" * 360, when=1.0)
+        msstore.write_save(acct, "Slot9Auto", chunked(b"{}"), b"\x00" * 360, when=1.0)

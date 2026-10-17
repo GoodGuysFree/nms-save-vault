@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import struct
 import uuid
 from pathlib import Path
@@ -33,6 +34,15 @@ def live_save_dir() -> Path:
     return d
 
 
+@pytest.fixture(scope="session")
+def live_wgs_dir() -> Path:
+    """The real Game Pass wgs account folder, for read-only checks; skips when absent."""
+    d = next((p for p in msstore.find_microsoft_save_dirs() if msstore.is_microsoft_save_dir(p)), None)
+    if d is None:
+        pytest.skip("no live Xbox / Game Pass save directory found")
+    return d
+
+
 def meta_data_files(d: Path):
     """Yield (file_no, meta_path, data_path) for save members present in ``d``."""
     for f in slotmap.all_file_numbers():
@@ -42,28 +52,59 @@ def meta_data_files(d: Path):
             yield f, mp, dp
 
 
-# --- synthetic Microsoft / Xbox 'wgs' account fixture ----------------------------------
+# --- synthetic saves: data blobs, Xbox metas, wgs accounts ------------------------------
 
 
-def _wgs_data_blob(payload: bytes) -> bytes:
-    """A valid single-chunk 0xFEEDA1E5 stream (current Worlds format). payload <= 15 bytes."""
-    block = bytes([len(payload) << 4]) + payload          # LZ4 literals-only block
+def lz4_literals(payload: bytes) -> bytes:
+    """A literals-only LZ4 block holding ``payload`` (any length)."""
+    lit = len(payload)
+    if lit < 15:
+        return bytes([lit << 4]) + payload
+    rest = lit - 15
+    cont = bytearray()
+    while rest >= 255:
+        cont.append(255)
+        rest -= 255
+    cont.append(rest)
+    return bytes([0xF0]) + bytes(cont) + payload
+
+
+def chunked(payload: bytes) -> bytes:
+    """A valid single-chunk 0xFEEDA1E5 save data stream (Steam and current Xbox saves)."""
+    block = lz4_literals(payload)
     return struct.pack("<4I", formats.SAVE_MAGIC, len(block), len(payload), 0) + block
 
 
-def _wgs_meta(name: str, summary: str, play: int, size: int) -> bytes:
-    """A plaintext MS meta blob. Timestamp field is 0 (as on real saves): the authoritative
-    last-write time lives in containers.index, so effective time is driven by the FILETIME."""
-    b = bytearray(formats.META_LEN_WORLDS_II)             # 360
+def wgs_playthrough_id(identifier: str) -> int:
+    """The playthrough id ``make_wgs_account`` gives a save unless told otherwise: one per
+    slot (both members of a slot are one run), with the high bytes set so that a read
+    stopping at 32 bits shows up. 0 for account-level records."""
+    m = re.fullmatch(r"Slot(\d+)(?:Auto|Manual)", identifier)
+    return 0xA1B2C3D4_00000000 + int(m.group(1)) if m else 0
+
+
+def xbox_meta(name: str = "", summary: str = "", *, play: int = 0, size: int = 0, pid: int = 0,
+              ts: int = 0, difficulty: int = 0, length: int = 360) -> bytes:
+    """A plaintext Xbox meta at a real length: 360 B (Worlds II), 296 B (Worlds I) or 280 B
+    (Waypoint). From 296 B it carries the playthrough id at 0x118 and the save time at
+    0x120, as the game writes them; 280 B ends at 0x118 with a one-byte difficulty."""
+    if length not in (280, 296, 360):
+        raise ValueError(f"no Xbox meta is {length} bytes")
+    b = bytearray(length)
     struct.pack_into("<I", b, 0, 4700)                    # base version
     struct.pack_into("<H", b, 4, 1)                       # game mode
     struct.pack_into("<Q", b, 8, play)                    # total play time
     struct.pack_into("<I", b, 16, size)                   # decompressed size
-    nm, sm = name.encode("utf-8"), summary.encode("utf-8")
+    nm, sm = name.encode("utf-8"), summary.encode("utf-8")  # UTF-8, NUL-terminated
     b[20 : 20 + len(nm)] = nm
     b[148 : 148 + len(sm)] = sm
-    struct.pack_into("<I", b, 288, 0)                     # timestamp = 0 (real-save behaviour)
-    struct.pack_into("<I", b, 292, formats.META_FORMAT_4)
+    if length == 280:
+        b[0x114] = difficulty
+        return bytes(b)
+    struct.pack_into("<I", b, 0x114, difficulty)
+    struct.pack_into("<Q", b, 0x118, pid)                 # playthrough id
+    struct.pack_into("<I", b, 0x120, ts)                  # save time (unix seconds)
+    struct.pack_into("<I", b, 0x124, formats.META_FORMAT_4)
     return bytes(b)
 
 
@@ -72,8 +113,11 @@ def make_wgs_account():
     """Factory building a spec-accurate wgs account folder, for Xbox read/write tests.
 
     Call ``make_wgs_account(parent, saves)`` where each save is
-    ``(identifier, payload_text, name, summary, play, when)`` and ``when`` is the unix time
-    written into the containers.index FILETIME (drives 'newest'). Returns the account dir.
+    ``(identifier, payload_text, name, summary, play, when[, pid[, meta_ts]])``. ``when`` is
+    the unix time written into the containers.index FILETIME; ``meta_ts`` is the save time
+    in the meta (default ``int(when)``), which is what decides 'newest'; ``pid`` defaults to
+    :func:`wgs_playthrough_id`. ``meta_len`` 296 or 280 builds Worlds I or Waypoint metas
+    instead of 360-byte ones (280 holds no id or time). Returns the account dir.
     """
     def _gb(seed: int) -> bytes:
         return bytes((seed + i) % 256 for i in range(16))
@@ -88,20 +132,25 @@ def make_wgs_account():
         raw = s.encode("utf-16-le")
         return raw + b"\x00" * (total - len(raw))
 
-    def build(parent, saves, name="0000000000000001_29070100B936489ABCE8B9AF3980429C") -> Path:
+    def build(parent, saves, name="0000000000000001_29070100B936489ABCE8B9AF3980429C",
+              meta_len: int = 360) -> Path:
         acct = Path(parent) / "wgs" / name
         acct.mkdir(parents=True)
         index = struct.pack("<i", msstore.CONTAINERSINDEX_HEADER)
         index += struct.pack("<q", len(saves))
         index += _lp("proc") + struct.pack("<q", 0) + struct.pack("<i", 2) + _lp("acct")
         index += struct.pack("<q", msstore.CONTAINERSINDEX_FOOTER)
-        for i, (ident, payload, nm, summ, play, when) in enumerate(saves):
+        for i, (ident, payload, nm, summ, play, when, *extra) in enumerate(saves):
+            pid = extra[0] if extra else wgs_playthrough_id(ident)
+            meta_ts = extra[1] if len(extra) > 1 else int(when)
             blobdir = acct / _gn(_gb(100 + i))
             blobdir.mkdir()
             data_guid, meta_guid = _gb(1 + i * 2), _gb(2 + i * 2)
-            data = _wgs_data_blob(payload.encode())
+            data = chunked(payload.encode())
             (blobdir / _gn(data_guid)).write_bytes(data)
-            (blobdir / _gn(meta_guid)).write_bytes(_wgs_meta(nm, summ, play, len(payload)))
+            meta_blob = xbox_meta(nm, summ, play=play, size=len(payload), pid=pid, ts=meta_ts,
+                                  length=meta_len)
+            (blobdir / _gn(meta_guid)).write_bytes(meta_blob)
             container = struct.pack("<ii", msstore.BLOBCONTAINER_HEADER, 2)
             container += _fixed("data") + _gb(200 + i) + data_guid
             container += _fixed("meta") + _gb(210 + i) + meta_guid
@@ -116,25 +165,7 @@ def make_wgs_account():
     return build
 
 
-# --- synthetic Steam save helpers ------------------------------------------------------
-
-
-def lz4_literals(payload: bytes) -> bytes:
-    lit = len(payload)
-    if lit < 15:
-        return bytes([lit << 4]) + payload
-    rest = lit - 15
-    cont = bytearray()
-    while rest >= 255:
-        cont.append(255)
-        rest -= 255
-    cont.append(rest)
-    return bytes([0xF0]) + bytes(cont) + payload
-
-
-def chunked(payload: bytes) -> bytes:
-    block = lz4_literals(payload)
-    return struct.pack("<4I", formats.SAVE_MAGIC, len(block), len(payload), 0) + block
+# --- synthetic Steam saves ---------------------------------------------------------------
 
 
 def steam_save(folder: Path, slot: int, member: int, name: str, play: int, ident: int, ts: int) -> None:

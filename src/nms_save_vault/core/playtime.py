@@ -7,13 +7,14 @@ Steam and an Xbox account. Counting files would multiply one playthrough by all 
 so every copy is folded onto one identity and the highest play time wins -- play time only
 ever increases, so the newest copy is simply the largest.
 
-Identity is the game's own: the u64 the Steam meta carries at ``OFF_SLOT_IDENTIFIER``,
-which is the same number the save data holds as ``<h0``/``WmU``. It survives renames, slot
-moves and the trip through the cloud to another platform. Xbox metas leave that field 0,
-so an Xbox save is identified from its data blob instead -- that costs a decompress, which
-is why the answer is cached per file. Saves older than the field (pre-Waypoint) have no
-identity at all and fall back to platform+slot+name, which cannot tell two same-named runs
-apart; :attr:`PlaytimeReport.unidentified` says how many of those there were.
+Identity is the game's own: the u64 the meta carries (Steam ``OFF_SLOT_IDENTIFIER``, Xbox
+``MS_OFF_SLOT_ID``), which is the same number the save data holds as ``<h0``/``WmU``. It
+survives renames, slot moves and the trip through the cloud to another platform. Only when
+the meta has no id (older Xbox metas are too short to hold one) is the data blob decoded
+for it -- that costs a decompress, which is why the answer is cached per file. Saves older
+than the field (pre-Waypoint) have no identity at all and fall back to platform+slot+name,
+which cannot tell two same-named runs apart; :attr:`PlaytimeReport.unidentified` says how
+many of those there were.
 """
 from __future__ import annotations
 
@@ -166,9 +167,9 @@ class _IdCache:
 def _identity(member, platform: str, cache: _IdCache | None) -> tuple[str, bool]:
     """(key, identified) for one save: the game's id where there is one, else a fallback.
 
-    The Steam meta hands the id over for free. An Xbox meta does not (it leaves the field
-    0), so the blob is decoded -- through the cache when there is one, directly when the
-    caller turned caching off. Disabling the cache must cost time, not identity.
+    The meta hands the id over for free. A meta without one (0) falls back to decoding the
+    blob -- through the cache when there is one, directly when the caller turned caching
+    off. Disabling the cache must cost time, not identity.
     """
     info = member.info
     ident = getattr(info, "slot_identifier", 0) or 0

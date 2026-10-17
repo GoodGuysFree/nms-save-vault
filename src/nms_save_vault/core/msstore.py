@@ -71,6 +71,12 @@ MS_OFF_SLOT_ID = 0x118       # 280, u64 (Worlds)
 MS_OFF_TIMESTAMP = 0x120     # 288, u32 (Worlds)
 MS_OFF_META_FORMAT = 0x124   # 292, u32 (Worlds)
 
+# MS meta lengths (libNOM.io PlatformMicrosoft.cs:22-25). Not the Steam ones in ``formats``:
+# the plaintext Microsoft meta has no header or hash area, so every era is shorter.
+MS_META_LEN_WAYPOINT = 0x118   # 280: names, difficulty as a single byte
+MS_META_LEN_WORLDS_I = 0x128   # 296: + u32 difficulty, playthrough id, save time, format
+MS_META_LEN_WORLDS_II = 0x168  # 360: + 64-byte difficulty tag
+
 
 def microsoft_root() -> Path | None:
     # The wgs store is a Windows package layout with no Linux or macOS equivalent, so this
@@ -308,6 +314,12 @@ def _ms_string(b: bytes, off: int, length: int = 128) -> str:
     return raw.decode("utf-8", errors="replace")
 
 
+def _has_save_time(meta_len: int) -> bool:
+    """Worlds-era layout (difficulty u32, playthrough id, save time, format): 296 or 360
+    bytes, and anything longer, which is taken to extend the 360-byte layout."""
+    return meta_len == MS_META_LEN_WORLDS_I or meta_len >= MS_META_LEN_WORLDS_II
+
+
 def parse_ms_meta(disk: bytes) -> dict:
     """Parse a Microsoft (plaintext) meta blob into the common field set."""
     L = len(disk)
@@ -326,28 +338,30 @@ def parse_ms_meta(disk: bytes) -> dict:
     }
     if out["season"] == 0xFFFF:
         out["season"] = 0
-    if L >= formats.META_LEN_WAYPOINT:  # 280+: names present
+    if L >= MS_META_LEN_WAYPOINT:
         out["name"] = _ms_string(disk, MS_OFF_NAME)
         out["summary"] = _ms_string(disk, MS_OFF_SUMMARY)
-    if L in (formats.META_LEN_WORLDS_I, formats.META_LEN_WORLDS_II):  # 296 / 360
+    if _has_save_time(L):
         out["difficulty"] = _u(disk, MS_OFF_DIFFICULTY, "<I", 4)
         out["slot_id"] = _u(disk, MS_OFF_SLOT_ID, "<Q", 8)
         out["timestamp"] = _u(disk, MS_OFF_TIMESTAMP, "<I", 4)
         out["meta_format"] = _u(disk, MS_OFF_META_FORMAT, "<I", 4)
-    elif L == formats.META_LEN_WAYPOINT:
-        out["difficulty"] = disk[MS_OFF_DIFFICULTY] if MS_OFF_DIFFICULTY < L else 0
+    elif L == MS_META_LEN_WAYPOINT:
+        out["difficulty"] = disk[MS_OFF_DIFFICULTY]
     return out
 
 
 def set_ms_meta_timestamp(meta_bytes: bytes, ts: int) -> bytes:
-    """Set the timestamp field of a Worlds-era MS meta blob (no-op for shorter metas that
-    don't carry one). Promote uses this so the meta and the containers.index FILETIME agree
-    on which save is newest, regardless of which the game keys off."""
-    if len(meta_bytes) >= formats.META_LEN_WORLDS_I and MS_OFF_TIMESTAMP + 4 <= len(meta_bytes):
-        b = bytearray(meta_bytes)
-        struct.pack_into("<I", b, MS_OFF_TIMESTAMP, int(ts) & 0xFFFFFFFF)
-        return bytes(b)
-    return meta_bytes
+    """Set the save time (u32 at 0x120) of a Worlds-era MS meta (296 or 360+ bytes).
+
+    Raises ``ValueError`` for any other length: such a meta has no known time field, and
+    handing the input back unchanged would let promote report a change it never made.
+    """
+    if not _has_save_time(len(meta_bytes)):
+        raise ValueError(f"an Xbox meta of {len(meta_bytes)} bytes has no save time to set")
+    b = bytearray(meta_bytes)
+    struct.pack_into("<I", b, MS_OFF_TIMESTAMP, int(ts) & 0xFFFFFFFF)
+    return bytes(b)
 
 
 def _data_decompressed_size(data: bytes, fallback: int) -> int:

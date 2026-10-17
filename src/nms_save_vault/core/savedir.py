@@ -80,12 +80,14 @@ class MemberView:
 
     @property
     def timestamp(self) -> int:
+        """The meta save time; 0 when the meta has none (e.g. a 280-byte Xbox meta)."""
         return self.info.timestamp if self.info else 0
 
     @property
     def effective_timestamp(self) -> int:
-        """Meta timestamp, falling back to file mtime when absent (e.g. Xbox saves store
-        the save time in containers.index rather than the meta)."""
+        """When this save was made: the meta save time, else the file time (Xbox: the
+        containers.index time). For showing, storing and comparing saves across slots and
+        folders; which member of one slot is newer is :meth:`SlotView.order_time`'s call."""
         return self.timestamp or int(self.data_mtime)
 
 
@@ -107,13 +109,29 @@ class SlotView:
     def occupied(self) -> bool:
         return bool(self.present_members)
 
+    def _candidates(self) -> list[MemberView]:
+        return [m for m in self.present_members if m.valid] or self.present_members
+
+    def order_time(self, m: MemberView) -> float:
+        """The time :attr:`newest` compares for ``m`` -- only for choosing the newer member of
+        this slot: the meta save time when every candidate has one, else the file time (Xbox:
+        the containers.index time) for both.
+
+        Never one clock against the other: the index time is the local write or sync time,
+        often hours or days after the save time, so mixing them picks the wrong member. To
+        show a member's time or compare saves across slots, use ``effective_timestamp``.
+        """
+        if all(c.timestamp for c in self._candidates()):
+            return m.timestamp or m.data_mtime   # only a non-candidate can lack one here
+        return m.data_mtime
+
     @property
     def newest(self) -> MemberView | None:
-        """The member the game treats as current: highest meta timestamp, then mtime."""
-        candidates = [m for m in self.present_members if m.valid] or self.present_members
+        """The member the game treats as current: the later :meth:`order_time`."""
+        candidates = self._candidates()
         if not candidates:
             return None
-        return max(candidates, key=lambda m: m.effective_timestamp)
+        return max(candidates, key=self.order_time)
 
     @property
     def display_name(self) -> str:

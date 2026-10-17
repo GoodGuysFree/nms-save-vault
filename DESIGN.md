@@ -116,9 +116,16 @@ Implemented in `core/msstore.py`, exposed via `savedir.scan_any()`.
   member B; `AccountData`/`Settings` are not slots.
 * **Data blob**: current saves (Worlds 5.0+) use the *same* `0xFEEDA1E5` stream as Steam
   (handled by `lz4_block`); older ones use a single LZ4 block or an `HGSAVEV2` chunk format.
-* **Meta blob**: plaintext (NOT XXTEA), MS-specific leading fields then SaveName/Summary as
-  **UTF-8** (offsets 0x14 / 0x94). No timestamp is stored in the meta — the save time comes
-  from the blob's `containers.index` entry (used as `data_mtime`).
+* **Meta blob**: plaintext (NOT XXTEA), 280 B (Waypoint), 296 B (Worlds I) or 360 B
+  (Worlds II) — not the Steam lengths. MS-specific leading fields, then SaveName/Summary as
+  **UTF-8** (offsets 0x14 / 0x94) and the difficulty at 0x114 (one byte at 280 B, u32 from
+  296 B). From 296 B: playthrough id (u64 0x118), save time (u32 0x120), meta format (u32
+  0x124); 360 B adds a 64-byte difficulty tag at 0x128. The `containers.index` FILETIME is
+  only the local write or sync time (used as `data_mtime`). Newest member: the later meta
+  save time when both have one, else the later FILETIME for both — never one clock against
+  the other; promote moves both clocks. Verified 2026-10-17 on a real install: all 30 metas
+  (22 of 360 B, 8 of 296 B) carry a non-zero id and time, and the id equals the save data's
+  own in all 28 saves whose data holds one.
 
 Verified read-only against a real Game Pass install (15 slots decoded with correct names,
 play times, summaries and dates) and a synthetic fixture in `tests/test_msstore.py`.
