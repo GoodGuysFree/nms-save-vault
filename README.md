@@ -215,6 +215,7 @@ installed to build it.
 uv venv
 uv pip install -e ".[dev]"
 uv run pytest
+uv run pytest -m slow      # the long ones: real-data read-only smoke, time budget
 ```
 
 ## Auto-configuration

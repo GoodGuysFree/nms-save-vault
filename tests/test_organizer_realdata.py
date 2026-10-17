@@ -51,6 +51,7 @@ def _real_setup():
     return root, sources
 
 
+@pytest.mark.slow
 def test_the_owners_vault_read_only(capsys):
     root, sources = _real_setup()
     watched = [root, *(Path(s.path) for s in sources), SAFETY_BACKUP]
@@ -136,6 +137,7 @@ def _big_vault(tmp_path, entries: int) -> tuple[Path, list[Source]]:
     return vault.root, [Source(id="s", platform="steam", account=live.name, path=str(live))]
 
 
+@pytest.mark.slow
 def test_two_thousand_versions_stay_within_the_time_budget(tmp_path):
     root, sources = _big_vault(tmp_path, entries=67)       # 67 x 30 + 15 live = 2,025
     org = Organizer(root, sources, read_only=True, game_running=lambda: False)
