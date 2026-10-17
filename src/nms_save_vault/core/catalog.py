@@ -7,13 +7,21 @@ per-slot summary (computed by scanning + decoding metas) so the UI is fast.
 from __future__ import annotations
 
 import json
+import logging
 import os
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-from . import formats, savedir, slotmap
+from . import formats, safety, savedir, slotmap
 from .savedir import SaveDirView
+
+log = logging.getLogger(__name__)
+
+# catalog.json is saved through a temp file named like this. One older than a few minutes is
+# a leftover of a save that was interrupted, never a save still in progress.
+CATALOG_TEMP_PREFIX = ".catalog.json.tmp_"
+STALE_TEMP_SECONDS = 5 * 60
 
 CATALOG_VERSION = 1
 
@@ -147,6 +155,30 @@ def _entry_from_dict(d: dict) -> CatalogEntry:
     )
 
 
+class OplogRead(list):
+    """The readable op-log records, oldest first, plus where the log is damaged. ``lines``
+    holds each record's line number, so damage can be placed relative to a record."""
+
+    def __init__(self, records=(), damaged_lines=(), tail_damaged: bool = False, lines=()):
+        super().__init__(records)
+        self.damaged_lines: list[int] = list(damaged_lines)
+        self.tail_damaged = tail_damaged
+        self.lines: list[int] = list(lines)
+
+    @property
+    def warning(self) -> str:
+        """One sentence for the user about damage, or '' when there is none."""
+        if not self.damaged_lines:
+            return ""
+        lines = ", ".join(str(n) for n in self.damaged_lines[:5])
+        if len(self.damaged_lines) > 5:
+            lines += f" and {len(self.damaged_lines) - 5} more"
+        return (
+            f"The undo log (oplog.jsonl) has damaged lines ({lines}); they were skipped, so "
+            "the operations they recorded cannot be undone."
+        )
+
+
 class Vault:
     """Managed storage root + catalog of all known backups."""
 
@@ -165,6 +197,7 @@ class Vault:
             d.mkdir(parents=True, exist_ok=True)
 
     def load(self) -> "Vault":
+        self._remove_stale_temp_files()
         if self.catalog_path.is_file():
             data = json.loads(self.catalog_path.read_text("utf-8"))
             self._entries = [_entry_from_dict(e) for e in data.get("entries", [])]
@@ -176,9 +209,24 @@ class Vault:
     def save(self) -> None:
         self.ensure()
         data = {"version": CATALOG_VERSION, "entries": [asdict(e) for e in self._entries]}
-        tmp = self.catalog_path.with_name(self.catalog_path.name + ".tmp")
-        tmp.write_text(json.dumps(data, indent=2), "utf-8")
-        os.replace(tmp, self.catalog_path)
+        # Temp file, fsync, os.replace: a crash leaves the old catalog or the new one, whole.
+        safety.atomic_write_bytes(
+            self.catalog_path, json.dumps(data, indent=2).encode("utf-8"), temp_prefix=CATALOG_TEMP_PREFIX
+        )
+
+    def _remove_stale_temp_files(self) -> None:
+        """Delete temp files an interrupted catalog save left behind (only those, and only
+        once they are too old to belong to a save in progress)."""
+        if not self.root.is_dir():
+            return
+        cutoff = datetime.now().timestamp() - STALE_TEMP_SECONDS
+        for tmp in self.root.glob(f"{CATALOG_TEMP_PREFIX}*.part"):
+            try:
+                if tmp.is_file() and tmp.stat().st_mtime < cutoff:
+                    tmp.unlink()
+                    log.warning("removed %s, left by an interrupted catalog save", tmp.name)
+            except OSError as exc:
+                log.warning("could not remove %s, left by an interrupted catalog save: %s", tmp.name, exc)
 
     @property
     def entries(self) -> list[CatalogEntry]:
@@ -230,19 +278,54 @@ class Vault:
         return f"{base}-{i}"
 
     def append_oplog(self, record: dict) -> None:
+        """Append one record as one complete line, fsynced, so a crash can lose the record
+        but never leave half a line in front of later ones. A line torn by an earlier crash
+        is never extended: the record starts on a fresh line. One handle checks the last
+        byte and writes, and every byte is written even if the OS takes them in pieces."""
         self.ensure()
-        with open(self.oplog_path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(record) + "\n")
+        data = (json.dumps(record) + "\n").encode("utf-8")
+        with open(self.oplog_path, "a+b", buffering=0) as f:
+            size = f.seek(0, os.SEEK_END)
+            if size:
+                f.seek(size - 1)
+                if f.read(1) != b"\n":
+                    data = b"\n" + data
+            pending = memoryview(data)
+            while pending:                 # appends go to the end whatever the position
+                pending = pending[f.write(pending):]
+            os.fsync(f.fileno())
 
-    def read_oplog(self) -> list[dict]:
+    def read_oplog(self) -> OplogRead:
+        """Every readable record, oldest first, and where the log is damaged. A line that is
+        not a record -- torn by a crash mid-write, invalid UTF-8, or otherwise damaged -- is
+        logged and skipped, never raised: one bad line must not make the whole history
+        unreadable. Whether the damage is the newest line is reported, because then the last
+        operation is unknown (undo must not act on an older one)."""
         if not self.oplog_path.is_file():
-            return []
-        out = []
-        for line in self.oplog_path.read_text("utf-8").splitlines():
-            line = line.strip()
-            if line:
-                out.append(json.loads(line))
-        return out
+            return OplogRead()
+        records: list[dict] = []
+        record_lines: list[int] = []
+        damaged: list[int] = []
+        last_line = 0
+        for number, raw in enumerate(self.oplog_path.read_bytes().split(b"\n"), start=1):
+            if not raw.strip():
+                continue
+            last_line = number
+            try:
+                record = json.loads(raw.decode("utf-8"))
+            except ValueError as exc:      # UnicodeDecodeError is a ValueError too
+                log.warning("skipped line %d of %s, not a valid record: %s", number, self.oplog_path.name, exc)
+                damaged.append(number)
+                continue
+            if not isinstance(record, dict):
+                log.warning("skipped line %d of %s, not a record object", number, self.oplog_path.name)
+                damaged.append(number)
+                continue
+            records.append(record)
+            record_lines.append(number)
+        return OplogRead(
+            records, damaged, tail_damaged=bool(damaged) and damaged[-1] == last_line, lines=record_lines
+        )
 
     def make_entry_from_dir(self, entry_id, kind, label, path, *, managed, source=None, slots=None, note="") -> CatalogEntry:
         """Scan ``path`` and build a catalog entry with a cached slot summary."""

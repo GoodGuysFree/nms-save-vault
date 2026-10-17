@@ -50,11 +50,12 @@ def sha256_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def atomic_write_bytes(path: str | Path, data: bytes) -> None:
-    """Write ``data`` to ``path`` atomically (temp file in same dir, fsync, os.replace)."""
+def atomic_write_bytes(path: str | Path, data: bytes, temp_prefix: str = ".tmp_") -> None:
+    """Write ``data`` to ``path`` atomically (temp file in same dir, fsync, os.replace). The
+    temp file is ``<temp_prefix><random>.part``, so a caller can recognise its own leftovers."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".tmp_", suffix=".part")
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=temp_prefix, suffix=".part")
     try:
         with os.fdopen(fd, "wb") as f:
             f.write(data)

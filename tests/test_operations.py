@@ -358,17 +358,34 @@ def test_failed_snapshot_leaves_no_orphan_folder_or_entry(tmp_path, monkeypatch)
     assert savedir.scan_any(kept.path).occupied_slots
 
 
+class _BlockedCatalog:
+    """Make the catalog write really fail: a folder stands where catalog.json is swapped in.
+    On exit the file is put back exactly as it was."""
+
+    def __init__(self, vault: Vault):
+        self.path = vault.catalog_path
+
+    def __enter__(self):
+        self.saved = self.path.read_bytes()
+        self.path.unlink()
+        self.path.mkdir()
+        (self.path / "keep").write_bytes(b"x")
+        return self
+
+    def __exit__(self, *exc):
+        shutil.rmtree(self.path)
+        self.path.write_bytes(self.saved)
+
+
 def test_a_snapshot_the_catalog_cannot_record_is_removed(tmp_path):
-    """The catalog write really fails (its staging file is blocked by a folder): the copied
-    snapshot goes, and the in-memory catalog does not keep an entry the file never got."""
+    """The catalog write really fails: the copied snapshot goes, and the in-memory catalog
+    does not keep an entry the file never got."""
     live = tmp_path / "live"
     steam_save(live, 1, 0, "Steam Run", 3600, 0x1234, 1_700_000_000)
     vault = Vault(tmp_path / "vault")
     kept = ops.snapshot_live(vault, live, reason="good")
-    blocker = vault.catalog_path.with_name(vault.catalog_path.name + ".tmp")
-    blocker.mkdir()
 
-    with pytest.raises(OSError):
+    with _BlockedCatalog(vault), pytest.raises(OSError):
         ops.snapshot_live(vault, live, reason="cannot be catalogued")
 
     assert [e.id for e in vault.entries] == [kept.id]
@@ -592,9 +609,8 @@ def test_a_catalog_removal_that_cannot_be_saved_is_not_half_done(tmp_path):
     steam_save(live, 1, 0, "Run", 3600, 0x1234, 1_700_000_000)
     vault = Vault(tmp_path / "vault")
     kept = ops.snapshot_live(vault, live, reason="x")
-    vault.catalog_path.with_name(vault.catalog_path.name + ".tmp").mkdir()
 
-    with pytest.raises(OSError):
+    with _BlockedCatalog(vault), pytest.raises(OSError):
         vault.remove(kept.id)
 
     assert [e.id for e in vault.entries] == [kept.id]
