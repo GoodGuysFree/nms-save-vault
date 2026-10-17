@@ -26,7 +26,8 @@ from typing import Any, Literal, Protocol, runtime_checkable
 from .. import aliases, formats
 from ..state import Source
 from .journal import JournalState, ObsRecord, OpRecord
-from .lineage import LineageState
+from .history import CrossLink, HistoryGraph, HNode, project
+from .lineage import LineageGraph, LineageState
 from .model import (
     EdgeKind,
     EdgeMethod,
@@ -57,7 +58,6 @@ CrossPlatform = Literal["n/a", "same", "steam-behind", "xbox-behind", "diverged"
 SLOT_OPS = ("place", "place_into_empty", "restore_older", "swap", "repopulate", "clear")
 RECENT_EVENT_SECONDS = 30 * 86400
 EXPEDITION_MODE = 6
-_TIER_RANK = {"owner": 3, "recorded": 2, "observed": 1}
 
 
 # --- the content index, as the read model sees it (D1 2.10, D4 2.6) -----------
@@ -244,7 +244,18 @@ class _Pair:
 class ReadModel:
     def __init__(self, lines: Mapping[Pid, Line], versions: Mapping[Pid, tuple[VersionRow, ...]],
                  board: LiveBoard, events: Mapping[Pid, tuple[LineEvent, ...]],
-                 tokens: Mapping[LiveRef, int], notes: NotesState) -> None:
+                 tokens: Mapping[LiveRef, int], notes: NotesState, *,
+                 trees: Mapping[Pid, tuple] | None = None, graph: LineageGraph | None = None,
+                 vid_pid: Mapping[Vid, Pid] | None = None,
+                 vid_raw: Mapping[Vid, Pid] | None = None,
+                 problems: tuple[str, ...] = (),
+                 line_problems: Mapping[Pid, tuple[str, ...]] | None = None) -> None:
+        self.problems = problems                    # the whole vault's, in plain words
+        self._line_problems = line_problems or {}
+        self._vid_raw = vid_raw or {}
+        self._trees = trees or {}
+        self.graph = graph
+        self._vid_pid = vid_pid or {}
         self._lines = lines
         self._versions = versions
         self._board = board
@@ -272,6 +283,27 @@ class ReadModel:
 
     def live_board(self) -> LiveBoard:
         return self._board
+
+    def line_of(self, vid: Vid) -> Pid | None:
+        """The save file a version (a head or a partner) belongs to."""
+        return self._vid_pid.get(vid)
+
+    def raw_pid_of(self, vid: Vid) -> Pid | None:
+        """The save file id the game wrote into a version, before the owner's Combines."""
+        return self._vid_raw.get(vid)
+
+    def history(self, pid: Pid, mode: Literal["default", "all", "key"] = "default"
+                ) -> HistoryGraph:
+        """The line's history as a tree (D1 2.10.4, 2.10.5): only what was recorded or
+        observed, lanes assigned; every other version listed by date. ``mode`` "default"
+        folds re-saves without play, "all" folds nothing, "key" keeps the key versions."""
+        nodes, links = self._trees.get(pid, ((), ()))
+        graph = project(pid, mode, self._versions.get(pid, ()), nodes, links)
+        return dataclasses.replace(graph, problems=self.problems_for(pid))
+
+    def problems_for(self, pid: Pid) -> tuple[str, ...]:
+        """The corrections left out and the conflicting evidence of one save file."""
+        return self._line_problems.get(pid, ())
 
     def events(self, pid: Pid) -> tuple[LineEvent, ...]:
         """Newest first."""
@@ -307,6 +339,8 @@ class _Builder:
         self.notes = notes
         self.sources = list(sources)
         self.now = now
+        self._effective: dict[Vid, Pid] | None = None
+        self.graph = LineageGraph.build(journal.edges, lineage)
         self.refs = live_refs(self.sources)
         self.tokens = {ref: i for i, ref in enumerate(self.refs)}
         per_platform = Counter(r.platform for r in self.refs)
@@ -329,8 +363,11 @@ class _Builder:
         return obs.pid if obs is not None else None
 
     def pid(self, vid: Vid) -> Pid | None:
-        raw = self.raw_pid(vid)
-        return self.lineage.canonical(raw) if raw is not None else None
+        """The save file ``vid`` belongs to: the owner's Combines and Splits applied."""
+        if self._effective is None:
+            known = {*self.scan.versions, *self.journal.metas}
+            self._effective = self.graph.effective_pids(sorted(known), self.raw_pid, self.lineage)
+        return self._effective.get(vid)
 
     def platform(self, vid: Vid) -> Platform:
         info = self.scan.versions.get(vid)
@@ -356,8 +393,16 @@ class _Builder:
         heads = {p.head for p in pairs.values()}
         children = Counter(parent.values())
         forks = {v for v, n in children.items() if n > 1}
-        candidates = heads | forks
+        in_pair = {v for p in pairs.values() for v in p.pair if v}
+        candidates = heads | (forks & in_pair)
         display = {h: self._display_parent(h, parent, candidates) for h in candidates}
+        # An edge that leaves its save file (a Split, an unrelated line) is a link, not a branch.
+        self.cross = {h: d for h, d in display.items()
+                      if d is not None and self.pid(d) is not None
+                      and self.pid(h) != self.pid(d)}
+        for h in self.cross:
+            display[h] = None
+        self.cross_involved = set(self.cross) | set(self.cross.values())
         display_children = Counter(p for p in display.values() if p is not None)
         slot_ops = [r for r in self.journal.records
                     if isinstance(r, OpRecord) and r.status == "done" and r.kind in SLOT_OPS]
@@ -388,7 +433,45 @@ class _Builder:
             lines[pid] = self._line(pid, rows[pid], live_by_pid.get(pid, []), display_children)
         board = self._board(live, lines)
         events = self._events(lines)
-        return ReadModel(lines, rows, board, events, self.tokens, self.notes)
+        trees = self._trees(rows, display, candidates)
+        by_pid, texts = self._problems(rows)
+        self.problems = tuple(texts)
+        return ReadModel(lines, rows, board, events, self.tokens, self.notes, trees=trees,
+                         problems=self.problems, line_problems=by_pid,
+                         graph=self.graph, vid_pid=dict(self._effective or {}),
+                         vid_raw={v: self.raw_pid(v) for v in (self._effective or {})
+                                  if self.raw_pid(v)})
+
+    def _trees(self, rows: Mapping[Pid, tuple[VersionRow, ...]],
+               display: Mapping[Vid, Vid | None], candidates: set[Vid]) -> dict[Pid, tuple]:
+        """Per save file, the inputs of its HistoryGraph: the tree nodes (heads that are in the
+        tree, and fork points that are no head, each in its own save file), and where edges
+        cross to another save file."""
+        by_vid = {v: r for line_rows in rows.values() for r in line_rows for v in r.pair if v}
+        nodes: dict[Pid, list[HNode]] = defaultdict(list)
+        for vid in sorted(candidates):
+            row = by_vid.get(vid)
+            pid = self.pid(vid)
+            if row is None or pid is None:
+                continue
+            if vid == row.head:
+                if not row.in_tree:
+                    continue
+                nodes[pid].append(HNode(vid, row.head, "version", display.get(vid),
+                                        self.edge_of.get(vid), self.order(vid),
+                                        self.platform(vid)))
+            else:
+                nodes[pid].append(HNode(vid, row.head, "fork-member", display.get(vid),
+                                        self.edge_of.get(vid), self.order(vid),
+                                        self.platform(vid), row))
+        links: dict[Pid, list[CrossLink]] = defaultdict(list)
+        for child, par in self.cross.items():
+            cp, pp = self.pid(child), self.pid(par)
+            links[cp].append(CrossLink(child, pp, par))
+            links[pp].append(CrossLink(par, cp, child))
+        return {pid: (tuple(nodes.get(pid, ())),
+                      tuple(sorted(links.get(pid, ()), key=lambda k: (k.vid, k.other_vid))))
+                for pid in {*nodes, *links, *rows}}
 
     def _pairs(self) -> dict[PairKey, _Pair]:
         """Every pair the app has seen: in this scan, or in the journal (gone or past)."""
@@ -419,14 +502,11 @@ class _Builder:
         return MemberObs(member, vid, info.raw_pid, info.pid_src, info.platform, info.meta)
 
     def _parents(self) -> dict[Vid, Vid]:
-        """One parent per version: the highest tier of evidence, the later within a tier."""
-        best: dict[Vid, tuple] = {}
-        for e in self.journal.edges:
-            rank = (_TIER_RANK.get(e.tier, 0), e.created)
-            if e.child not in best or rank > best[e.child][0]:
-                best[e.child] = (rank, e)
-        self.edge_of = {child: e for child, (_, e) in best.items()}
-        return {child: e.parent for child, (_, e) in best.items()}
+        """One parent per version (D1 2.7.1): the owner's word, else the highest tier of
+        evidence, the later within a tier."""
+        self.edge_of = dict(self.graph.edge_of)
+        self.parent_of = dict(self.graph.parent)
+        return dict(self.parent_of)
 
     def _view(self, vid: Vid) -> Any | None:
         return self.facts.view(vid) if self.facts is not None else None
@@ -437,6 +517,35 @@ class _Builder:
         if self.facts is None or row.parent is None:
             return False
         return self.facts.is_milestone(row.head, row.parent) is True
+
+    def _problems(self, rows) -> tuple[dict[Pid, tuple[str, ...]], list[str]]:
+        """Corrections that were left out and versions with conflicting evidence, in plain
+        words, by the save file they belong to."""
+        def stamp(unix) -> str:
+            return datetime.fromtimestamp(unix, timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+        def saved(pid, vid) -> str:
+            row = next((r for r in rows.get(pid, ()) if vid in r.pair), None)
+            return f"the version saved {stamp(row.saved_at)}" if row else "a version"
+
+        by_corr = {c.get("id"): c for c in self.lineage.corrections}
+        found: list[tuple[Pid | None, str]] = []
+        for cid, why in self.graph.dropped:
+            c = by_corr.get(cid, {})
+            child = c.get("child")
+            pid = self.pid(child) if isinstance(child, str) else None
+            when = f" of {stamp(c['at'])}" if type(c.get("at")) is int else ""
+            found.append((pid, f"your correction{when} for {saved(pid, child)} was left out: "
+                               f"{why}"))
+        for child, _ in self.graph.conflicts:
+            pid = self.pid(child)
+            found.append((pid, f"{saved(pid, child)} has conflicting evidence of where it "
+                               "comes from"))
+        by_pid: dict[Pid, list[str]] = {}
+        for pid, text in found:
+            if pid is not None:
+                by_pid.setdefault(pid, []).append(text)
+        return {k: tuple(v) for k, v in by_pid.items()}, [t for _, t in found]
 
     @staticmethod
     def _display_parent(vid: Vid, parent: Mapping[Vid, Vid], candidates: set[Vid]) -> Vid | None:
@@ -478,7 +587,8 @@ class _Builder:
         if any(lp.partner == p.head for lp in live.values()):
             flags.add("live-partner")
         n_children = display_children.get(p.head, 0)
-        in_tree = parent_vid is not None or n_children > 0 or p.head in marked
+        in_tree = (parent_vid is not None or n_children > 0 or p.head in marked
+                   or p.head in self.cross_involved)
         if in_tree and n_children == 0:
             flags.add("tip")
         if n_children > 1 or p.head in forks:
@@ -645,7 +755,7 @@ class _Builder:
         raw_pids = sorted({self.raw_pid(v) for v in vids if self.raw_pid(v)})
         return Line(
             pid=pid, raw_pids=tuple(raw_pids), identified=is_identified(pid),
-            name=names[0] if names else "", former_names=tuple(names[1:]),
+            name=self._line_name(pid, names), former_names=tuple(self._former(pid, names)),
             difficulty=formats.difficulty_label(rep_meta.difficulty, rep_meta.game_mode)
             if rep_meta else "",
             mode=_mode(rep_meta),
@@ -659,6 +769,18 @@ class _Builder:
             pinned=bool(note and note.pinned), locked_count=locked_count,
             flags=frozenset(flags), representative=rep, facts=self._view(rep),
         )
+
+    def _line_name(self, pid: Pid, names: list[str]) -> str:
+        """A split line has the name the owner gave it, else the original's name and its number."""
+        if not pid.startswith("split:"):
+            return names[0] if names else ""
+        given = self.lineage.split_names().get(pid)
+        return given or f"{names[0] if names else 'Save'} (split {pid.rpartition(':')[2]})"
+
+    def _former(self, pid: Pid, names: list[str]) -> list[str]:
+        if pid.startswith("split:") and self.lineage.split_names().get(pid):
+            return names
+        return names[1:]
 
     def _badge_order(self, target: LiveTarget) -> tuple:
         return (_platform_order(target.platform), self.tokens.get(target.ref, 99), target.slot)
@@ -894,6 +1016,10 @@ def resolve_save(model: ReadModel, ref: str) -> Pid:
             raise RefError(f"live slot {slot.label} holds no save")
         return slot.pid
     lines = model.lines()
+    if ref.lower().startswith("split:"):
+        found = [line for line in lines if line.pid.lower().startswith(ref.lower())]
+        if found:
+            return _one(found, ref, _describe_line).pid
     if _HEX.fullmatch(ref) and len(ref) >= 6:
         found = [line for line in lines
                  if any(p.upper().startswith(ref.upper()) for p in (line.pid, *line.raw_pids))]

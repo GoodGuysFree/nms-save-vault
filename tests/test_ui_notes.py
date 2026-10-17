@@ -192,3 +192,69 @@ def test_closing_the_main_window_asks_about_an_unsaved_note(gui_app, world, wind
         assert holder.confirm_close() is True             # Discard: the close goes on
     finally:
         gui_app.__dict__["organizer_view"] = real
+
+
+# --- the note snapshot diff (D6 U26) --------------------------------------------------------
+
+
+def _third_version(world):
+    """The note changes, then the game saves again: the new version was captured with
+    revision 2 of the note, its parent (seen in the live slot) with revision 1."""
+    from nms_save_vault.core.organizer.history import HistoryGraph  # noqa: F401
+
+    from .conftest import steam_save
+    from .organizer_world import MAIN, T0
+
+    notes = world.organizer.notes
+    cur = notes.save_note(PIDS["main"])
+    notes.set_save_note(PIDS["main"], "Main run.\nNext: the Atlas path.", base_rev=cur.rev)
+    steam_save(world.steam, 9, 0, "Main Save", 8400, MAIN, T0 + 1200, extra="main-3")
+    world.organizer.clock = lambda: T0 + 9000
+    world.organizer.refresh(record=True)
+    cur = notes.save_note(PIDS["main"])
+    notes.set_save_note(PIDS["main"], "Main run.\nNext: the Atlas path, then Vesper.",
+                        base_rev=cur.rev)
+    steam_save(world.steam, 9, 0, "Main Save", 9000, MAIN, T0 + 1800, extra="main-4")
+    world.organizer.clock = lambda: T0 + 9600
+    world.organizer.refresh(record=True)
+    return world.refresh()
+
+
+def test_the_note_snapshot_is_diffed_word_by_word_against_the_parent(world):
+    model = _third_version(world)
+    rows = model.versions(PIDS["main"])
+    newest = rows[0]
+    assert newest.parent is not None and newest.note_rev is not None
+    diff = N.note_diff(world.organizer.notes, model, PIDS["main"], newest.head)
+    assert ("then Vesper.", "add") in [(t.strip() if False else t, g) for t, g in diff] or \
+        any(g == "add" and "Vesper" in t for t, g in diff)
+    assert any(g == "del" and "path." in t for t, g in diff)
+    assert "".join(t for t, g in diff if g != "del") == (
+        "Main run.\nNext: the Atlas path, then Vesper.")
+
+
+def test_a_version_from_before_the_organizer_has_no_snapshot(world):
+    model = world.model
+    oldest = model.versions(PIDS["old"])[-1]
+    assert oldest.note_rev is None
+    assert N.note_diff(world.organizer.notes, model, PIDS["old"], oldest.head) == [
+        (N.NO_SNAPSHOT, "note")]
+
+
+def test_the_window_shows_the_diff_with_green_and_struck_red_text(world, gui_app):
+    model = _third_version(world)
+    win = N.NotesWindow(gui_app, notes=world.organizer.notes, model=model,
+                        worker=gui_app.worker, themed=gui_app.themed, pid=PIDS["main"])
+    win.withdraw()
+    try:
+        _wait(gui_app, lambda: win.snapshot.get("1.0", "end-1c"))
+        text = win.snapshot.get("1.0", "end-1c")
+        assert "Vesper" in text
+        assert win.snapshot.tag_ranges("add") and win.snapshot.tag_ranges("del")
+        assert str(win.snapshot.tag_cget("del", "overstrike")) in ("1", "true")
+        oldest = model.versions(PIDS["main"])[-1]
+        assert oldest.note_rev is None
+        win.pick_version(oldest.head)
+        _wait(gui_app, lambda: N.NO_SNAPSHOT in win.snapshot.get("1.0", "end"))
+    finally:
+        win.destroy()

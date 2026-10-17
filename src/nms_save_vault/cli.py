@@ -32,6 +32,10 @@ Examples:
     nmsvault note "Main Save" --set "Next: Atlas path"
     nmsvault note S9 --label "before the Atlas" --lock
     nmsvault pin S9 [--off]
+    nmsvault history "Main Save" [--key | --all] [--json]   # the recorded tree, in lanes
+    nmsvault lineage comes-from <version> <parent> | --none  # your word over the record
+    nmsvault lineage unrelated <version> <version>
+    nmsvault lineage combine <save> <into-save> | split <version> [--name N]
     nmsvault scan                             # record what the live slots hold now
     nmsvault organizer bootstrap [--dry-run]  # read in the history of an existing vault
     nmsvault index status | build | show <version> | changes <version>
@@ -51,6 +55,8 @@ from .core import playtime, savedir, slotmap
 from .core import state as appstate
 from .core.catalog import Vault
 from .core.organizer import Organizer
+from .core.organizer.history import format_history
+from .core.organizer.lineage import Corrections
 from .core.organizer.notes import NoteConflict
 from .core.organizer.readmodel import (
     SORT_KEYS,
@@ -695,6 +701,103 @@ def cmd_pin(args) -> int:
     return 0
 
 
+def cmd_history(args) -> int:
+    _, model = _model(args)
+    pid = _resolve(resolve_save, model, args.save)
+    mode = "key" if args.key else ("all" if args.all else "default")
+    graph = model.history(pid, mode)
+    if args.json:
+        _print_json(model.to_dict(graph))
+        return 0
+    line = model.line(pid)
+    live: dict[str, list[str]] = {}
+    for badge in line.live:
+        live.setdefault(badge.head, []).append(badge.label)
+    behind = {tip.head: tip.behind_by for tip in line.platform_tips if tip.behind_by}
+    for text in format_history(graph, line.name, live=live, behind=behind):
+        print(text)
+    for problem in graph.problems:
+        print(f"note: {problem}")
+    return 0
+
+
+def _vid_of(model, ref: str) -> str:
+    """A version id for ``ref``: the head of the version it names, or the partner when the
+    reference is that member's own id (a fork point can be one)."""
+    row = _resolve(resolve_version, model, ref)
+    prefix = ref.strip().lower()
+    if row.partner and row.partner.startswith(prefix) and not row.head.startswith(prefix):
+        return row.partner
+    return row.head
+
+
+def cmd_lineage(args) -> int:
+    org, model = _model(args, writable=True)
+    cor = Corrections(org.store, org.clock)
+    action = args.lineage_command
+    try:
+        if action in ("set-parent", "comes-from"):
+            child = _vid_of(model, args.version)
+            if args.parent is None and not args.none:
+                _die("error: give the version it comes from, or --none if it comes from nothing")
+            parent = None if args.none else _vid_of(model, args.parent)
+            cor.set_parent(child, parent, note=args.note or "", graph=model.graph,
+                           line_of=model.line_of)
+            print(f"{child[:8]}: " + ("no known parent" if parent is None
+                                     else f"comes from {parent[:8]}"))
+        elif action == "unrelated":
+            a, b = _vid_of(model, args.version), _vid_of(model, args.other)
+            cor.mark_unrelated(a, b, note=args.note or "")
+            print(f"{a[:8]} and {b[:8]}: no longer linked (any link you drew between them "
+                  "is taken back)")
+        elif action == "list":
+            for c in cor.state().corrections:
+                what = (f"{c.get('child', '')[:8]} comes from "
+                        f"{(c.get('parent') or 'nothing')[:8]}" if c.get("kind") == "set_parent"
+                        else f"{c.get('a', '')[:8]} and {c.get('b', '')[:8]} are not related")
+                print(f"{c.get('id')}  {what}")
+        elif action == "undo":
+            ids = [c["id"] for c in cor.state().corrections
+                   if isinstance(c.get("id"), str) and c["id"].startswith(args.correction)]
+            if len(ids) != 1:
+                _die(f"error: {len(ids)} corrections start with {args.correction!r} "
+                     "(see: lineage list)")
+            cor.remove_correction(ids[0])
+            print(f"Correction {ids[0]} undone.")
+        elif action == "combine":
+            pid = _resolve(resolve_save, model, args.save)
+            into = _resolve(resolve_save, model, args.into)
+            cor.combine([pid], into, names={pid: model.line(pid).name})
+            print(f"{model.line(pid).name} is now part of {model.line(into).name}")
+        elif action == "uncombine":
+            joined = [a["pid"] for a in cor.state().aliases if isinstance(a.get("pid"), str)]
+            ref = args.save.strip().upper()
+            found = [p for p in joined if len(ref) >= 6 and p.upper().startswith(ref)]
+            if not found:       # or the combined save file: undo the one joined to it
+                line = model.line(_resolve(resolve_save, model, args.save))
+                found = [p for p in line.raw_pids if p in joined]
+            if len(found) != 1:
+                _die("error: name the save file to separate by the start of its id "
+                     "(6+ hex digits) - " + (f"{len(found)} are joined here"
+                                              if found else "none was combined"))
+            cor.uncombine(found[0])
+            print(f"{found[0][:8]} is a save file of its own again")
+        elif action == "split":
+            vid = _vid_of(model, args.version)
+            pid = model.line_of(vid)
+            branch = sorted({v for r in model.versions(pid) for v in r.pair
+                             if v and model.graph.descends_from(v, vid)})
+            new = cor.split(model.raw_pid_of(vid), branch, args.name or "")
+            print(f"{len(branch)} version(s) are now the save file {new}")
+        elif action == "unsplit":
+            pid = _resolve(resolve_save, model, args.save)
+            cor.unsplit(pid)
+            print("The split is undone.")
+    except (StoreBusy, StoreReadOnly, ValueError) as exc:
+        _die(f"error: {exc}")
+    return 0
+
+
 def cmd_scan(args) -> int:
     org = _organizer(args, writable=True)
     try:
@@ -866,6 +969,44 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("save")
     s.add_argument("--off", action="store_true")
     s.set_defaults(func=cmd_pin)
+
+    s = sub.add_parser("history", help="the recorded history of a save file, as a tree")
+    s.add_argument("save")
+    group = s.add_mutually_exclusive_group()
+    group.add_argument("--key", action="store_true", help="only the key versions")
+    group.add_argument("--all", action="store_true", help="fold nothing")
+    s.add_argument("--json", action="store_true")
+    s.add_argument("--no-cache", action="store_true")
+    s.set_defaults(func=cmd_history)
+
+    s = sub.add_parser("lineage", help="correct the history: what comes from what, and which "
+                                       "save files are one")
+    lin = s.add_subparsers(dest="lineage_command", required=True)
+    for name in ("set-parent", "comes-from"):
+        c = lin.add_parser(name, help="say which version a version comes from")
+        c.add_argument("version")
+        c.add_argument("parent", nargs="?")
+        c.add_argument("--none", "--root", dest="none", action="store_true",
+                       help="it comes from nothing known")
+        c.add_argument("--note")
+    c = lin.add_parser("unrelated", help="two versions are not related; drop any link")
+    c.add_argument("version")
+    c.add_argument("other")
+    c.add_argument("--note")
+    lin.add_parser("list", help="the corrections you have made")
+    c = lin.add_parser("undo", help="take back one correction (an id, or its start)")
+    c.add_argument("correction")
+    c = lin.add_parser("combine", help="make a save file part of another")
+    c.add_argument("save")
+    c.add_argument("into")
+    c = lin.add_parser("uncombine", help="undo a combine")
+    c.add_argument("save")
+    c = lin.add_parser("split", help="split a version and what came after it into a new save file")
+    c.add_argument("version")
+    c.add_argument("--name")
+    c = lin.add_parser("unsplit", help="undo a split")
+    c.add_argument("save")
+    s.set_defaults(func=cmd_lineage)
 
     s = sub.add_parser("scan", help="record what the live slots hold now")
     s.set_defaults(func=cmd_scan)

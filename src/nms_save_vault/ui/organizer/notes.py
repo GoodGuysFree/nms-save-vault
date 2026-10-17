@@ -6,11 +6,14 @@ through the UI worker (they take the organizer store's lock) and are checked aga
 revision the editor started from: when another window or the CLI saved meanwhile, both
 texts are shown and the owner keeps theirs or takes the other (``NoteConflict``).
 
-Notes are kept in the vault (``organizer/notes.json``), never in the save files. The note
-snapshot diff and the automatic "what changed" arrive with phases 4 and 3.
+Notes are kept in the vault (``organizer/notes.json``), never in the save files. For each
+version the note as it read when the version was captured is shown, diffed word by word
+against its parent's snapshot (U26); the automatic "what changed" arrives with the index.
 """
 from __future__ import annotations
 
+import difflib
+import re
 import tkinter as tk
 from collections.abc import Callable
 from tkinter import messagebox, ttk
@@ -20,7 +23,7 @@ from ...core.organizer.notes import COMMENT_MAX, LABEL_MAX, NoteConflict, Notes
 from ...core.organizer.readmodel import ReadModel, VersionRow
 from ..dpi import fit_to_content, px, pxs
 from ..fmt import local_time, play_time
-from ..redact import RedactingTreeview, needs_latin1, rtitle, set_label, shown
+from ..redact import RedactingTreeview, needs_latin1, rtext, rtitle, set_label, shown
 from ..themeaware import ThemeRegistry
 from ..worker import UiWorker
 from .words import line_name, slot_words, version_numbers
@@ -39,6 +42,47 @@ def cannot_show(widget: tk.Misc, text: str) -> bool:
     return needs_latin1(widget) and any(ord(ch) > 255 for ch in text)
 
 
+NO_SNAPSHOT = "no note snapshot - this version predates the organizer"
+NO_PARENT_SNAPSHOT = ("no recorded parent with a note snapshot - the note is shown as it was, "
+                      "nothing to compare with")
+
+
+def note_diff(notes: Notes, model: ReadModel, pid: str, head: str) -> list[tuple[str, str]]:
+    """The save-file note as it read when version ``head`` was captured, diffed word by word
+    against the drawn parent's snapshot: ``(text, tag)`` pieces, tag "add" (added), "del"
+    (removed) or "" (unchanged). One piece with tag "note" is a message instead."""
+    row = next((r for r in model.versions(pid) if r.head == head), None)
+    if row is None or row.note_rev is None:
+        return [(NO_SNAPSHOT, "note")]
+    # ``note_rev`` is a revision of the raw save file's note (the id the game wrote), which is
+    # not the line's id after a Combine or a Split.
+    text = notes.note_text_at(model.raw_pid_of(head) or pid, row.note_rev)
+    if text is None:
+        return [(NO_SNAPSHOT, "note")]
+    parent = None
+    if row.parent:
+        parent = next((r for r in model.versions(pid) if r.head == row.parent), None)
+    before = None
+    if parent is not None and parent.note_rev is not None:
+        before = notes.note_text_at(model.raw_pid_of(parent.head) or pid, parent.note_rev)
+    if before is None:
+        out = [(NO_PARENT_SNAPSHOT, "note")]
+        return out + [("\n" + text, "")] if text else out
+    a, b = re.findall(r"\s+|\S+", before), re.findall(r"\s+|\S+", text)
+    out: list[tuple[str, str]] = []
+    for op, i0, i1, j0, j1 in difflib.SequenceMatcher(None, a, b, autojunk=False).get_opcodes():
+        if op == "equal":
+            out.append(("".join(b[j0:j1]), ""))
+            continue
+        if i1 > i0:
+            out.append(("".join(a[i0:i1]), "del"))
+        if j1 > j0:
+            out.append(("".join(b[j0:j1]), "add"))
+    if not any(tag for _, tag in out):
+        out.append(("\n(the note did not change since its parent)", "note"))
+    return out
+
+
 def toggle_pin(worker: UiWorker, notes: Notes, pid: str, pinned: bool,
                on_done: Callable[[], None],
                on_error: Callable[[BaseException], None]) -> None:
@@ -55,6 +99,7 @@ class NotesWindow(tk.Toplevel):
         self.notes = notes
         self.model = model
         self.worker = worker
+        self._snap_seq = 0
         self.on_saved = on_saved
         self.pid = pid
         self.head: str | None = None
@@ -172,8 +217,14 @@ class NotesWindow(tk.Toplevel):
         self.version_status = ttk.Label(this, text="", style="Muted.TLabel")
         self.version_status.pack(anchor="w", pady=pxs(4, 0))
 
+        snap = ttk.Labelframe(right, text="Save-file note when this version was captured",
+                              padding=px(8))
+        snap.pack(fill=tk.BOTH, expand=True, pady=pxs(8, 0))
+        self.snapshot = tk.Text(snap, wrap="word", height=6, relief="flat", padx=px(6),
+                                pady=px(4), cursor="arrow", state="disabled")
+        self.snapshot.pack(fill=tk.BOTH, expand=True)
         kept = ttk.Labelframe(right, text="Where notes are kept", padding=px(8))
-        kept.pack(fill=tk.BOTH, expand=True, pady=pxs(8, 0))
+        kept.pack(fill=tk.X, pady=pxs(8, 0))
         ttk.Label(kept, text=WHERE_KEPT, wraplength=px(420), justify="left").pack(anchor="nw")
 
     def apply_palette(self, p) -> None:
@@ -181,7 +232,13 @@ class NotesWindow(tk.Toplevel):
             text.configure(background=p["field"], foreground=p["fg"], insertbackground=p["fg"],
                            selectbackground=p["sel_bg"], selectforeground=p["sel_fg"])
         self.versions.tag_configure("plain", font=theme.ITALIC_FONT, foreground=p["muted"])
+        self.snapshot.configure(background=p["field"], foreground=p["fg"],
+                                selectbackground=p["sel_bg"], selectforeground=p["sel_fg"])
+        self.snapshot.tag_configure("add", background=p["diff_add"])
+        self.snapshot.tag_configure("del", background=p["diff_del"], overstrike=True)
+        self.snapshot.tag_configure("note", font=theme.ITALIC_FONT, foreground=p["muted"])
         self._count()
+        self._show_snapshot()
 
     # --- what is shown -----------------------------------------------------------------------
 
@@ -204,13 +261,36 @@ class NotesWindow(tk.Toplevel):
         return True
 
     def set_model(self, model: ReadModel) -> None:
-        """A newer read model: the lists follow; text being edited stays."""
+        """A newer read model: the lists follow; text being edited stays. When a Combine
+        took this save file away, the window follows it to the save file it joined."""
         self.model = model
+        if model.line(self.pid) is None:
+            self._follow_combine()
+            return
         if not self.dirty():
             self._load_note()
         self._fill_versions()
         if self.head is not None:
             self._show_version_heading()
+
+    def _follow_combine(self) -> None:
+        """The shown save file is gone (combined into another): show that one. Unsaved text
+        is kept - added at the end of the other note - and never saved under the gone id."""
+        target = next((line.pid for line in self.model.lines() if self.pid in line.raw_pids),
+                      None)
+        if target is None:
+            self.destroy()
+            return
+        typed = self.editor.get("1.0", "end-1c") if self.dirty() else ""
+        head = self.head
+        self.pid = target
+        self.show(target, head if head in {r.head for r in self.model.versions(target)} else None)
+        if typed:
+            self.editor.configure(state="normal")
+            gap = "\n\n" if self.editor.get("1.0", "end-1c") else ""
+            self.editor.insert("end", gap + typed)
+            set_label(self.status, "This save file was combined into another; your unsaved text "
+                                   "was added at the end - Save note to keep it.")
 
     def dirty(self) -> bool:
         return self.editor.get("1.0", "end-1c") != self.loaded_text
@@ -344,7 +424,33 @@ class NotesWindow(tk.Toplevel):
             self.versions.see(head)
         self._show_version_heading()
 
+    def _show_snapshot(self) -> None:
+        """The note as it was when the shown version was captured, diffed against its
+        parent's (U26); the diff is made in the worker."""
+        self._snap_seq += 1
+        seq = self._snap_seq
+        self._write_snapshot([])
+        if self.head is None:
+            return
+        self.worker.submit(note_diff, self.notes, self.model, self.pid, self.head,
+                           on_done=lambda pieces: self._snapshot_ready(seq, pieces),
+                           on_error=lambda e: self._snapshot_ready(
+                               seq, [(f"The note snapshot could not be read: {e}", "note")]))
+
+    def _snapshot_ready(self, seq: int, pieces: list) -> None:
+        if seq == self._snap_seq and self.winfo_exists():
+            self._write_snapshot(pieces)
+
+    def _write_snapshot(self, pieces: list) -> None:
+        t = self.snapshot
+        t.configure(state="normal")
+        t.delete("1.0", "end")
+        for text, tag in pieces:
+            rtext(t, "end", text, *((tag,) if tag else ()))
+        t.configure(state="disabled")
+
     def _show_version_heading(self) -> None:
+        self._show_snapshot()
         row = self._rows.get(self.head) if self.head is not None else None
         if row is None:
             set_label(self.version_title, "(no version)")

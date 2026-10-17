@@ -275,10 +275,12 @@ class DetailPane(ttk.Frame):
                  on_notes: Callable[[str, str | None], None] | None = None,
                  on_pin: Callable[[str, bool], None] | None = None,
                  on_move: Callable[[str, str | None], None] | None = None,
-                 on_deep: Callable[[str], None] | None = None) -> None:
+                 on_deep: Callable[[str], None] | None = None,
+                 on_history: Callable[[str, str | None], None] | None = None) -> None:
         super().__init__(master)
         self.on_move = on_move
         self.on_deep = on_deep
+        self.on_history = on_history
         self.facts_head: str | None = None
         self.on_link = on_link
         self.on_notes = on_notes
@@ -296,6 +298,7 @@ class DetailPane(ttk.Frame):
         self.notes_button = ttk.Button(self.actions, text="Notes...", command=self._notes)
         self.pin_button = ttk.Button(self.actions, text="Pin", command=self._pin)
         self.move_button = ttk.Button(self.actions, text="Move to live...", command=self._move)
+        self.history_button = ttk.Button(self.actions, text="History...", command=self._history)
         self.pages = ttk.Notebook(self)
         self.pages.pack(fill=tk.BOTH, expand=True)
         self.summary_text = self._page("Summary")
@@ -396,10 +399,12 @@ class DetailPane(ttk.Frame):
         self.pages.select(0)
 
     def _buttons(self, *, line: bool, notes: bool = False) -> None:
-        for button in (self.notes_button, self.pin_button, self.move_button):
+        for button in (self.notes_button, self.pin_button, self.move_button,
+                       self.history_button):
             button.pack_forget()
         if line or notes:
             self.move_button.pack(side=tk.LEFT, padx=pxs(0, 6))
+            self.history_button.pack(side=tk.LEFT, padx=pxs(0, 6))
             self.notes_button.pack(side=tk.LEFT)
             self.edit_button.state(["!disabled"])
         else:
@@ -451,6 +456,10 @@ class DetailPane(ttk.Frame):
     def _move(self) -> None:
         if self.on_move is not None and self.pid is not None:
             self.on_move(self.pid, self.head)
+
+    def _history(self) -> None:
+        if self.on_history is not None and self.pid is not None:
+            self.on_history(self.pid, self.head)
 
     def _pin(self) -> None:
         if self.on_pin is not None and self.pid is not None:
