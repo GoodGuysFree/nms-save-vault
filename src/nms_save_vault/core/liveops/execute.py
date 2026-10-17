@@ -752,13 +752,17 @@ def outcome_text(plan: PlacePlan, wts: list[OpTarget]) -> str:
         return f"{label} holds this version of '{name}' now. The one it replaced is in the vault."
     if plan.kind == "swap":
         return f"Swapped {label} and {wts[1].rt.label}."
+    if plan.kind == "undo":
+        if len(wts) == 2:
+            return f"Swapped {label} and {wts[1].rt.label} back."
+        return f"Put '{name}' back into {label}."
     text = f"Moved '{name}' into {label}."
     return text + (f" '{evicted}' is in the vault." if evicted else "")
 
 
 def undo_offer(plan: PlacePlan, wts: list[OpTarget], op_id: str) -> UndoOffer | None:
     wt = wts[0]
-    if plan.kind == "swap":
+    if plan.kind == "swap" or len(wts) == 2:
         return UndoOffer(op_id, f"Undo: swap {wt.rt.label} and {wts[1].rt.label} back")
     if not wt.before.present:
         return None                       # undoing a fill would empty the slot (F8)

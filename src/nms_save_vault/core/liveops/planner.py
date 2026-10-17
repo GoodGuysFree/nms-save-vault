@@ -108,6 +108,15 @@ TEXTS = {
                            "one is used."),
     "SWAP_EMPTY_SIDE": ("block", "{slot} is empty, and the app never empties a slot. Use Move "
                         "to live to put a save into it."),
+    "UNDO_UNAVAILABLE": ("block", "That move cannot be undone: it did not finish, or its record "
+                         "is incomplete."),
+    "UNDO_WOULD_EMPTY": ("block", "Undoing this would empty {slot}. The app never empties a "
+                         "slot; see the steps to do it yourself."),
+    "ALREADY_UNDONE": ("block", "{slot} already holds '{name}' again."),
+    "UNDO_STALE": ("block", "{slot} has changed since (it now holds '{name}'). Use Move to "
+                   "live to put '{was}' where you want it."),
+    "PLAYED_SINCE": ("confirm", "You played {played} in {slot} since the move. That progress "
+                     "stays in the vault as the newest version of '{name}'."),
     "NOTHING_TO_KEEP": ("block", "{slot} is empty: there is nothing to keep."),
     "EMPTY_SLOT_MAY_REFILL": ("info", "{refill}"),
 }
