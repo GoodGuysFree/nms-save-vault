@@ -1019,7 +1019,33 @@ def build_parser() -> argparse.ArgumentParser:
 
     from . import index_cli
     index_cli.add_arguments(sub.add_parser("index", help="the content index: facts read from every save version"))
+    sub.add_parser(
+        "selftest", help="read-only: does this app still understand every live save and vault "
+                         "version? (counts only; exit 1 means an app update is needed)"
+    ).set_defaults(func=cmd_selftest)
     return p
+
+
+def cmd_selftest(args) -> int:
+    """Decode every live save and vault version in memory and report counts (no ids, no names,
+    nothing written anywhere)."""
+    from .core import locations
+    from .core import selftest
+    from .core import state as appstate
+    from .core.index import vaultlink
+
+    state = appstate.load()
+    vault = Path(args.vault) if args.vault else (
+        Path(state.vault) if (state and state.vault) else locations.default_vault_dir())
+    if args.live:
+        sources = [vaultlink.Source(id="live", platform=savedir.platform_of(args.live) or "steam",
+                                    account="", path=args.live)]
+    else:
+        sources = vaultlink.default_sources()
+    report = selftest.run(vault, sources)
+    for line in report.lines():
+        print(line)
+    return report.exit_code
 
 
 def main(argv=None) -> int:
