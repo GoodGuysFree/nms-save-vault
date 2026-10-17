@@ -1105,12 +1105,18 @@ def apply_pair(plan: XboxPairPlan, payload: Mapping[str, tuple[bytes, bytes]],
     removed and nothing references them. ``faults``: the tests' crash points."""
     folder = plan.folder
     index = folder / "containers.index"
+    for b in plan.blobs:                     # the checks that must not remove anything
+        data, meta_bytes = payload[b.identifier]
+        if (hashlib.sha256(data).hexdigest(), hashlib.sha256(meta_bytes).hexdigest()) != (
+                b.data_sha256, b.meta_sha256):
+            raise ValueError(f"the bytes for {b.identifier} are not the planned ones")
+        taken = [n for n, _ok in _blob_files(plan, b) if (folder / b.dir_name / n).exists()
+                 and not _is_ours(folder / b.dir_name, b, n)]
+        if taken:                            # the Xbox app wrote there since the plan
+            raise IndexChanged(f"{b.dir_name}/{taken[0]} appeared since the write was planned")
     try:
         for b in plan.blobs:
             data, meta_bytes = payload[b.identifier]
-            if (hashlib.sha256(data).hexdigest(), hashlib.sha256(meta_bytes).hexdigest()) != (
-                    b.data_sha256, b.meta_sha256):
-                raise ValueError(f"the bytes for {b.identifier} are not the planned ones")
             d = folder / b.dir_name
             if b.dir_name in plan.new_dirs and not d.is_dir():
                 d.mkdir()
@@ -1241,10 +1247,31 @@ def _index_state(plan: XboxPairPlan, raw: bytes) -> tuple[str, bytes | None]:
         elif plan.pre_records_raw[ident] is not None:
             out.append((ident, plan.pre_records_raw[ident]))
     restored = join_index(plan.pre_header_raw, out, trailer)
-    if (hashlib.sha256(restored).hexdigest() != plan.pre_index_sha256
-            or _post_index(plan, restored) != raw):
+    if hashlib.sha256(restored).hexdigest() != plan.pre_index_sha256:
+        return "other", None
+    expected = _post_index(plan, restored)
+    if expected != raw and _ignoring_sync(plan, expected) != _ignoring_sync(plan, raw):
         return "other", None
     return "post", restored
+
+
+def _ignoring_sync(plan: XboxPairPlan, raw: bytes) -> bytes:
+    """``raw`` with the sync state of the index and of the op's own records fixed: the Xbox
+    app moving them from Modified to Synced (an upload) does not change what was written
+    (the record identity, the blobs, the times)."""
+    header, records, trailer = split_index(raw)
+    own = {b.identifier for b in plan.blobs}
+    out = []
+    for ident, rec in records:
+        if ident in own:
+            buf = bytearray(rec)
+            struct.pack_into("<i", buf, len(rec) - RECORD_TAIL_LENGTH + 1, BLOB_SYNC_MODIFIED)
+            rec = bytes(buf)
+        out.append((ident, rec))
+    off = 4 + 2 * struct.unpack_from("<i", header, 0)[0]
+    head = bytearray(header)
+    struct.pack_into("<i", head, off + 8, INDEX_SYNC_MODIFIED)
+    return join_index(bytes(head), out, trailer)
 
 
 def _post_index(plan: XboxPairPlan, pre_raw: bytes) -> bytes:
@@ -1328,9 +1355,32 @@ def _patched_header(header: bytes, filetime: int, state: int) -> bytes:
     return bytes(out)
 
 
+def _blob_files(plan: XboxPairPlan, b: XboxBlobWrite) -> list[tuple[str, str]]:
+    return [(b.data_name, b.data_sha256), (b.meta_name, b.meta_sha256),
+            (b.container_name, "")]
+
+
+def _is_ours(d: Path, b: XboxBlobWrite, name: str) -> bool:
+    """The data and meta names are fresh GUIDs, so they are always this op's own. A
+    ``container.<n>`` file is ours only when it holds exactly the bytes this op writes: the
+    Xbox app may have made the same number since the plan."""
+    if name != b.container_name:
+        return True
+    try:
+        return (d / name).read_bytes() == build_blob_container(
+            b.data_name, b.meta_name, b.data_cloud, b.meta_cloud)
+    except OSError:
+        return False
+
+
 def _remove_new(plan: XboxPairPlan) -> None:
-    for rel in plan.new_files:
-        (plan.folder / rel).unlink(missing_ok=True)
+    """Remove the files this op wrote; a file with the same name that holds other bytes is
+    someone else's and stays."""
+    for b in plan.blobs:
+        d = plan.folder / b.dir_name
+        for name, _sha in _blob_files(plan, b):
+            if (d / name).is_file() and _is_ours(d, b, name):
+                (d / name).unlink()
     for rel in plan.new_dirs:
         d = plan.folder / rel
         if d.is_dir() and not any(d.iterdir()):

@@ -66,16 +66,21 @@ def failed_op(world, monkeypatch, action):
 # 1 -----------------------------------------------------------------------------------------
 
 
-def test_back_over_new_game_progress_keeps_it_in_the_vault_first(world, monkeypatch):
+def test_back_is_not_offered_over_new_game_progress_and_leave_keeps_it(world, monkeypatch):
     played = {}
 
     def progress():
         steam_save(world.live, 1, 0, "Played", 9000, 0x1111, T0 + 900, extra="new-progress")
         played["vid"] = _sha(world.live / "save.hg")
 
-    op_id = failed_op(world, monkeypatch, progress)
+    op_id = failed_op(
+        world, monkeypatch, lambda: (world.live / "save.hg").write_bytes(b"broken"))
+    progress()                                   # the owner plays after the failure
+    world.refresh()
     assert not world.ctx.locator.is_durable(played["vid"])
-    assert resolve_recovery(world.ctx, op_id, "back").status == "rolled_back"
+    assert resolve_recovery(world.ctx, op_id, "back").status == "refused"
+    assert _sha(world.live / "save.hg") == played["vid"]          # the game's save stays
+    assert resolve_recovery(world.ctx, op_id, "leave").status == "rolled_back"
     assert world.ctx.locator.is_durable(played["vid"])
 
 

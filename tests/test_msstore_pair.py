@@ -295,3 +295,33 @@ def test_planning_reads_no_other_records_blobs(tmp_path, make_wgs_account, monke
                                                               real(c))[1])
     msstore.prepare_pair(acct, pair(2))                 # Slot2Auto exists, Slot2Manual is new
     assert resolved == ["Slot2Auto"]
+
+
+def test_a_container_file_the_xbox_app_made_meanwhile_is_never_overwritten_or_deleted(
+        tmp_path, make_wgs_account):
+    """Review D5 2.10-2.12 #9: between prepare and apply the app may write the very
+    container.N the plan picked; the write refuses and every rollback leaves that file."""
+    acct = account(tmp_path, make_wgs_account)
+    writes = pair()
+    plan = msstore.prepare_pair(acct, writes)
+    before = (acct / "containers.index").read_bytes()
+    foreign = acct / plan.blobs[0].dir_name / plan.blobs[0].container_name
+    foreign.write_bytes(b"the app wrote this")
+    with pytest.raises(msstore.IndexChanged):
+        msstore.apply_pair(plan, payload(writes))
+    assert foreign.read_bytes() == b"the app wrote this"
+    assert (acct / "containers.index").read_bytes() == before
+    msstore.rollback_pair(plan)
+    assert foreign.read_bytes() == b"the app wrote this"
+
+
+def test_the_sync_flag_moving_to_synced_leaves_the_written_state_post(tmp_path, make_wgs_account):
+    """Review #8: an upload (Modified -> Synced) is not another writer."""
+    acct = account(tmp_path, make_wgs_account)
+    writes = pair()
+    plan = msstore.prepare_pair(acct, writes)
+    msstore.apply_pair(plan, payload(writes))
+    assert msstore.pair_index_state(plan) == "post"
+    _set_state(acct, "Slot1Auto", msstore.BLOB_SYNC_SYNCED)
+    _set_state(acct, "Slot1Manual", msstore.BLOB_SYNC_SYNCED)
+    assert msstore.pair_index_state(plan) == "post"

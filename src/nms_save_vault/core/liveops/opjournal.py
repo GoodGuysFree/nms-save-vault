@@ -20,7 +20,7 @@ import os
 import re
 import secrets
 import threading
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -544,13 +544,14 @@ def xbox_plan_to_json(plan: msstore.XboxPairPlan) -> dict:
     }
 
 
-def xbox_plan_from_json(value: object, folder: Path, *, slot: int) -> msstore.XboxPairPlan:
+def xbox_plan_from_json(value: object, folder: Path, *, slot: int,
+                        slots: Iterable[int] = ()) -> msstore.XboxPairPlan:
     """Decode and check against the op's ``slot``: only that slot's two records, blob files
     and dirs that belong to those records (new files and dirs to the records the op wrote,
     replaced blobs to the records it replaced), so a damaged journal can never point a
     rollback elsewhere. Anything else is a damaged record (JournalError): never acted on."""
     d = _obj(value)
-    idents = {f"Slot{slot}Auto", f"Slot{slot}Manual"}
+    idents = {f"Slot{n}{p}" for n in {slot, *slots} for p in ("Auto", "Manual")}
     blobs = []
     for b in _list(d.get("blobs")):
         b = _obj(b)

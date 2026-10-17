@@ -38,6 +38,7 @@ from .context import OpContext
 from .execute import (
     LIVEOP_TIMEOUT,
     OpTarget,
+    plan_key,
     append_quietly,
     finalize,
     finish,
@@ -156,14 +157,12 @@ def _pending(ctx: OpContext) -> list[RecoveryItem]:
 
 def _classify(ctx: OpContext, op: _Open, game_free: bool) -> RecoveryItem:
     rec = op.record
-    if rec.status == "failed":
-        item = _item(rec, "failed", "back", ("back", "leave"))
-    elif op.state == "other":
+    if op.state == "other":                      # the game or another tool wrote the slot since
         item = _item(rec, "superseded", "leave", ("leave",))
+    elif rec.status == "failed":
+        item = _item(rec, "failed", "back", ("back", "leave"))
     elif rec.status == "validated" or op.state == "post":
         item = _item(rec, "complete", "forward", ("forward",))
-    elif op.state == "other":
-        item = _item(rec, "superseded", "leave", ("leave",))
     elif op.state == "pre":
         item = _item(rec, "not_started", "back", ("back",))
     else:
@@ -195,16 +194,11 @@ def _resolve(ctx: OpContext, op_id: str, choice: Choice,
         return OpOutcome(op_id, "rolled_back", "Nothing had been written.", (), None, "n/a", None)
     if choice == "leave":
         return _leave(ctx, op)
-    # A failed op's own write may have left a slot that is neither image (a corrupt file):
-    # retrying its rollback is what "failed" offers, once what the slot holds now is kept in
-    # the vault. Anything else is someone else's save, and is never rolled back over.
+    # A slot that is neither the op's pre nor its post image holds someone else's save (the
+    # game played it): it is never rolled back over, and nothing in it is deleted. Only
+    # "leave" is offered; it keeps what the slot holds in the vault.
     if op.state == "other":
-        if not (rec.status == "failed" and choice == "back"):
-            return refused(op_id, "SLOT_CHANGED",
-                           TEXTS["superseded"].format(labels=_labels(rec)))
-        kept = _keep_current(ctx, op)
-        if kept is not None:
-            return kept
+        return refused(op_id, "SLOT_CHANGED", TEXTS["superseded"].format(labels=_labels(rec)))
     if choice == "forward" and rec.status == "failed":
         return refused(op_id, "NOT_OFFERED", "That move can only be put back or left.")
     if choice == "forward":
@@ -222,14 +216,22 @@ def _forward(ctx: OpContext, op: _Open) -> OpOutcome:
     try:
         for wt in op.targets:
             _rederive(ctx, wt)
+        merged: dict = {}
+        for wt in op.targets:                 # a plan shared by two slots needs both payloads
+            if wt.xbox is not None:
+                merged.setdefault(wt.folder, {}).update(wt.payload)
+        done: set = set()
         for wt, state in zip(op.targets, op.states):
             if wt.steam is not None:
                 _forward_steam(wt)
+            elif plan_key(wt) in done:
+                continue
             elif state != "post" or msstore.pair_index_state(wt.xbox) != "post":
                 if msstore.pair_index_state(wt.xbox) == "pre":
-                    msstore.apply_pair(wt.xbox, wt.payload)
+                    msstore.apply_pair(wt.xbox, merged[wt.folder])
                 else:
-                    msstore.complete_pair(wt.xbox, wt.payload)
+                    msstore.complete_pair(wt.xbox, merged[wt.folder])
+                done.add(plan_key(wt))
         for wt in op.targets:
             validate(wt, steamwrite.op_tag(rec.op_id))
     except (LiveOpError, SourceUnreadable, msstore.IndexChanged, OSError, ValueError) as exc:
@@ -345,10 +347,12 @@ def _open(ctx: OpContext, rec: opjournal.OpRecord) -> _Open:
         return _Open(rec, [], [], "")
     targets, states = [], []
     try:
+        slots = [target_from_json(t["target"]).slot for t in writing["targets"]
+                 if "xbox" in t]                  # one plan may cover several slots
         for t in writing["targets"]:
-            wt = _target(ctx, rec.op_id, t)
+            wt = _target(ctx, rec.op_id, t, slots)
             targets.append(wt)
-            states.append(_state(wt, rec.op_id))
+            states.append(_state(wt, rec.op_id, (rec.last("failed") or {}).get("settled")))
     except (KeyError, TypeError, ValueError, TargetError) as exc:
         log.warning("op %s: its write-ahead record cannot be used: %s", rec.op_id, exc)
         return _Open(rec, targets, states, str(exc))
@@ -356,7 +360,7 @@ def _open(ctx: OpContext, rec: opjournal.OpRecord) -> _Open:
     return _Open(rec, targets, states)
 
 
-def _target(ctx: OpContext, op_id: str, t: dict) -> OpTarget:
+def _target(ctx: OpContext, op_id: str, t: dict, slots: Iterable[int] = ()) -> OpTarget:
     target = target_from_json(t["target"])
     rt = resolve_target(ctx, target)
     load = t["load"]
@@ -374,7 +378,8 @@ def _target(ctx: OpContext, op_id: str, t: dict) -> OpTarget:
         wt.steam = opjournal.steam_plan_from_json(t["steam"], rt.folder, slot=target.slot,
                                                   op_id=op_id)
     else:
-        wt.xbox = opjournal.xbox_plan_from_json(t["xbox"], rt.folder, slot=target.slot)
+        wt.xbox = opjournal.xbox_plan_from_json(t["xbox"], rt.folder, slot=target.slot,
+                                                slots=slots)
     return wt
 
 
@@ -390,8 +395,9 @@ def _before(target: LiveTarget, pre: dict, newer: str | None) -> SlotNow:
     return SlotNow(target, state, members.get("A"), members.get("B"), newer, ())
 
 
-def _state(wt: OpTarget, op_id: str) -> str:
-    """pre / post / torn / other for one target."""
+def _state(wt: OpTarget, op_id: str, settled: dict | None = None) -> str:
+    """pre / post / torn / other for one target. ``settled``: what a failed op's files held
+    when it failed; a file still so is the op's own damaged output, not someone's save."""
     if wt.steam is not None:
         posts = {f.name: f.sha256 for f in wt.steam.files}
         kinds = set()
@@ -401,7 +407,8 @@ def _state(wt: OpTarget, op_id: str) -> str:
             pre_sha = pre.sha256 if pre else None
             if pre_sha == posts.get(name) and now_sha == pre_sha:
                 continue                                  # unchanged by the write either way
-            kinds.add("pre" if now_sha == pre_sha else "post" if now_sha == posts.get(name)
+            own = settled is not None and f"{wt.rt.target.slot}/{name}" in settled and                 settled[f"{wt.rt.target.slot}/{name}"] == now_sha
+            kinds.add("pre" if now_sha == pre_sha else "post" if now_sha == posts.get(name) or own
                       else "other")
         return _combine(kinds)
     index = msstore.pair_index_state(wt.xbox)
