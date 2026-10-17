@@ -21,11 +21,13 @@ from .. import safety, savedir
 from ..catalog import Vault
 from ..organizer import Organizer
 from ..organizer.model import LiveRef, LiveTarget
+from ..organizer.recorder import LiveOpBusy
 from ..state import Source
 from ..store import listing
 from .context import OpContext, context_for
 from .errors import LiveOpError
-from .execute import execute
+from . import opjournal as jr
+from .execute import LIVEOP_TIMEOUT, execute
 from .model import OpOutcome, PairSource, PlacePlan
 from .opjournal import machine_id
 from .planner import plan_place, plan_promote
@@ -112,8 +114,10 @@ def restore_full(vault: Vault, entry, live_dir: Path, mirror: bool = True,
     if entry.path:
         ops._guard_same_platform(Path(entry.path), live_dir)
     refuse_disabled(live_dir)
-    notes = repair_damaged_index(vault, entry, live_dir, allow_game_running)
     ctx, ref = open_context(vault, live_dir)
+    notes = repair_damaged_index(ctx, ref, vault, entry, live_dir, allow_game_running)
+    if notes:
+        ctx, ref = open_context(vault, live_dir)      # the folder reads again
     found = listing.get_vault_entry(ctx.vault, ctx.versions, entry.id, live_roots=[])
     if found is not None and found.platform != ref.platform:
         raise ops.FeatureNotYetAvailableError(ops.CROSS_PLATFORM_MSG)
@@ -157,13 +161,13 @@ def refuse_disabled(live_dir: Path) -> None:
                                      "app's settings, so nothing is written to it.")
 
 
-def repair_damaged_index(vault: Vault, entry, live_dir: Path, allow_game_running: bool) -> list[str]:
+def repair_damaged_index(ctx: OpContext, ref: LiveRef, vault: Vault, entry, live_dir: Path,
+                         allow_game_running: bool) -> list[str]:
     """A restore is how a damaged Xbox folder is repaired: when the live ``containers.index``
     does not read, its damaged bytes are kept in the vault and an index of the records that
     still read (with the identity of the account) is written, and the restore then fills in
-    the rest from the backup. Returns the notes for the result."""
-    from ..store import classic as store_classic
-
+    the rest from the backup. Runs under the live-op lock and is journaled as an op of kind
+    ``index_repair``. Returns the notes for the result."""
     index = Path(live_dir) / "containers.index"
     if not index.is_file():
         return []
@@ -173,9 +177,40 @@ def repair_damaged_index(vault: Vault, entry, live_dir: Path, allow_game_running
         return []
     except ValueError as exc:
         why = str(exc)
-    running = safety.is_game_running()
+    running = ctx.game_probe()
     if running is True or (running is None and not allow_game_running):
         raise ops.GameRunningError("No Man's Sky appears to be running. Close the game first.")
+    try:
+        with jr.liveop_lock(ctx, timeout=LIVEOP_TIMEOUT):
+            return _repair_locked(ctx, ref, vault, entry, live_dir, raw, why)
+    except (LiveOpBusy, RuntimeError):
+        raise ops.OperationError("Another operation is still running. Try again in a "
+                                 "moment.") from None
+
+
+def _repair_locked(ctx, ref, vault, entry, live_dir, raw: bytes, why: str) -> list[str]:
+    from ..organizer.model import new_op_id
+
+    index = Path(live_dir) / "containers.index"
+    if index.read_bytes() != raw:                    # someone else repaired or wrote it
+        return []
+    op_id = new_op_id(ctx.clock)
+    jr.append(ctx, op_id, "preparing", {
+        "kind": "index_repair", "app": ctx.app_version,
+        "targets": [jr.target_json(ref.target(1))], "sources": [None], "undo_of": None,
+        "note": "containers.index damaged", "confirmed": [], "plan_digest": ""})
+    try:
+        notes = _repair_files(vault, entry, live_dir, index, raw, why)
+    except BaseException:
+        jr.append(ctx, op_id, "abandoned", {"reason": "repair_failed"})
+        raise
+    jr.append(ctx, op_id, "done", {"oplog": False, "lineage": False})
+    return notes
+
+
+def _repair_files(vault, entry, live_dir, index, raw: bytes, why: str) -> list[str]:
+    from ..store import classic as store_classic
+
     with store_classic.entry_folder(vault, entry) as folder:
         theirs = msstore.split_index((Path(folder) / "containers.index").read_bytes())[0]
     header, records = msstore.salvage_index(raw)

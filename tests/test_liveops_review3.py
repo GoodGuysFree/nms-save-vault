@@ -207,3 +207,45 @@ def test_a_folder_the_owner_disabled_is_not_written_by_an_explicit_path(tmp_path
         ops.promote_member(vault, live, 1, 1, allow_game_running=True)
 
     assert {p.name: p.read_bytes() for p in live.iterdir() if p.is_file()} == before
+
+
+def test_the_index_repair_runs_under_the_live_op_lock_and_is_journaled(make_wgs_account, tmp_path,
+                                                                      monkeypatch):
+    from nms_save_vault.core.liveops import classic, opjournal as jr
+    from nms_save_vault.core.liveops.classic import open_context
+
+    live = make_wgs_account(tmp_path / "live", [("Slot1Auto", '{"a":1}', "Keep", "", 1, 100)])
+    vault = _vault(tmp_path)
+    backup = ops.create_full_backup(vault, live, include_cache=False)
+    index = live / "containers.index"
+    index.write_bytes(index.read_bytes()[:-30])
+    damaged = index.read_bytes()
+    monkeypatch.setattr(classic, "LIVEOP_TIMEOUT", 0.2)
+    ctx, _ref = open_context(vault, live)
+
+    import threading
+
+    held, release, outcome = threading.Event(), threading.Event(), {}
+
+    def other_operation():                          # another operation holds the lock
+        with jr.liveop_lock(ctx):
+            held.set()
+            release.wait(10)
+
+    t = threading.Thread(target=other_operation)
+    t.start()
+    held.wait(10)
+    try:
+        with pytest.raises(ops.OperationError, match="still running"):
+            ops.restore_full(vault, backup, live, allow_game_running=True)
+        outcome["index"] = index.read_bytes()
+    finally:
+        release.set()
+        t.join(10)
+    assert outcome["index"] == damaged               # nothing was written meanwhile
+
+    ops.restore_full(vault, backup, live, allow_game_running=True)
+    kinds = [r.kind for r in jr.read_ops(ctx).values()]
+    assert "index_repair" in kinds
+    repair = next(r for r in jr.read_ops(ctx).values() if r.kind == "index_repair")
+    assert repair.status == "done"
