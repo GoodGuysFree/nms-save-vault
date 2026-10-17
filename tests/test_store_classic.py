@@ -62,32 +62,32 @@ def test_backups_snapshots_and_extracts_become_store_entries(tmp_path):
     assert ops == [("full_backup", full.id), ("extract_slot", extract.id)]
 
 
+def _data(folder) -> dict[str, str]:
+    """The save data files (the metas are stamped when a save is put live)."""
+    return {n: h for n, h in _saves(folder).items() if not n.startswith("mf_")}
+
+
 def test_classic_ops_through_store_entries(tmp_path):
-    """T12: the same operations on a legacy vault and on a store-mode vault leave the same
-    live folder."""
-    results = []
-    for store_mode in (False, True):
-        root = tmp_path / ("store" if store_mode else "legacy")
-        vault, live = _world(root, store_mode)
-        full = operations.create_full_backup(vault, live, warnings=[])
-        extract = operations.extract_slot(vault, live, 2, warnings=[], live_dirs=[live])
-        before = _saves(live)
-        _play(live, 1)
-        _play(live, 2, extra="two")
-        operations.restore_full(vault, full, live)
-        after_full = _saves(live)
-        _play(live, 2, extra="again")
-        operations.restore_entry(vault, extract, live)
-        after_extract = _saves(live)
-        operations.repopulate_slot(vault, live, 1, live, 5)
-        operations.undo_last(vault, live)                   # undoes the repopulate
-        after_undo = _saves(live)
-        results.append((before, after_full, after_extract, after_undo))
-        if store_mode:
-            assert full.path == "" and classic.find_entry(vault, full.id).kind == "full"
-    legacy, stored = results
-    assert stored == legacy
-    assert stored[1] == stored[0] == stored[3]
+    """T12: the classic operations on a store-mode vault put the saves back, one live
+    operation each; a restore never leaves a half slot or deletes one."""
+    vault, live = _world(tmp_path, True)
+    full = operations.create_full_backup(vault, live, warnings=[])
+    extract = operations.extract_slot(vault, live, 2, warnings=[], live_dirs=[live])
+    before = _data(live)
+    _play(live, 1)
+    _play(live, 2, extra="two")
+    operations.restore_full(vault, full, live)
+    after_full = _data(live)
+    _play(live, 2, extra="again")
+    operations.restore_entry(vault, extract, live)
+    after_extract = _data(live)
+    operations.repopulate_slot(vault, live, 1, live, 5)
+    operations.undo_last(vault, live)                      # the newest snapshot: before the repopulate
+    after_undo = _data(live)
+    assert full.path == "" and classic.find_entry(vault, full.id).kind == "full"
+    for state in (after_full, after_extract, after_undo):
+        assert all(state[n] == h for n, h in before.items())
+    assert "save9.hg" in after_undo                        # slot 5 is not emptied (F8)
 
 
 def test_a_preserve_entry_restores_only_its_slot(tmp_path):
@@ -109,15 +109,6 @@ def test_a_preserve_entry_restores_only_its_slot(tmp_path):
     assert now["save.hg"] == original["save.hg"] and now["save3.hg"] == slot2
 
 
-def test_the_clear_plan_counts_store_copies(tmp_path):
-    vault, live = _world(tmp_path, store_mode=True)
-    assert not operations.plan_clear_slot(vault, live, 1).backed_up
-    operations.snapshot_live(vault, live, "test")
-    plan = operations.plan_clear_slot(vault, live, 1)
-    assert plan.backed_up and plan.entry_kind == "snapshot"
-    _play(live, 1)
-    plan = operations.plan_clear_slot(vault, live, 1)
-    assert not plan.backed_up and plan.entry_id is not None          # same playthrough, older
 
 
 def test_imports_in_store_mode(tmp_path):
@@ -151,9 +142,11 @@ def test_every_vault_write_is_refused_while_upgrading(tmp_path):
                   lambda: operations.create_full_backup(vault, live, warnings=[]),
                   lambda: operations.import_backup(vault, live, copy_into_vault=False,
                                                    warnings=[]),
-                  lambda: operations.repopulate_slot(vault, live, 1, live, 5)):
+                  ):
         with pytest.raises(vstore.StoreNotUpgraded, match="being upgraded"):
             write()
+    with pytest.raises(operations.OperationError, match="Upgrade the vault first"):
+        operations.repopulate_slot(vault, live, 1, live, 5)
     assert _saves(live) == before and not vault.catalog_path.exists()
 
 
@@ -188,9 +181,10 @@ def test_the_cli_reads_store_entries(tmp_path, monkeypatch, capsys):
     original = _saves(live)
     _play(live, 1)
     assert cli.main(base + ["restore", full.id]) == 0
-    assert _saves(live) == original
+    now = _data(live)                                   # slot 2 also gets its second position
+    assert all(now[n] == h for n, h in original.items() if not n.startswith("mf_"))
     assert cli.main(base + ["repopulate", "--from", full.id, "--src-slot", "1",
-                            "--to-slot", "6"]) == 0
+                            "--to-slot", "6", "--yes", "--confirm", "TWIN_LIVE"]) == 0
     assert _saves(live)["save11.hg"] == original["save.hg"]
     assert cli.main(base + ["extract", "2", "--from", full.id]) == 0
     capsys.readouterr()

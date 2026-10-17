@@ -350,7 +350,7 @@ def _open(ctx: OpContext, rec: opjournal.OpRecord) -> _Open:
         slots = [target_from_json(t["target"]).slot for t in writing["targets"]
                  if "xbox" in t]                  # one plan may cover several slots
         for t in writing["targets"]:
-            wt = _target(ctx, rec.op_id, t, slots)
+            wt = _target(ctx, rec.op_id, t, slots, rec.kind)
             targets.append(wt)
             states.append(_state(wt, rec.op_id, (rec.last("failed") or {}).get("settled")))
     except (KeyError, TypeError, ValueError, TargetError) as exc:
@@ -360,7 +360,8 @@ def _open(ctx: OpContext, rec: opjournal.OpRecord) -> _Open:
     return _Open(rec, targets, states)
 
 
-def _target(ctx: OpContext, op_id: str, t: dict, slots: Iterable[int] = ()) -> OpTarget:
+def _target(ctx: OpContext, op_id: str, t: dict, slots: Iterable[int] = (),
+            kind: str = "") -> OpTarget:
     target = target_from_json(t["target"])
     rt = resolve_target(ctx, target)
     load = t["load"]
@@ -371,7 +372,7 @@ def _target(ctx: OpContext, op_id: str, t: dict, slots: Iterable[int] = ()) -> O
     stand_in = LoadedSource(SourcePair(target.platform, load, None, None), {}, t.get("name", ""),
                             0, 0, 0, None, "")
     wt = OpTarget(TargetPlan(target, rt.label, rt.cloud_mode, before.state, (), (), source),
-                    rt, stand_in, before, writes=writes)
+                    rt, stand_in, before, writes=writes, stamped=kind != "panic_restore")
     wt.snapshot_id = t["snapshot_id"]
     wt.preserved = [opjournal.location_from_json(p["location"]) for p in t["preserved"]]
     if "steam" in t:
@@ -441,7 +442,7 @@ def _rederive(ctx: OpContext, wt: OpTarget) -> None:
             raise
         src = load_source(ctx, PairSource(source.vid_a, source.vid_b, source.load, None))
     now = int(wt.writes[0].write.disk_time)
-    planned = pairmeta.compute(src.pair, wt.rt, now)
+    planned = pairmeta.compute(src.pair, wt.rt, now, stamped=wt.stamped)
     for got, recorded in zip(planned, wt.writes):
         g, r = got.write, recorded.write
         if (g.position, g.vid, g.meta_disk_sha256) != (r.position, r.vid, r.meta_disk_sha256):

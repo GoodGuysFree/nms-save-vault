@@ -3,33 +3,27 @@
 :class:`LineageRecorder` is the API the live operations call: an ``op`` record per slot an
 operation wrote, the observation before and after, and what became of each operation.
 
-:func:`classic_write` is the phase-1 hook around today's live writers (repopulate, full
-restore, clear, promote, undo): it serialises every live write on the live-op lock, so the
-GUI, the CLI and a second app instance never write one live folder at once, looks at the
-folder before the write and records the write as an operation. Recording is a by-product:
-a failure to record is logged and never fails the operation.
+Every live write is a D5 operation (``liveops.execute``), which takes the live-op lock and
+records itself; :func:`observe_folder` is the one look the classic backup still takes.
 """
 from __future__ import annotations
 
 import dataclasses
 import logging
-import threading
 import time
-from collections.abc import Callable, Iterator, Mapping, Sequence
-from contextlib import ExitStack, contextmanager
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
 from .. import safety, savedir
 from .. import state as appstate
-from ..catalog import Vault
 from ..state import Source
 from .cache import FILENAME, ScanCache, cache_dir
 from .journal import Journal, ObserveResult, OpStatus, op_fields
-from .model import LiveRef, LiveTarget, MemberObs, PairKey, Vid, new_op_id
+from .model import LiveRef, LiveTarget, MemberObs, PairKey, Vid
 from .scanner import ScanResult, live_refs, scan
-from .store import APP, OrganizerStore, liveop_lock_path
+from .store import APP, OrganizerStore
 
 log = logging.getLogger(__name__)
 
@@ -114,43 +108,17 @@ def _target_key(raw: Mapping[str, Any]) -> tuple:
     return (raw.get("platform"), raw.get("account"), raw.get("instance"), raw.get("slot"))
 
 
-# --- the phase-1 hook around classic live writes ------------------------------------
+# --- looking at a live folder -------------------------------------------------------
 
 
 class LiveOpBusy(Exception):
     """Another window holds the live-op lock past the timeout."""
 
 
-_writing = threading.local()
+class _FolderLook:
+    """One look at a live folder as the scanner names it (for the journal)."""
 
 
-@contextmanager
-def classic_write(vault_root: Path, live_dir: Path, kind: str, *,
-                  clock: Callable[[], float] = time.time) -> Iterator[_ClassicWrite | None]:
-    """Run one classic live write under the live-op lock, after a look at its folder; the
-    caller hands the outcome to :meth:`_ClassicWrite.done` to record it. A write nested in
-    another on this thread (undo runs a full restore) is part of the outer one: it gets None
-    and records nothing itself."""
-    if getattr(_writing, "active", False):
-        yield None
-        return
-    with ExitStack() as stack:
-        try:
-            stack.enter_context(safety.exclusive_lock(liveop_lock_path(vault_root),
-                                                      timeout=LIVEOP_TIMEOUT))
-        except safety.LockTimeout as exc:
-            raise LiveOpBusy() from exc
-        except OSError as exc:
-            log.warning("live writes are not serialised: the live-op lock failed: %s",
-                        exc.strerror)
-        _writing.active = True
-        stack.callback(setattr, _writing, "active", False)
-        write = _ClassicWrite(Path(vault_root), Path(live_dir), kind, clock)
-        write.before()
-        yield write
-
-
-class _ClassicWrite:
     def __init__(self, vault_root: Path, live_dir: Path, kind: str,
                  clock: Callable[[], float]) -> None:
         self.vault_root = vault_root
@@ -187,86 +155,6 @@ class _ClassicWrite:
         # The scanner names the folder by its own rule; the journal must use the same name.
         return _renamed(result, self.ref)
 
-    def before(self) -> None:
-        """Look at the slots as they are, before anything is replaced."""
-        try:
-            self._prepare()
-            self.pre = self._scan()
-        except Exception as exc:  # noqa: BLE001 - recording never fails the operation
-            log.warning("organizer: the live folder was not looked at before %s: %s",
-                        self.kind, exc)
-
-    def done(self, result: Any, *, slot: int | None = None,
-             source: Callable[[], Mapping[str, Any] | None] | None = None,
-             game_running: bool | None = None, error: BaseException | None = None) -> None:
-        """Record a write: one op record per written slot (``slot``, or every slot whose
-        pair changed), all in one transaction. A write that failed is recorded only where it
-        changed the folder. The slots themselves are journaled before and after only when the
-        game was checked and is not running."""
-        try:
-            if error is None and getattr(result, "snapshot_id", None) is None:
-                return                  # nothing was written (e.g. already the newest)
-            self._prepare()             # again, when the look before failed to open the store
-            post = self._scan()
-            folder = post.live[self.ref]
-            if not folder.readable:
-                return
-            # A folder missing or unreadable before the write: nothing known was replaced.
-            seen = self.pre is not None and self.pre.live[self.ref].readable
-            pre_pairs = {c.slot: c.pair for c in self.pre.live[self.ref].captures} if seen else {}
-            changed = [c for c in folder.captures if c.pair != pre_pairs.get(c.slot)]
-            if error is not None:
-                written = changed
-            elif slot is not None:
-                written = [c for c in folder.captures if c.slot == slot]
-            else:
-                written = changed
-            if not written:
-                return
-            registry = {**(self.pre.versions if self.pre is not None else {}), **post.versions}
-            journal = Journal(self.store, registry)
-            observe = game_running is False
-            if observe and seen:
-                journal.observe(self.pre, src="scan", skip=frozenset())
-            snapshot = getattr(result, "snapshot_id", None)
-            op_id = new_op_id(self.clock)
-            undo_of = self._undone(snapshot) if self.kind == "undo" else None
-            where = source() if source is not None else None
-            note = f"failed after writing: {error}" if error is not None else ""
-            recs = []
-            for capture in written:
-                prior = pre_pairs.get(capture.slot)
-                preserved = ({vid: {"kind": "entry", "entry": snapshot, "slot": capture.slot,
-                                    "member": "AB"[i]}
-                              for i, vid in enumerate(prior or ()) if vid} if snapshot else {})
-                recs.append(OpLineage(
-                    op_id, self.kind, int(self.clock()), self.ref.target(capture.slot),
-                    capture.pair, prior, source=where, preserved=preserved, undo_of=undo_of,
-                    note=note[:200], members={m.vid: m for m in capture.members},
-                    snapshot=snapshot))
-            LineageRecorder(self.store, journal).record_ops(recs)
-            if observe:
-                journal.observe(post, src="scan", skip=frozenset())
-        except Exception as exc:  # noqa: BLE001 - recording never fails the operation
-            log.warning("organizer: %s was not recorded: %s", self.kind, exc)
-
-    def _undone(self, snapshot: str | None) -> str | None:
-        """The journal's op an undo reversed: the one whose pre-write snapshot the undo
-        restored (the classic undo names that snapshot in its log line). Only this undo's
-        own line counts - the one with this undo's snapshot; an undo that failed before it
-        logged has none, and then what it undid is unknown."""
-        if not snapshot:
-            return None
-        lines = Vault(self.vault_root, read_only=True).read_oplog()
-        restored = next((r.get("undo_of") for r in reversed(lines)
-                         if r.get("op") == "undo" and r.get("snapshot_id") == snapshot), None)
-        if not restored:
-            return None
-        for raw in reversed(self.store.journal_records()):
-            if raw["t"] == "op" and raw.get("snapshot") == restored and raw.get("src") == "app":
-                return raw["op_id"]
-        return None
-
 
 def _configured_sources() -> Sequence[Source]:
     """The live folders the app is configured with - what the scanner names folders by.
@@ -297,7 +185,7 @@ def observe_folder(vault_root: Path, live_dir: Path,
     try:
         if safety.is_game_running() is not False:
             return
-        write = _ClassicWrite(Path(vault_root), Path(live_dir), "observe", clock)
+        write = _FolderLook(Path(vault_root), Path(live_dir), "observe", clock)
         write._prepare()
         result = write._scan()
         Journal(write.store, result.versions).observe(result, src="scan", skip=frozenset())

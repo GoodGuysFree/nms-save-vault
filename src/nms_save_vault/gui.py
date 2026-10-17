@@ -21,6 +21,7 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 from . import __version__, theme, updates
 from .core import aliases, catalog, discover, locations, slotmap
 from .core import operations as ops
+from .core.liveops import classic
 from .core import platform as host_platform
 from .core import playtime, savedir
 from .core import state as appstate
@@ -228,43 +229,15 @@ def _restore_menu_label(entry) -> str:
     return f"Restore all of '{entry.id}' into live (replaces other slots)"
 
 
-def _clear_question(plan, directory) -> str:
-    """The confirmation text for clearing a slot: what goes, what the vault still has,
-    and - when clearing would cost progress - the warning that earns the "are you sure"."""
-    lines = [
-        f"Delete both saves in live slot {plan.slot} of {Path(directory).name}?",
-        "",
-        f"Slot {plan.slot} holds: {plan.live_name}"
-        f"   ({ops.format_duration(plan.live_play_time)} play time)",
-    ]
-    if plan.entry_id is not None:
-        lines.append(
-            f"Best copy in the vault: {plan.entry_id}"
-            f"   ({ops.format_duration(plan.backup_play_time)} play time)"
-        )
-        if plan.identical:
-            lines.append("  An identical copy: the vault holds this very save.")
-    if plan.warning:
-        lines += ["", ("CANNOT VERIFY: " if plan.unverifiable else "WARNING: ") + plan.warning]
-    if plan.notes:
-        lines += ["", "Not checked (could not be read):"] + [f" - {n}" for n in plan.notes[:5]]
-        if len(plan.notes) > 5:
-            lines.append(f" - and {len(plan.notes) - 5} more")
-    if plan.cloud_warning:
-        lines += ["", "STEAM CLOUD: " + plan.cloud_warning]
-    lines += ["", "The current state is auto-snapshotted first, so Undo can put it back."]
-    return "\n".join(lines)
-
-
 #: The account-data choice Restore and Undo offer; unticked unless the user ticks it.
 ACCOUNT_DATA_CHOICE = "Also put back the account data (unlocks, settings) - this rolls them back too"
 
-#: What a copy into a live slot writes, and when it is refused (P6).
+#: What a copy into a live slot writes.
 COPY_RULE = (
-    "Both saves of the slot are copied, replacing what is in the destination. A slot\n"
-    "holding only one save is refused unless the destination's other save is missing or\n"
-    "the same playthrough (that save then stays). The live folder is auto-snapshotted\n"
-    "first, so Undo puts it back."
+    "Both saves of the slot are written, replacing what is in the destination. A source\n"
+    "with one save fills the other position with a copy of it, so a slot never holds two\n"
+    "different saves. What the slot held is kept in the vault first, and the live folder is\n"
+    "auto-snapshotted, so Undo puts it back."
 )
 
 #: How the undo confirmation names a recorded change.
@@ -272,7 +245,7 @@ _OP_NAMES = {
     "restore_full": "a restore",
     "repopulate_slot": "a copy into a slot",
     "promote_member": "a promote",
-    "clear_slot": "a clear slot",
+    "panic_restore": "a whole-folder restore",
 }
 
 
@@ -644,7 +617,7 @@ class App(tk.Tk):
         live.add_command(label="Accounts...", command=self.on_accounts, underline=0)
         live.add_command(label="Rescan live folders", command=self.on_rescan, underline=0)
         live.add_command(label="Extract a slot", command=self.on_extract, underline=0)
-        live.add_command(label="Clear a slot...", command=self.on_clear, underline=0)
+        live.add_command(label="Empty a slot (steps)...", command=self.on_clear, underline=0)
         live.add_command(label="Copy into a live slot...", command=self.on_copy_slot,
                          underline=5)
         live.add_command(label="Promote", command=self.on_promote, underline=0)
@@ -748,7 +721,7 @@ class App(tk.Tk):
             ("Backup live", self.on_backup),
             ("Restore", self.on_restore),
             ("Extract slot", self.on_extract),
-            ("Clear slot...", self.on_clear),
+            ("Empty slot (steps)...", self.on_clear),
             ("Copy into live slot...", self.on_copy_slot),
             ("Promote", self.on_promote),
             ("Import...", self.on_import),
@@ -1652,7 +1625,7 @@ class App(tk.Tk):
                 command=lambda: self.on_extract(target),
             )
             menu.add_command(
-                label=f"Clear live slot {slot} (delete its saves)...",
+                label=f"Empty live slot {slot} (manual steps)...",
                 command=lambda: self.on_clear(target),
             )
         else:
@@ -1855,36 +1828,38 @@ class App(tk.Tk):
         )
 
     def on_clear(self, target: dict | None = None) -> None:
-        """Empty a live slot, after showing what the vault does (or does not) still hold."""
+        """The app never empties a slot: show the steps to do it by hand, after offering to
+        keep a copy of what the slot holds in the vault (D5 2.4.2)."""
         sel = target or self._selected()
         if not sel or sel.get("type") not in ("slot", "member") or not sel.get("live"):
             _showinfo(
                 "Select a live slot",
-                "Clear empties one of your LIVE slots, so it needs a live one: select a "
-                "slot - or either of the two saves inside it - in the LIVE SAVES pane.",
+                "Emptying a slot needs a LIVE one: select a slot - or either of the two "
+                "saves inside it - in the LIVE SAVES pane.",
             )
             return
         directory, slot = Path(sel["dir"]), sel["slot"]
-        others = self._live_paths()
-        # The plan reads every save in the vault: off the Tk thread, behind the wait dialog.
         holder = self._run_worker(
-            lambda _force: ops.plan_clear_slot(self.vault, directory, slot, other_live_dirs=others),
-            False, "Looking for copies of this save in the vault - please wait...",
+            lambda _force: classic.empty_guide(self.vault, directory, slot), False,
+            "Looking at the slot - please wait...",
         )
         if "error" in holder:
-            _showerror("Clear slot", f"Could not check the vault for copies of this save:\n{holder['error']}")
+            _showerror("Empty a slot", f"Could not look at the slot:\n{holder['error']}")
             return
-        plan = holder["result"]
-        if not plan.occupied:
-            _showinfo("Already empty", f"Live slot {slot} holds no saves.")
+        guide = holder["result"]
+        if not guide.occupied:
+            _showinfo("Already empty", f"{guide.label} holds no saves.")
             return
-        if not _askyesno("Clear slot", _clear_question(plan, directory)):
-            return
-        self._run(
-            lambda force: ops.clear_slot(self.vault, directory, slot, allow_game_running=force),
-            success=f"Cleared slot {slot}.",
-            message=f"Clearing slot {slot} - please wait...",
-        )
+        if not guide.durable and _askyesno(
+                "Keep a copy first?",
+                f"{guide.label} holds a save with no copy in the vault. Keep a copy in the "
+                "vault now?"):
+            self._run(
+                lambda _force: classic.keep_copy(self.vault, directory, slot),
+                success=f"Kept a copy of slot {slot} in the vault.",
+                message=f"Keeping slot {slot} - please wait...",
+            )
+        _showinfo("Empty a slot - steps", classic.guide_text(guide))
 
     def on_copy_slot(self, source=None, dest_dir=None, dest_slot=None, ask: bool = True) -> None:
         """Copy one slot's saves into a live slot.
@@ -2562,11 +2537,9 @@ BUTTONS
 - Extract slot: Select a slot -- or either of the two saves inside it -- under LIVE or a
   backup, to copy just that one slot aside into the vault. You can free the slot now and
   bring it back later.
-- Clear slot: Empties a live slot by deleting both of its saves. Before it does, it
-  shows the slot's play time next to the play time of the best copy of that save in
-  the vault, and if the live save is further on - or if the vault has no copy at all -
-  it says so and asks again, because that progress is what you would lose. The live
-  state is auto-snapshotted first, so Undo brings the slot back.
+- Empty slot (steps): The app never empties a slot; it only replaces. This shows the
+  steps to empty one yourself (they differ for Steam Cloud, Steam without Cloud and
+  Xbox), and first offers to keep a copy of what the slot holds in the vault.
 - Copy into live slot: Copies one slot's saves into a live slot. It opens a window
   showing BOTH ends: what is being copied, and every live slot with what is currently in
   it, so you can see what you are about to replace. Either end can be changed there, so
@@ -2643,8 +2616,8 @@ Any slot, or either save in it, in either pane also offers "Show this save's his
 which narrows the backups to every copy of that save.
 
 WORKFLOWS
-- More than 15 slots: Extract the slots you are not using into the vault, Clear them to
-  free the live slot, then copy them back into a live slot whenever you want to play them
+- More than 15 slots: Extract the slots you are not using into the vault, empty them
+  yourself (see Empty slot), then copy them back into a live slot whenever you want to play them
   again. Your library is unlimited; only 15 are live at a time.
 - Safe experimenting: Backup live (or Extract the slot), make changes in-game, then
   Restore / copy back / Undo if you do not like the result.

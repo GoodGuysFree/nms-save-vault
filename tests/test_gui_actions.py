@@ -172,13 +172,13 @@ def test_a_live_slot_can_be_a_destination_as_well_as_a_source(app):
     assert "Extract live slot 4 to the vault" in labels
 
 
-def test_a_live_slot_can_be_cleared_but_a_backup_slot_cannot(app):
-    """Clear deletes live saves, so it belongs only on a live row -- a slot inside a
-    backup has nothing live to empty."""
+def test_the_empty_steps_belong_to_a_live_row_only(app):
+    """The steps to empty a slot are for a live slot -- a slot inside a backup has nothing
+    live to empty."""
     live = _menu_labels(app, app._menu_for_slot, {"type": "slot", "dir": "X", "slot": 4, "live": True})
     backup = _menu_labels(app, app._menu_for_slot, {"type": "slot", "dir": "X", "slot": 4, "live": False})
-    assert "Clear live slot 4 (delete its saves)..." in live
-    assert not [x for x in backup if x.startswith("Clear")]
+    assert "Empty live slot 4 (manual steps)..." in live
+    assert not [x for x in backup if x.startswith("Empty")]
 
 
 def test_a_live_save_adds_promote_on_top_of_its_slot_actions(app):
@@ -291,7 +291,7 @@ def test_direct_copy_confirms_then_writes_the_named_slot(app, live_target, tmp_p
     assert str(live_target) == recorded["live"]
     assert "slot 7 of some-backup" in asked["msg"]
     assert "currently holds" in asked["msg"], "the user must see what is being replaced"
-    assert "only one save is refused" in asked["msg"], "the P6 rule, not 'both saves are copied'"
+    assert "Both saves of the slot are written" in asked["msg"]
     assert "slot 7" in calls["success"]
 
 
@@ -306,101 +306,14 @@ def test_declining_the_confirmation_writes_nothing(app, live_target, monkeypatch
     assert calls == {}
 
 
-def test_clearing_shows_the_play_time_gap_and_then_clears(app, live_target, monkeypatch):
-    from nms_save_vault import gui
-    from nms_save_vault.core import operations as ops
-
-    plan = ops.ClearPlan(
-        slot=4, occupied=True, live_name="Expedition", live_play_time=12600,
-        entry_id="full-steam-20260101-000000", entry_kind="full",
-        entry_created="2026-01-01T00:00:00", backup_name="Expedition", backup_play_time=3600,
-    )
-    monkeypatch.setattr(ops, "plan_clear_slot", lambda vault, directory, slot, **kw: plan)
-    asked = {}
-    monkeypatch.setattr(gui, "_askyesno", lambda title, msg: asked.setdefault("msg", msg) or True)
-    recorded = {}
-    monkeypatch.setattr(
-        ops, "clear_slot",
-        lambda vault, directory, slot, **kw: recorded.update(directory=str(directory), slot=slot),
-    )
-    calls = _capture_run(app, monkeypatch)
-
-    app.on_clear({"type": "slot", "dir": str(live_target), "slot": 4, "live": True})
-
-    assert recorded == {"directory": str(live_target), "slot": 4}
-    assert "2h30m less play time" in asked["msg"], "the user must see what clearing costs"
-    assert "full-steam-20260101-000000" in asked["msg"]
-    assert "Undo" in asked["msg"]
-    assert "slot 4" in calls["success"]
 
 
-def test_declining_the_clear_deletes_nothing(app, live_target, monkeypatch):
-    from nms_save_vault import gui
-    from nms_save_vault.core import operations as ops
-
-    monkeypatch.setattr(
-        ops, "plan_clear_slot", lambda *a, **k: ops.ClearPlan(slot=4, occupied=True, live_name="X")
-    )
-    monkeypatch.setattr(gui, "_askyesno", lambda *a, **k: False)
-    monkeypatch.setattr(ops, "clear_slot", lambda *a, **k: pytest.fail("must not run"))
-    calls = _capture_run(app, monkeypatch)
-    app.on_clear({"type": "slot", "dir": str(live_target), "slot": 4, "live": True})
-    assert calls == {}
 
 
-def test_clearing_an_already_empty_slot_says_so_and_stops(app, live_target, monkeypatch):
-    from nms_save_vault import gui
-    from nms_save_vault.core import operations as ops
-
-    monkeypatch.setattr(ops, "plan_clear_slot", lambda *a, **k: ops.ClearPlan(slot=4, occupied=False))
-    shown = []
-    monkeypatch.setattr(gui, "_showinfo", lambda *a, **k: shown.append(a))
-    monkeypatch.setattr(gui, "_askyesno", lambda *a, **k: pytest.fail("must not ask"))
-    calls = _capture_run(app, monkeypatch)
-    app.on_clear({"type": "slot", "dir": str(live_target), "slot": 4, "live": True})
-    assert shown and calls == {}
 
 
-@pytest.mark.parametrize(
-    "meta",
-    [
-        {"type": "slot", "dir": "X", "slot": 4, "live": True},
-        {"type": "member", "dir": "X", "slot": 4, "live": True, "member": 1},
-    ],
-    ids=["slot", "save-inside-it"],
-)
-def test_clear_from_the_right_click_menu_actually_clears(app, live_target, monkeypatch, meta):
-    """Regression: the menu narrowed a member row to its slot with a hand-built dict that
-    dropped the "live" flag, so Clear -- which needs a LIVE slot -- refused every row the
-    menu offered it to, on a slot and on either save inside it alike. Reported as "no
-    matter what I try, I get this error"."""
-    from nms_save_vault import gui
-    from nms_save_vault.core import operations as ops
-
-    meta = dict(meta, dir=str(live_target))
-    monkeypatch.setattr(
-        ops, "plan_clear_slot", lambda *a, **k: ops.ClearPlan(slot=4, occupied=True, live_name="X")
-    )
-    monkeypatch.setattr(gui, "_askyesno", lambda *a, **k: True)
-    monkeypatch.setattr(gui, "_showinfo", lambda *a, **k: pytest.fail("must not report a bad row"))
-    recorded = {}
-    monkeypatch.setattr(ops, "clear_slot", lambda vault, d, slot, **k: recorded.update(slot=slot))
-    _capture_run(app, monkeypatch)
-
-    assert _invoke_menu_entry(app, app._menu_for_slot, meta, "Clear live slot 4")
-    assert recorded == {"slot": 4}
 
 
-def test_clearing_needs_a_live_row(app, monkeypatch):
-    from nms_save_vault import gui
-    from nms_save_vault.core import operations as ops
-
-    shown = []
-    monkeypatch.setattr(gui, "_showinfo", lambda *a, **k: shown.append(a))
-    monkeypatch.setattr(ops, "plan_clear_slot", lambda *a, **k: pytest.fail("must not plan"))
-    calls = _capture_run(app, monkeypatch)
-    app.on_clear({"type": "slot", "dir": "X", "slot": 4, "live": False})
-    assert shown and calls == {}
 
 
 def test_copy_refuses_when_there_is_nowhere_writable(app, monkeypatch):
@@ -641,29 +554,6 @@ def test_promote_acts_on_the_clicked_rows_folder_not_the_active_one(app, live_ta
 # --- step 11: the clear plan off the Tk thread, with what it could not check ------------------
 
 
-def test_the_clear_plan_runs_off_the_tk_thread_and_shows_what_it_could_not_check(app, live_target, monkeypatch):
-    from nms_save_vault import gui
-    from nms_save_vault.core import operations as ops
-
-    plan = ops.ClearPlan(slot=4, occupied=True, live_name="Run", unverifiable=True,
-                         notes=["entry-1 could not be checked (drive unplugged)."])
-    planned = {}
-    monkeypatch.setattr(ops, "plan_clear_slot", lambda vault, directory, slot, **kw: planned.update(kw) or plan)
-    workers = []
-
-    def worker(fn, force, message):
-        workers.append(message)
-        return {"result": fn(force)}
-
-    monkeypatch.setattr(app, "_run_worker", worker)
-    asked = {}
-    monkeypatch.setattr(gui, "_askyesno", lambda title, msg: asked.setdefault("msg", msg) and False)
-
-    app.on_clear({"type": "slot", "dir": str(live_target), "slot": 4, "live": True})
-
-    assert workers, "the plan reads the whole vault: it must not run on the Tk thread"
-    assert any(Path(d).resolve() == live_target.resolve() for d in planned["other_live_dirs"])
-    assert "CANNOT VERIFY" in asked["msg"] and "drive unplugged" in asked["msg"]
 
 
 # --- step 11: P10, nothing out of reach at a larger font ---------------------------------------
@@ -844,7 +734,7 @@ def test_the_copy_dialog_fits_the_screen_and_keeps_its_buttons(app, live_target,
         assert isinstance(first, ttk.Button) and first.cget("text") == "Change..."
         rule = next(
             w for w in dialog.pack_slaves()
-            if isinstance(w, ttk.Label) and "only one save is refused" in str(w.cget("text"))
+            if isinstance(w, ttk.Label) and "Both saves of the slot are written" in str(w.cget("text"))
         )
         assert int(str(rule.cget("wraplength")) or 0) > 0, "the caption wraps instead of widening the window"
     finally:
@@ -942,7 +832,7 @@ def test_the_menu_bar_reaches_every_toolbar_action(app):
         "Backup live": "Back up live folder now",
         "Restore": "Restore whole folder from a backup...",
         "Extract slot": "Extract a slot",
-        "Clear slot...": "Clear a slot...",
+        "Empty slot (steps)...": "Empty a slot (steps)...",
         "Copy into live slot...": "Copy into a live slot...",
         "Promote": "Promote",
         "Import...": "Import...",
@@ -1029,3 +919,113 @@ def test_every_window_wide_key_goes_through_the_grab_check():
     source = Path(gui.__file__).read_text(encoding="utf-8")
     bindings = re.findall(r"self\.bind_all\([^\n]*", source)
     assert bindings and all("_shortcut(" in b for b in bindings), bindings
+
+
+# --- the app never empties a slot: the steps, after offering to keep a copy (D5 2.4.2) -------------
+
+
+def _guide(*, occupied=True, durable=False):
+    from nms_save_vault.core.liveops import EmptySlotGuide
+
+    return EmptySlotGuide(None, "Steam slot 4", "steam-local", occupied, durable, None,
+                          ("Close No Man's Sky.", "Delete the four files of this slot."))
+
+
+def test_the_steps_are_shown_after_offering_to_keep_a_copy(app, live_target, monkeypatch):
+    from nms_save_vault import gui
+    from nms_save_vault.core.liveops import classic
+
+    monkeypatch.setattr(classic, "empty_guide", lambda vault, directory, slot: _guide())
+    asked, shown, kept = [], [], {}
+    monkeypatch.setattr(gui, "_askyesno", lambda title, msg: asked.append(msg) or True)
+    monkeypatch.setattr(gui, "_showinfo", lambda title, msg: shown.append(msg))
+    monkeypatch.setattr(classic, "keep_copy",
+                        lambda vault, directory, slot: kept.update(slot=slot, directory=str(directory)))
+    calls = _capture_run(app, monkeypatch)
+
+    app.on_clear({"type": "slot", "dir": str(live_target), "slot": 4, "live": True})
+
+    assert "no copy in the vault" in asked[0]
+    assert kept == {"slot": 4, "directory": str(live_target)} and "slot 4" in calls["success"]
+    assert "1. Close No Man's Sky." in shown[-1] and "never empties a slot" in shown[-1]
+
+
+def test_declining_the_copy_still_shows_the_steps_and_keeps_nothing(app, live_target, monkeypatch):
+    from nms_save_vault import gui
+    from nms_save_vault.core.liveops import classic
+
+    monkeypatch.setattr(classic, "empty_guide", lambda vault, directory, slot: _guide())
+    monkeypatch.setattr(gui, "_askyesno", lambda *a, **k: False)
+    shown = []
+    monkeypatch.setattr(gui, "_showinfo", lambda title, msg: shown.append(msg))
+    monkeypatch.setattr(classic, "keep_copy", lambda *a, **k: pytest.fail("must not keep"))
+    calls = _capture_run(app, monkeypatch)
+
+    app.on_clear({"type": "slot", "dir": str(live_target), "slot": 4, "live": True})
+
+    assert shown and "2. Delete the four files" in shown[-1] and calls == {}
+
+
+def test_a_slot_already_in_the_vault_is_not_offered_a_copy(app, live_target, monkeypatch):
+    from nms_save_vault import gui
+    from nms_save_vault.core.liveops import classic
+
+    monkeypatch.setattr(classic, "empty_guide", lambda *a, **k: _guide(durable=True))
+    monkeypatch.setattr(gui, "_askyesno", lambda *a, **k: pytest.fail("must not ask"))
+    shown = []
+    monkeypatch.setattr(gui, "_showinfo", lambda title, msg: shown.append(msg))
+    _capture_run(app, monkeypatch)
+
+    app.on_clear({"type": "slot", "dir": str(live_target), "slot": 4, "live": True})
+
+    assert shown
+
+
+def test_an_already_empty_slot_says_so(app, live_target, monkeypatch):
+    from nms_save_vault import gui
+    from nms_save_vault.core.liveops import classic
+
+    monkeypatch.setattr(classic, "empty_guide", lambda *a, **k: _guide(occupied=False))
+    shown = []
+    monkeypatch.setattr(gui, "_showinfo", lambda title, msg: shown.append((title, msg)))
+    monkeypatch.setattr(gui, "_askyesno", lambda *a, **k: pytest.fail("must not ask"))
+    _capture_run(app, monkeypatch)
+
+    app.on_clear({"type": "slot", "dir": str(live_target), "slot": 4, "live": True})
+
+    assert shown and shown[0][0] == "Already empty"
+
+
+@pytest.mark.parametrize(
+    "meta",
+    [
+        {"type": "slot", "dir": "X", "slot": 4, "live": True},
+        {"type": "member", "dir": "X", "slot": 4, "live": True, "member": 1},
+    ],
+    ids=["slot", "save-inside-it"],
+)
+def test_the_steps_are_offered_from_the_right_click_menu(app, live_target, monkeypatch, meta):
+    """The menu narrows a member row to its slot: the live flag must survive that."""
+    from nms_save_vault import gui
+    from nms_save_vault.core.liveops import classic
+
+    meta = dict(meta, dir=str(live_target))
+    monkeypatch.setattr(classic, "empty_guide", lambda *a, **k: _guide(durable=True))
+    shown = []
+    monkeypatch.setattr(gui, "_showinfo", lambda title, msg: shown.append((title, msg)))
+    _capture_run(app, monkeypatch)
+
+    assert _invoke_menu_entry(app, app._menu_for_slot, meta, "Empty live slot 4")
+    assert shown and "steps" in shown[0][0]
+
+
+def test_the_steps_need_a_live_row(app, monkeypatch):
+    from nms_save_vault import gui
+    from nms_save_vault.core.liveops import classic
+
+    shown = []
+    monkeypatch.setattr(gui, "_showinfo", lambda *a, **k: shown.append(a))
+    monkeypatch.setattr(classic, "empty_guide", lambda *a, **k: pytest.fail("must not look"))
+    calls = _capture_run(app, monkeypatch)
+    app.on_clear({"type": "slot", "dir": "X", "slot": 4, "live": False})
+    assert shown and calls == {}

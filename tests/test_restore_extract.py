@@ -15,6 +15,7 @@ import pytest
 
 from nms_save_vault.core import operations as ops
 from nms_save_vault.core import savedir, slotmap
+from nms_save_vault.core import store as vstore
 from nms_save_vault.core.catalog import KIND_EXTRACT, SlotSummary, Vault
 
 
@@ -30,6 +31,7 @@ def sandbox(live_save_dir, tmp_path):
         shutil.copy2(vdf, live / vdf.name)
     vault = Vault(tmp_path / "vault")
     vault.ensure()
+    vstore.create_store(vault.root)          # live operations need the version store (D3)
     return live, vault
 
 
@@ -95,7 +97,12 @@ def test_restoring_an_extract_puts_its_slot_back_and_nothing_else(sandbox):
     assert result.ok
     assert result.op == "restore_extract"
     assert f"slot {slot}" in result.detail
-    assert after == before, "restoring the extract must return the folder to its exact prior state"
+    # the slot's saves are back byte for byte (the metas are stamped now); nothing else moved
+    for name in _slot_files(slot):
+        if name.startswith("save"):
+            assert after[name] == before[name], f"{name} did not come back"
+    for name in set(before) - _slot_files(slot):
+        assert after[name] == before[name], f"{name} was modified"
 
 
 def test_restoring_an_extract_deletes_nothing(sandbox):
@@ -128,11 +135,13 @@ def test_restoring_an_extract_leaves_every_other_slot_byte_identical(sandbox):
 
 def test_restoring_an_extract_is_undoable(sandbox):
     live, vault = sandbox
-    slot = savedir.scan(live).occupied_slots[0].slot
+    view = savedir.scan(live)
+    slot, other = view.occupied_slots[0].slot, view.occupied_slots[1].slot
     extract = ops.extract_slot(vault, live, slot)
+    ops.repopulate_slot(vault, live, other, live, slot, allow_game_running=True)
 
     result = ops.restore_entry(vault, extract, live, allow_game_running=True)
-    assert result.snapshot_id, "a change to the live folder must be undoable"
+    assert result.op_id, "a change to the live folder must be undoable"
     undo = ops.undo_last(vault, live, allow_game_running=True)
     assert undo.ok
 
@@ -195,7 +204,7 @@ def test_extract_entries_are_the_only_kind_diverted(sandbox):
 
 def test_undo_with_nothing_done_says_so(sandbox):
     live, vault = sandbox
-    with pytest.raises(ops.OperationError, match="[Nn]othing has been done yet"):
+    with pytest.raises(ops.OperationError, match="nothing to undo"):
         ops.undo_last(vault, live, allow_game_running=True)
 
 
@@ -212,25 +221,5 @@ def test_undo_after_only_a_backup_explains_why_there_is_nothing_to_undo(sandbox)
     assert "never change your live saves" in message
 
 
-def test_undo_reports_a_snapshot_that_has_gone_missing(sandbox):
-    live, vault = sandbox
-    view = savedir.scan(live)
-    ops.repopulate_slot(vault, live, view.occupied_slots[0].slot, live,
-                        view.occupied_slots[1].slot, allow_game_running=True)
-    snap = [e for e in vault.entries if e.kind == "snapshot"][0]
-    shutil.rmtree(snap.path)
-
-    with pytest.raises(ops.OperationError, match="folder is gone"):
-        ops.undo_last(vault, live, allow_game_running=True)
 
 
-def test_undo_reports_a_snapshot_dropped_from_the_catalog(sandbox):
-    live, vault = sandbox
-    view = savedir.scan(live)
-    ops.repopulate_slot(vault, live, view.occupied_slots[0].slot, live,
-                        view.occupied_slots[1].slot, allow_game_running=True)
-    snap = [e for e in vault.entries if e.kind == "snapshot"][0]
-    vault.remove(snap.id)
-
-    with pytest.raises(ops.OperationError, match="not in the catalog"):
-        ops.undo_last(vault, live, allow_game_running=True)

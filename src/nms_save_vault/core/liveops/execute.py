@@ -74,6 +74,7 @@ class OpTarget:
     xbox: msstore.XboxPairPlan | None = None
     payload: dict = field(default_factory=dict)
     records: list = field(default_factory=list)      # Xbox: this target's XboxRecordWrite
+    stamped: bool = True                              # False: a panic restore (metas verbatim)
     outside: dict = field(default_factory=dict)
     excluded: tuple = (frozenset(), frozenset())      # (file names, record dirs) the op writes
 
@@ -307,7 +308,7 @@ def _prepare(ctx: OpContext, plan: PlacePlan, rts: list[ResolvedTarget], op_id: 
             raise _Abandon("not_started", "SOURCE_UNREADABLE", str(exc)) from exc
         now = (scanned or {}).get(rt.target.ref) or             read_account(ctx, resolve_account(ctx, rt.target.ref))
         before = now.slots[rt.target.slot]       # a change since is caught by the pre-image checks
-        wts.append(OpTarget(tp, rt, src, before))
+        wts.append(OpTarget(tp, rt, src, before, stamped=plan.kind != "panic_restore"))
     progress(Progress("preserving", 0, len(wts)))
     for wt in wts:
         wt.preserved = _preserve(ctx, wt, op_id, plan.kind)
@@ -368,7 +369,7 @@ def _snapshot(ctx: OpContext, wt: OpTarget, op_id: str, kind: str) -> str:
 def _prepare_writer(ctx: OpContext, wt: OpTarget, now: int, tag: str) -> None:
     """The writes stamped now (F5b), the writer's plan, its payload; the slot as the writer
     sees it must still be what was preserved."""
-    wt.writes = pairmeta.compute(wt.src.pair, wt.rt, now)
+    wt.writes = pairmeta.compute(wt.src.pair, wt.rt, now, stamped=wt.stamped)
     slot = wt.rt.target.slot
     data = wt.src.data
     if wt.rt.target.platform == "steam":
@@ -790,6 +791,8 @@ def outcome_text(plan: PlacePlan, wts: list[OpTarget]) -> str:
         return f"The {which} of {label} loads now."
     if plan.kind == "restore_older":
         return f"{label} holds this version of '{name}' now. The one it replaced is in the vault."
+    if plan.kind == "panic_restore":
+        return f"The folder is restored from the snapshot ({len(wts)} slots)."
     if plan.kind == "swap":
         return f"Swapped {label} and {wts[1].rt.label}."
     if plan.kind == "undo":
@@ -802,6 +805,8 @@ def outcome_text(plan: PlacePlan, wts: list[OpTarget]) -> str:
 
 def undo_offer(plan: PlacePlan, wts: list[OpTarget], op_id: str) -> UndoOffer | None:
     wt = wts[0]
+    if plan.kind == "panic_restore":
+        return UndoOffer(op_id, "Undo: restore the folder from the safety snapshot")
     if plan.kind == "swap" or len(wts) == 2:
         return UndoOffer(op_id, f"Undo: swap {wt.rt.label} and {wts[1].rt.label} back")
     if not wt.before.present:

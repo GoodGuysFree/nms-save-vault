@@ -9,6 +9,8 @@ from pathlib import Path
 import pytest
 
 from nms_save_vault.core import operations, slotmap
+from nms_save_vault.core import store as vstore
+from nms_save_vault.core.store import classic as store_classic
 from nms_save_vault.core.catalog import Vault
 from nms_save_vault.core.organizer import scanner
 from nms_save_vault.core.organizer.cache import ScanCache
@@ -230,13 +232,15 @@ def test_an_operation_waiting_for_the_game_and_a_recent_event(tmp_path):
     w = World(tmp_path)
     steam_save(w.steam, 9, 0, "Main Save", 100, MAIN, T0, extra="v1")
     steam_save(w.steam, 3, 0, "Main Save", 50, MAIN, T0 - 10, extra="v0")
+    vstore.create_store(w.vault.root)               # live operations need the version store
     backup = operations.create_full_backup(w.vault, w.steam, warnings=[])
-    operations.repopulate_slot(w.vault, Path(backup.path), 3, w.steam, 9)
+    with store_classic.entry_folder(w.vault, backup) as folder:
+        operations.repopulate_slot(w.vault, folder, 3, w.steam, 9)
     model = w.refresh()
     slot9 = model.live_board().sources[0].slots[8]
     assert slot9.pending_op is not None and slot9.pending_op.startswith("op-")
     events = model.events(PID)
-    assert events[0].kind == "repopulate"
+    assert events[0].kind == "restore_older"
     assert events[0].text == "Put live by the app in Steam slot 9"
     steam_save(w.steam, 7, 0, "Main Save", 60, MAIN, T0 + 1, extra="v7")
     w.refresh()

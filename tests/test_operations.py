@@ -16,6 +16,8 @@ from types import SimpleNamespace
 import pytest
 
 from nms_save_vault.core import operations as ops
+from nms_save_vault.core import store as vstore
+from nms_save_vault.core.store import classic as store_classic
 from nms_save_vault.core import catalog, formats, savedir, slotmap
 from nms_save_vault.core.catalog import CatalogEntry, Vault
 
@@ -33,7 +35,16 @@ def sandbox(live_save_dir, tmp_path):
         shutil.copy2(vdf, live / vdf.name)
     vault = Vault(tmp_path / "vault")
     vault.ensure()
+    vstore.create_store(vault.root)          # live operations need the version store (D3)
     return live, vault
+
+
+def _vault(tmp_path: Path) -> Vault:
+    """A vault in store mode: live operations need the version store (D3)."""
+    vault = Vault(tmp_path / "vault")
+    vault.ensure()
+    vstore.create_store(vault.root)
+    return vault
 
 
 def _data_bytes(folder: Path, slot: int, member: int = 0) -> bytes:
@@ -55,7 +66,7 @@ def test_full_backup_and_restore_mirror(sandbox):
     assert victim not in [s.slot for s in savedir.scan(live).occupied_slots]
 
     res = ops.restore_full(vault, entry, live, allow_game_running=True)
-    assert res.ok and res.snapshot_id
+    assert res.ok and res.op_id           # one live operation, undoable per slot
     assert [s.slot for s in savedir.scan(live).occupied_slots] == occupied_before
 
 
@@ -106,7 +117,8 @@ def test_extract_then_repopulate_from_extract(sandbox):
     entry = ops.extract_slot(vault, live, src_slot, label="x")
     assert entry.kind == "extract"
 
-    res = ops.repopulate_slot(vault, Path(entry.path), src_slot, live, dest_slot, allow_game_running=True)
+    with store_classic.entry_folder(vault, entry) as folder:
+        res = ops.repopulate_slot(vault, folder, src_slot, live, dest_slot, allow_game_running=True)
     assert res.ok
     assert savedir.scan(live).slots[dest_slot].a.save_name == src_name
 
@@ -238,22 +250,6 @@ def test_import_vault_preview_and_guards(tmp_path):
         ops.import_vault(cur, cur.root, copy_into_vault=True)
 
 
-def test_steam_promote_beats_a_sibling_without_a_meta_time(tmp_path):
-    """With no meta time on the sibling the pair is ordered by file time, so promote has to
-    move the target's file time past the sibling's as well, not only its meta time."""
-    live = tmp_path / "live"
-    steam_save(live, 1, 0, "Run", 3600, 0x1234, 1_700_000_000)
-    steam_save(live, 1, 1, "Run", 3700, 0x1234, 0)
-    for member, when in ((0, 1_700_000_000), (1, 1_700_005_000)):
-        fno = slotmap.slot_file_numbers(1)[member]
-        for name in (slotmap.data_filename(fno), slotmap.meta_filename(fno)):
-            os.utime(live / name, (when, when))
-    vault = Vault(tmp_path / "vault")
-    assert savedir.scan(live).slots[1].newest.label == "B"
-
-    ops.promote_member(vault, live, 1, 0, allow_game_running=True)
-
-    assert savedir.scan(live).slots[1].newest.label == "A"
 
 
 def _steam_pair(live: Path, a_file_time: float, b_file_time: float) -> None:
@@ -266,103 +262,16 @@ def _steam_pair(live: Path, a_file_time: float, b_file_time: float) -> None:
             os.utime(live / name, (when, when))
 
 
-def test_steam_promote_never_moves_a_file_time_back(tmp_path):
-    """A's files were last written long after its meta time; promoting it must not stamp
-    them with the (much older) new meta time."""
-    live = tmp_path / "live"
-    _steam_pair(live, 1_700_000_000, 2000)
-
-    ops.promote_member(Vault(tmp_path / "vault"), live, 1, 0, allow_game_running=True)
-
-    a = savedir.scan(live).slots[1].a
-    assert a.timestamp == 2001 and a.data_mtime >= 1_700_000_000
 
 
-def test_a_steam_promote_that_would_change_nothing_writes_nothing(tmp_path):
-    """A is newer by its meta time and by its file time already: no snapshot, no log line,
-    no write -- just a note saying so."""
-    live = tmp_path / "live"
-    _steam_pair(live, 1_700_000_000, 2000)          # A: meta 1000 < B's 2000 ...
-    vault = Vault(tmp_path / "vault")
-    ops.promote_member(vault, live, 1, 0, allow_game_running=True)   # ... so this one writes
-    before = {p.name: (p.read_bytes(), p.stat().st_mtime) for p in live.iterdir()}
-    snapshots = len(vault.entries)
-
-    result = ops.promote_member(vault, live, 1, 0, allow_game_running=True)
-
-    assert result.ok and result.snapshot_id is None and "already the newest" in result.detail
-    assert {p.name: (p.read_bytes(), p.stat().st_mtime) for p in live.iterdir()} == before
-    assert len(vault.entries) == snapshots and vault.read_oplog()[-1]["op"] == "promote_member"
-    assert len(vault.read_oplog()) == 1
 
 
-def test_already_newest_is_judged_on_the_same_order_as_newest(tmp_path):
-    """No meta times, so the data files' times order the pair. A's meta file is the latest
-    file of all, but its data file is older than B's: B is the newest, so promoting A must
-    do something rather than report it already newest."""
-    live = tmp_path / "live"
-    steam_save(live, 1, 0, "Run", 3600, 0x1234, 0)
-    steam_save(live, 1, 1, "Run", 3700, 0x1234, 0)
-    a_data, b_data = (slotmap.slot_file_numbers(1)[m] for m in (0, 1))
-    for name, when in ((slotmap.data_filename(a_data), 1000), (slotmap.meta_filename(a_data), 3000),
-                       (slotmap.data_filename(b_data), 2000), (slotmap.meta_filename(b_data), 2000)):
-        os.utime(live / name, (when, when))
-    assert savedir.scan(live).slots[1].newest.label == "B"
-
-    result = ops.promote_member(Vault(tmp_path / "vault"), live, 1, 0, allow_game_running=True)
-
-    assert result.snapshot_id is not None
-    assert savedir.scan(live).slots[1].newest.label == "A"
 
 
-def test_steam_promote_without_any_meta_time_orders_by_file_time_only(tmp_path):
-    """Neither member carries a save time: the meta is left alone (a time of 1 would read
-    as 1970) and the target's file time moves past the sibling's."""
-    live = tmp_path / "live"
-    steam_save(live, 1, 0, "Run", 3600, 0x1234, 0)
-    steam_save(live, 1, 1, "Run", 3700, 0x1234, 0)
-    for member, when in ((0, 1_700_000_000), (1, 1_700_005_000)):
-        fno = slotmap.slot_file_numbers(1)[member]
-        for name in (slotmap.data_filename(fno), slotmap.meta_filename(fno)):
-            os.utime(live / name, (when, when))
-    a_meta = live / slotmap.meta_filename(slotmap.slot_file_numbers(1)[0])
-    meta_before = a_meta.read_bytes()
-
-    ops.promote_member(Vault(tmp_path / "vault"), live, 1, 0, allow_game_running=True)
-
-    slot = savedir.scan(live).slots[1]
-    assert slot.newest.label == "A" and slot.a.timestamp == 0
-    assert a_meta.read_bytes() == meta_before
-    assert slot.a.data_mtime > 1_700_005_000
 
 
-def test_steam_promote_beats_a_sibling_whose_data_is_missing(tmp_path):
-    """A half-present sibling (meta, no data) has no data time; its meta file's time still
-    counts, so the promoted files end up later than it."""
-    live = tmp_path / "live"
-    _steam_pair(live, 1000, 2000)
-    b_fno = slotmap.slot_file_numbers(1)[1]
-    (live / slotmap.data_filename(b_fno)).unlink()
-    b_meta = live / slotmap.meta_filename(b_fno)
-    os.utime(b_meta, (1_700_000_000, 1_700_000_000))
-
-    ops.promote_member(Vault(tmp_path / "vault"), live, 1, 0, allow_game_running=True)
-
-    assert savedir.scan(live).slots[1].a.data_mtime > b_meta.stat().st_mtime
 
 
-def test_steam_promote_under_cloud_stamps_the_write_time(tmp_path):
-    """Steam Cloud judges by file time: an old time would let its copy win on next launch."""
-    live = tmp_path / "live"
-    _steam_pair(live, 1000, 2000)
-    (live / formats.STEAM_AUTOCLOUD).write_text("cloud", "utf-8")
-    before = time.time()
-
-    ops.promote_member(Vault(tmp_path / "vault"), live, 1, 0, allow_game_running=True)
-
-    a = savedir.scan(live).slots[1].a
-    assert a.timestamp == 2001 and a.data_mtime >= int(before)
-    assert a.meta_path.stat().st_mtime >= int(before)
 
 
 def test_snapshot_live_never_deletes_snapshots(make_wgs_account, tmp_path):
@@ -714,18 +623,6 @@ def test_repopulate_under_cloud_stamps_the_write_time(sandbox):
     assert (live / slotmap.data_filename(fno)).stat().st_mtime >= started - 1
 
 
-def test_repopulate_without_cloud_keeps_the_source_age(sandbox):
-    live, vault = sandbox
-    occ = [s.slot for s in savedir.scan(live).occupied_slots]
-    src_slot, dest_slot = occ[0], occ[1]
-    old = time.time() - 30 * 86400
-    _touch_slot(live, src_slot, old)
-    (live / formats.STEAM_AUTOCLOUD).unlink(missing_ok=True)
-
-    ops.repopulate_slot(vault, live, src_slot, live, dest_slot, allow_game_running=True)
-
-    fno = slotmap.slot_file_numbers(dest_slot)[0]
-    assert (live / slotmap.data_filename(fno)).stat().st_mtime == pytest.approx(old, abs=2)
 
 
 def test_restore_under_cloud_stamps_the_write_time(sandbox):
@@ -750,17 +647,6 @@ def _steam_slot(folder: Path, slot: int, members: tuple[int, ...], name: str, id
         steam_save(folder, slot, m, name, 100 + m, ident, base + m)
 
 
-def test_a_one_member_steam_source_never_leaves_an_old_member_behind(tmp_path):
-    live = tmp_path / "live"
-    _steam_slot(live, 1, (0,), "Source", 0x1, 1000)
-    _steam_slot(live, 3, (0, 1), "Old", 0x3, 500)
-    vault = Vault(tmp_path / "vault")
-    before = {p.name: p.read_bytes() for p in live.iterdir()}
-
-    with pytest.raises(ops.OperationError, match="would leave behind"):
-        ops.repopulate_slot(vault, live, 1, live, 3, allow_game_running=True)
-
-    assert {p.name: p.read_bytes() for p in live.iterdir()} == before and vault.entries == []
 
 
 def test_a_two_member_steam_source_replaces_both_and_keeps_its_order(tmp_path):
@@ -771,7 +657,7 @@ def test_a_two_member_steam_source_replaces_both_and_keeps_its_order(tmp_path):
         steam_save(live, 1, m, "Source", 100 + m, 0x1, ts)
     _steam_slot(live, 3, (0, 1), "Old", 0x3, 500)
     (live / formats.STEAM_AUTOCLOUD).write_text("cloud", "utf-8")
-    vault = Vault(tmp_path / "vault")
+    vault = _vault(tmp_path)
 
     ops.repopulate_slot(vault, live, 1, live, 3, allow_game_running=True)
 
@@ -786,7 +672,66 @@ def test_a_one_member_steam_source_may_join_its_own_playthrough(tmp_path):
     steam_save(live, 3, 0, "Run", 100, 0xCAFE, 1000)
     steam_save(live, 3, 1, "Run", 200, 0xCAFE, 2000)
 
-    ops.repopulate_slot(Vault(tmp_path / "vault"), live, 1, live, 3, allow_game_running=True)
+    ops.repopulate_slot(_vault(tmp_path), live, 1, live, 3, allow_game_running=True)
 
     slot = savedir.scan(live).slots[3]
     assert slot.newest.label == "A" and slot.a.info.total_play_time == 300
+
+
+# --- the classic operations are live operations (D5 4.1) ---------------------------------------
+
+
+def test_promote_that_would_change_nothing_writes_nothing(tmp_path):
+    live = tmp_path / "live"
+    steam_save(live, 1, 0, "Run", 3600, 0x1234, 1000)
+    steam_save(live, 1, 1, "Run", 3700, 0x1234, 2000)
+    vault = _vault(tmp_path)
+    ops.promote_member(vault, live, 1, 0, allow_game_running=True)        # A loads now
+    before = {p.name: (p.read_bytes(), p.stat().st_mtime) for p in live.iterdir()}
+
+    result = ops.promote_member(vault, live, 1, 0, allow_game_running=True)
+
+    assert result.ok and result.op_id is None and "already the newest" in result.detail
+    assert {p.name: (p.read_bytes(), p.stat().st_mtime) for p in live.iterdir()} == before
+
+
+def test_promote_stamps_the_write_time_and_keeps_the_old_pair_in_the_vault(tmp_path):
+    live = tmp_path / "live"
+    steam_save(live, 1, 0, "Run", 3600, 0x1234, 1000)
+    steam_save(live, 1, 1, "Run", 3700, 0x1234, 2000)
+    started = int(time.time())
+
+    result = ops.promote_member(_vault(tmp_path), live, 1, 0, allow_game_running=True)
+
+    a = savedir.scan(live).slots[1].a
+    assert result.op_id and savedir.scan(live).slots[1].newest.label == "A"
+    assert a.timestamp >= started and a.data_mtime >= started
+
+
+def test_repopulate_stamps_the_write_time_even_without_cloud(sandbox):
+    live, vault = sandbox
+    occ = [s.slot for s in savedir.scan(live).occupied_slots]
+    src_slot, dest_slot = occ[0], occ[1]
+    _touch_slot(live, src_slot, time.time() - 30 * 86400)
+    (live / formats.STEAM_AUTOCLOUD).unlink(missing_ok=True)
+    started = time.time()
+
+    ops.repopulate_slot(vault, live, src_slot, live, dest_slot, allow_game_running=True)
+
+    fno = slotmap.slot_file_numbers(dest_slot)[0]
+    assert (live / slotmap.data_filename(fno)).stat().st_mtime >= started - 1
+
+
+def test_a_one_member_steam_source_fills_both_positions_and_keeps_the_old_pair(tmp_path):
+    """The old member is never left beside the copy (P6): both positions get the copy, and
+    what the slot held is in the vault."""
+    live = tmp_path / "live"
+    _steam_slot(live, 1, (0,), "Source", 0x1, 1000)
+    _steam_slot(live, 3, (0, 1), "Old", 0x3, 500)
+    vault = _vault(tmp_path)
+
+    result = ops.repopulate_slot(vault, live, 1, live, 3, allow_game_running=True)
+
+    dest = savedir.scan(live).slots[3]
+    assert dest.a.save_name == dest.b.save_name == "Source" and result.op_id
+    assert any(e.kind == "preserve" for e in store_classic.list_entries(vault))

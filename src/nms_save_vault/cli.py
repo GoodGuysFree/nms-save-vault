@@ -7,15 +7,23 @@ Examples:
     nmsvault backup --label "before X"
     nmsvault restore <entry-id>
     nmsvault extract 9 --label "main"
-    nmsvault clear 9 [--yes]
-    nmsvault repopulate --from <entry-id|path> --src-slot 9 --to-slot 3
+    nmsvault clear steam:9                    # the steps to empty a slot yourself
+    nmsvault repopulate --from <entry-id|path> --src-slot 9 --to-slot 3 [--yes]
     nmsvault promote --slot 9 --member A
     nmsvault import "D:\\some\\st_backup" [--copy]
     nmsvault import "E:\\Backup\\_SaveVault" [--copy]   # a whole copied vault
     nmsvault discover [--add]
     nmsvault accounts --set 7656119...=Main    # hide the real account ids
-    nmsvault undo
+    nmsvault undo [--to steam:7 | --op OP_ID | --whole-folder]
     nmsvault verify [live|<entry-id>|<path>]
+
+  Live operations (what a slot is replaced by is kept in the vault first):
+    nmsvault place steam:7 --from <entry-id> --src-slot 3 [--member A|B] [--yes]
+    nmsvault swap steam:3 steam:7
+    nmsvault keep steam:7
+    nmsvault ops steam:7                      # the moves made to a slot
+    nmsvault recover [--op OP_ID --choice forward|back|leave]
+    nmsvault panic-restore [<entry-id>]       # a whole snapshot back, slot by slot
 
   The organizer (every save file, its versions and history):
     nmsvault saves [--sort play_time] [--live-only] [--find TEXT] [--json]
@@ -331,40 +339,6 @@ def cmd_playtime(args) -> int:
     return 0
 
 
-def cmd_clear(args) -> int:
-    live = _resolve_live(args)
-    vault = _resolve_vault(args)
-    st = appstate.load()
-    others = [Path(s.path) for s in st.live_sources] if st is not None else []
-    plan = ops.plan_clear_slot(vault, live, args.slot, other_live_dirs=others)
-    if not plan.occupied:
-        print(f"slot {args.slot} is already empty; nothing to do")
-        return 0
-
-    print(f"Clearing live slot {plan.slot} of {Path(live).name} would delete:")
-    print(f"  {plan.live_name}   ({ops.format_duration(plan.live_play_time)} play time)")
-    if plan.entry_id is not None:
-        print(
-            f"Best copy in the vault: {plan.entry_id} [{plan.entry_kind}] "
-            f"made {plan.entry_created}, {ops.format_duration(plan.backup_play_time)} play time"
-        )
-        if plan.identical:
-            print("  (an identical copy: the vault holds this very save)")
-    for note in plan.notes:
-        print(f"  note: {note}")
-    if plan.warning:
-        print(f"\nWARNING: {plan.warning}")
-    if plan.cloud_warning:
-        print(f"\nSTEAM CLOUD: {plan.cloud_warning}")
-    if not args.yes and not _confirm(f"Clear slot {plan.slot}?"):
-        print("cancelled")
-        return 0
-
-    res = ops.clear_slot(vault, live, args.slot, allow_game_running=args.force)
-    _report(res)
-    return 0
-
-
 def _confirm(question: str) -> bool:
     """Ask on the terminal. A non-interactive run must pass --yes rather than be assumed
     to have agreed, so every way stdin can fail to produce an answer -- redirected from
@@ -378,13 +352,21 @@ def _confirm(question: str) -> bool:
 
 
 def cmd_repopulate(args) -> int:
+    """Today's repopulate, as a ``place``: the plan is printed and confirmed first."""
+    from . import cli_live
+    from .core.liveops import classic, plan_place
+
     live = _resolve_live(args)
     vault = _resolve_vault(args)
     with ExitStack() as stack:
         source = stack.enter_context(_source_folder(vault, args.source)) if args.source else live
-        res = ops.repopulate_slot(vault, source, args.src_slot, live, args.to_slot, allow_game_running=args.force)
-    _report(res)
-    return 0
+        ops._check_slot(args.src_slot)
+        ops._check_slot(args.to_slot)
+        ops._guard_same_platform(Path(source), live)
+        ctx, ref = classic.open_context(vault, live)
+        plan = plan_place(ctx, classic.folder_pair(Path(source), args.src_slot),
+                          ref.target(args.to_slot))
+        return cli_live._run(ctx, plan, args)
 
 
 def cmd_promote(args) -> int:
@@ -444,19 +426,6 @@ def cmd_discover(args) -> int:
     return 0
 
 
-def cmd_undo(args) -> int:
-    live = _resolve_live(args)
-    vault = _resolve_vault(args)
-    st = appstate.load()
-    others = [Path(s.path) for s in st.live_sources] if st is not None else []
-    res = ops.undo_last(
-        vault, live, allow_game_running=args.force, acknowledge_damage=args.accept_damaged_log,
-        other_live_dirs=others, restore_accountdata=args.with_accountdata,
-    )
-    _report(res)
-    return 0
-
-
 def cmd_verify(args) -> int:
     target = args.target or "live"
     if target == "live":
@@ -491,7 +460,9 @@ def _report(res: ops.OpResult) -> None:
     if res.changed:
         print(f"  changed: {', '.join(res.changed)}")
     _print_warnings(res.warnings)
-    if res.snapshot_id:
+    if res.op_id:
+        print(f"  (undo available: nmsvault undo --op {res.op_id})")
+    elif res.snapshot_id:
         print(f"  (undo available: nmsvault undo  -> restores snapshot {res.snapshot_id})")
 
 
@@ -776,8 +747,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--live", help="path to the live st_<id> save folder")
     p.add_argument("--vault", help="path to the vault folder")
     sub = p.add_subparsers(dest="command", required=True)
-    from . import cli_store
+    from . import cli_live, cli_store
     cli_store.add_commands(sub)
+    cli_live.add_commands(sub)
 
     sub.add_parser("status", help="show the live folder and slot table").set_defaults(func=cmd_status)
     sub.add_parser("list", help="list catalog entries").set_defaults(func=cmd_list)
@@ -800,7 +772,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("restore", help="restore a backup into the live folder")
     s.add_argument("entry_id")
-    s.add_argument("--no-mirror", action="store_true", help="add/overwrite only; keep extra live slots")
+    s.add_argument("--no-mirror", action="store_true", help="kept for old scripts: slots the backup does not hold are always left alone")
     s.add_argument("--force", action="store_true", help="proceed even if the game seems to be running")
     s.add_argument(
         "--with-accountdata", action="store_true",
@@ -814,17 +786,15 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--label", default="")
     s.set_defaults(func=cmd_extract)
 
-    s = sub.add_parser("clear", help="empty a live slot (deletes both of its saves)")
-    s.add_argument("slot", type=int)
-    s.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
-    s.add_argument("--force", action="store_true", help="proceed even if the game seems to be running")
-    s.set_defaults(func=cmd_clear)
-
     s = sub.add_parser("repopulate", help="write a slot from a backup into a live slot")
     s.add_argument("--from", dest="source", help="source entry id or folder (default: live)")
     s.add_argument("--src-slot", type=int, required=True)
     s.add_argument("--to-slot", type=int, required=True)
-    s.add_argument("--force", action="store_true")
+    s.add_argument("--yes", action="store_true", help="do not ask for confirmation")
+    s.add_argument("--confirm", action="append", default=[], metavar="CODE",
+                   help="answer a confirmation the plan asks (repeatable)")
+    s.add_argument("--force", action="store_true",
+                   help="go on when it cannot be checked whether the game is running")
     s.set_defaults(func=cmd_repopulate)
 
     s = sub.add_parser("promote", help="force a slot member to be the newest")
@@ -842,18 +812,6 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("discover", help="find existing backups under the NMS root")
     s.add_argument("--add", action="store_true", help="add newly found backups to the catalog (in place)")
     s.set_defaults(func=cmd_discover)
-
-    s = sub.add_parser("undo", help="undo the last operation on the live folder (restore its snapshot)")
-    s.add_argument("--force", action="store_true")
-    s.add_argument(
-        "--accept-damaged-log", action="store_true",
-        help="undo even though a newer line of the undo log is damaged (it may record a change this skips)",
-    )
-    s.add_argument(
-        "--with-accountdata", action="store_true",
-        help="also roll the account data (unlocks, settings) back to the snapshot's",
-    )
-    s.set_defaults(func=cmd_undo)
 
     s = sub.add_parser(
         "accounts",

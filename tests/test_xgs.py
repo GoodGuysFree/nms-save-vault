@@ -10,13 +10,22 @@ import pytest
 
 from nms_save_vault.core import msstore, savedir
 from nms_save_vault.core import operations as ops
+from nms_save_vault.core import store as vstore
 from nms_save_vault.core.catalog import Vault
 
 
 def _vault(tmp_path) -> Vault:
     v = Vault(tmp_path / "vault")
     v.ensure()
+    vstore.create_store(v.root)          # live operations need the version store (D3)
     return v
+
+
+@pytest.fixture(autouse=True)
+def _xbox_app_is_quiet(monkeypatch):
+    from nms_save_vault.core.liveops import planner
+
+    monkeypatch.setattr(planner, "XBOX_SYNC_SECONDS", 0)
 
 
 def _add_xgs_twin(wgs_account: Path) -> Path:
@@ -66,18 +75,11 @@ def test_promote_mirrors_into_xgs_and_leaves_others(make_wgs_account, tmp_path):
     assert after == _wgs_state(live)
     assert after["Slot1Auto"] != before["Slot1Auto"]          # the promoted meta was re-stamped
     assert after["Slot1Auto"][0] == before["Slot1Auto"][0]    # data verbatim
-    for ident in ("AccountData", "Slot1Manual", "Slot2Auto"):
+    assert after["Slot1Manual"][0] == before["Slot1Manual"][0]   # the pair is written whole
+    for ident in ("AccountData", "Slot2Auto"):
         assert after[ident] == before[ident]
 
 
-def test_clear_removes_the_slot_from_xgs_only(make_wgs_account, tmp_path):
-    live = make_wgs_account(tmp_path, SAVES)
-    twin = _add_xgs_twin(live)
-
-    ops.clear_slot(_vault(tmp_path), live, 1, allow_game_running=True)
-
-    assert sorted(_xgs_state(twin)) == ["AccountData", "Slot2Auto"]
-    assert _xgs_state(twin) == _wgs_state(live)
 
 
 def test_repopulate_creates_the_slot_in_xgs(make_wgs_account, tmp_path):
@@ -87,7 +89,7 @@ def test_repopulate_creates_the_slot_in_xgs(make_wgs_account, tmp_path):
     ops.repopulate_slot(_vault(tmp_path), live, 1, live, 5, allow_game_running=True)
 
     state = _xgs_state(twin)
-    assert state["Slot5Auto"] == state["Slot1Auto"]
+    assert state["Slot5Auto"][0] == state["Slot1Auto"][0]        # data verbatim
     assert state == _wgs_state(live)
 
 
@@ -102,13 +104,17 @@ def test_restore_and_undo_resync_xgs(make_wgs_account, tmp_path):
     vault = _vault(tmp_path)
     entry = ops.import_backup(vault, backup, label="bk")
 
-    res = ops.restore_full(vault, entry, live, allow_game_running=True)
+    ops.restore_full(vault, entry, live, allow_game_running=True)
     assert _xgs_state(twin) == _wgs_state(live)
-    assert sorted(_xgs_state(twin)) == ["AccountData", "Slot3Manual"]
-    assert "-xgs/Slot1Auto" in res.changed
+    # the slots the backup lacks are left alone (F8); the account data stays the live one
+    assert sorted(_xgs_state(twin)) == ["AccountData", "Slot1Auto", "Slot1Manual", "Slot2Auto",
+                                        "Slot3Auto", "Slot3Manual"]
+    assert _xgs_state(twin)["AccountData"] == original["AccountData"]
 
     ops.undo_last(vault, live, allow_game_running=True)
-    assert _xgs_state(twin) == original
+    assert _xgs_state(twin) == _wgs_state(live)
+    for ident in ("Slot1Auto", "Slot1Manual", "Slot2Auto"):
+        assert _xgs_state(twin)[ident] == original[ident]
 
 
 def test_no_xgs_folder_is_not_created(make_wgs_account, tmp_path):
@@ -132,7 +138,7 @@ def test_xgs_only_account_is_readable_but_not_writable(make_wgs_account, tmp_pat
     with pytest.raises(ops.OperationError):
         ops.promote_member(_vault(tmp_path), twin, 1, 0, allow_game_running=True)
     with pytest.raises(ops.OperationError):
-        ops.clear_slot(_vault(tmp_path), twin, 1, allow_game_running=True)
+        ops.repopulate_slot(_vault(tmp_path), twin, 1, twin, 5, allow_game_running=True)
 
 
 def test_discovery_adds_xgs_only_accounts(make_wgs_account, tmp_path, monkeypatch):

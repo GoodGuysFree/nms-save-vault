@@ -39,6 +39,12 @@ def plan_undo(ctx: OpContext, op_id: str) -> PlacePlan:
         entries = [_Entry.of(t) for t in writing["targets"]]
     except (KeyError, TypeError, ValueError, opjournal.JournalError, LiveOpError):
         return _unavailable(ctx)
+    if rec.kind == "panic_restore":          # the inverse is the restore of its own snapshot
+        from .panic import plan_panic_restore
+
+        t = writing["targets"][0]
+        plan = plan_panic_restore(ctx, target_from_json(t["target"]).ref, t["snapshot_id"])
+        return dataclasses.replace(plan, undo_of=op_id)
     swap = rec.kind == "swap"
     parts, warnings, blocks = [], [], []
     for e in entries:
