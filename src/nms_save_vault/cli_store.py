@@ -31,6 +31,10 @@ def add_commands(sub: argparse._SubParsersAction) -> None:
     u.add_argument("--yes", action="store_true", help="do not ask for confirmation")
     u.set_defaults(func=cmd_store_upgrade)
 
+    f = store_sub.add_parser("fold", help="read the old backup folders into the store (after the "
+                                          "upgrade; resumes a fold that stopped)")
+    f.set_defaults(func=cmd_store_fold)
+
 
 def _vault_root(args, state) -> Path:
     if args.vault:
@@ -69,7 +73,26 @@ def cmd_store_upgrade(args) -> int:
             return 0
     result = upgrade.run_upgrade(plan, progress=_progress)
     print(result.message)
-    return 0
+    if result.fold_waiting_for_space:
+        return 0
+    return _fold(root, state)
+
+
+def cmd_store_fold(args) -> int:
+    state = appstate.load()
+    return _fold(_vault_root(args, state), state)
+
+
+def _fold(root: Path, state) -> int:
+    from .core.store import migrate
+
+    store = vstore.open_store(root, app_state=state)
+    report = migrate.run_fold(store, progress=lambda p: print(
+        f"  reading {p.current} ({p.entries_done + 1} of {p.entries_total})"))
+    print(report.message)
+    if report.fsck_ok is False:
+        print("warning: the check after the fold found damage: run nmsvault store fsck")
+    return 0 if not report.failed and report.fsck_ok is not False else 1
 
 
 def _progress(p) -> None:
