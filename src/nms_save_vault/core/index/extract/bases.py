@@ -23,38 +23,48 @@ IGNORED_TYPES = frozenset({"UITempShipBase"})
 CORVETTE_FOLDER = "/BIGGS/"       # corvette ship models live under MODELS/.../BIGGS/
 
 
-def corvette_slots(psd: dict) -> set[int]:
-    return {i for i, s in enumerate(items(psd, "ShipOwnership"))
-            if CORVETTE_FOLDER in (_str(get(s, "Resource", "Filename")))}
-
-
-def _str(v: object) -> str:
-    return v if isinstance(v, str) else ""
+def corvette_slots(ctx: CtxInput) -> set[int]:
+    return {s.index for s in ctx.ships if CORVETTE_FOLDER in s.model}
 
 
 def _digest(value: object, n: int) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=True).encode("ascii")).hexdigest()[:n]
 
 
-def _base_id(base_type: str, base: dict, address: int | None) -> str:
+def _base_id(base_type: str, base: dict, address: int | None, index: int) -> str:
     # The freighter base and corvette layouts move with their vehicle, so their address
     # changes every save; two planet bases can share a planet, so position is part of it.
     if base_type == "FreighterBase":
         return "freighter"
     if base_type == "PlayerShipBase":
         return f"corvette:{integer(get(base, 'UserData'))}"
-    return f"{base_type[:12]}:" + _digest([hex64(address), get(base, "Position")], 12)
+    position = get(base, "Position")
+    if not isinstance(position, list):
+        # No position to tell bases on one planet apart: fall back to the list index.
+        return f"{base_type[:12]}:" + _digest([hex64(address), None], 12) + f"#{index}"
+    return f"{base_type[:12]}:" + _digest([hex64(address), position], 12)
+
+
+def unique_id(wanted: str, index: int, used: set[str]) -> str:
+    """``wanted``, or (when this save already has a base by that id: two layouts for one
+    corvette slot, two bases at one spot) ``wanted#<list index>``."""
+    bid = wanted
+    while bid in used:
+        bid = f"{bid}#{index}"
+    used.add(bid)
+    return bid
 
 
 @context_extractor("bases", ("bases", "exocraft_bays"))
 def bases(ctx: CtxInput, out: dict) -> None:
     psd = ctx.psd
-    corvettes = corvette_slots(psd)
+    corvettes = corvette_slots(ctx)
+    used: set[str] = set()
     own: list[dict] = []
     external = orphans = 0
     unknown: Counter = Counter()
     platforms: set[str] = set()
-    for base in items(psd, "PersistentPlayerBases"):
+    for index, base in enumerate(items(psd, "PersistentPlayerBases")):
         base_type = get(base, "BaseType", "PersistentBaseTypes")
         if not isinstance(base_type, str) or base_type in IGNORED_TYPES:
             continue
@@ -70,7 +80,7 @@ def bases(ctx: CtxInput, out: dict) -> None:
         ids = Counter(gid(o.get(_OBJECT_ID)) for o in items(base, "Objects") if isinstance(o, dict))
         address = u64(get(base, "GalacticAddress"))
         own.append({
-            "id": _base_id(base_type, base, address),
+            "id": unique_id(_base_id(base_type, base, address, index), index, used),
             "name": text(get(base, "Name")),
             "type": base_type,
             "galaxy": galaxy_of(address),

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from collections import Counter
 
-from ..nodes import get, gid, hex64, integer, items, text, u32
+from ..nodes import get, gid, hex64, integer, items, label, text, u32
 from . import CtxInput, SaveInput, context_extractor, save_extractor
 
 
@@ -11,8 +11,7 @@ from . import CtxInput, SaveInput, context_extractor, save_extractor
 def save_basics(save: SaveInput, out: dict) -> None:
     root = save.root
     out["json_version"] = integer(get(root, "Version"))
-    active = get(root, "ActiveContext")
-    out["active_context"] = active if isinstance(active, str) else None
+    out["active_context"] = label(get(root, "ActiveContext"))
     # Pre-context saves keep name and play time in PlayerStateData itself.
     src = save.common if save.common is not None else get(root, "PlayerStateData")
     out["save_name"] = text(get(src, "SaveName"))
@@ -86,17 +85,13 @@ def ctx_basics(ctx: CtxInput, out: dict) -> None:
 @context_extractor("difficulty", ("difficulty",))
 def difficulty(ctx: CtxInput, out: dict) -> None:
     state = get(ctx.psd, "DifficultyState")
-
-    def preset(name: str) -> str | None:
-        v = get(state, name, "DifficultyPresetType")
-        return v if isinstance(v, str) else None
-
-    death = get(state, "Settings", "DeathConsequences", "DeathConsequencesDifficulty")
     free = get(state, "Settings", "CraftingIsFree")
     locked = get(state, "Settings", "SettingsLocked")
     out["difficulty"] = {
-        "preset": preset("Preset"), "easiest": preset("EasiestUsedPreset"), "hardest": preset("HardestUsedPreset"),
-        "death": death if isinstance(death, str) else None,
+        "preset": label(get(state, "Preset", "DifficultyPresetType")),
+        "easiest": label(get(state, "EasiestUsedPreset", "DifficultyPresetType")),
+        "hardest": label(get(state, "HardestUsedPreset", "DifficultyPresetType")),
+        "death": label(get(state, "Settings", "DeathConsequences", "DeathConsequencesDifficulty")),
         "crafting_free": free if isinstance(free, bool) else None,
         "locked": locked if isinstance(locked, bool) else None,
     }

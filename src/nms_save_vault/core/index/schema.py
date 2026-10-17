@@ -244,7 +244,8 @@ def _check(value: Any, spec: Any, path: str, problems: list[str]) -> Any:
             if not isinstance(k, str):
                 problems.append(f"{path}: dropped a non-string key")
                 continue
-            checked = _check(v, spec.value, f"{path}.{k}", problems)
+            # Map keys come from the save (stat ids, container names...): never in a problem.
+            checked = _check(v, spec.value, f"{path}[key]", problems)
             if checked is not _DROP:
                 out[k] = checked
         return out

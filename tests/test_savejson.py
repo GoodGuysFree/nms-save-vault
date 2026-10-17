@@ -35,7 +35,7 @@ def test_a_chunked_save_decodes_to_its_root_with_container_facts():
     assert got.root == {"F2P": 4737, "<h0": {"Pk4": "Main"}}
     assert (got.container, got.chunks) == ("chunked", 1)
     assert got.decompressed_bytes == len(payload)
-    assert got.decompressed_sha256 == hashlib.sha256(payload).hexdigest()
+    assert got.decompressed_sha256 == hashlib.sha256(payload[:-1]).hexdigest()   # the JSON, no NUL
     assert got.json_bytes == len(payload) - 1
     assert got.repaired_escapes == 0
 
@@ -64,6 +64,30 @@ def test_invalid_utf8_inside_a_string_survives_losslessly():
     value = got.root["id"]
     assert value.encode("utf-8", errors="surrogateescape") == raw_id
     assert "�" not in value
+
+
+def test_the_content_hash_covers_the_json_only_not_what_follows_its_nul():
+    body = b'{"a":1}'
+    one = decode_save(chunked(body + b"\x00" + b"old bytes"))
+    two = decode_save(chunked(body + b"\x00" + b"other old bytes, longer"))
+    assert one.decompressed_bytes != two.decompressed_bytes
+    assert one.decompressed_sha256 == two.decompressed_sha256 == hashlib.sha256(body).hexdigest()
+
+
+def test_an_integer_past_the_digit_limit_is_corrupt_not_a_crash():
+    with pytest.raises(SaveDecodeError) as err:
+        decode_save(chunked(b'{"a":' + b"9" * 5000 + b"}"))
+    assert err.value.kind == "corrupt"
+    with pytest.raises(SaveDecodeError) as err:      # the same after an escape repair
+        decode_save(chunked(b'{"n":"a\\\tb","a":' + b"9" * 5000 + b"}"))
+    assert err.value.kind == "corrupt"
+
+
+def test_absurd_nesting_after_an_escape_repair_is_corrupt():
+    body = b'{"n":"a\\\tb","deep":' + b"[" * 100_000 + b"]" * 100_000 + b"}"
+    with pytest.raises(SaveDecodeError) as err:
+        decode_save(chunked(body))
+    assert err.value.kind == "corrupt"
 
 
 def test_a_backslash_before_a_raw_tab_is_repaired_like_libnom():

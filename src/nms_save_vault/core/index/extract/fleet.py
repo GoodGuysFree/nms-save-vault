@@ -1,14 +1,8 @@
 """Ships (owned and archived), the freighter, frigates and multi-tools."""
 from __future__ import annotations
 
-from ..nodes import get, integer, items, seed, text
-from . import CtxInput, context_extractor
-
-MODEL_PATH_LIMIT = 256
-
-
-def _class(v: object) -> str | None:
-    return v if isinstance(v, str) and v else None
+from ..nodes import get, integer, items, label, seed, text
+from . import MODEL_PATH_LIMIT, CtxInput, context_extractor
 
 
 def model_stem(path: str) -> str:
@@ -19,19 +13,16 @@ def model_stem(path: str) -> str:
 @context_extractor("ships", ("ships", "archived_ships"))
 def ships(ctx: CtxInput, out: dict) -> None:
     primary = integer(get(ctx.psd, "PrimaryShip"))
-    owned = []
-    for slot, ship in enumerate(items(ctx.psd, "ShipOwnership")):
-        model = text(get(ship, "Resource", "Filename"), MODEL_PATH_LIMIT)
-        if not model:
-            continue                      # an empty fleet slot
-        owned.append({"slot": slot, "name": text(get(ship, "Name")), "model_path": model,
-                      "cls": _class(get(ship, "Inventory", "Class", "InventoryClass")),
-                      "seed": seed(get(ship, "Resource", "Seed")), "primary": slot == primary})
-    out["ships"] = owned
+    out["ships"] = [
+        {"slot": s.index, "name": text(get(s.node, "Name")), "model_path": s.model,
+         "cls": label(get(s.node, "Inventory", "Class", "InventoryClass")),
+         "seed": seed(get(s.node, "Resource", "Seed")), "primary": s.index == primary}
+        for s in ctx.ships
+    ]
     out["archived_ships"] = [
         {"name": text(get(a, "ArchivedName")),
-         "ship_class": _class(get(a, "ArchivedClass", "ShipClass")),
-         "inv_class": _class(get(a, "ArchivedInventoryClass", "InventoryClass"))}
+         "ship_class": label(get(a, "ArchivedClass", "ShipClass")),
+         "inv_class": label(get(a, "ArchivedInventoryClass", "InventoryClass"))}
         for a in items(ctx.psd, "ArchivedShipOwnership")
         if text(get(a, "Ownership", "Resource", "Filename"), MODEL_PATH_LIMIT)
     ]
@@ -45,12 +36,11 @@ def fleet(ctx: CtxInput, out: dict) -> None:
         "has": bool(freighter_model),
         "name": text(get(psd, "PlayerFreighterName")) if freighter_model else "",
         "model": model_stem(freighter_model) if freighter_model else "",
-        "cls": _class(get(psd, "FreighterInventory", "Class", "InventoryClass")) if freighter_model else None,
+        "cls": label(get(psd, "FreighterInventory", "Class", "InventoryClass")) if freighter_model else None,
     }
     out["frigates"] = len(items(psd, "FleetFrigates"))
     out["multitools"] = [
-        {"name": text(get(m, "Name")), "model": model_stem(model),
-         "cls": _class(get(m, "Store", "Class", "InventoryClass"))}
-        for m in items(psd, "Multitools")
-        if (model := text(get(m, "Resource", "Filename"), MODEL_PATH_LIMIT))
+        {"name": text(get(m.node, "Name")), "model": model_stem(m.model),
+         "cls": label(get(m.node, "Store", "Class", "InventoryClass"))}
+        for m in ctx.multitools
     ]

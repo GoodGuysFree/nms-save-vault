@@ -15,7 +15,7 @@ from ..hashname import key
 from .privacy import DENIED, PrivacyError, check
 
 __all__ = ["get", "items", "key", "PrivacyError", "DENIED", "u32", "u64", "hex64", "galaxy_of",
-           "text", "gid", "seed", "number", "integer"]
+           "text", "label", "gid", "seed", "number", "integer"]
 
 _MASK64 = (1 << 64) - 1
 _MARKUP = re.compile(r"<[^<>]*>")
@@ -83,6 +83,12 @@ def text(v: object, limit: int = 128) -> str:
         return ""
     s = _SURROGATE.sub(_REPLACEMENT, _MARKUP.sub("", v)).strip()
     return s[:limit]
+
+
+def label(v: object, limit: int = 64) -> str | None:
+    """An enum-like string from the save (difficulty, class, biome): :func:`text`, or None
+    when absent or empty."""
+    return text(v, limit) or None
 
 
 def gid(v: object) -> str:

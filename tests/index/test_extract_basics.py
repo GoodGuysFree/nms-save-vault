@@ -119,6 +119,24 @@ def test_difficulty():
                                                    "death": "ItemGrave", "crafting_free": True, "locked": False}
 
 
+def test_active_context_and_difficulty_labels_are_normalised():
+    bad = b"Cus\xfftom".decode("utf-8", errors="surrogateescape")
+    long = "N" * 400
+    state = {"Preset": {"DifficultyPresetType": bad}, "EasiestUsedPreset": {"DifficultyPresetType": long},
+             "HardestUsedPreset": {"DifficultyPresetType": ""},
+             "Settings": {"DeathConsequences": {"DeathConsequencesDifficulty": "<X>" + bad}}}
+    root = context_save(base=psd(DifficultyState=state))
+    root["ActiveContext"] = bad + long
+    f = facts_of(root)
+    d = f["contexts"]["base"]["difficulty"]
+    assert d["preset"] == "Cus�tom" and d["death"] == "Cus�tom"
+    assert d["easiest"] == "N" * 64 and d["hardest"] is None
+    active = f["save"]["active_context"]
+    assert len(active) == 64 and active.startswith("Cus�tom")
+    for v in (d["preset"], d["death"], active):
+        v.encode("utf-8")
+
+
 def test_words_count_per_race_in_the_game_order():
     groups = [{"Races": [True, False, False, False, True, False, False, False, True]},
               {"Races": [True, True, True, False, False]},

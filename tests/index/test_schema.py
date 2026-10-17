@@ -45,7 +45,18 @@ def test_undeclared_keys_are_dropped_and_reported_without_their_name():
     out, problems = schema.validate(facts)
     assert "SENTINEL_KEY" not in out["save"]
     assert "owner" not in out["contexts"]["base"]["ships"][0]
-    assert problems == ["facts.save: dropped an undeclared key", "facts.contexts.base.ships[0]: dropped an undeclared key"]
+    assert problems == ["facts.save: dropped an undeclared key", "facts.contexts[key].ships[0]: dropped an undeclared key"]
+    assert "SENTINEL" not in repr(problems)
+
+
+def test_map_keys_from_the_save_never_appear_in_problems():
+    facts = minimal_facts()
+    facts["contexts"]["base"]["stats"]["SENTINEL_STAT"] = {"a": 1}
+    facts["contexts"]["base"]["inventories"]["SENTINEL_BOX"] = {"slots": "x", "capacity": 1, "digest": "d"}
+    out, problems = schema.validate(facts)
+    assert "SENTINEL_STAT" not in out["contexts"]["base"]["stats"]
+    assert problems == ["facts.contexts[key].stats[key]: expected num, got dict",
+                        "facts.contexts[key].inventories[key].slots: expected int, got str"]
     assert "SENTINEL" not in repr(problems)
 
 

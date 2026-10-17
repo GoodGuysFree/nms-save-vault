@@ -152,3 +152,72 @@ def test_companions_eggs_and_slots():
 def test_wrong_shapes_give_empty_facts_not_errors(field):
     ctx = base_facts(**{field: {"not": "a list"}})
     assert ctx["bases"]["own"] == [] and ctx["ships"] == [] and ctx["companions"] == []
+
+
+# --- review fixes ---------------------------------------------------------------------------
+
+BAD = b"S\xff".decode("utf-8", errors="surrogateescape")
+LONG = "X" * 500
+
+
+def _clean(value: str | None, limit: int = 64) -> None:
+    assert value is not None
+    assert len(value) <= limit
+    value.encode("utf-8")                     # no lone surrogates left
+
+
+def test_enum_like_strings_from_the_save_are_normalised():
+    ctx = base_facts(
+        ShipOwnership=[{"Resource": {"Filename": FIGHTER}, "Inventory": {"Class": {"InventoryClass": BAD}}}],
+        ArchivedShipOwnership=[{"ArchivedClass": {"ShipClass": LONG}, "ArchivedInventoryClass": {"InventoryClass": BAD},
+                                "Ownership": {"Resource": {"Filename": FIGHTER}}}],
+        CurrentFreighter={"Filename": FIGHTER}, FreighterInventory={"Class": {"InventoryClass": LONG}},
+        Multitools=[{"Resource": {"Filename": "STAFF.SCENE.MBIN"}, "Store": {"Class": {"InventoryClass": BAD}}}],
+        Pets=[{"CreatureID": "^QUAD_PET", "Biome": {"Biome": BAD + LONG}}])
+    _clean(ctx["ships"][0]["cls"])
+    _clean(ctx["archived_ships"][0]["ship_class"])
+    _clean(ctx["archived_ships"][0]["inv_class"])
+    _clean(ctx["freighter"]["cls"])
+    _clean(ctx["multitools"][0]["cls"])
+    _clean(ctx["companions"][0]["biome"])
+    assert ctx["ships"][0]["cls"] == "S�"
+
+
+def test_two_layouts_for_one_corvette_slot_and_bases_without_position_get_unique_ids():
+    no_pos = {"Position": None}
+    bases = [base("PlayerShipBase", "Layout A", UserData=2), base("PlayerShipBase", "Layout B", UserData=2),
+             base("HomePlanetBase", "P1", **no_pos), base("HomePlanetBase", "P2", **no_pos),
+             base("HomePlanetBase", "Same spot 1"), base("HomePlanetBase", "Same spot 2")]
+    own = base_facts(PersistentPlayerBases=bases, ShipOwnership=SHIPS)["bases"]["own"]
+    ids = [b["id"] for b in own]
+    assert len(ids) == len(set(ids)) == 6
+    assert ids[0] == "corvette:2" and ids[1] == "corvette:2#1"
+    assert ids[2].endswith("#2") and ids[3].endswith("#3")
+    assert ids[5] == ids[4] + "#5"
+
+
+class CountingList(list):
+    iterations = 0
+
+    def __iter__(self):
+        CountingList.iterations += 1
+        return super().__iter__()
+
+
+def test_ship_ownership_is_walked_once_per_context():
+    from nms_save_vault.core.hashname import hash_name
+
+    data, _ = encode(context_save(base={"ShipOwnership": SHIPS, "Multitools": []},
+                                  expedition={"ShipOwnership": SHIPS}))
+    decoded = decode_save(data)
+    for ctx in ("BaseContext", "ExpeditionContext"):
+        psd = decoded.root[hash_name(ctx)][hash_name("PlayerStateData")]
+        psd[hash_name("ShipOwnership")] = CountingList(psd[hash_name("ShipOwnership")])
+    CountingList.iterations = 0
+    facts = extract.run_extractors(decoded)
+    assert facts["status"] == "ok"
+    assert CountingList.iterations == 2
+    for ctx in facts["contexts"].values():
+        assert [s["slot"] for s in ctx["ships"]] == [0, 2]
+        assert sorted(k for k in ctx["inventories"] if k.startswith("ship:")) == ["ship:0", "ship:2"]
+        assert ctx["bases"]["orphan_corvette_layouts"] == 0

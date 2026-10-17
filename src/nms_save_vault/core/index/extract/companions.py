@@ -2,7 +2,7 @@
 (``SenderData``); that block is never read."""
 from __future__ import annotations
 
-from ..nodes import get, gid, items, seed, text
+from ..nodes import get, gid, items, label, seed, text
 from . import CtxInput, context_extractor
 
 
@@ -13,9 +13,8 @@ def companions(ctx: CtxInput, out: dict) -> None:
         creature = gid(get(pet, "CreatureID"))
         if not creature:
             continue                      # "^": an empty slot
-        biome = get(pet, "Biome", "Biome")
         pets.append({"slot": slot, "name": text(get(pet, "CustomName")), "creature": creature,
-                     "biome": biome if isinstance(biome, str) else None,
+                     "biome": label(get(pet, "Biome", "Biome")),
                      "seed": seed(get(pet, "CreatureSeed"))})
     out["companions"] = pets
     out["eggs"] = sum(1 for e in items(ctx.psd, "Eggs") if gid(get(e, "CreatureID")))

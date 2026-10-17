@@ -8,15 +8,19 @@ from __future__ import annotations
 import hashlib
 import json
 
-from ..nodes import get, items, text
+from ..nodes import get, items
 from . import CtxInput, context_extractor
 
-STORAGE = tuple(f"Chest{i}Inventory" for i in range(1, 11)) + (
+# Field names spelt out (not built), so the pin test can check every one of them.
+STORAGE = (
+    "Chest1Inventory", "Chest2Inventory", "Chest3Inventory", "Chest4Inventory", "Chest5Inventory",
+    "Chest6Inventory", "Chest7Inventory", "Chest8Inventory", "Chest9Inventory", "Chest10Inventory",
     "ChestMagicInventory", "ChestMagic2Inventory", "CookingIngredientsInventory", "RocketLockerInventory",
     "FishPlatformInventory", "FishBaitBoxInventory", "FoodUnitInventory", "CorvetteStorageInventory",
 )
 EXOSUIT = ("Inventory", "Inventory_TechOnly", "Inventory_Cargo")
 FREIGHTER = ("FreighterInventory", "FreighterInventory_TechOnly", "FreighterInventory_Cargo")
+VEHICLE = ("Inventory", "Inventory_TechOnly")
 
 
 def digest(inventories: list) -> dict:
@@ -48,13 +52,10 @@ def inventories(ctx: CtxInput, out: dict) -> None:
         "exosuit": digest([get(psd, n) for n in EXOSUIT]),
         "freighter": digest([get(psd, n) for n in FREIGHTER]),
         "storage": digest([get(psd, n) for n in STORAGE]),
-        "vehicles": digest([get(v, n) for v in items(psd, "VehicleOwnership")
-                            for n in ("Inventory", "Inventory_TechOnly")]),
+        "vehicles": digest([get(v, n) for v in items(psd, "VehicleOwnership") for n in VEHICLE]),
     }
-    for slot, ship in enumerate(items(psd, "ShipOwnership")):
-        if text(get(ship, "Resource", "Filename"), 256):
-            inv[f"ship:{slot}"] = digest([get(ship, n) for n in EXOSUIT])
-    for index, tool in enumerate(items(psd, "Multitools")):
-        if text(get(tool, "Resource", "Filename"), 256):
-            inv[f"multitool:{index}"] = digest([get(tool, "Store")])
+    for ship in ctx.ships:
+        inv[f"ship:{ship.index}"] = digest([get(ship.node, n) for n in EXOSUIT])
+    for tool in ctx.multitools:
+        inv[f"multitool:{tool.index}"] = digest([get(tool.node, "Store")])
     out["inventories"] = inv

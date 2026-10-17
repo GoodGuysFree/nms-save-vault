@@ -44,7 +44,8 @@ class DecodedSave:
     container: Literal["chunked", "unframed"]
     chunks: int
     decompressed_bytes: int
-    decompressed_sha256: str              # tells re-encoded but identical content apart
+    decompressed_sha256: str              # of the JSON text up to the NUL: identical content in a
+                                          # re-encoded container, or with other stale bytes, hashes alike
     json_bytes: int                       # up to the first NUL
     repaired_escapes: int                 # libNOM escape repairs applied (0 in real saves so far)
 
@@ -82,7 +83,7 @@ def decode_save(data: bytes, *, bare_size_hint: int | None = None,
         container="chunked" if chunks else "unframed",
         chunks=len(chunks),
         decompressed_bytes=len(raw),
-        decompressed_sha256=hashlib.sha256(raw).hexdigest(),
+        decompressed_sha256=hashlib.sha256(body).hexdigest(),
         json_bytes=len(body),
         repaired_escapes=repaired,
     )
@@ -94,17 +95,27 @@ def _parse(body: bytes) -> tuple[dict[str, Any], int]:
         root = _loads(body)
     except json.JSONDecodeError as exc:
         if "Invalid \\escape" not in exc.msg:
-            raise SaveDecodeError("corrupt", f"the save JSON is damaged: {exc.msg} at byte {exc.pos}") from None
+            raise _damaged(exc) from None
         body, repaired = _BAD_ESCAPE.subn(lambda m: _ESCAPED[m.group(1)], body)
         try:
             root = _loads(body)
-        except json.JSONDecodeError as again:
-            raise SaveDecodeError("corrupt", f"the save JSON is damaged: {again.msg} at byte {again.pos}") from None
-    except RecursionError:
-        raise SaveDecodeError("corrupt", "the save JSON is nested too deeply") from None
+        except (ValueError, RecursionError) as again:
+            raise _damaged(again) from None
+    except (ValueError, RecursionError) as exc:
+        raise _damaged(exc) from None
     if not isinstance(root, dict):
         raise SaveDecodeError("corrupt", f"the save JSON is a {type(root).__name__}, not an object")
     return root, repaired
+
+
+def _damaged(exc: BaseException) -> SaveDecodeError:
+    """Any parse failure -- bad syntax, an integer past Python's digit limit, absurd nesting --
+    as one 'corrupt' error. Only a JSONDecodeError's own message (no save text) is kept."""
+    if isinstance(exc, json.JSONDecodeError):
+        return SaveDecodeError("corrupt", f"the save JSON is damaged: {exc.msg} at byte {exc.pos}")
+    if isinstance(exc, RecursionError):
+        return SaveDecodeError("corrupt", "the save JSON is nested too deeply")
+    return SaveDecodeError("corrupt", f"the save JSON cannot be read ({type(exc).__name__})")
 
 
 def _loads(body: bytes) -> Any:

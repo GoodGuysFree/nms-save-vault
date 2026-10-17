@@ -11,11 +11,12 @@ from __future__ import annotations
 import traceback
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
+from functools import cached_property
 from pathlib import Path
-from typing import Literal
+from typing import Literal, NamedTuple
 
 from .. import nodes, schema
-from ..nodes import get
+from ..nodes import get, items, text
 
 ErrorList = list[dict]
 
@@ -27,12 +28,42 @@ class SaveInput:
     layout: Literal["context", "pre-context"]
 
 
+MODEL_PATH_LIMIT = 256
+
+
+class Owned(NamedTuple):
+    """A filled ship or multi-tool slot: its index, its subtree and its model path."""
+    index: int
+    node: dict
+    model: str
+
+
+def owned(entries: list) -> tuple[Owned, ...]:
+    """The filled slots of ``ShipOwnership`` / ``Multitools``: an empty ``Resource.Filename``
+    marks an empty slot. The one place that rule lives."""
+    out = []
+    for index, entry in enumerate(entries):
+        model = text(get(entry, "Resource", "Filename"), MODEL_PATH_LIMIT)
+        if model:
+            out.append(Owned(index, entry, model))
+    return tuple(out)
+
+
 @dataclass(frozen=True)
 class CtxInput:
     name: Literal["base", "expedition"]
     psd: dict                          # PlayerStateData of the context
     container: dict | None             # BaseContext / ExpeditionContext; None pre-context
     save: SaveInput
+
+    # Read by several extractors (bases, ships, inventories); walked once per context.
+    @cached_property
+    def ships(self) -> tuple[Owned, ...]:
+        return owned(items(self.psd, "ShipOwnership"))
+
+    @cached_property
+    def multitools(self) -> tuple[Owned, ...]:
+        return owned(items(self.psd, "Multitools"))
 
 
 @dataclass(frozen=True)
@@ -73,8 +104,7 @@ def contexts_of(root: dict) -> tuple[SaveInput, dict[str, CtxInput]]:
     common = get(root, "CommonStateData")
     save = SaveInput(root, common if isinstance(common, dict) else None, "context")
     out: dict[str, CtxInput] = {}
-    for name, container_name in (("base", "BaseContext"), ("expedition", "ExpeditionContext")):
-        container = get(root, container_name)
+    for name, container in (("base", get(root, "BaseContext")), ("expedition", get(root, "ExpeditionContext"))):
         inner = get(container, "PlayerStateData")
         if isinstance(inner, dict):
             out[name] = CtxInput(name, inner, container, save)

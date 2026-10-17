@@ -3,9 +3,10 @@
 The game writes save JSON with three-character keys (``"6f="`` for ``PlayerStateData``).
 Each key is a hash of the field's name: MBINCompiler's ``HashName``
 (``SaveFileMapping/Program.cs``, credited to AndASM) runs SpookyHash V2 over the UTF-8
-name with both seeds set to :data:`SEED` and turns three 21-bit slices of the first
-64-bit result into characters. Computing keys this way means no mapping file ships, and a
-field keeps its key for as long as the game keeps its name.
+name with both seeds set to :data:`SEED` and takes three characters from the first 64-bit
+result ``h``: ``h % 68``, ``(h >> 21) % 68`` and ``(h >> 42) % 68``, each shifted value
+taken whole (not masked to 21 bits). Computing keys this way means no mapping file ships,
+and a field keeps its key for as long as the game keeps its name.
 
 SpookyHash V2 is Bob Jenkins' public-domain hash; only its short path (messages under 192
 bytes) is ported, which covers every field name (the longest real one is 60 bytes).
@@ -103,6 +104,8 @@ def hash_name(name: str) -> str:
     h1, _h2 = spooky_short(name.encode("utf-8"), SEED, SEED)
     out = []
     for shift in (0, 21, 42):
+        # The whole shifted value modulo 68, as Program.cs does. Do NOT mask it to 21 bits
+        # first: (h >> 21) & 0x1FFFFF gives different keys for most names.
         ch = (h1 >> shift) % 68 + ord("0")
         if ch > ord("Z"):
             ch += 6
