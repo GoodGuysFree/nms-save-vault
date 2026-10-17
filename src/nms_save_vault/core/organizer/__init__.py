@@ -87,7 +87,10 @@ class Organizer:
         it saw, so no live write is under way between the look and the record (as the
         bootstrap does). When a write holds the lock the live folders are looked at all the
         same but not journaled this time ("operation in progress"); when the lock cannot be
-        taken at all, neither ("live-op lock failed"). A listing scans everything at once."""
+        taken at all, neither ("live-op lock failed"). A listing scans everything at once.
+        The catalog is read again each time: a backup made since (the classic tab, the CLI)
+        is part of this look."""
+        self.vault.load()
         running = self.game_running()
         recording = record and not self.store.read_only
         self.scan = scan(self.vault, self.sources, self.cache, game_running=running,

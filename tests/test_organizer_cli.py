@@ -421,3 +421,16 @@ def test_recording_looks_at_each_live_folder_once(world, monkeypatch):
     looked.clear()
     org.refresh(record=False)
     assert len(looked) == len(state.live_sources)
+
+
+def test_a_backup_made_since_the_last_refresh_is_seen(world):
+    """The GUI keeps one Organizer: a classic backup in between must not be missed."""
+    vault, live, state = world
+    org = Organizer(vault.root, state.live_sources)
+    first = org.refresh(record=False)
+    before = set(org.scan.entries)
+    steam_save(live, 4, 0, "New Run", 50, 0x4444, T0 + 300, extra="new")
+    entry = operations.create_full_backup(Vault(vault.root), live, warnings=[])
+    org.refresh(record=False)
+    assert entry.id in org.scan.entries and entry.id not in before
+    assert first is not org.model
