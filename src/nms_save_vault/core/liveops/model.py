@@ -210,6 +210,7 @@ class TargetPlan(_JsonForm):
     before: SlotState
     writes: tuple[MemberWrite, ...]       # always 2; 0 only for keep (vault-only)
     evictions: tuple[Eviction, ...]       # for keep: the members copied to the vault
+    source: PairSource | None = None      # what is written here (execute reads it again)
 
 
 @dataclass(frozen=True)

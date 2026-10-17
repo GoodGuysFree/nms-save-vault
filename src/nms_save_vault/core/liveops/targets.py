@@ -12,7 +12,7 @@ from pathlib import Path
 
 from .. import aliases, formats, msstore, savedir
 from ..organizer.model import LiveRef, LiveTarget
-from ..organizer.scanner import instance_of
+from ..organizer.scanner import instance_of, live_refs
 from ..state import ROLE_LIVE, Source
 from .context import OpContext
 from .errors import TargetError
@@ -67,6 +67,19 @@ def resolve_account(ctx: OpContext, account: LiveRef) -> ResolvedAccount:
         raise TargetError("NOT_WRITABLE", "the live source is set read-only")
     return ResolvedAccount(account, source.id, folder, cloud, twin,
                            _account_label(ctx.sources, source, account))
+
+
+def account_label(ctx: OpContext, account: LiveRef) -> str:
+    """A live account's name in the app: "Steam" / "Xbox" when it is its platform's only
+    one, else its own name (aliases applied, never an account id)."""
+    source = _the_source(ctx.sources, account)
+    return _account_label(ctx.sources, source, account) or _PLATFORM_NAMES[account.platform]
+
+
+def live_accounts(ctx: OpContext) -> list[LiveRef]:
+    """Every enabled live account, as D1 names them."""
+    live = [s for s in ctx.sources if s.role == ROLE_LIVE and s.enabled]
+    return live_refs(live)
 
 
 def slot_label(platform: str, slot: int, account_label: str = "") -> str:

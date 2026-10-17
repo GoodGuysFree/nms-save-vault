@@ -50,6 +50,10 @@ class WriteError(LiveOpError):
         self.swapped = tuple(swapped)
 
 
+class SourceUnreadable(LiveOpError):
+    """The version to write cannot be read back with its version id."""
+
+
 class LiveChanged(LiveOpError):
     """The live slot changed after it was planned (the game or another tool wrote it). The
     writer wrote nothing; the slot must not be rolled back, it holds someone else's save."""

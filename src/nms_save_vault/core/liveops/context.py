@@ -16,6 +16,7 @@ from .. import safety
 
 if TYPE_CHECKING:
     from ..catalog import Vault
+    from ..organizer import Organizer
     from ..organizer.locator import VersionLocator
     from ..organizer.readmodel import ReadModel
     from ..organizer.recorder import LineageRecorder
@@ -41,6 +42,28 @@ class Policies:
     Steam <-> Xbox transfer opens per direction after the owner's validation runs (F6)."""
 
     cross_platform: Literal["off", "validated"] = "off"
+
+
+def context_for(organizer: Organizer, *, host: Host, machine_id: str, app_version: str,
+                policies: Policies | None = None,
+                game_probe: Callable[[], bool | None] = safety.is_game_running,
+                clock: Callable[[], float] = time.time,
+                faults: FaultInjector | None = None) -> OpContext:
+    """The context of a refreshed :class:`Organizer` (refreshed here when it is not yet):
+    its vault, version store, organizer store, locator (the store first, the one preserver)
+    and read model, and a recorder over its registry."""
+    from ..organizer.journal import Journal
+    from ..organizer.recorder import LineageRecorder
+
+    if organizer.model is None or organizer.locator is None or organizer.scan is None:
+        organizer.refresh()
+    return OpContext(
+        vault=organizer.vault, versions=organizer.version_store, store=organizer.store,
+        locator=organizer.locator,
+        lineage=LineageRecorder(organizer.store, Journal(organizer.store, organizer.scan.versions)),
+        readmodel=organizer.model, sources=list(organizer.sources),
+        policies=policies or Policies(), host=host, app_version=app_version,
+        machine_id=machine_id, game_probe=game_probe, clock=clock, faults=faults)
 
 
 @dataclass

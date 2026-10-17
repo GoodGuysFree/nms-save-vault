@@ -42,7 +42,10 @@ from .model import (
     VerifyItem,
     Warning,
 )
+from .context import context_for
+from .errors import SourceUnreadable
 from .opjournal import busy_targets, liveop_lock
+from .planner import eviction_picker, plan_place, plan_promote
 from .targets import resolve_target
 
 __all__ = [
@@ -53,5 +56,6 @@ __all__ = [
     "PlacePlan", "Policies", "Position", "Progress", "RecoveryItem", "ResolvedTarget",
     "RollbackError", "SimulatedCrash", "SlotCandidate", "SourceSummary", "TargetError",
     "TargetPlan", "UndoOffer", "VerifyItem", "VersionStore", "Warning", "WriteError",
-    "busy_targets", "liveop_lock", "resolve_target",
+    "SourceUnreadable", "busy_targets", "context_for", "eviction_picker", "liveop_lock",
+    "plan_place", "plan_promote", "resolve_target",
 ]
