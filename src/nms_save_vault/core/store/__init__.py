@@ -38,6 +38,14 @@ from .migrate import (
     not_copied_in,
     run_fold,
 )
+from .rollback import (
+    RollbackPlan,
+    RollbackResult,
+    keep_upgrade,
+    plan_rollback,
+    rollback_interrupted,
+    run_rollback,
+)
 from .upgrade import (
     UpgradePlan,
     UpgradeProgress,

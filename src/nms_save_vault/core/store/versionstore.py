@@ -597,18 +597,24 @@ class VersionStore:
              app_version: str, clock: Callable[[], datetime] = utc_now,
              live_roots: Sequence[Path] | None = None,
              faults: FaultHook | None = None,
-             app_state: AppState | None = None, read_only: bool = False) -> "VersionStore":
+             app_state: AppState | None = None, read_only: bool = False,
+             for_rollback: bool = False) -> "VersionStore":
         """Open the store of a vault in store mode. Raises StoreUnavailable (vault gone, FORMAT
         unreadable), StoreNotUpgraded (legacy or upgrading vault), StoreTooNew (needs a newer
         app to read). Opens read-only when only writing needs a newer app, the medium cannot be
         written, or the file system cannot lock. ``live_roots``: the live save folders nothing
         is ever written into; None means the live sources of ``app_state`` plus the ones
         discovered on this machine. ``read_only``: only look - nothing in the vault is written,
-        not even a probe or the sweep of old temp files."""
+        not even a probe or the sweep of old temp files. ``for_rollback``: an undo of the upgrade
+        that was interrupted reads the store although the vault is marked as being upgraded
+        (read-only)."""
         vault_root = Path(vault_root)
         if not vault_root.is_dir():
             raise StoreUnavailable("The vault is not reachable.")
-        _require_store_mode(vault_root)
+        if for_rollback:
+            read_only = True
+        else:
+            _require_store_mode(vault_root)
         store = cls(vault_root, read_format(store_root(vault_root)), lock=lock,
                     app_version=app_version, clock=clock, live_roots=live_roots, faults=faults,
                     app_state=app_state)

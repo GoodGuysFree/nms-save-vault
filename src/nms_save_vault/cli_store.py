@@ -41,6 +41,15 @@ def add_commands(sub: argparse._SubParsersAction) -> None:
     c.add_argument("--all", action="store_true", help="every one not copied in yet")
     c.set_defaults(func=cmd_store_copy_in)
 
+    r = store_sub.add_parser("rollback", help="undo the vault upgrade: back to the old layout "
+                                              "with everything made since")
+    r.add_argument("--copy", metavar="FOLDER", help="where the pre-upgrade copy is, when it is "
+                                                     "not next to the vault any more")
+    r.add_argument("--keep-upgrade", action="store_true",
+                   help="after an interrupted undo: stay upgraded instead of finishing it")
+    r.add_argument("--yes", action="store_true", help="do not ask for confirmation")
+    r.set_defaults(func=cmd_store_rollback)
+
 
 def _vault_root(args, state) -> Path:
     from .core.store import upgrade
@@ -115,6 +124,46 @@ def cmd_store_copy_in(args) -> int:
         print(f"  skipped {entry_id}: {why}")
     print(report.message)
     return 1 if report.failed else 0
+
+
+def cmd_store_rollback(args) -> int:
+    from .core.store import rollback
+
+    state = appstate.load()
+    root = _vault_root(args, state)
+    interrupted = rollback.rollback_interrupted(root)
+    if args.keep_upgrade:
+        if not interrupted:
+            print("No undo of the upgrade was interrupted; nothing to do.")
+            return 0
+        rollback.keep_upgrade(root)
+        print("The vault stays upgraded.")
+        return 0
+    store = vstore.VersionStore.open(root, lock=vstore.vault_lock(root),
+                                     app_version=_version(), app_state=state,
+                                     for_rollback=interrupted)
+    plan = rollback.plan_rollback(root, store, copy=Path(args.copy) if args.copy else None)
+    for _code, text in plan.problems:
+        print(f"error: {text}", file=sys.stderr)
+    if plan.problems:
+        return 1
+    print(f"{len(plan.export)} backups made since the upgrade are written out as folders and "
+          f"{len(plan.restore)} old folders are put back from the copy; the store is then moved "
+          "next to the vault.")
+    if not args.yes:
+        answer = input("Undo the vault upgrade now? [y/N] ")
+        if answer.strip().lower() not in ("y", "yes"):
+            print("Nothing was changed.")
+            return 0
+    result = rollback.run_rollback(plan, store)
+    print(result.message)
+    return 0
+
+
+def _version() -> str:
+    from . import __version__
+
+    return __version__
 
 
 def _fold(root: Path, state) -> int:
