@@ -321,6 +321,11 @@ per-save action — it changes *which* of a slot's two saves the game loads.
 
 ## Appearance and updates
 
+**Tabs.** Under the menu bar the window has two tabs: **Live saves and backups** (the two
+panes described above, as they have always been) and **Organizer**. **Ctrl+1** and
+**Ctrl+2** (or **View**) switch, and the app reopens the tab you used last (`state.json`,
+`ui.last_view`).
+
 **Theme.** **View > Theme** offers **Light**, **Dark**, or **System**, which
 follows your Windows light/dark setting. Your choice is remembered in `state.json`. (Light
 keeps the native Windows widget styling the app has always had; dark switches to a
@@ -460,7 +465,7 @@ The vault lives outside `st_<id>`, so it is never scanned by the game or synced 
 ## Status
 
 Working. Core format/crypto and all operations are verified against the real save files and
-in a temp sandbox (1068 tests). Xbox / Game Pass saves are supported for reading **and**
+in a temp sandbox (1073 tests). Xbox / Game Pass saves are supported for reading **and**
 same-platform writing — verified against a real install (reads) and synthetic `wgs` fixtures
 (writes). A full file-copy safety backup of the live folder was made before development
 (`C:\Devel\NMS-SaveBackup-SAFETY-2026-06-24`).

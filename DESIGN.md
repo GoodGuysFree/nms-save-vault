@@ -94,7 +94,8 @@ src/nms_save_vault/
                   dark title bar (front-end)
   updates.py      opt-in GitHub release check + in-place self-update (the only network access)
   cli.py          argparse front end
-  gui.py          Tkinter app (two panes: live saves / backups)
+  gui.py          Tkinter app: menu bar, tabs "Live saves and backups" (the two panes) and
+                  "Organizer", status bar (shell 10a)
 ```
 
 ## Storage model (hybrid)
