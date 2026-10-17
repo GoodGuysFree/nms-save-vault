@@ -14,12 +14,13 @@ for the session (``warning``). The cache refuses to live inside the vault or a s
 """
 from __future__ import annotations
 
+import contextlib
+import functools
 import json
 import os
 import sqlite3
 import threading
 import time
-import uuid
 from collections import OrderedDict
 from collections.abc import Callable, Iterable
 from pathlib import Path
@@ -31,6 +32,8 @@ FILENAME = "index-v1.sqlite"
 LRU_SIZE = 512
 GC_AGE_S = 180 * 24 * 3600
 FAILED_STATUSES = ("corrupt", "unsupported", "error")
+OPEN_BUSY_TIMEOUT_S = 2.0          # waiting for another app instance's lock at open
+OPEN_RETRIES = 3
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL);
@@ -76,6 +79,21 @@ class CacheLocationError(ValueError):
     """The cache path lies inside the vault or a save folder (invariant I1)."""
 
 
+def is_busy(exc: BaseException) -> bool:
+    """Another connection (another app instance) holds the lock: wait, never treat as damage."""
+    text = str(exc).lower()
+    return isinstance(exc, sqlite3.OperationalError) and ("locked" in text or "busy" in text)
+
+
+def _serialized(fn):
+    """In memory mode every reader and the writer share one connection: one at a time."""
+    @functools.wraps(fn)
+    def wrapper(self, *args, **kwargs):
+        with self._serial:
+            return fn(self, *args, **kwargs)
+    return wrapper
+
+
 def cache_file(cache_dir: Path) -> Path:
     """The index file in a vault's per-machine cache folder (``organizer.cache.cache_dir``)."""
     return Path(cache_dir) / FILENAME
@@ -100,14 +118,15 @@ class IndexCache:
         self.warning: str | None = None
         if self.path is not None:
             _refuse_inside(self.path, forbidden)
-        self._memory_uri: str | None = None
+        self._memory: sqlite3.Connection | None = None
+        self._serial: contextlib.AbstractContextManager = contextlib.nullcontext()
         self._local = threading.local()
-        self._lru: OrderedDict[str, dict | None] = OrderedDict()
+        self._lru: OrderedDict[str, dict] = OrderedDict()
         self._lru_lock = threading.Lock()
+        self._generation = 0                # bumped by every write: a read started before it is not cached
         self._writer: sqlite3.Connection | None = None
         self._connections: list[sqlite3.Connection] = []
         self._connections_lock = threading.Lock()
-        self._keeper: sqlite3.Connection | None = None
         self._writer_thread: int | None = None
         self._open(app_version)
         self._writer_thread = None              # opening was not the writer thread's job
@@ -116,19 +135,30 @@ class IndexCache:
 
     def _open(self, app_version: str) -> None:
         if self.path is not None:
-            try:
-                self.path.parent.mkdir(parents=True, exist_ok=True)
-                self._check_file()
-                self._init(app_version)
-                return
-            except (OSError, sqlite3.OperationalError) as exc:
-                self._close_connections()
-                self._use_memory(f"Content index kept in memory this session (cache folder not writable: "
-                                 f"{type(exc).__name__})")
+            for attempt in range(OPEN_RETRIES):
+                try:
+                    self.path.parent.mkdir(parents=True, exist_ok=True)
+                    self._check_file()
+                    self._init(app_version)
+                    return
+                except sqlite3.OperationalError as exc:
+                    self._close_connections()
+                    if is_busy(exc) and attempt + 1 < OPEN_RETRIES:
+                        time.sleep(0.2 * (attempt + 1))
+                        continue
+                    reason = "busy in another window" if is_busy(exc) else f"not writable: {type(exc).__name__}"
+                    self._use_memory(f"Content index kept in memory this session (cache file {reason})")
+                    break
+                except OSError as exc:
+                    self._close_connections()
+                    self._use_memory(f"Content index kept in memory this session (cache folder not writable: "
+                                     f"{type(exc).__name__})")
+                    break
         else:
             self._use_memory()
         self._init(app_version)
 
+    @_serialized
     def _init(self, app_version: str) -> None:
         con = self._write_con()
         with con:
@@ -140,17 +170,21 @@ class IndexCache:
             con.execute("INSERT OR REPLACE INTO meta (k, v) VALUES ('last_open', ?)", (now,))
 
     def _check_file(self) -> None:
+        """Set the file aside only when sqlite says it is damaged. A lock held by another
+        instance raises ``OperationalError`` (busy) to the caller and touches nothing."""
         if not self.path.exists():
             return
         try:
-            con = sqlite3.connect(self.path)
+            con = sqlite3.connect(self.path, timeout=OPEN_BUSY_TIMEOUT_S)
             try:
-                ok = con.execute("PRAGMA quick_check").fetchone()[0] == "ok"
+                verdict = con.execute("PRAGMA quick_check").fetchone()[0]
             finally:
                 con.close()
+        except sqlite3.OperationalError:
+            raise                                  # locked, busy, cannot open: not damage
         except sqlite3.DatabaseError:
-            ok = False
-        if not ok:
+            verdict = "damaged"                    # not a database, malformed image
+        if verdict != "ok":
             self._set_aside()
 
     def _set_aside(self) -> None:
@@ -166,25 +200,24 @@ class IndexCache:
         self.warning = "Content index rebuilt (cache file was damaged)"
 
     def _use_memory(self, warning: str | None = None) -> None:
-        self._memory_uri = f"file:index-{uuid.uuid4().hex}?mode=memory&cache=shared"
-        # A shared in-memory database lives as long as one connection to it is open.
-        self._keeper = sqlite3.connect(self._memory_uri, uri=True, check_same_thread=False)
+        # One private connection for readers and the writer alike, used one call at a time
+        # (``_serialized``): no shared cache, so no SQLITE_LOCKED between connections.
+        self._memory = sqlite3.connect(":memory:", check_same_thread=False)
+        self._memory.execute("PRAGMA foreign_keys = ON")
+        self._serial = threading.RLock()
         if warning:
             self.warning = warning
 
     @property
     def in_memory(self) -> bool:
-        return self._memory_uri is not None
+        return self._memory is not None
 
     def _connect(self) -> sqlite3.Connection:
         # check_same_thread is off only so close() can close every connection; each one is
         # still used by one thread: readers are per thread, the writer is checked below.
-        if self._memory_uri is not None:
-            con = sqlite3.connect(self._memory_uri, uri=True, timeout=5, check_same_thread=False)
-        else:
-            con = sqlite3.connect(self.path, timeout=5, check_same_thread=False)
-            con.execute("PRAGMA journal_mode = WAL")
-            con.execute("PRAGMA synchronous = NORMAL")
+        con = sqlite3.connect(self.path, timeout=5, check_same_thread=False)
+        con.execute("PRAGMA journal_mode = WAL")
+        con.execute("PRAGMA synchronous = NORMAL")
         con.execute("PRAGMA foreign_keys = ON")
         con.execute("PRAGMA busy_timeout = 5000")
         with self._connections_lock:
@@ -192,6 +225,8 @@ class IndexCache:
         return con
 
     def _reader(self) -> sqlite3.Connection:
+        if self._memory is not None:
+            return self._memory
         con = getattr(self._local, "con", None)
         if con is None:
             con = self._local.con = self._connect()
@@ -201,7 +236,7 @@ class IndexCache:
         """The one write connection, owned by the first thread that writes after opening."""
         me = threading.get_ident()
         if self._writer is None:
-            self._writer = self._connect()
+            self._writer = self._memory if self._memory is not None else self._connect()
         if self._writer_thread is None:
             self._writer_thread = me
         elif self._writer_thread != me:
@@ -220,13 +255,18 @@ class IndexCache:
             if vid in self._lru:
                 self._lru.move_to_end(vid)
                 return self._lru[vid]
+            generation = self._generation
         facts = self._load(vid)
         with self._lru_lock:
-            self._lru[vid] = facts
-            while len(self._lru) > LRU_SIZE:
-                self._lru.popitem(last=False)
+            # Not-indexed is never cached, and a row read before a write that landed meanwhile
+            # is not kept: the writer's _forget must win.
+            if facts is not None and generation == self._generation:
+                self._lru[vid] = facts
+                while len(self._lru) > LRU_SIZE:
+                    self._lru.popitem(last=False)
         return facts
 
+    @_serialized
     def _load(self, vid: str) -> dict | None:
         con = self._reader()
         row = con.execute("SELECT status, schema, extractor, save_facts, errors, primary_ctx FROM version "
@@ -241,6 +281,7 @@ class IndexCache:
                 "container": stored.get("container"), "save": stored.get("save"), "contexts": contexts,
                 "primary": primary}
 
+    @_serialized
     def row(self, vid: str) -> dict | None:
         """The version row's scalar columns (status, versions, timings) for status displays."""
         cur = self._reader().execute(
@@ -250,28 +291,34 @@ class IndexCache:
         found = cur.fetchone()
         return dict(zip(names, found)) if found else None
 
+    @_serialized
     def indexed(self) -> dict[str, tuple[str, int]]:
         """vid -> (status, extractor version) for every row."""
         return {v: (s, e) for v, s, e in self._reader().execute("SELECT vid, status, extractor FROM version")}
 
+    @_serialized
     def counts(self) -> dict[str, int]:
         return dict(self._reader().execute("SELECT status, count(*) FROM version GROUP BY status").fetchall())
 
+    @_serialized
     def stale_vids(self) -> list[str]:
         """Rows from an older extractor: still served (marked stale), refreshed at REFRESH."""
         return [v for (v,) in self._reader().execute(
             "SELECT vid FROM version WHERE extractor < ? AND status NOT IN (?, ?, ?) ORDER BY data_bytes DESC",
             (EXTRACTOR_VERSION, *FAILED_STATUSES))]
 
+    @_serialized
     def retry_vids(self) -> list[str]:
         """Failed rows from an older decoder: worth one more try with the new one."""
         return [v for (v,) in self._reader().execute(
             "SELECT vid FROM version WHERE decoder < ? AND status IN (?, ?, ?)", (DECODER_VERSION, *FAILED_STATUSES))]
 
+    @_serialized
     def failures(self) -> dict[str, int]:
         """vid -> attempts, for every version with a transient failure."""
         return dict(self._reader().execute("SELECT vid, attempts FROM failure").fetchall())
 
+    @_serialized
     def failure(self, vid: str) -> tuple[int, str, str] | None:
         """(attempts, kind, last error) of a transient failure, or None."""
         row = self._reader().execute("SELECT attempts, kind, last_error FROM failure WHERE vid = ?", (vid,)).fetchone()
@@ -284,6 +331,7 @@ class IndexCache:
 
     # --- writes (the writer thread only) ------------------------------------------------
 
+    @_serialized
     def write_result(self, result: IndexResult) -> None:
         """Store one worker result in one transaction. A ``mismatch`` is never cached."""
         if result.status == "mismatch":
@@ -321,6 +369,7 @@ class IndexCache:
             con.execute("DELETE FROM failure WHERE vid = ?", (result.vid,))
         self._forget(result.vid)
 
+    @_serialized
     def record_failure(self, vid: str, kind: str, error: str) -> int:
         """Count a transient failure (unavailable, mismatch, worker-died, timeout); never facts."""
         now = int(self.clock())
@@ -332,10 +381,12 @@ class IndexCache:
                 "last_at = excluded.last_at, kind = excluded.kind", (vid, error[:200], now, kind))
         return self.failure_attempts(vid, con)
 
+    @_serialized
     def failure_attempts(self, vid: str, con: sqlite3.Connection | None = None) -> int:
         row = (con or self._reader()).execute("SELECT attempts FROM failure WHERE vid = ?", (vid,)).fetchone()
         return row[0] if row else 0
 
+    @_serialized
     def touch(self, vids: Iterable[str], now: int | None = None) -> None:
         """Mark rows as still known (a request named them), for the age-based clean-up."""
         stamp = int(self.clock() if now is None else now)
@@ -343,6 +394,7 @@ class IndexCache:
         with con:
             con.executemany("UPDATE version SET last_seen = ? WHERE vid = ?", [(stamp, v) for v in vids])
 
+    @_serialized
     def gc(self, max_age_s: int = GC_AGE_S) -> int:
         """Delete rows no request has named for ``max_age_s``; returns how many."""
         cutoff = int(self.clock()) - max_age_s
@@ -354,6 +406,7 @@ class IndexCache:
             self._forget(v)
         return len(gone)
 
+    @_serialized
     def clear(self) -> None:
         """Owner "Rebuild content index": every row goes, every version is indexed again."""
         con = self._write_con()
@@ -362,16 +415,18 @@ class IndexCache:
             con.execute("DELETE FROM failure")
         with self._lru_lock:
             self._lru.clear()
+            self._generation += 1
 
     def _forget(self, vid: str) -> None:
         with self._lru_lock:
             self._lru.pop(vid, None)
+            self._generation += 1
 
     def close(self) -> None:
         self._close_connections()
-        if self._keeper is not None:
-            self._keeper.close()
-            self._keeper = None
+        if self._memory is not None:
+            with self._serial:
+                self._memory.close()
 
     def _close_connections(self) -> None:
         with self._connections_lock:

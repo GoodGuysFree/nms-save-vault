@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import os
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -27,6 +27,20 @@ from .pool import ExecutionPolicy
 from .service import IndexService
 
 TIER_ORDER = {"owner": 0, "recorded": 1, "observed": 2}
+
+
+class ReadOnlyVault(Vault):
+    """The vault as the index sees it: loaded and read, never written - not even the clean-up
+    of a catalog save's stale temp files that ``Vault.load`` does."""
+
+    def _remove_stale_temp_files(self) -> None:
+        pass
+
+    def ensure(self) -> None:
+        raise PermissionError("the content index never writes the vault")
+
+    def save(self) -> None:
+        raise PermissionError("the content index never writes the vault")
 
 
 class VersionUnavailable(LookupError):
@@ -126,7 +140,9 @@ def forbidden_roots(vault: Vault, sources: Sequence[Source], host: platform.Host
 
 
 def open_service(vault: Vault, sources: Sequence[Source], *, workers: str | int = "auto",
-                 host: platform.Host | None = None) -> tuple[IndexService, scanner.ScanResult, str | None]:
+                 host: platform.Host | None = None,
+                 game_running: Callable[[], bool | None] = safety.is_game_running,
+                 ) -> tuple[IndexService, scanner.ScanResult, str | None]:
     host = host or platform.Host.current()
     vault_id = vault_id_of(vault.root)
     scan = scan_vault(vault, sources, vault_id, host)
@@ -138,7 +154,7 @@ def open_service(vault: Vault, sources: Sequence[Source], *, workers: str | int 
     service = IndexService(
         cache_path=cache_file(org_cache.cache_dir(vault.root, vault_id, host)), vault_id=vault_id or "nostore",
         locator=ScanLocator(scan, vault), policy=policy, size_hint=sizes.get, when=stamps.get,
-        forbidden=forbidden_roots(vault, sources, host), app_version=_app_version())
+        forbidden=forbidden_roots(vault, sources, host), app_version=_app_version(), game_running=game_running)
     return service, scan, vault_id
 
 

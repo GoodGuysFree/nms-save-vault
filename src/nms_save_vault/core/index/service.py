@@ -9,6 +9,7 @@ mean meta-level display, nothing more.
 """
 from __future__ import annotations
 
+import logging
 import queue
 import sqlite3
 import threading
@@ -22,14 +23,18 @@ from typing import Literal
 from .. import lz4_block, msstore
 from . import changes as changes_mod
 from . import derive
-from .cache import IndexCache
+from .cache import IndexCache, is_busy
+from .extract import describe
 from .pool import Dispatcher, ExecutionPolicy, Executor, Priority, make_executor, split_key
 from .schema import EXTRACTOR_VERSION
 from .worker import IndexResult
 
 EVENT_RING = 2000
+BUSY_BACKOFF_S = (0.05, 0.1, 0.2, 0.5, 1.0, 2.0, 4.0)   # waiting out another instance's lock
 DEEP_LRU = 5                      # deep detail of the last few opened cards, in memory only
 MAX_STRIKES = 3                   # transient failures before a version stops being retried
+
+log = logging.getLogger(__name__)
 
 Status = Literal["not-indexed", "queued", "running", "ok", "partial", "corrupt", "unsupported", "error",
                  "unreadable", "stale", "off"]
@@ -300,16 +305,58 @@ class IndexService:
             op = self._writes.get()
             if op is None:
                 return
-            try:
-                self._apply(op)
-            except sqlite3.Error as exc:
-                # Disk full, I/O error: stop indexing, keep serving what is cached.
-                self._error = f"{type(exc).__name__} writing the cache"
-                if self.dispatcher is not None:
-                    self.dispatcher.pause()
-                self._event("failed", None, "error")
+            self._apply_safely(op)
             if self.dispatcher is not None and self.idle() and self._writes.empty() and op[0] == "result":
                 self._event("finished")
+
+    def _apply_safely(self, op: tuple) -> None:
+        """Apply one write. A lock held by another instance is waited out with backoff; a
+        failing cache (disk full, I/O error, read-only) stops indexing for the session;
+        anything else fails only this item (a failure row and an event) and the loop goes on."""
+        for delay in BUSY_BACKOFF_S:
+            try:
+                self._apply(op)
+                return
+            except sqlite3.OperationalError as exc:
+                if not is_busy(exc):
+                    self._cache_failed(exc)          # disk full, I/O error, read-only file
+                    return
+                time.sleep(delay)
+            except (sqlite3.IntegrityError, sqlite3.InterfaceError, sqlite3.ProgrammingError,
+                    sqlite3.DataError) as exc:
+                self._item_failed(op, f"store-error: {describe(exc)}")   # this item's data, not the cache
+                return
+            except sqlite3.Error as exc:
+                self._cache_failed(exc)              # a damaged database
+                return
+            except Exception as exc:  # noqa: BLE001 - one bad item must not stop the writer
+                log.warning("content index could not store an item: %s", describe(exc))
+                self._item_failed(op, f"store-error: {describe(exc)}")
+                return
+        # Still locked after the backoff: this item is dropped (it is requested again later),
+        # indexing goes on.
+        self._item_failed(op, "cache busy", record=False)
+
+    def _cache_failed(self, exc: BaseException) -> None:
+        # Disk full, I/O error, read-only: stop indexing, keep serving what is cached.
+        self._error = f"{type(exc).__name__} writing the cache"
+        if self.dispatcher is not None:
+            self.dispatcher.pause()
+        self._event("failed", None, "error")
+
+    def _item_failed(self, op: tuple, reason: str, *, record: bool = True) -> None:
+        vid = None
+        if op[0] == "result":
+            vid = op[1].vid
+        elif op[0] == "failure":
+            vid = split_key(op[1])[1]
+        if vid is not None and record:
+            try:
+                self.cache.record_failure(vid, "store-error", reason)
+            except Exception as exc:  # noqa: BLE001 - the event below still tells the UI
+                log.warning("content index could not record a failure: %s", describe(exc))
+            self._strike(vid)
+        self._event("failed", vid, reason[:60])
 
     def _apply(self, op: tuple) -> None:
         kind = op[0]

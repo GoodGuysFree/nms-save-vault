@@ -16,12 +16,13 @@ import json
 import sys
 import time
 
-from .core import aliases
+from .core import aliases, safety
 from .core.catalog import Vault
 from .core.index import IndexService, Priority, derive
 from .core.index import vaultlink
 
 WAIT_S = 300.0
+STUCK_S = 15.0           # nothing can start this long: say why and stop
 
 
 def _out(*args, **kwargs) -> None:
@@ -36,6 +37,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     s.add_argument("--workers", default="auto", help="worker processes: auto, 1-8, or 0 for off")
     s.add_argument("--rebuild", action="store_true", help="forget every cached fact and index again")
     s.add_argument("--live-only", action="store_true", help="only the saves in the live folders")
+    s.add_argument("--timeout", type=float, default=3600.0, help="give up after this many seconds")
     s.set_defaults(func=cmd_build)
     s = sub.add_parser("show", help="the facts of one version")
     s.add_argument("ref", help="the version id, or its first 6+ characters")
@@ -54,7 +56,23 @@ def _setup(args, workers: str | int = "auto"):
     vault = _vault(args)
     sources = vaultlink.default_sources() if not args.live else [
         vaultlink.Source(id="live", platform=savedir.platform_of(args.live) or "steam", account="", path=args.live)]
-    return vaultlink.open_service(vault, sources, workers=_workers(workers)) + (vault,)
+    return vaultlink.open_service(vault, sources, workers=_workers(workers), game_running=_game_running) + (vault,)
+
+
+def _game_running() -> bool:
+    """For an explicit command-line build, "cannot tell" is allowed, with a warning; a game
+    that is known to run still holds background versions back."""
+    running = safety.is_game_running()
+    if running is None:
+        global _warned_unknown
+        if not _warned_unknown:
+            _out("warning: could not tell whether the game is running; indexing anyway")
+            _warned_unknown = True
+        return False
+    return running
+
+
+_warned_unknown = False
 
 
 def _vault(args) -> Vault:
@@ -67,7 +85,7 @@ def _vault(args) -> Vault:
     else:
         st = appstate.load()
         root = Path(st.vault) if (st and st.vault) else locations.default_vault_dir()
-    return Vault(root).load()
+    return vaultlink.ReadOnlyVault(root).load()       # read only: not even temp-file clean-up
 
 
 def _workers(value: str | int) -> str | int:
@@ -139,13 +157,10 @@ def cmd_build(args) -> int:
         p = service.policy
         _out(f"Indexing {queued} of {len(wanted)} versions ({p.mode}, {p.workers} worker"
              f"{'s' if p.workers != 1 else ''}); {len(wanted) - queued} already indexed.")
-        last = ""
-        while not service.idle():
-            line = service.progress().message
-            if line != last:
-                _out(f"  {line}")
-                last = line
-            time.sleep(0.5)
+        stuck = _follow(service, args.timeout)
+        if stuck:
+            _out(stuck)
+            return 2
         service.flush()
         counts: dict[str, int] = {}
         for vid in wanted:
@@ -156,6 +171,39 @@ def cmd_build(args) -> int:
     finally:
         service.close()
     return 0
+
+
+def _follow(service: IndexService, timeout: float, *, stuck_s: float = STUCK_S) -> str | None:
+    """Print progress until the queue is empty. Returns why it stopped early, or None."""
+    end = time.monotonic() + timeout
+    last = ""
+    blocked_since: float | None = None
+    while not service.idle():
+        p = service.progress()
+        if p.message != last:
+            _out(f"  {p.message}")
+            last = p.message
+        if p.state == "error":
+            return f"Stopped: {p.message}. Facts indexed so far are kept."
+        if p.state == "paused":
+            return "Stopped: the content index is paused."
+        if p.running == 0 and p.queued > 0:
+            blocked_since = blocked_since or time.monotonic()
+            if time.monotonic() - blocked_since >= stuck_s:
+                if service.dispatcher is not None and service.dispatcher.playing:
+                    return (f"Stopped: the game is running, so {p.queued} older versions wait until it is closed "
+                            "(live saves are indexed; use --live-only, or close the game and build again).")
+                return f"Stopped: {p.queued} versions could not start."
+        else:
+            blocked_since = None
+        if time.monotonic() >= end:
+            return f"Stopped after {timeout:.0f} s: {p.queued} versions still queued."
+        time.sleep(0.2)
+    service.flush()                                       # the last results may fail to store
+    p = service.progress()
+    if p.state == "error":
+        return f"Stopped: {p.message}. Facts indexed so far are kept."
+    return None
 
 
 def _resolve(scan, ref: str) -> str:

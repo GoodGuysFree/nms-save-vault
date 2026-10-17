@@ -15,7 +15,10 @@ from __future__ import annotations
 
 import heapq
 import itertools
+import logging
 import multiprocessing
+import multiprocessing.pool
+import os
 import threading
 import time
 from collections import deque
@@ -35,6 +38,9 @@ TIMEOUT_FLOOR_S = 60.0
 TIMEOUT_PER_JSON_MB_S = 1.0       # 10 s per 10 MB of JSON
 IDLE_CLOSE_S = 60.0
 GAME_CHECK_S = 5.0
+DEAD_WORKER_GRACE_S = 3.0         # a worker gone this long without its job's result has died
+
+log = logging.getLogger(__name__)
 
 
 class Priority(IntEnum):
@@ -66,13 +72,18 @@ Done = Callable[[IndexResult], None]
 Failed = Callable[[BaseException], None]
 
 
+class ExecutorClosed(RuntimeError):
+    """The executor was closed: it starts no more work."""
+
+
 class Executor(Protocol):
     inline: bool
 
-    def submit(self, job: IndexJob, done: Done, failed: Failed) -> None: ...
+    def submit(self, job: IndexJob, done: Done, failed: Failed, token: int = 0) -> None: ...
     def terminate(self) -> None: ...
     def idle(self) -> None: ...
     def close(self) -> None: ...
+    def dead_tokens(self, live: Iterable[int]) -> set[int]: ...
 
 
 class ThreadExecutor:
@@ -83,10 +94,10 @@ class ThreadExecutor:
     def __init__(self, target: Callable[[IndexJob], IndexResult] = run_job) -> None:
         self.target = target
 
-    def submit(self, job: IndexJob, done: Done, failed: Failed) -> None:
+    def submit(self, job: IndexJob, done: Done, failed: Failed, token: int = 0) -> None:
         try:
             result = self.target(job)
-        except BaseException as exc:  # noqa: BLE001 - reported like a crashed worker
+        except Exception as exc:  # noqa: BLE001 - reported like a crashed worker
             failed(exc)
             return
         done(result)
@@ -100,6 +111,25 @@ class ThreadExecutor:
     def close(self) -> None:
         pass
 
+    def dead_tokens(self, live: Iterable[int]) -> set[int]:
+        return set()
+
+
+# Set in each worker process by the pool initializer: where a job announces that it started.
+_STARTED = None
+
+
+def _worker_init(started) -> None:
+    global _STARTED
+    _STARTED = started
+
+
+def _tracked(token: int, target: Callable[[IndexJob], IndexResult], job: IndexJob) -> IndexResult:
+    """Run ``target`` in a worker, first telling the parent which process took the job."""
+    if _STARTED is not None:
+        _STARTED.put((token, os.getpid()))
+    return target(job)
+
 
 class ProcessExecutor:
     """A spawn ``multiprocessing.Pool``: created on the first job, closed when idle, and
@@ -109,30 +139,71 @@ class ProcessExecutor:
     inline = False
 
     def __init__(self, workers: int, *, target: Callable[[IndexJob], IndexResult] = run_job,
-                 maxtasksperchild: int = 25) -> None:
+                 maxtasksperchild: int = 25, clock: Callable[[], float] = time.monotonic) -> None:
         self.workers = workers
         self.target = target
         self.maxtasksperchild = maxtasksperchild
+        self.clock = clock
         self._pool = None
+        self._started = None
+        self._closed = False
         self._lock = threading.Lock()
+        self._pids: dict[int, int] = {}           # token -> worker pid that took it
+        self._gone: dict[int, float] = {}         # token -> when its worker was first missing
 
     def _get(self):
         with self._lock:
+            if self._closed:
+                raise ExecutorClosed("the index workers were closed")
+            if self._pool is not None and getattr(self._pool, "_state", None) != multiprocessing.pool.RUN:
+                self._pool = None                 # broken or shut down under us: start a new one
             if self._pool is None:
                 ctx = multiprocessing.get_context("spawn")   # fork with Tk/X11 state is unsafe
-                self._pool = ctx.Pool(self.workers, maxtasksperchild=self.maxtasksperchild)
+                self._started = ctx.SimpleQueue()
+                self._pids.clear()
+                self._gone.clear()
+                self._pool = ctx.Pool(self.workers, initializer=_worker_init, initargs=(self._started,),
+                                      maxtasksperchild=self.maxtasksperchild)
             return self._pool
 
     @property
     def running(self) -> bool:
         return self._pool is not None
 
-    def submit(self, job: IndexJob, done: Done, failed: Failed) -> None:
-        self._get().apply_async(self.target, (job,), callback=done, error_callback=failed)
+    def submit(self, job: IndexJob, done: Done, failed: Failed, token: int = 0) -> None:
+        self._get().apply_async(_tracked, (token, self.target, job), callback=done, error_callback=failed)
+
+    def dead_tokens(self, live: Iterable[int]) -> set[int]:
+        """Jobs whose worker process ended without a result (killed, crashed hard): a Pool
+        replaces the process but never reports the lost job, so it is found here."""
+        with self._lock:
+            pool, started = self._pool, self._started
+            if pool is None or started is None:
+                return set()
+            while not started.empty():
+                token, pid = started.get()
+                self._pids[token] = pid
+            alive = {proc.pid for proc in list(getattr(pool, "_pool", [])) if proc.is_alive()}
+            now = self.clock()
+            dead = set()
+            for token in live:
+                pid = self._pids.get(token)
+                if pid is None or pid in alive:
+                    self._gone.pop(token, None)
+                    continue
+                first = self._gone.setdefault(token, now)
+                if now - first >= DEAD_WORKER_GRACE_S:
+                    dead.add(token)
+            for token in dead:
+                self._pids.pop(token, None)
+                self._gone.pop(token, None)
+            return dead
 
     def terminate(self) -> None:
         with self._lock:
             pool, self._pool = self._pool, None
+            self._pids.clear()
+            self._gone.clear()
         if pool is not None:
             pool.terminate()
             pool.join()
@@ -145,6 +216,9 @@ class ProcessExecutor:
             pool.join()
 
     def close(self) -> None:
+        """Terminate the workers for good: nothing is started afterwards."""
+        with self._lock:
+            self._closed = True
         self.terminate()
 
 
@@ -382,6 +456,7 @@ class Dispatcher:
         """One round: collect finished jobs, enforce timeouts, start at most one job.
         Returns True when anything changed (the loop then runs again at once)."""
         changed = self._collect()
+        changed |= self._reap_dead()
         changed |= self._watchdog()
         self._check_game()
         changed |= self._start_one()
@@ -413,6 +488,17 @@ class Dispatcher:
                 self.stats.failed += 1
             self.on_result(result)
         return changed
+
+    def _reap_dead(self) -> bool:
+        with self._lock:
+            live = list(self._running)
+        dead = self.executor.dead_tokens(live) if live else set()
+        for token in dead:
+            with self._lock:
+                run = self._running.pop(token, None)
+            if run is not None:
+                self._retry_or_fail(run, "worker-died", "worker process ended without a result")
+        return bool(dead)
 
     def _retry_or_fail(self, run: _Running, kind: str, error: str) -> None:
         if run.vid not in self._retried:
@@ -468,6 +554,11 @@ class Dispatcher:
             if held is None:
                 return True
         with self._lock:
+            if self._stopped:
+                return False                                # opened while stopping: drop it
+            if self._paused:
+                self._held = held                           # opened while pausing: keep it for resume
+                return False
             if not self._fits(held):
                 better = self._heap and self._heap[0][0] < held.tier and self._pending.get(self._heap[0][3]) is self._heap[0]
                 if better:
@@ -481,9 +572,22 @@ class Dispatcher:
                 return False
             self._held = None
             token = next(self._tokens)
-            self._running[token] = _Running(held.vid, held.tier, held.est, held.json_bytes, self.clock(), held.alone)
+            run = _Running(held.vid, held.tier, held.est, held.json_bytes, self.clock(), held.alone)
+            self._running[token] = run
             self._idle_since = None
-        self.executor.submit(held.job, self._done(token), self._failed(token))
+        try:
+            self.executor.submit(held.job, self._done(token), self._failed(token), token)
+        except ExecutorClosed:
+            with self._lock:
+                self._running.pop(token, None)
+                if held.vid not in self._pending:
+                    self._push(held.vid, held.tier)
+            return False
+        except Exception as exc:  # noqa: BLE001 - a broken pool: this job fails, the next gets a new pool
+            log.warning("index job %s could not be started: %s", held.vid[:12], extract.describe(exc))
+            with self._lock:
+                self._running.pop(token, None)
+            self._retry_or_fail(run, "worker-died", f"could not start: {extract.describe(exc)}")
         return True
 
     def _open(self, key: str, tier: Priority) -> _Held | None:
@@ -501,6 +605,8 @@ class Dispatcher:
         return _Held(key, tier, IndexJob(vid, kind, data, hint), est, json_bytes, alone)
 
     def _fits(self, held: _Held) -> bool:
+        if not self._allowed(held.tier):
+            return False                                    # the game started while it waited
         running = list(self._running.values())
         if any(r.alone for r in running):
             return False                                    # an oversized job runs alone
@@ -536,10 +642,24 @@ class Dispatcher:
 
     def _run(self) -> None:
         while not self._stopped:
-            if not self.step():
+            try:
+                changed = self.step()
+            except Exception as exc:  # noqa: BLE001 - one bad step must not end indexing
+                log.exception("index dispatcher step failed")
+                self._fail_held(exc)
+                changed = False
+            if not changed:
                 with self._lock:
                     if not self._stopped and not self._completions:
                         self._lock.wait(timeout=1.0)
+
+    def _fail_held(self, exc: Exception) -> None:
+        """After an unexpected error, the job being started (if any) is reported failed."""
+        with self._lock:
+            held, self._held = self._held, None
+        if held is not None:
+            self.stats.failed += 1
+            self.on_failure(held.vid, "worker-died", f"dispatcher error: {extract.describe(exc)}")
 
     def stop(self) -> None:
         with self._lock:

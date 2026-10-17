@@ -30,12 +30,21 @@ class FakeExecutor:
     def __init__(self) -> None:
         self.jobs: list[tuple[IndexJob, object, object]] = []
         self.started: list[str] = []
+        self.tokens: dict[str, int] = {}
+        self.dead: set[str] = set()
         self.terminated = 0
         self.idled = 0
 
-    def submit(self, job, done, failed):
+    def submit(self, job, done, failed, token=0):
         self.jobs.append((job, done, failed))
         self.started.append(job.vid)
+        self.tokens[job.vid] = token
+
+    def dead_tokens(self, live):
+        gone = {self.tokens[v] for v in self.dead if v in self.tokens}
+        self.jobs = [j for j in self.jobs if j[0].vid not in self.dead]
+        self.dead.clear()
+        return gone & set(live)
 
     def running(self) -> list[str]:
         return [j.vid for j, _d, _f in self.jobs]
