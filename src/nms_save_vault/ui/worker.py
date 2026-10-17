@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 import queue
 import threading
+import weakref
 from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Any
@@ -96,3 +97,48 @@ class UiWorker:
                 pass
             self._after = None
         self._executor.shutdown(wait=False, cancel_futures=True)
+
+
+def weak(method: Callable[..., Any], *lead) -> Callable[..., None]:
+    """``method`` (a widget's bound method) for a job's callbacks, without keeping the widget
+    alive: the worker may drop the last reference to a callback, and a widget (with its Tk
+    variables) must only ever be released on the Tk thread. Calls nothing once it is gone."""
+    ref = weakref.WeakMethod(method)
+
+    def call(*args) -> None:
+        target = ref()
+        if target is not None:
+            target(*lead, *args)
+    return call
+
+
+def finisher(ref, gen: int, on_done, on_recover) -> Callable[[Any], None]:
+    """The callback of an executed plan: the dialog's own handler while the dialog object is
+    there (it also copes with a closed one); otherwise the outcome still reaches what the
+    dialog was given (the Done bar, the rescan, Recover), never the widget."""
+    def call(outcome) -> None:
+        dialog = ref()
+        if dialog is not None:
+            dialog._executed(gen, outcome)
+        elif outcome.status == "done" and on_done is not None:
+            on_done(outcome)
+        elif outcome.status in ("failed", "rolled_back") and on_recover is not None:
+            on_recover()
+    return call
+
+
+def release_tk_variables(*owners) -> None:
+    """Drop every Tk variable an owner (a dialog, a picker) holds, on the Tk thread, as the
+    owner is destroyed. A variable that outlives its window sits in a reference cycle, and the
+    garbage collector may then free it on whichever thread happens to trigger a collection -
+    the worker - where Tk refuses ("main thread is not in main loop")."""
+    import tkinter as tk
+
+    for owner in owners:
+        if owner is None:
+            continue
+        for name, value in list(vars(owner).items()):
+            if isinstance(value, tk.Variable):
+                setattr(owner, name, None)
+            elif isinstance(value, dict) and any(isinstance(v, tk.Variable) for v in value.values()):
+                value.clear()

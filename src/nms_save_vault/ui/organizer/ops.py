@@ -9,7 +9,9 @@ items or the guide. The app never empties a slot (F8); the steps window only tel
 from __future__ import annotations
 
 import tkinter as tk
+import weakref
 from collections.abc import Callable
+from types import SimpleNamespace
 from tkinter import ttk
 
 from ... import theme
@@ -21,7 +23,7 @@ from ..dpi import px, pxs
 from ..fmt import play_time
 from ..redact import rtitle, set_label, shown
 from ..themeaware import ThemeRegistry
-from ..worker import UiWorker
+from ..worker import UiWorker, finisher, release_tk_variables, weak
 
 SEVERITY_ORDER = {"block": 0, "confirm": 1, "warn": 2, "info": 3}
 MARKS = {"info": "i", "warn": "!", "confirm": "?", "block": "X"}
@@ -95,7 +97,17 @@ class _Dialog(tk.Toplevel):
                 self.grab_set()
             except tk.TclError:
                 pass
-        self.bind("<Escape>", lambda _e: self.destroy())
+        self.bind("<Escape>", lambda _e: self.cancel())
+        self.protocol("WM_DELETE_WINDOW", self.cancel)
+
+    def cancel(self) -> None:
+        """Esc, the title-bar X and the Cancel / Close buttons: never while a write runs."""
+        if not getattr(self, "busy", False):
+            self.destroy()
+
+    def destroy(self) -> None:
+        release_tk_variables(self)
+        super().destroy()
 
     def _ready(self) -> None:
         """Last line of every constructor: the widgets exist, so the theme can reach them."""
@@ -124,7 +136,7 @@ class PlanDialog(_Dialog):
         self.on_done, self.on_recover = on_done, on_recover
         self.outcome: OpOutcome | None = None
         self.busy = False
-        self._progress = None
+        self._box = SimpleNamespace(progress=None)       # worker -> Tk: plain data only
         self._gen = 0
         self.vars: dict[str, tk.BooleanVar] = {}
         pad = px(10)
@@ -235,18 +247,17 @@ class PlanDialog(_Dialog):
         self.bar.configure(value=0, maximum=1)
         set_label(self.status, "Working...")
         self.after(100, self._poll)
-        self.worker.submit(self._job, self.plan, confirmed, note,
-                           on_done=lambda r: self._executed(gen, r),
-                           on_error=lambda e: self._failed(gen, e))
-
-    def _job(self, plan, confirmed, note) -> OpOutcome:
-        return execute(self.make_context(), plan, confirmed,
-                       lambda p: setattr(self, "_progress", p), note=note)
+        plan, make_context, box = self.plan, self.make_context, self._box
+        self.worker.submit(
+            lambda: execute(make_context(), plan, confirmed,
+                            lambda p: setattr(box, "progress", p), note=note),
+            on_done=finisher(weakref.ref(self), gen, self.on_done, self.on_recover),
+            on_error=weak(self._failed, gen))
 
     def _poll(self) -> None:
         if not self.winfo_exists() or not self.busy:
             return
-        p = self._progress
+        p = self._box.progress
         if p is not None:
             self.bar.configure(maximum=max(1, p.total), value=p.done)
             set_label(self.status, STEPS.get(p.step, p.step) + "...")
@@ -260,7 +271,13 @@ class PlanDialog(_Dialog):
         self._update()
 
     def _executed(self, gen: int, outcome: OpOutcome) -> None:
-        if gen != self._gen or not self.winfo_exists():
+        if not self.winfo_exists():            # closed mid-write: the result still counts
+            if outcome.status == "done" and self.on_done is not None:
+                self.on_done(outcome)
+            elif outcome.status in ("failed", "rolled_back") and self.on_recover is not None:
+                self.on_recover()
+            return
+        if gen != self._gen:
             return
         self.outcome = outcome
         self._idle()
@@ -290,10 +307,6 @@ class PlanDialog(_Dialog):
         if self.on_recover is not None:
             self.on_recover()
 
-    def cancel(self) -> None:
-        if not self.busy:
-            self.destroy()
-
 
 class RecoveryDialog(_Dialog):
     """An interrupted move (or a missing vault copy) the owner must decide on. One row per
@@ -314,7 +327,7 @@ class RecoveryDialog(_Dialog):
         pad = px(10)
         foot = ttk.Frame(self, padding=pad)
         foot.pack(side=tk.BOTTOM, fill=tk.X)
-        ttk.Button(foot, text="Close", command=self.destroy).pack(side=tk.RIGHT)
+        ttk.Button(foot, text="Close", command=self.cancel).pack(side=tk.RIGHT)
         self.confirm_check = ttk.Checkbutton(
             foot, variable=self.confirm,
             text="I confirm the game is not running (the app could not check)")
@@ -361,14 +374,19 @@ class RecoveryDialog(_Dialog):
         choice = self.choice[item.op_id].get()
         self.apply_buttons[item.op_id].state(["disabled"])
         set_label(self.result[item.op_id], "Working...")
+        make_context, op_id = self.make_context, item.op_id
         self.worker.submit(
-            lambda: resolve_recovery(self.make_context(), item.op_id, choice, confirmed),
-            on_done=lambda o: self._applied(item, o),
-            on_error=lambda e: self._applied(item, None, e))
+            lambda: resolve_recovery(make_context(), op_id, choice, confirmed),
+            on_done=weak(self._applied, item), on_error=weak(self._apply_failed, item))
+
+    def _apply_failed(self, item: RecoveryItem, error: BaseException) -> None:
+        self._applied(item, None, error)
 
     def _applied(self, item: RecoveryItem, outcome: OpOutcome | None,
                  error: BaseException | None = None) -> None:
-        if not self.winfo_exists():
+        if not self.winfo_exists():            # closed mid-write: the result still counts
+            if outcome is not None and outcome.status == "done" and self.on_changed is not None:
+                self.on_changed()
             return
         self.busy = False
         label = self.result[item.op_id]
@@ -428,6 +446,18 @@ class StepsWindow(_Dialog):
                                   foreground=self._pal["fg"])
 
 
+def _read_log(make_context, targets):
+    """The worker's job for the log: a closure over plain data, never over the window."""
+    def job() -> list[OpSummary]:
+        ctx = make_context()
+        merged: dict[str, OpSummary] = {}
+        for t in targets:
+            for s in op_history(ctx, t):
+                merged.setdefault(s.op_id, s)
+        return sorted(merged.values(), key=lambda s: (s.when, s.op_id), reverse=True)
+    return job
+
+
 class OpsLogWindow(_Dialog):
     """The operations log: every move touching the given slots, newest first, with Undo for
     the selected one."""
@@ -459,15 +489,8 @@ class OpsLogWindow(_Dialog):
         self.tree.bind("<<TreeviewSelect>>", self._selected)
         self.minsize(px(640), px(300))
         self._ready()
-        worker.submit(self._job, on_done=self._loaded, on_error=self._failed)
-
-    def _job(self) -> list[OpSummary]:
-        ctx = self.make_context()
-        merged: dict[str, OpSummary] = {}
-        for t in self.targets:
-            for s in op_history(ctx, t):
-                merged.setdefault(s.op_id, s)
-        return sorted(merged.values(), key=lambda s: (s.when, s.op_id), reverse=True)
+        worker.submit(_read_log(make_context, list(targets)), on_done=weak(self._loaded),
+                      on_error=weak(self._failed))
 
     def _loaded(self, rows: list[OpSummary]) -> None:
         if not self.winfo_exists():

@@ -148,8 +148,12 @@ class VersionPicker(ttk.Frame):
             _v, _key, pid, head = iid.split(":", 3)
             self._choose(pid, head)
 
-    def _choose(self, pid: str, head: str) -> None:
-        if self.chosen == (pid, head):
+    def restore(self, pair: tuple[str, str] | None) -> None:
+        """Show ``pair`` as the pick again (the dialog refused a pick), without a callback."""
+        self._choose(*(pair or (None, None)), notify=False) if pair else None
+
+    def _choose(self, pid: str, head: str, notify: bool = True) -> None:
+        if self.chosen == (pid, head) and notify:
             return
         self.chosen = (pid, head)
         for iid in self._version_ids():
@@ -159,7 +163,8 @@ class VersionPicker(ttk.Frame):
             self.tree.item(iid, text=("(o) " if on else "( ) ") + number)
             tags = [t for t in self.tree.item(iid, "tags") if t != "chosen"]
             self.tree.item(iid, tags=tags + (["chosen"] if on else []))
-        self.on_pick(pid, head)
+        if notify:
+            self.on_pick(pid, head)
 
     def _version_ids(self) -> list[str]:
         out = []

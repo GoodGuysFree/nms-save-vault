@@ -222,8 +222,11 @@ def test_the_entry_points_open_it(view, gui_app):
     d.cancel()
     head = view.model.versions(pid)[0].head
     d2 = view.open_move_for(pid, head, slot=3)
-    _wait(gui_app, lambda: d2.plan is not None)
-    assert d2.slot in (3, d2.picker.suggested_slot)
+    _wait(gui_app, lambda: d2.picker is not None and not d2.busy)
+    if d2.slot == 3:
+        assert d2.plan is not None
+    else:                                   # a slot that cannot take it says why (never another one)
+        assert d2.plan is None and "cannot take" in d2.error.cget("text")
     d2.cancel()
 
 

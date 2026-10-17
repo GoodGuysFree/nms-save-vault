@@ -709,6 +709,7 @@ class OrganizerTable(ttk.Frame):
         if not iid or self.on_move is None:
             return
         self.tree.selection_set(iid)
+        self.tree.focus(iid)
         menu = tk.Menu(self.tree, tearoff=False)
         pid, head = self.selection_ref()
         if pid is not None:

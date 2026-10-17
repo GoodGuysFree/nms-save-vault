@@ -15,6 +15,8 @@ that account's one confirmation (F7b), exactly as the plan states it.
 from __future__ import annotations
 
 import tkinter as tk
+import weakref
+from types import SimpleNamespace
 from collections.abc import Callable
 from tkinter import ttk
 
@@ -29,7 +31,7 @@ from ..dpi import px, pxs
 from ..fmt import local_time, play_time
 from ..redact import rtext, rtitle, set_label, shown
 from ..themeaware import ThemeRegistry
-from ..worker import UiWorker
+from ..worker import UiWorker, finisher, release_tk_variables, weak
 from .detail import Segment
 from .pick import VersionPicker
 from .words import find_row, line_name
@@ -127,8 +129,13 @@ class MoveDialog(tk.Toplevel):
         self.model = model
         self.fixed_slot = fixed        # Replace with...: the slot is fixed, the version is picked
         self.fixed = fixed.target if fixed is not None else None
-        self._refresh_only = False
+        self._rows_stale = False                # the slot rows belong to a picker being replaced
+        self._keep_gen: int | None = None      # the reload after a stale result keeps its replan
         self.start_account = account
+        self.want_account: LiveRef | None = account     # what the owner asked for, not yet shown
+        self.executing = False
+        self._picked_pair: tuple[str, str] | None = None
+        self._box = SimpleNamespace(progress=None)       # worker -> Tk: plain data, no widgets
         self.on_done = on_done
         self.on_recover = on_recover
         self.picker: EvictionPicker | None = None
@@ -319,42 +326,70 @@ class MoveDialog(tk.Toplevel):
         self._set_idle("Pick the version to put in.")
 
     def _version_picked(self, pid: str, head: str) -> None:
-        if self.model is None or self.fixed is None or self.busy:
+        if self.model is None or self.fixed is None:
+            return
+        if self.executing:                     # a write is under way: the pick stays as it is
+            if self.picker_widget is not None:
+                self.picker_widget.restore(self._picked_pair)
             return
         try:
             source, name, card = source_for(self.model, pid, head)
         except KeyError:
             return
+        self._picked_pair = (pid, head)
         self.source, self.name, self.card = source, name, card
         self.slot = None
         self.prefer_slot = self.fixed.slot
         self._load(self.fixed.ref)
 
-    def _load(self, account: LiveRef | None) -> None:
+    def _token(self) -> tuple:
+        """The pick on screen: version, account, slot. A plan is good for exactly one."""
+        s = self.source
+        return ((s.vid_a, s.vid_b, s.load) if s is not None else None,
+                self.want_account or self.account, self.slot)
+
+    def plan_matches(self, plan: PlacePlan | None) -> bool:
+        """Is ``plan`` for exactly the current picks? Apply is enabled only then."""
+        s, ref = self.source, self.want_account or self.account
+        if plan is None or s is None or ref is None or self.slot is None or not plan.targets:
+            return False
+        t = plan.targets[0].target
+        src = plan.source
+        return (t.ref == ref and t.slot == self.slot and src is not None
+                and (src.vid_a, src.vid_b) == (s.vid_a, s.vid_b))
+
+    def _load(self, account: LiveRef | None, keep_plan: bool = False) -> None:
         if self.source is None:
             return
         self._gen += 1
         gen = self._gen
-        if not self._refresh_only:
+        self._keep_gen = gen if keep_plan else None
+        if account is not None:
+            self.want_account = account
+        if not keep_plan:
             self.plan = None
+            self.error.configure(text="")
+            self._render_plan(None)
+        self._rows_stale = True
         self._set_busy("Reading the live slots...")
-        self.worker.submit(self._picker_job, account, on_done=lambda r: self._picked(gen, r),
-                           on_error=lambda e: self._failed(gen, e))
-
-    def _picker_job(self, account: LiveRef | None) -> EvictionPicker:
-        return eviction_picker(self.make_context(), self.source, account)
+        make_context, source = self.make_context, self.source
+        self.worker.submit(lambda: eviction_picker(make_context(), source, account),
+                           on_done=weak(self._picked, gen),
+                           on_error=weak(self._failed, gen))
 
     def _picked(self, gen: int, picker: EvictionPicker) -> None:
         if gen != self._gen or not self.winfo_exists():
             return
         self.picker = picker
         self.account = picker.account
+        self.want_account = picker.account
         self._show_source(picker)
         self._show_accounts(picker)
         self._show_slots(picker)
+        self._rows_stale = False
         self._show_strip(picker)
-        if self._refresh_only:                 # after a stale result: keep the shown plan
-            self._refresh_only = False
+        if self._keep_gen == gen:              # after a stale result: keep the shown plan
+            self._keep_gen = None
             cand = next((c for c in picker.candidates if c.target.slot == self.slot), None)
             if cand is not None:
                 self._mark_rows(self.slot)
@@ -369,6 +404,16 @@ class MoveDialog(tk.Toplevel):
             self._render_plan(None)
             self.error.configure(text=shown(self, "This version cannot go into that slot"
                                             + (f" ({blocked})." if blocked else ".")))
+            return
+        if self.prefer_slot is not None and not self._usable(self.prefer_slot):
+            asked = next((c for c in picker.candidates if c.target.slot == self.prefer_slot), None)
+            self.prefer_slot = None            # dropped on a slot that cannot take it: say why
+            self.slot = None
+            self._show_out(None)
+            self._render_plan(None)
+            self._set_idle("Pick a slot.")
+            why = (asked.blocked if asked and asked.blocked else "it is not available")
+            self.error.configure(text=shown(self, f"That slot cannot take this version ({why})."))
             return
         keep = self.slot if self.slot in {c.target.slot for c in picker.candidates
                                           if not c.blocked} else None
@@ -398,28 +443,34 @@ class MoveDialog(tk.Toplevel):
         self._show_out(cand)
         self._gen += 1
         gen = self._gen
+        self._keep_gen = None
         self.plan = None
+        self.error.configure(text="")
         self._render_plan(None)
         self._set_busy("Planning...")
-        self.worker.submit(self._plan_job, cand, on_done=lambda r: self._planned(gen, r),
-                           on_error=lambda e: self._failed(gen, e))
+        make_context, source, target = self.make_context, self.source, cand.target
+        token = self._token()
+        self.worker.submit(lambda: plan_place(make_context(), source, target),
+                           on_done=weak(self._planned, gen, token),
+                           on_error=weak(self._failed, gen))
 
-    def _plan_job(self, cand: SlotCandidate) -> PlacePlan:
-        return plan_place(self.make_context(), self.source, cand.target)
-
-    def _planned(self, gen: int, plan: PlacePlan) -> None:
-        if gen != self._gen or not self.winfo_exists():
+    def _planned(self, gen: int, token: tuple, plan: PlacePlan) -> None:
+        if gen != self._gen or not self.winfo_exists() or token != self._token():
             return
         self.plan = plan
+        self.error.configure(text="")
         self._set_idle("")
         self._render_plan(plan)
 
     def _failed(self, gen: int, error: BaseException) -> None:
         if gen != self._gen or not self.winfo_exists():
             return
+        self.plan = None
+        self._keep_gen = None
+        self._rows_stale = False
         self._set_idle("")
-        self.error.configure(text=shown(self, f"This could not be planned: {error}"))
         self._render_plan(None)
+        self.error.configure(text=shown(self, f"This could not be planned: {error}"))
 
     # --- showing --------------------------------------------------------------------------------
 
@@ -468,7 +519,11 @@ class MoveDialog(tk.Toplevel):
         return self.labels.get(ref) or ("Xbox" if ref.platform == "xbox" else "Steam")
 
     def _account_picked(self, ref: LiveRef) -> None:
-        if ref != self.account and not self.busy:
+        if self.executing:
+            if self.account in self.accounts:
+                self.account_var.set(self.accounts.index(self.account))
+            return
+        if ref != (self.want_account or self.account):
             self.slot = None
             self._load(ref)
 
@@ -508,7 +563,7 @@ class MoveDialog(tk.Toplevel):
 
     def _row_selected(self, _event=None) -> None:
         sel = self.tree.selection()
-        if self.busy or not sel:
+        if self.executing or self._rows_stale or not sel:
             return
         cand = self._rows.get(sel[0])
         if cand is None or cand.blocked:
@@ -538,7 +593,6 @@ class MoveDialog(tk.Toplevel):
                   f"{local_time(cand.last_played)}\n{where}")
 
     def _render_plan(self, plan: PlacePlan | None) -> None:
-        self.error.configure(text="")
         for w in self.warnings.winfo_children():
             w.destroy()
         self._confirm_vars.clear()
@@ -604,7 +658,8 @@ class MoveDialog(tk.Toplevel):
 
     def _update_apply(self) -> None:
         plan = self.plan
-        ok = (plan is not None and not plan.blocked and not self.busy and
+        ok = (plan is not None and self.plan_matches(plan) and not plan.blocked
+              and not self.busy and not self.executing and
               all(v.get() for v in self._confirm_vars.values()) and
               plan.confirmations <= {c for c, v in self._confirm_vars.items() if v.get()})
         self.apply_button.state(["!disabled"] if ok else ["disabled"])
@@ -630,7 +685,8 @@ class MoveDialog(tk.Toplevel):
 
     def apply(self) -> None:
         plan = self.plan
-        if plan is None or self.busy or self.apply_button.instate(["disabled"]):
+        if plan is None or self.busy or self.apply_button.instate(["disabled"]) \
+                or not self.plan_matches(plan):
             return
         confirmed = frozenset(c for c, v in self._confirm_vars.items() if v.get())
         note = self.note_var.get().strip()
@@ -638,34 +694,43 @@ class MoveDialog(tk.Toplevel):
         gen = self._gen
         self.error.configure(text="")
         self.recover_button.pack_forget()
-        self._progress = None
+        self._box.progress = None
+        self.executing = True
         self.cancel_button.state(["disabled"])
         self.tree.state(["disabled"])
         self._set_busy("Working...")
         self.bar.pack(side=tk.LEFT)
         self.bar.configure(value=0, maximum=1)
         self.after(100, self._poll_progress)
-        self.worker.submit(self._execute_job, plan, confirmed, note,
-                           on_done=lambda r: self._executed(gen, r),
-                           on_error=lambda e: self._exec_failed(gen, e))
-
-    def _execute_job(self, plan: PlacePlan, confirmed: frozenset, note: str) -> OpOutcome:
-        return execute(self.make_context(), plan, confirmed, self._on_progress, note=note)
-
-    def _on_progress(self, p: Progress) -> None:      # worker thread: store only
-        self._progress = p
+        make_context, box = self.make_context, self._box     # no widget in the worker's closure
+        self.worker.submit(
+            lambda: execute(make_context(), plan, confirmed,
+                            lambda p: setattr(box, "progress", p), note=note),
+            on_done=finisher(weakref.ref(self), gen, self.on_done, self.on_recover),
+            on_error=weak(self._exec_failed, gen))
 
     def _poll_progress(self) -> None:
         if not self.winfo_exists() or not self.busy or self.apply_button is None:
             return
-        p = self._progress
+        p = self._box.progress
         if p is not None:
             self.bar.configure(maximum=max(1, p.total), value=p.done)
             set_label(self.status, STEPS.get(p.step, p.step) + "...")
         self.after(100, self._poll_progress)
 
+    def _outcome_after_close(self, outcome: OpOutcome) -> None:
+        """The dialog is gone but the write finished: the result still reaches the Done bar,
+        the rescan, Undo and Recover."""
+        if outcome.status == "done" and self.on_done is not None:
+            self.on_done(outcome)
+        elif outcome.status in ("failed", "rolled_back") and self.on_recover is not None:
+            self.on_recover()
+
     def _executed(self, gen: int, outcome: OpOutcome) -> None:
-        if gen != self._gen or not self.winfo_exists():
+        if not self.winfo_exists():
+            self._outcome_after_close(outcome)
+            return
+        if gen != self._gen:
             return
         self.outcome = outcome
         self._after_execute()
@@ -679,9 +744,8 @@ class MoveDialog(tk.Toplevel):
             if outcome.replan is not None:     # the fresh plan, shown as it is
                 self.plan = outcome.replan
                 self._render_plan(outcome.replan)
-                self._refresh_only = True
             self.error.configure(text=shown(self, text))
-            self._load(self.account)
+            self._load(self.want_account or self.account, keep_plan=outcome.replan is not None)
             return
         why = outcome.error or " ".join(w.text for w in outcome.warnings) or outcome.outcome
         self.error.configure(text=shown(self, f"{outcome.outcome}: {why}" if outcome.error else why))
@@ -694,19 +758,26 @@ class MoveDialog(tk.Toplevel):
             self.on_recover()
 
     def _exec_failed(self, gen: int, error: BaseException) -> None:
-        if gen != self._gen or not self.winfo_exists():
+        if not self.winfo_exists():
+            return
+        if gen != self._gen:
             return
         self._after_execute()
         self.error.configure(text=shown(self, f"The move could not be done: {error}"))
         self._set_idle("")
 
     def _after_execute(self) -> None:
+        self.executing = False
         self.bar.pack_forget()
         self.cancel_button.state(["!disabled"])
         self.tree.state(["!disabled"])
 
+    def destroy(self) -> None:
+        release_tk_variables(self, self.picker_widget)
+        super().destroy()
+
     def cancel(self) -> None:
-        if self.busy and self.cancel_button.instate(["disabled"]):
+        if self.executing:
             return                     # a write is under way: it is never interrupted
         self._gen += 1
         self.destroy()
