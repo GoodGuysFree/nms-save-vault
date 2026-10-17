@@ -493,3 +493,24 @@ def test_lineage_combine_and_split(world, capsys):
     assert "second try" in _run(capsys, "saves")[1]
     with pytest.raises(SystemExit):
         cli.main(["lineage", "unsplit", "Nobody"])
+
+
+def test_lineage_list_undo_and_notes_about_what_was_left_out(world, capsys):
+    _two_versions(world)
+    _run(capsys, "lineage", "comes-from", "S4", "S9")
+    _, out = _run(capsys, "lineage", "list")
+    assert "comes from" in out
+    cid = out.split()[0]
+    assert "undone" in _run(capsys, "lineage", "undo", cid[:12])[1]
+    assert "no recorded history" in _run(capsys, "history", "Main Save")[1]
+    with pytest.raises(SystemExit):
+        cli.main(["lineage", "undo", "cor-nope"])
+    _run(capsys, "lineage", "comes-from", "S4", "S9")
+    _, out = _run(capsys, "lineage", "unrelated", "S4", "S9")
+    assert "taken back" in out
+    # an unnamed split is named, and can be reached by its id
+    _, out = _run(capsys, "lineage", "split", "S4")
+    ref = out.split()[-1]
+    assert "Main Save (split 1)" in _run(capsys, "saves")[1]
+    assert "Main Save (split 1)" in _run(capsys, "history", ref)[1]
+    assert "undone" in _run(capsys, "lineage", "unsplit", ref)[1]

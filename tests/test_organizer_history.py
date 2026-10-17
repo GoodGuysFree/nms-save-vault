@@ -136,3 +136,32 @@ def test_the_ascii_picture_matches_the_lanes(tmp_path):
     assert [ln[:4] for ln in lines[1:5]] == ["*   ", "| * ", "* | ", "*/  "]
     assert "live S7, tip" in lines[1] and "fork, root" in lines[4]
     assert lines[5].strip().startswith("no recorded link") and lines[6].startswith("-")
+
+
+def test_a_fork_point_belongs_to_its_own_save_file_and_is_drawn_once(tmp_path):
+    w = World(tmp_path)
+    steam_save(w.steam, 9, 0, "Main Save", 200, MAIN, T0 + 200, extra="head")
+    steam_save(w.steam, 9, 1, "Main Save", 100, MAIN, T0 + 100, extra="partner")
+    steam_save(w.steam, 3, 0, "Main Save", 300, MAIN, T0 + 300, extra="x")
+    steam_save(w.steam, 5, 0, "Main Save", 400, MAIN, T0 + 400, extra="y")
+    partner, x, y = _vid(w.steam, 9, 1), _vid(w.steam, 3), _vid(w.steam, 5)
+    head = _vid(w.steam, 9, 0)
+    cor = _corrections(w.store)
+    cor.set_parent(x, partner)
+    cor.set_parent(y, partner)
+    pid = cor.split(PID, [partner], "root try")
+    model = w.refresh()
+    main, other = model.history(PID, "all"), model.history(pid, "all")
+    assert model.line_of(partner) == pid and model.line_of(head) == PID
+    assert partner in {n.vid for n in other.nodes} and partner not in {n.vid for n in main.nodes}
+    assert {n.vid: n.kind for n in other.nodes} == {partner: "fork-member", x: "version",
+                                                    y: "version"}    # the twins follow it
+    drawn = [(e.parent, e.child) for g in (main, other) for e in g.edges]
+    assert sorted(drawn) == sorted([(partner, x), (partner, y)])      # each edge drawn once
+    assert main.nodes == () and main.links == () and [r.head for r in main.dated] == [head]
+
+
+def test_a_lagging_copy_is_marked_on_a_tree_node_too(tmp_path):
+    w, (a, b, c, d, e), _ = _forked(tmp_path)
+    lines = format_history(w.refresh().history(PID, "all"), "Main Save", behind={d: 3660})
+    assert "copy 1h01 behind" in next(ln for ln in lines if d[:8] in ln)

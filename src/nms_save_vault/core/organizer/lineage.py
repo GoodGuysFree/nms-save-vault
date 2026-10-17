@@ -108,8 +108,10 @@ class LineageGraph:
 
     @classmethod
     def build(cls, edges: Iterable[Edge], lineage: LineageState) -> LineageGraph:
-        corrections = sorted((c for c in lineage.corrections if isinstance(c.get("id"), str)),
-                             key=lambda c: (c["at"] if type(c.get("at")) is int else 0, c["id"]))
+        # In the order they were made: the sequence number, else their place in the file.
+        corrections = [c for _, c in sorted(
+            enumerate(c for c in lineage.corrections if isinstance(c.get("id"), str)),
+            key=lambda ic: (ic[1]["seq"] if type(ic[1].get("seq")) is int else 0, ic[0]))]
         unrelated = {frozenset((c["a"], c["b"])) for c in corrections
                      if c.get("kind") == "not_related" and isinstance(c.get("a"), str)
                      and isinstance(c.get("b"), str)}
@@ -164,7 +166,7 @@ class LineageGraph:
                         and (v not in seed or (at, sp["pid"]) >= seed[v]):
                     seed[v] = (at, sp["pid"])
         sources = lineage.split_sources()
-        out: dict[Vid, Pid] = {}
+        out: dict[Vid, Pid] = {}      # before the owner's Combines of split lines
 
         def own(v: Vid, above: Pid | None) -> Pid | None:
             raw = raw_pid(v)
@@ -191,7 +193,7 @@ class LineageGraph:
                 above = own(u, above)
                 if above is not None:
                     out[u] = above
-        return out
+        return {v: lineage.canonical(p) for v, p in out.items()}
 
 
 def _reaches(parent: Mapping[Vid, Vid], start: Vid, target: Vid) -> bool:
@@ -220,6 +222,11 @@ class Corrections:
     def state(self) -> LineageState:
         return read_lineage(self.store)
 
+    @staticmethod
+    def _next_seq(doc: Mapping[str, Any]) -> int:
+        return 1 + max((c["seq"] for c in doc.get("corrections", ())
+                        if type(c.get("seq")) is int), default=0)
+
     def _new_id(self) -> str:
         stamp = datetime.fromtimestamp(int(self.clock()), timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         return f"cor-{stamp}-{secrets.token_hex(2)}"
@@ -247,7 +254,9 @@ class Corrections:
         record = {"id": self._new_id(), "kind": "set_parent", "child": child, "parent": parent,
                   "at": int(self.clock()), "note": str(note)}
         with self.store.transaction() as tx:
-            tx.doc(LINEAGE).setdefault("corrections", []).append(record)
+            doc = tx.doc(LINEAGE)
+            record["seq"] = self._next_seq(doc)
+            doc.setdefault("corrections", []).append(record)
         return record
 
     def mark_unrelated(self, a: Vid, b: Vid, *, note: str = "") -> Mapping[str, Any]:
@@ -258,7 +267,14 @@ class Corrections:
         record = {"id": self._new_id(), "kind": "not_related", "a": a, "b": b,
                   "at": int(self.clock()), "note": str(note)}
         with self.store.transaction() as tx:
-            tx.doc(LINEAGE).setdefault("corrections", []).append(record)
+            doc = tx.doc(LINEAGE)
+            items = doc.setdefault("corrections", [])
+            # "not related" also takes back any link the owner drew between the two.
+            items[:] = [c for c in items if not (
+                c.get("kind") == "set_parent" and c.get("parent") is not None
+                and {c.get("child"), c.get("parent")} == {a, b})]
+            record["seq"] = self._next_seq(doc)
+            items.append(record)
         return record
 
     def remove_correction(self, correction_id: str) -> None:
@@ -321,10 +337,14 @@ class Corrections:
         for v in vids:
             _check_vid(v)
         with self.store.transaction() as tx:
-            splits = tx.doc(LINEAGE).setdefault("splits", [])
+            doc = tx.doc(LINEAGE)
+            splits = doc.setdefault("splits", [])
             used = [int(sp["pid"].rpartition(":")[2]) for sp in splits
                     if sp.get("from") == raw_pid and isinstance(sp.get("pid"), str)]
-            pid = split_pid(raw_pid, max(used, default=0) + 1)
+            marks = doc.setdefault("split_marks", {})     # a number is never used twice
+            n = max([*used, marks.get(raw_pid, 0)]) + 1
+            marks[raw_pid] = n
+            pid = split_pid(raw_pid, n)
             splits.append({"pid": pid, "from": raw_pid, "vids": sorted(set(vids)),
                            "name": name.strip(), "at": int(self.clock())})
         return pid

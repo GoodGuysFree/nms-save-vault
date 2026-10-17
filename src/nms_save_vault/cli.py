@@ -745,6 +745,8 @@ def cmd_history(args) -> int:
     behind = {tip.head: tip.behind_by for tip in line.platform_tips if tip.behind_by}
     for text in format_history(graph, line.name, live=live, behind=behind):
         print(text)
+    for problem in graph.problems:
+        print(f"note: {problem}")
     return 0
 
 
@@ -775,7 +777,22 @@ def cmd_lineage(args) -> int:
         elif action == "unrelated":
             a, b = _vid_of(model, args.version), _vid_of(model, args.other)
             cor.mark_unrelated(a, b, note=args.note or "")
-            print(f"{a[:8]} and {b[:8]}: no longer linked")
+            print(f"{a[:8]} and {b[:8]}: no longer linked (any link you drew between them "
+                  "is taken back)")
+        elif action == "list":
+            for c in cor.state().corrections:
+                what = (f"{c.get('child', '')[:8]} comes from "
+                        f"{(c.get('parent') or 'nothing')[:8]}" if c.get("kind") == "set_parent"
+                        else f"{c.get('a', '')[:8]} and {c.get('b', '')[:8]} are not related")
+                print(f"{c.get('id')}  {what}")
+        elif action == "undo":
+            ids = [c["id"] for c in cor.state().corrections
+                   if isinstance(c.get("id"), str) and c["id"].startswith(args.correction)]
+            if len(ids) != 1:
+                _die(f"error: {len(ids)} corrections start with {args.correction!r} "
+                     "(see: lineage list)")
+            cor.remove_correction(ids[0])
+            print(f"Correction {ids[0]} undone.")
         elif action == "combine":
             pid = _resolve(resolve_save, model, args.save)
             into = _resolve(resolve_save, model, args.into)
@@ -1018,6 +1035,9 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument("version")
     c.add_argument("other")
     c.add_argument("--note")
+    lin.add_parser("list", help="the corrections you have made")
+    c = lin.add_parser("undo", help="take back one correction (an id, or its start)")
+    c.add_argument("correction")
     c = lin.add_parser("combine", help="make a save file part of another")
     c.add_argument("save")
     c.add_argument("into")

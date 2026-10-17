@@ -148,9 +148,85 @@ def test_split_seeds_a_new_line_and_carries_the_twin_forward(tmp_path):
     assert [r.head for r in model.versions(pid)] == [c, b]
     cor.unsplit(pid)
     assert w.refresh().line_of(b) == PID
-    assert cor.split(PID, [a]) == f"split:{PID}:1"
-    assert cor.split(PID, [b]) == f"split:{PID}:2"
+    assert cor.split(PID, [a]) == f"split:{PID}:2"        # a number is never used twice
+    assert cor.split(PID, [b]) == f"split:{PID}:3"
     with pytest.raises(ValueError):
         cor.split(f"split:{PID}:2", [a])
     with pytest.raises(ValueError):
-        cor.unsplit(f"split:{PID}:9")             # no such split
+        cor.unsplit(f"split:{PID}:9")                     # no such split
+
+
+def test_an_unnamed_split_has_a_name_and_a_reference(tmp_path):
+    from nms_save_vault.core.organizer.readmodel import resolve_save
+    w, (a, b, c) = _three(tmp_path)
+    cor = Corrections(w.store)
+    pid = cor.split(PID, [b])
+    model = w.refresh()
+    assert model.line(pid).name == "Main Save (split 1)" and model.line(PID).name == "Main Save"
+    assert resolve_save(model, pid) == pid == resolve_save(model, f"SPLIT:{PID}:1".lower())
+    assert resolve_save(model, "Main Save (split 1)") == pid
+
+
+def test_unsplit_then_split_again_carries_no_note_or_pin(tmp_path):
+    w, (a, b, c) = _three(tmp_path)
+    cor = Corrections(w.store)
+    first = cor.split(PID, [b])
+    notes = Notes(w.store)
+    notes.set_save_note(first, "old words", base_rev=None)
+    notes.set_pinned(first, True)
+    cor.unsplit(first)
+    second = cor.split(PID, [b])
+    assert second != first
+    state = Notes(w.store).state()
+    assert second not in state.save_files
+
+
+def test_a_split_can_be_combined_into_another_save_file(tmp_path):
+    w = World(tmp_path)
+    steam_save(w.steam, 9, 0, "Main Save", 100, MAIN, T0, extra="a")
+    steam_save(w.steam, 4, 0, "Other Run", 50, OTHER, T0, extra="o")
+    w.refresh()
+    steam_save(w.steam, 9, 0, "Main Save", 200, MAIN, T0 + 10, extra="b")
+    model = w.refresh()
+    b = model.versions(PID)[0].head
+    cor = Corrections(w.store)
+    pid = cor.split(PID, [b], "branch")
+    cor.combine([pid], OTHER_PID)
+    steam_save(w.steam, 9, 0, "Main Save", 300, MAIN, T0 + 20, extra="c")   # carried on
+    model = w.refresh()
+    c = _vid(w.steam, 9)
+    assert model.line_of(b) == OTHER_PID == model.line_of(c)
+    assert {line.pid for line in model.lines()} == {PID, OTHER_PID}
+
+
+def test_corrections_left_out_are_reported(tmp_path):
+    w, (a, b, _) = _three(tmp_path)
+    cor = Corrections(w.store)
+    cor.set_parent(b, a)
+    cor.set_parent(a, b)
+    model = w.refresh()
+    assert len(model.problems) == 1 and "left out" in model.problems[0]
+    assert model.history(PID, "all").problems == model.problems
+
+
+def test_corrections_apply_in_the_order_they_were_made_whatever_the_clock(tmp_path):
+    w, (a, b, _) = _three(tmp_path)
+    for _ in range(5):                                    # the same second, random ids
+        cor = Corrections(w.store, clock=lambda: T0)
+        cor.set_parent(b, a)
+        cor.set_parent(a, b)
+        graph = LineageGraph.build([], read_lineage(w.store))
+        assert dict(graph.parent) == {b: a} and len(graph.dropped) == 1
+        w.store_reset = None
+        with w.store.transaction() as tx:
+            from nms_save_vault.core.organizer.store import LINEAGE
+            tx.doc(LINEAGE)["corrections"] = []
+
+
+def test_unrelated_takes_back_a_link_drawn_by_the_owner(tmp_path):
+    w, (a, b, _) = _three(tmp_path)
+    cor = Corrections(w.store)
+    cor.set_parent(b, a)
+    cor.mark_unrelated(a, b)
+    assert not _row(w.refresh(), b).in_tree
+    assert [c["kind"] for c in read_lineage(w.store).corrections] == ["not_related"]

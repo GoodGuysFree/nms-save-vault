@@ -34,6 +34,7 @@ class HNode:
     edge: Edge | None           # the member edge into ``vid``
     order: tuple                # newest sorts last
     platform: Platform
+    row: VersionRow | None = None   # a fork point's own row, when it is another save file's
 
 
 @dataclass(frozen=True)
@@ -76,6 +77,7 @@ class HistoryGraph:
     pass_through: tuple[tuple[int, ...], ...]    # per row: lanes with a line passing (no node)
     links: tuple[CrossLink, ...]
     dated: tuple[VersionRow, ...]                # every other version, newest first
+    problems: tuple[str, ...] = ()               # corrections left out, evidence in conflict
 
 
 def project(pid: Pid, mode: str, rows: Sequence[VersionRow], nodes: Sequence[HNode],
@@ -84,10 +86,10 @@ def project(pid: Pid, mode: str, rows: Sequence[VersionRow], nodes: Sequence[HNo
     if mode not in MODES:
         raise ValueError(f"mode must be one of {MODES}, not {mode!r}")
     by_head = {r.head: r for r in rows}
-    by_vid = {n.vid: n for n in nodes if n.head in by_head}
+    by_vid = {n.vid: n for n in nodes if n.row is not None or n.head in by_head}
 
     def row_of(n: HNode) -> VersionRow:
-        return by_head[n.head]
+        return n.row if n.row is not None else by_head[n.head]
 
     def is_key(n: HNode) -> bool:
         return n.kind == "fork-member" or row_of(n).key
@@ -254,6 +256,8 @@ def format_history(graph: HistoryGraph, name: str, *,
         v = node.version
         notes = list(live.get(node.vid, ()) or ())
         notes = [f"live {', '.join(notes)}"] if notes else []
+        if behind.get(node.version.head) and node.kind == "version":
+            notes.append(f"copy {_hm(behind[node.version.head])} behind")
         for flag in ("tip", "fork", "root", "placed", "evicted", "locked"):
             if flag in node.flags and (flag != "tip" or kids[node.vid] == 0):
                 notes.append(flag)
