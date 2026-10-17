@@ -16,6 +16,8 @@ from nms_save_vault.core import operations as ops
 from nms_save_vault.core import formats, savedir, slotmap
 from nms_save_vault.core.catalog import CatalogEntry, Vault
 
+from .conftest import steam_save
+
 
 @pytest.fixture
 def sandbox(live_save_dir, tmp_path):
@@ -204,7 +206,7 @@ def test_import_vault_in_place_references_source_and_is_unmanaged(tmp_path):
     assert res.ok and len(res.changed) == 2
 
     snap = cur.get("snapshot-steam-20260602-000000")
-    # Points back at the source vault, and is NOT managed (so our pruning won't delete it).
+    # Points back at the source vault, and is NOT managed (its files belong to that vault).
     assert Path(snap.path) == src.snapshots_dir / "snapshot-steam-20260602-000000"
     assert snap.managed is False
     # Nothing was copied into the current vault.
@@ -233,57 +235,55 @@ def test_import_vault_preview_and_guards(tmp_path):
         ops.import_vault(cur, cur.root, copy_into_vault=True)
 
 
-def test_prune_leaves_unmanaged_snapshots_untouched(tmp_path):
-    """An in-place-imported snapshot (managed=False) must never be pruned/deleted, and must
-    not count toward the managed-snapshot retention budget."""
+def test_snapshot_live_never_deletes_snapshots(make_wgs_account, tmp_path):
+    """Every auto-snapshot is kept: some versions exist only in a snapshot, so deleting one
+    loses that version for good. 25 is more than the 20 the old pruning kept."""
+    steam = tmp_path / "steam_live"
+    steam_save(steam, 1, 0, "Steam Run", 3600, 0x1234, 1_700_000_000)
+    xbox = make_wgs_account(tmp_path / "xbox_live", [
+        ("Slot1Auto", "x", "Xbox Run", "s", 3600, 1_700_000_000),
+    ])
     vault = Vault(tmp_path / "vault")
-    vault.ensure()
-    foreign = tmp_path / "foreign"
-    foreign.mkdir()
-    (foreign / "save.hg").write_bytes(b"keep")
-    vault.upsert(CatalogEntry(id="snapshot-xbox-20250101-000000", kind="snapshot", label="",
-                              path=str(foreign), created="2025-01-01T00:00:00", managed=False))
-    # Fill the managed retention budget so prune would evict the oldest if it counted foreign.
-    for day in range(1, ops.SNAPSHOT_RETENTION + 1):
-        _mk_vault_entry(vault, vault.snapshots_dir, f"snapshot-steam-202606{day:02d}-000000",
-                        "snapshot", f"2026-06-{day:02d}T00:00:00")
 
-    ops._prune_snapshots(vault)
+    taken: list[str] = []
+    for i in range(25):
+        snap = ops.snapshot_live(vault, steam if i % 2 == 0 else xbox, reason=f"op {i}")
+        taken.append(snap.id)
+        assert {e.id for e in vault.entries} == set(taken)
 
-    ids = {e.id for e in vault.entries}
-    assert "snapshot-xbox-20250101-000000" in ids  # unmanaged foreign snapshot survives
-    assert foreign.is_dir() and (foreign / "save.hg").is_file()  # its files were not touched
-    assert len([e for e in vault.entries if e.managed and e.kind == "snapshot"]) == ops.SNAPSHOT_RETENTION
+    reloaded = Vault(vault.root).load()
+    assert sorted(e.id for e in reloaded.entries) == sorted(taken)
+    for entry in reloaded.entries:
+        assert entry.kind == "snapshot" and entry.managed
+        assert savedir.scan_any(entry.path).occupied_slots, f"{entry.id} lost its save files"
 
 
-def test_prune_snapshots_is_chronological_across_platforms(tmp_path):
-    """Regression: snapshot ids embed the platform ('snapshot-<platform>-<stamp>'), so a
-    naive id sort groups every Steam snapshot before every Xbox one and would prune the wrong
-    end -- including a just-created snapshot still referenced by the oplog, silently defeating
-    undo. Pruning must be by creation time."""
+def test_failed_snapshot_leaves_no_orphan_folder_or_entry(tmp_path, monkeypatch):
+    """A copy that dies part-way removes its own half-written folder, records nothing, and
+    leaves every earlier snapshot alone."""
+    live = tmp_path / "live"
+    steam_save(live, 1, 0, "Steam Run", 3600, 0x1234, 1_700_000_000)
     vault = Vault(tmp_path / "vault")
-    vault.ensure()
+    kept = ops.snapshot_live(vault, live, reason="good")
 
-    def add(entry_id: str, created: str) -> Path:
-        d = vault.snapshots_dir / entry_id
-        d.mkdir(parents=True)
-        vault.upsert(CatalogEntry(id=entry_id, kind="snapshot", label="", path=str(d),
-                                  created=created, managed=True))
-        return d
+    real_copy2 = shutil.copy2
+    copies = []
 
-    # 20 older Xbox snapshots + 1 Steam snapshot created most recently (21 > retention of 20).
-    oldest = add("snapshot-xbox-20260601-000000", "2026-06-01T00:00:00")
-    for day in range(2, 21):
-        add(f"snapshot-xbox-202606{day:02d}-000000", f"2026-06-{day:02d}T00:00:00")
-    newest = add("snapshot-steam-20260701-120000", "2026-07-01T12:00:00")
+    def copy2_then_fail(src, dst, *args, **kwargs):
+        if copies:
+            raise OSError("disk full")
+        copies.append(src)
+        return real_copy2(src, dst, *args, **kwargs)
 
-    ops._prune_snapshots(vault)
+    monkeypatch.setattr(ops.shutil, "copy2", copy2_then_fail)
+    with pytest.raises(OSError, match="disk full"):
+        ops.snapshot_live(vault, live, reason="dies part-way")
+    monkeypatch.undo()
 
-    ids = {e.id for e in vault.entries}
-    assert len(ids) == ops.SNAPSHOT_RETENTION
-    # The most recent snapshot survives; the single oldest is the one pruned.
-    assert newest.name in ids and newest.is_dir()
-    assert oldest.name not in ids and not oldest.exists()
+    assert copies, "the failure must happen after something was written"
+    assert [p.name for p in vault.snapshots_dir.iterdir()] == [kept.id]
+    assert [e.id for e in Vault(vault.root).load().entries] == [kept.id]
+    assert savedir.scan_any(kept.path).occupied_slots
 
 
 # --- Steam Cloud: mtimes on writes into the live folder ----------------------

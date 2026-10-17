@@ -55,6 +55,8 @@ shortcuts? `install.bat` in the zip adds them. Full details under
 * Every destructive operation auto-snapshots first, writes atomically (stage → validate →
   swap), validates by header + size cross-checks + hashes, and refuses to run while the
   game is open.
+* Every auto-snapshot is kept, so each live write adds a full copy of the live folder
+  (roughly 40-65 MB); a later deduplicated store will reclaim that space.
 
 See [DESIGN.md](DESIGN.md) for the architecture and the verified save-format details.
 

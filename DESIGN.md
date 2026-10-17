@@ -86,7 +86,7 @@ src/nms_save_vault/
 
 ## Safety invariants
 1. Never write while `NMS.exe` runs.
-2. Auto-snapshot live before every destructive op (keep-last-N).
+2. Auto-snapshot live before every destructive op; every snapshot is kept.
 3. Atomic: stage to temp → validate → swap.
 4. Validate: meta header + `SizeDisk == file size` + `SizeDecompressed == Σ chunk sizes`
    + sha256 on copies + re-key round-trip.

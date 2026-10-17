@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from nms_save_vault.core import catalog, formats, msstore, slotmap
+from nms_save_vault.core import catalog, formats, meta, msstore, slotmap
 
 
 def find_live_save_dir() -> Path | None:
@@ -114,6 +114,51 @@ def make_wgs_account():
         return acct
 
     return build
+
+
+# --- synthetic Steam save helpers ------------------------------------------------------
+
+
+def lz4_literals(payload: bytes) -> bytes:
+    lit = len(payload)
+    if lit < 15:
+        return bytes([lit << 4]) + payload
+    rest = lit - 15
+    cont = bytearray()
+    while rest >= 255:
+        cont.append(255)
+        rest -= 255
+    cont.append(rest)
+    return bytes([0xF0]) + bytes(cont) + payload
+
+
+def chunked(payload: bytes) -> bytes:
+    block = lz4_literals(payload)
+    return struct.pack("<4I", formats.SAVE_MAGIC, len(block), len(payload), 0) + block
+
+
+def steam_save(folder: Path, slot: int, member: int, name: str, play: int, ident: int, ts: int) -> None:
+    """Write one Steam save pair (data + encrypted meta) into ``folder``."""
+    folder.mkdir(parents=True, exist_ok=True)
+    fno = slotmap.slot_file_numbers(slot)[member]
+    payload = b'{"F2P":4737,"<h0":{"Pk4":"' + name.encode("utf-8") + b'","WmU":"0x%X"}}' % ident
+    (folder / slotmap.data_filename(fno)).write_bytes(chunked(payload))
+
+    plain = bytearray(formats.META_LEN_WORLDS_II)
+    struct.pack_into("<I", plain, formats.OFF_HEADER, formats.META_HEADER)
+    struct.pack_into("<I", plain, formats.OFF_META_FORMAT, formats.META_FORMAT_4)
+    struct.pack_into("<I", plain, formats.OFF_SIZE_DECOMPRESSED, len(payload))
+    struct.pack_into("<I", plain, formats.OFF_SIZE_DISK, len(chunked(payload)))
+    struct.pack_into("<H", plain, formats.OFF_GAME_MODE, 1)
+    struct.pack_into("<Q", plain, formats.OFF_TOTAL_PLAY_TIME, play)
+    nm = name.encode("utf-8")
+    plain[formats.OFF_SAVE_NAME : formats.OFF_SAVE_NAME + len(nm)] = nm
+    struct.pack_into("<I", plain, formats.OFF_DIFFICULTY, 2)
+    struct.pack_into("<Q", plain, formats.OFF_SLOT_IDENTIFIER, ident)
+    struct.pack_into("<I", plain, formats.OFF_TIMESTAMP, ts)
+    struct.pack_into("<I", plain, formats.OFF_META_FORMAT_TAIL, formats.META_FORMAT_4)
+    ordinal = slotmap.storage_ordinal(fno)
+    (folder / slotmap.meta_filename(fno)).write_bytes(meta.encrypt(bytes(plain), ordinal))
 
 
 # --- the single Tk root for the whole session ------------------------------------------

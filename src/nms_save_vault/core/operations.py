@@ -28,8 +28,6 @@ from .catalog import (
 )
 from .slotmap import SaveFileRef, slot_file_numbers, storage_ordinal
 
-SNAPSHOT_RETENTION = 20
-
 
 class OperationError(Exception):
     pass
@@ -136,27 +134,20 @@ def snapshot_live(vault: Vault, live_dir: Path, reason: str) -> CatalogEntry:
     vault.ensure()
     sid = vault.new_id(KIND_SNAPSHOT, tag=savedir.platform_of(live_dir))
     dest = vault.snapshots_dir / sid
-    _copy_save_state(Path(live_dir), dest)
-    entry = vault.make_entry_from_dir(
-        sid, KIND_SNAPSHOT, f"auto: {reason}", dest, managed=True, source=Path(live_dir).name
-    )
+    created_here = not dest.exists()
+    try:
+        _copy_save_state(Path(live_dir), dest)
+        entry = vault.make_entry_from_dir(
+            sid, KIND_SNAPSHOT, f"auto: {reason}", dest, managed=True, source=Path(live_dir).name
+        )
+    except BaseException:
+        # A half-copied snapshot is not a backup; drop it so it is never mistaken for one.
+        # Only a folder this call created -- never anything that was already there.
+        if created_here:
+            shutil.rmtree(dest, ignore_errors=True)
+        raise
     vault.upsert(entry)
-    _prune_snapshots(vault)
     return entry
-
-
-def _prune_snapshots(vault: Vault) -> None:
-    # Sort by creation time, not id: ids are "snapshot-<platform>-<stamp>", so sorting by id
-    # groups by platform and would prune the wrong (not the oldest) snapshots when a user has
-    # both Steam and Xbox live folders -- including a just-created one still referenced by the
-    # oplog, which would silently defeat undo. Only prune snapshots this vault manages -- an
-    # in-place-imported snapshot (managed=False) belongs to another vault; never delete it.
-    snaps = sorted(
-        (e for e in vault.entries if e.kind == KIND_SNAPSHOT and e.managed), key=lambda e: e.created
-    )
-    for old in snaps[:-SNAPSHOT_RETENTION]:
-        shutil.rmtree(old.path, ignore_errors=True)
-        vault.remove(old.id)
 
 
 # --- feature 1: full backup / restore ---------------------------------------
@@ -870,8 +861,8 @@ def _relocate_entry(
         if not dst_folder.exists():  # idempotent: never re-copy over an existing folder
             shutil.copytree(src_folder, dst_folder)
         return replace(entry, path=str(dst_folder), managed=True)
-    # In place: reference the source vault's folder, but do NOT manage it, so this vault's
-    # snapshot pruning never deletes files that belong to the other vault.
+    # In place: reference the source vault's folder, but do NOT manage it -- the files
+    # belong to the other vault.
     return replace(entry, path=str(src_folder), managed=False)
 
 
