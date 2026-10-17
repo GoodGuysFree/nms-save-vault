@@ -30,6 +30,7 @@ from ..redact import set_label
 from ..themeaware import ThemeRegistry
 from ..worker import UiWorker
 from .detail import DetailPane
+from .histhooks import HistoryHooks
 from .live import LiveArea
 from .move import MoveDialog, source_for
 from .notes import NotesWindow, toggle_pin
@@ -115,6 +116,7 @@ class OrganizerView(ttk.Frame):
         self.organizer: Organizer | None = None
         self.model: ReadModel | None = None
         self.notes_window: NotesWindow | None = None
+        self.histories = HistoryHooks(self)
         self.scanning = False
         self.scanned_at = 0.0
         self._pending_scan: bool | None = None
@@ -130,6 +132,8 @@ class OrganizerView(ttk.Frame):
         self.notes_button.pack(side=tk.LEFT)
         self.move_button = ttk.Button(bar, text="Move to live...", command=self.open_move)
         self.move_button.pack(side=tk.LEFT, padx=pxs(6, 0))
+        self.history_button = ttk.Button(bar, text="History...", command=self.open_history)
+        self.history_button.pack(side=tk.LEFT, padx=pxs(6, 0))
         self.log_button = ttk.Button(bar, text="Operations...", command=lambda: self.open_log())
         self.log_button.pack(side=tk.LEFT, padx=pxs(6, 0))
         self.rescan_button = ttk.Button(bar, text="Rescan", command=lambda: self.rescan())
@@ -162,7 +166,7 @@ class OrganizerView(ttk.Frame):
         self.live.pack(side=tk.TOP, fill=tk.X)
         self.detail = DetailPane(right, themed=self.themed, on_link=self._link,
                                  on_notes=self.open_notes_for, on_pin=self._pin,
-                                 on_move=self.open_move_for)
+                                 on_move=self.open_move_for, on_history=self.open_history_for)
         self.detail.pack(side=tk.TOP, fill=tk.BOTH, expand=True, pady=pxs(8, 0))
         self._drag = None
         self._dragging = False
@@ -262,6 +266,7 @@ class OrganizerView(ttk.Frame):
             self._show(pid, head)
         if self.notes_window is not None and self.notes_window.winfo_exists():
             self.notes_window.set_model(model)
+        self.histories.set_model(model)
 
     # --- alerts --------------------------------------------------------------------------------
 
@@ -635,6 +640,14 @@ class OrganizerView(ttk.Frame):
                                         model=self.model, worker=self.worker,
                                         themed=self.themed, pid=pid, head=head,
                                         on_saved=self.reload)
+
+    def open_history(self) -> None:
+        pid, head = self.table.selection_ref()
+        if pid is not None:
+            self.open_history_for(pid, head)
+
+    def open_history_for(self, pid: str, head: str | None = None) -> None:
+        self.histories.open_history(pid, head)
 
     def _pin(self, pid: str, pinned: bool) -> None:
         if self.organizer is not None:

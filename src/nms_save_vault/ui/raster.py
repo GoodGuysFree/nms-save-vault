@@ -167,7 +167,10 @@ def lane_row(width: int, height: int, cell, colours: list[str], *, scale: float,
         r.line(cx, 0, cx, mid, t, own)
     if cell.down:
         r.line(cx, mid, cx, height, t, own)
-    if cell.kind == "live":
+    if cell.kind == "run":
+        for dy in (-5 * scale, 0, 5 * scale):
+            r.disc(cx, mid + dy, 1.5 * scale, own)
+    elif cell.kind == "live":
         r.disc(cx, mid, 5.2 * scale, live_colour or own)
         r.disc(cx, mid, 2 * scale, centre)
     elif cell.kind == "member":
