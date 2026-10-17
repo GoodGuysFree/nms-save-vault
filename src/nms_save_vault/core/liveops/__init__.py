@@ -35,6 +35,8 @@ from .model import (
     VerifyItem,
     Warning,
 )
+from .opjournal import busy_targets, liveop_lock
+from .targets import resolve_target
 
 __all__ = [
     "AccountChoice", "CloudInfo", "CloudMode", "ConfirmationRequired", "EmptySlotGuide",
@@ -43,4 +45,5 @@ __all__ = [
     "PlacePlan", "Policies", "Position", "Progress", "RecoveryItem", "ResolvedTarget",
     "RollbackError", "SimulatedCrash", "SlotCandidate", "SourceSummary", "TargetError",
     "TargetPlan", "UndoOffer", "VerifyItem", "VersionStore", "Warning", "WriteError",
+    "busy_targets", "liveop_lock", "resolve_target",
 ]
