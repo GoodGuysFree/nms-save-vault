@@ -38,13 +38,14 @@ class SelfTestReport:
     unknown_top_level_keys: int = 0        # distinct such keys over everything
     extractor_errors: int = 0              # saves whose extractors reported an error
     damaged: int = 0                       # data that does not decode at all (not an update issue)
-    unreadable: int = 0                    # a file that could not be read
+    unreadable: int = 0                    # a meta, an index or a file that does not read (a
+                                           # new format looks like this): an update issue
     _unknown: set = field(default_factory=set, repr=False)
 
     @property
     def needs_update(self) -> bool:
         return bool(self.unsupported_container or self.newer_format or self.unknown_top_level_saves
-                    or self.extractor_errors)
+                    or self.extractor_errors or self.unreadable)
 
     @property
     def exit_code(self) -> int:
@@ -61,7 +62,7 @@ class SelfTestReport:
             f"{self.unknown_top_level_saves} saves",
             f"extractor errors: {self.extractor_errors}",
             f"damaged (not an update issue): {self.damaged}",
-            f"unreadable files: {self.unreadable}",
+            f"unreadable (a meta, index or file that does not read): {self.unreadable}",
             "result: needs an app update" if self.needs_update else "result: clean",
         ]
 
@@ -103,19 +104,24 @@ def run(vault_root: Path | None, sources: Sequence[Source], *,
     """Look at every live save of ``sources`` and every version in ``vault_root``."""
     report = SelfTestReport()
     seen: set[str] = set()
+    folders = 0
     for source in sources:
         folder = Path(source.path)
         if not folder.is_dir():
             continue
+        folders += 1
         try:
             view = savedir.scan_any(folder)
-        except OSError:
+        except Exception:  # noqa: BLE001 - a damaged or unknown index is a finding, not a crash
             report.unreadable += 1
             continue
         platform = "xbox" if savedir.platform_of(folder) == "xbox" else "steam"
         for slot in view.slots.values():
             for member in slot.members:
-                if not member.exists or member.info is None:
+                if not member.exists:
+                    continue
+                if member.info is None or not member.info.valid:
+                    report.unreadable += 1            # its meta does not read: not "nothing"
                     continue
                 try:
                     data = Path(member.data_path).read_bytes()
@@ -132,6 +138,8 @@ def run(vault_root: Path | None, sources: Sequence[Source], *,
                     progress(report.saves)
     if vault_root is not None and Path(vault_root).is_dir():
         _vault(report, Path(vault_root), seen, progress)
+    if folders and report.saves == 0 and not report.unreadable:
+        report.unreadable += folders                  # live folders and nothing looked at: not clean
     return report
 
 

@@ -54,9 +54,10 @@ def test_a_damaged_xbox_index_is_repaired_by_a_restore_and_by_undo(make_wgs_acco
     assert any("save index was damaged" in w for w in result.warnings)
     assert savedir.scan_any(live).slots[1].a.save_name == "Keep"
     assert list((vault.root / "damaged-index").iterdir())              # the damaged bytes are kept
-    index.write_bytes(b"\x00garbage")                                  # beyond salvage
-    assert ops.undo_last(vault, live, allow_game_running=True).ok
-    assert savedir.scan_any(live).slots[1].a.save_name == "Keep"
+    index.write_bytes(b"\x00garbage")                                  # an index this app does not know
+    with pytest.raises(ops.OperationError, match="newer game version"):
+        ops.undo_last(vault, live, allow_game_running=True)             # never repaired, never guessed
+    assert index.read_bytes() == b"\x00garbage"
 
 
 def test_a_damaged_index_of_another_account_is_refused(make_wgs_account, tmp_path):

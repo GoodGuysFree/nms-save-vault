@@ -156,7 +156,7 @@ class PlanDialog(_Dialog):
         self.error.pack(side=tk.BOTTOM, fill=tk.X, padx=pad)
         body = ttk.Frame(self, padding=pad)
         body.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
-        ttk.Label(body, text=title, style="Title.TLabel").pack(side=tk.TOP, anchor="w")
+        ttk.Label(body, text=shown(self, title), style="Title.TLabel").pack(side=tk.TOP, anchor="w")
         self.summary = ttk.Label(body, text="", wraplength=px(620), justify="left")
         self.summary.pack(side=tk.TOP, anchor="w", pady=pxs(6, 4))
         self.warnings = ttk.Frame(body)

@@ -405,15 +405,16 @@ _DIALOG_DEFAULTS = {
 }
 
 
-@pytest.fixture(autouse=True)
-def dialogs(monkeypatch):
-    """Replace every tkinter message box / dialog, and the app's own wrappers, with a recorder."""
+_REC = Dialogs()
+
+
+def _install_dialog_stubs() -> None:
+    """Replace every tkinter message box / dialog, ``webbrowser.open`` and the nested waits at
+    IMPORT time - before the session's App is built and before ``gui`` binds the real functions -
+    so nothing, not even a fixture, can show a window a human must close."""
     import tkinter as tk
+    import webbrowser
     from tkinter import filedialog, messagebox, simpledialog
-
-    from nms_save_vault import gui      # first: its wrappers bind the REAL functions at import
-
-    rec = Dialogs()
 
     def stub(kind):
         default = _DIALOG_DEFAULTS[kind]
@@ -421,8 +422,8 @@ def dialogs(monkeypatch):
         def shown(*args, **kw):
             title = kw.get("title", args[0] if args else "")
             message = kw.get("message", kw.get("prompt", args[1] if len(args) > 1 else ""))
-            rec.record(kind, title, message)
-            if not rec.expecting:
+            _REC.record(kind, title, message)
+            if not _REC.expecting:
                 raise AssertionError(f"unexpected dialog {kind}: {title!r} {str(message)[:80]!r} - "
                                      "a test must never show a dialog nobody can close "
                                      "(call dialogs.expect() and dialogs.take() if intended)")
@@ -432,18 +433,15 @@ def dialogs(monkeypatch):
     for module in (messagebox, simpledialog, filedialog):
         for kind in _DIALOG_DEFAULTS:
             if hasattr(module, kind):
-                monkeypatch.setattr(module, kind, stub(kind))
-    for name, kind in (("_showinfo", "showinfo"), ("_showwarning", "showwarning"),
-                       ("_showerror", "showerror"), ("_askyesno", "askyesno"),
-                       ("_askyesnocancel", "askyesnocancel")):
-        monkeypatch.setattr(gui, name, stub(kind))
+                setattr(module, kind, stub(kind))
 
-    def confirm(master, title, message, check=None):
-        rec.record("confirm", title, message)
-        if not rec.expecting:
-            raise AssertionError(f"unexpected confirm dialog: {title!r}")
-        return False, False
-    monkeypatch.setattr(gui, "_confirm", confirm)
+    def browser(url, *args, **kw):
+        _REC.record("webbrowser", "open", url)
+        if not _REC.expecting:
+            raise AssertionError(f"unexpected browser open: {str(url)[:80]!r}")
+        return True
+    for name in ("open", "open_new", "open_new_tab"):
+        setattr(webbrowser, name, browser)
 
     def never_wait(self, window=None):
         """Fail fast: nothing in a test can close a window a nested wait is waiting for."""
@@ -456,11 +454,35 @@ def dialogs(monkeypatch):
             return
         raise AssertionError("a test waited on a window nobody can close "
                              f"({target.winfo_class()}); drive or stub the dialog")
-    monkeypatch.setattr(tk.Misc, "wait_window", never_wait)
-    monkeypatch.setattr(tk.Misc, "wait_visibility", never_wait)
-    monkeypatch.setattr(tk.Misc, "wait_variable", never_wait)
-    yield rec
-    left = rec.unclaimed
+    for name in ("wait_window", "wait_visibility", "wait_variable"):
+        setattr(tk.Misc, name, never_wait)
+
+    from nms_save_vault import gui          # binds the stubs above, never the real functions
+    for name, kind in (("_showinfo", "showinfo"), ("_showwarning", "showwarning"),
+                       ("_showerror", "showerror"), ("_askyesno", "askyesno"),
+                       ("_askyesnocancel", "askyesnocancel")):
+        setattr(gui, name, stub(kind))
+
+    def confirm(master, title, message, check=None):
+        _REC.record("confirm", title, message)
+        if not _REC.expecting:
+            raise AssertionError(f"unexpected confirm dialog: {title!r}")
+        return False, False
+    gui._confirm = confirm
+
+
+_install_dialog_stubs()
+
+
+@pytest.fixture(autouse=True)
+def dialogs():
+    """The recorder of every dialog a test shows (see :class:`Dialogs`): unexpected ones raise,
+    expected ones are claimed with ``expect()`` / ``take()``, unclaimed ones fail the test."""
+    _REC.shown.clear()
+    _REC._claimed = 0
+    _REC.expecting = False
+    yield _REC
+    left = _REC.unclaimed
     if left:
         pytest.fail("a test showed a dialog nobody claimed (use the `dialogs` fixture's take()): "
                     + "; ".join(f"{k}: {t!r} {m[:80]!r}" for k, t, m in left[:5]))
@@ -489,6 +511,10 @@ def _drain_ui_worker():
         while app.worker.busy and time.monotonic() < end:
             app.update()
             time.sleep(0.005)
+        try:            # a test that pointed the App at its own vault leaves its rows behind
+            app._populate_backups()
+        except Exception:  # noqa: BLE001
+            pass
 
 
 @pytest.fixture(scope="session")

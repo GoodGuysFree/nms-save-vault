@@ -78,7 +78,7 @@ def test_the_report_has_counts_only_no_ids_or_names(world):
     assert not re.search(r"[0-9a-fA-F]{12,}", text) and "Synthetic" not in text
     assert "st_7656" not in text and str(world.tmp) not in text
     for line in text.splitlines():
-        assert re.fullmatch(r"[A-Za-z ()\-]+: \d+( .*)?|result: .*", line)
+        assert re.fullmatch(r"[A-Za-z ,()\-]+: \d+( .*)?|result: .*", line)
 
 
 def test_a_newer_game_format_is_counted_and_asks_for_an_update(world):

@@ -1176,7 +1176,7 @@ class App(tk.Tk):
         active = self._active_source()
         active_txt = active.label if active else (str(self.live_dir) if self.live_dir else "none")
         self.status.set(
-            aliases.redact(
+            aliases.scrub(      # the home folder and account ids, not only the aliased accounts
                 f"Active live: {active_txt}   |   Sources: {len(sources)}   |   "
                 f"Vault: {self.vault.root}   |   Game: {game}"
             )

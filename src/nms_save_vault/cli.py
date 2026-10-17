@@ -1048,6 +1048,24 @@ def cmd_selftest(args) -> int:
     return report.exit_code
 
 
+def _absolutize(args) -> None:
+    """Relative paths given on the command line mean the current directory, resolved here at
+    the boundary; the core never reads a relative or empty path (it would read whatever the
+    process happens to be in). ``--from`` is an entry id or a folder: a folder only when it
+    exists as one."""
+    for name in ("live", "vault", "path", "copy", "copy_to"):
+        value = getattr(args, name, None)
+        if isinstance(value, str) and value.strip():
+            setattr(args, name, str(Path(value).resolve()))
+    source = getattr(args, "source", None)
+    if isinstance(source, str) and source.strip() and not Path(source).is_absolute()             and Path(source).exists():
+        args.source = str(Path(source).resolve())
+    fallbacks = getattr(args, "fallbacks", None)
+    if isinstance(fallbacks, list):
+        args.fallbacks = [str(Path(v).resolve()) if isinstance(v, str) and v.strip() else v
+                          for v in fallbacks]
+
+
 def main(argv=None) -> int:
     # Save names/summaries can contain Unicode the Windows console (cp1252) can't encode.
     for stream in (sys.stdout, sys.stderr):
@@ -1056,6 +1074,7 @@ def main(argv=None) -> int:
         except (AttributeError, ValueError):
             pass
     args = build_parser().parse_args(argv)
+    _absolutize(args)
     try:
         return args.func(args)
     except ops.FeatureNotYetAvailableError as e:

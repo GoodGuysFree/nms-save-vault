@@ -34,14 +34,28 @@ def _load_job(open_context: Callable[[], tuple[OpContext, LiveRef]], extra: tupl
     return job
 
 
-def _plan_job(open_context, snapshot_id: str, accountdata: bool):
+class RepairRefused(Exception):
+    """The damaged index cannot be repaired from this backup; the text says why."""
+
+
+def _plan_job(open_context, snapshot_id: str, accountdata: bool, vault=None, live_dir=None):
     def job() -> PlacePlan:
         ctx, ref = open_context()
-        return panic.plan_panic_restore(ctx, ref, snapshot_id, restore_accountdata=accountdata)
+        try:
+            return panic.plan_panic_restore(ctx, ref, snapshot_id,
+                                            restore_accountdata=accountdata)
+        except Exception as exc:  # noqa: BLE001
+            if "BAD_INDEX" in str(exc) and vault is not None:
+                entry = store_classic.find_entry(vault, snapshot_id)
+                problem = classic.index_repair_problem(vault, entry, live_dir) if entry else None
+                if problem:
+                    raise RepairRefused(problem) from exc
+            raise
     return job
 
 
-def _restore_job(vault, live_dir, snapshot_id: str, accountdata: bool):
+def _restore_job(vault, live_dir, snapshot_id: str, accountdata: bool, confirmed=frozenset(),
+                 fingerprint: str | None = None):
     """The whole-folder restore exactly as before U19 (``classic.restore_full``): a damaged
     Xbox index is repaired from the backup first, a Steam folder with no account data gets the
     backup's, a missing Xbox AccountData record is filled in, and a kept account is said so."""
@@ -50,8 +64,10 @@ def _restore_job(vault, live_dir, snapshot_id: str, accountdata: bool):
             entry = store_classic.find_entry(vault, snapshot_id)
             if entry is None:
                 raise ops.OperationError(f"The backup '{snapshot_id}' is not in the vault.")
-            result = classic.restore_full(vault, entry, live_dir, True, False,
-                                          restore_accountdata=accountdata)
+            # An unknown game state is the owner's to confirm (the plan asks); then it is allowed.
+            result = classic.restore_full(
+                vault, entry, live_dir, True, "GAME_STATE_UNKNOWN" in confirmed,
+                restore_accountdata=accountdata, expected_fingerprint=fingerprint)
         except (ops.OperationError, OSError) as exc:
             return OpOutcome(None, "refused", str(exc), (), None, "n/a", str(exc))
         notes = tuple(Warning("RESTORE_NOTE", "info", str(aliases.scrub(w)), {})
@@ -132,7 +148,8 @@ class PanicDialog(PlanDialog):
         self.repair_check.pack_forget()
         self.error.configure(text="")
         self._render()
-        job = _plan_job(self.open_context, self.snapshot_id, self.account_var.get())
+        job = _plan_job(self.open_context, self.snapshot_id, self.account_var.get(),
+                        self.vault, self.live_dir)
         self.worker.submit(job, on_done=weak(self._planned, gen), on_error=weak(self._plan_failed, gen))
 
     def _planned(self, gen: int, plan: PlacePlan) -> None:
@@ -145,6 +162,9 @@ class PanicDialog(PlanDialog):
         if gen != self._gen or not self.winfo_exists():
             return
         self.busy = False
+        if isinstance(error, RepairRefused):
+            self.error.configure(text=shown(self, str(error)))
+            return
         if "BAD_INDEX" in str(error) or getattr(error, "code", "") == "BAD_INDEX":
             self.repair = True            # a restore is how a damaged Xbox folder is repaired
             self.repair_check.pack(side=tk.TOP, anchor="w", before=self.summary)
@@ -175,8 +195,9 @@ class PanicDialog(PlanDialog):
         super().apply()
 
     def _make_job(self, confirmed, note):
+        fingerprint = self.plan.fingerprint if isinstance(self.plan, PlacePlan) else None
         return _restore_job(self.vault, self.live_dir, self.snapshot_id or "",
-                            self.account_var.get())
+                            self.account_var.get(), frozenset(confirmed), fingerprint)
 
 
 class _RepairPlan:

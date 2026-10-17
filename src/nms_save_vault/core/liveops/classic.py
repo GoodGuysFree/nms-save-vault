@@ -10,11 +10,16 @@ from __future__ import annotations
 
 import dataclasses
 import hashlib
+import re
+import shutil
+import struct
+import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from collections.abc import Iterable
 from pathlib import Path
 
-from .. import msstore
+from .. import gameversion, msstore
 from .. import operations as ops
 from .. import platform as hostmod
 from .. import safety, savedir
@@ -125,7 +130,8 @@ def promote(vault: Vault, live_dir: Path, slot: int, member: int,
 
 def restore_full(vault: Vault, entry, live_dir: Path, mirror: bool = True,
                  allow_game_running: bool = False, *, undo_of: str | None = None,
-                 restore_accountdata: bool = False) -> ops.OpResult:
+                 restore_accountdata: bool = False,
+                 expected_fingerprint: str | None = None) -> ops.OpResult:
     """Put a whole backup or snapshot back: the panic restore (D5 4.3). ``mirror`` is kept
     for today's callers: nothing is ever deleted, so slots the backup does not hold are
     always left alone."""
@@ -142,16 +148,19 @@ def restore_full(vault: Vault, entry, live_dir: Path, mirror: bool = True,
         ops._guard_same_platform(Path(entry.path), live_dir)
     refuse_disabled(live_dir)
     ctx, ref = open_context(vault, live_dir)
-    notes = repair_damaged_index(ctx, ref, vault, entry, live_dir, allow_game_running)
-    if notes:
-        ctx, ref = open_context(vault, live_dir)      # the folder reads again
     found = listing.get_vault_entry(ctx.vault, ctx.versions, entry.id, live_roots=[])
     if found is not None and found.platform != ref.platform:
         raise ops.FeatureNotYetAvailableError(ops.CROSS_PLATFORM_MSG)
+    notes = repair_damaged_index(ctx, ref, vault, entry, live_dir, allow_game_running)
+    if notes:
+        ctx, ref = open_context(vault, live_dir)      # the folder reads again
     plan = panic.plan_panic_restore(ctx, ref, entry.id, restore_accountdata=restore_accountdata)
     for why in plan.blocked:
         if why.code == "FOREIGN_ACCOUNT":
             raise ops.ForeignAccountError(why.text)
+    if expected_fingerprint is not None and plan.fingerprint != expected_fingerprint:
+        raise ops.OperationError("The folder changed since you looked at what would happen. "
+                                 "Nothing was changed; please check again.")
     op = "undo" if undo_of else "restore_full"
     if undo_of:                       # the whole-folder Undo: later Undos step past it
         plan = dataclasses.replace(plan, via_undo=True)
@@ -215,19 +224,20 @@ def repair_damaged_index(ctx: OpContext, ref: LiveRef, vault: Vault, entry, live
                                  "moment.") from None
 
 
-def _repair_locked(ctx, ref, vault, entry, live_dir, raw: bytes, why: str) -> list[str]:
+def _repair_locked(ctx, ref, vault, entry, live_dir: Path, raw: bytes, why: str) -> list[str]:
     from ..organizer.model import new_op_id
 
     index = Path(live_dir) / "containers.index"
     if index.read_bytes() != raw:                    # someone else repaired or wrote it
         return []
+    plan = _index_repair_plan(vault, entry, Path(live_dir), raw, why)   # the guard: refuses, writes nothing
     op_id = new_op_id(ctx.clock)
     jr.append(ctx, op_id, "preparing", {
         "kind": "index_repair", "app": ctx.app_version,
         "targets": [jr.target_json(ref.target(1))], "sources": [None], "undo_of": None,
         "note": "containers.index damaged", "confirmed": [], "plan_digest": ""})
     try:
-        notes = _repair_files(vault, entry, live_dir, index, raw, why)
+        notes = _repair_files(vault, Path(live_dir), index, raw, why, plan)
     except BaseException:
         jr.append(ctx, op_id, "abandoned", {"reason": "repair_failed"})
         raise
@@ -235,12 +245,54 @@ def _repair_locked(ctx, ref, vault, entry, live_dir, raw: bytes, why: str) -> li
     return notes
 
 
-def _repair_files(vault, entry, live_dir, index, raw: bytes, why: str) -> list[str]:
+_BLOB_DIR = re.compile(r"[0-9A-F]{32}")
+
+
+@dataclass(frozen=True)
+class _IndexRepairPlan:
+    header: bytes
+    records: list                  # (identifier, raw record bytes), whole and rebuilt
+    rebuilt: int                   # records rebuilt for blobs the damaged index lost
+
+
+def index_repair_problem(vault: Vault, entry, live_dir: Path) -> str | None:
+    """Read-only: why a damaged live ``containers.index`` could not be repaired from ``entry``
+    (None: it can). The same guard the repair itself runs before it writes anything."""
+    index = Path(live_dir) / "containers.index"
+    if not index.is_file():
+        return None
+    raw = index.read_bytes()
+    try:
+        msstore.split_index(raw)
+        return None
+    except ValueError as exc:
+        why = str(exc)
+    try:
+        _index_repair_plan(vault, entry, Path(live_dir), raw, why)
+    except ops.OperationError as exc:
+        return str(exc)
+    return None
+
+
+def _index_repair_plan(vault: Vault, entry, live_dir: Path, raw: bytes, why: str) -> _IndexRepairPlan:
+    """The guard (nothing is written): an index of an unknown or newer version, a save from a
+    newer game (in the folder or the backup), a backup of another account, or a lost record
+    that cannot be rebuilt each refuse the repair - never a guess."""
     from ..store import classic as store_classic
 
-    with store_classic.entry_folder(vault, entry) as folder:
-        theirs = msstore.split_index((Path(folder) / "containers.index").read_bytes())[0]
+    refuse_newer = ops.OperationError(gameversion.GAME_NEWER_TEXT)
+    refuse_newer.code = gameversion.GAME_NEWER
+    if len(raw) >= 4 and struct.unpack_from("<i", raw, 0)[0] != msstore.CONTAINERSINDEX_HEADER:
+        raise refuse_newer                     # an index version this app does not know
     header, records = msstore.salvage_index(raw)
+    with store_classic.entry_folder(vault, entry) as folder:
+        theirs_raw = (Path(folder) / "containers.index").read_bytes()
+        theirs = msstore.split_index(theirs_raw)[0]
+        _info, theirs_containers = msstore.parse_containers_index(Path(folder))
+        for c in theirs_containers:
+            if c.meta_file is not None and c.meta_file.is_file() and \
+                    gameversion.newer_plain("xbox", c.meta_file.read_bytes()):
+                raise refuse_newer             # the backup holds a save from a newer game
     if header is None:
         if entry.source != Path(live_dir).name:
             raise ops.OperationError(
@@ -252,14 +304,100 @@ def _repair_files(vault, entry, live_dir, index, raw: bytes, why: str) -> list[s
         raise ops.ForeignAccountError(
             f"'{entry.id}' was taken from another Xbox account. Restoring it would write that "
             "account's save index into this one, so it is refused. Nothing was changed.")
+    for _ident, rec in records:                # what still reads must not be from a newer game
+        c = msstore._parse_record(rec, live_dir)
+        if c.meta_file is not None and c.meta_file.is_file() and \
+                gameversion.newer_plain("xbox", c.meta_file.read_bytes()):
+            raise refuse_newer
+    held = {msstore._parse_record(rec, live_dir).dir_guid for _i, rec in records}
+    orphans = sorted(p.name for p in live_dir.iterdir()
+                     if p.is_dir() and _BLOB_DIR.fullmatch(p.name) and p.name not in held)
+    rebuilt = []
+    if orphans:
+        rebuilt = _rebuild_lost_records(raw, header, records, orphans, live_dir)
+        if rebuilt is None:
+            raise ops.OperationError(
+                f"The live save index is damaged ({why}) and {len(orphans)} save(s) in the folder "
+                "are no longer listed in it. They cannot be listed again safely, so the index was "
+                "not repaired. Nothing was changed.")
+    return _IndexRepairPlan(header, list(records) + rebuilt, len(rebuilt))
+
+
+def _rebuild_lost_records(raw: bytes, header: bytes, records: list, orphans: list[str],
+                          live_dir: Path):
+    """The records a truncated index lost, rebuilt from their blobs - only when exactly one
+    record is cut off (its identifier still reads) and exactly one blob is unlisted, so which
+    belongs to which is not a guess. None otherwise."""
+    if len(orphans) != 1:
+        return None
+    start = 12 + len(header)
+    for _ident, rec in records:
+        start += len(rec)
+    try:
+        identifier, off = msstore._read_lp_string(raw, start)
+        second, off = msstore._read_lp_string(raw, off)
+        sync, off = msstore._read_lp_string(raw, off)
+    except ValueError:
+        return None
+    if not identifier or len(raw) - off >= msstore.RECORD_TAIL_LENGTH:
+        return None                            # nothing cut off here, or not a record at all
+    folder = live_dir / orphans[0]
+    containers = sorted(folder.glob("container.*"), key=lambda p: p.name)
+    if not containers:
+        return None
+    try:
+        extension = int(containers[-1].suffix[1:])
+    except ValueError:
+        return None
+    files = [p for p in folder.iterdir() if p.is_file() and not p.name.startswith("container.")]
+    size = sum(p.stat().st_size for p in files)
+    guid = uuid.UUID(hex=orphans[0]).bytes_le
+    tail = (bytes([extension]) + struct.pack("<i", msstore.INDEX_SYNC_MODIFIED) + guid
+            + struct.pack("<q", msstore._unix_to_filetime(containers[-1].stat().st_mtime))
+            + bytes(8) + struct.pack("<q", size))
+    assert len(tail) == msstore.RECORD_TAIL_LENGTH
+
+    def lp(s: str) -> bytes:
+        return struct.pack("<i", len(s)) + s.encode("utf-16-le")
+    return [(identifier, lp(identifier) + lp(second) + lp(sync) + tail)]
+
+
+def _preserve_folder(vault: Vault, live_dir: Path, stamp: str) -> Path:
+    """The whole live account folder - the index and every blob, orphans included - copied into
+    the vault and verified file by file, before anything in it is changed."""
+    dest = Path(vault.root) / "damaged-index" / f"{live_dir.name}-{stamp}"
+    shutil.copytree(live_dir, dest)
+    for src in sorted(p for p in live_dir.rglob("*") if p.is_file()):
+        copy = dest / src.relative_to(live_dir)
+        if not copy.is_file() or hashlib.sha256(copy.read_bytes()).digest() != \
+                hashlib.sha256(src.read_bytes()).digest():
+            shutil.rmtree(dest, ignore_errors=True)
+            raise ops.OperationError("The folder could not be copied into the vault completely, "
+                                     "so the index was not repaired. Nothing was changed.")
+    return dest
+
+
+def _repair_files(vault, live_dir: Path, index: Path, raw: bytes, why: str,
+                  plan: _IndexRepairPlan) -> list[str]:
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     kept = Path(vault.root) / "damaged-index"
     kept.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    safety.atomic_write_bytes(kept / f"{Path(live_dir).name}-{stamp}.index", raw)
-    safety.atomic_write_bytes(index, msstore.join_index(header, records, b""))
-    return [f"The live save index was damaged ({why}); the {len(records)} records that still "
-            "read were kept, the rest came from the backup, and the damaged file is in the "
-            "vault (damaged-index)."]
+    _preserve_folder(vault, live_dir, stamp)                 # first: the whole folder, verified
+    safety.atomic_write_bytes(kept / f"{live_dir.name}-{stamp}.index", raw)
+    repaired = msstore.join_index(plan.header, plan.records, b"")
+    msstore.split_index(repaired)                            # it must read before it is written
+    held = {msstore._parse_record(rec, live_dir).dir_guid for _i, rec in plan.records}
+    blobs = {p.name for p in live_dir.iterdir() if p.is_dir() and _BLOB_DIR.fullmatch(p.name)}
+    if blobs - held:
+        raise ops.OperationError("The repaired index would not list every save in the folder, "
+                                 "so it was not written. Nothing was changed.")
+    safety.atomic_write_bytes(index, repaired)
+    note = (f"The live save index was damaged ({why}); it was rebuilt from the {len(plan.records)} "
+            "records that could be kept")
+    if plan.rebuilt:
+        note += f" ({plan.rebuilt} rebuilt from its save files)"
+    return [note + ". The whole folder as it was, and the damaged file, are in the vault "
+            "(damaged-index)."]
 
 
 def _give_missing_xbox_account_data(ctx: OpContext, entry_id: str, live_dir: Path) -> None:
