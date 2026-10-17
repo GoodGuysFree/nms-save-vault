@@ -16,6 +16,7 @@ Examples:
     nmsvault accounts --set 7656119...=Main    # hide the real account ids
     nmsvault undo
     nmsvault verify [live|<entry-id>|<path>]
+    nmsvault index status | build | show <version> | changes <version>
 """
 from __future__ import annotations
 
@@ -604,6 +605,9 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("verify", help="scan and validate a folder (live/entry/path)")
     s.add_argument("target", nargs="?")
     s.set_defaults(func=cmd_verify)
+
+    from . import index_cli
+    index_cli.add_arguments(sub.add_parser("index", help="the content index: facts read from every save version"))
     return p
 
 
