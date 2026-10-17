@@ -142,10 +142,9 @@ def test_a_store_lock_timeout_fails_only_that_append(tmp_path):
     assert jr.read_ops(ctx)[OP1].status == "abandoned"
 
 
-def test_the_live_op_lock_serialises_threads_and_classic_writes(tmp_path, monkeypatch):
-    """T-L1 (lock level): a second holder waits and gives up with LiveOpBusy; the classic
-    hook (D1 2.6.7) takes the same lock, so it is refused while an operation holds it; a
-    journal append under the live-op lock takes the store lock without a deadlock."""
+def test_the_live_op_lock_serialises_threads(tmp_path, monkeypatch):
+    """T-L1 (lock level): a second holder waits and gives up with LiveOpBusy; a journal
+    append under the live-op lock takes the store lock without a deadlock."""
     ctx = make_ctx(tmp_path)
     monkeypatch.setattr(rec_mod, "LIVEOP_TIMEOUT", 0.2)
     outcome = {}
@@ -157,21 +156,16 @@ def test_the_live_op_lock_serialises_threads_and_classic_writes(tmp_path, monkey
         except LiveOpBusy:
             outcome[name] = "busy"
 
-    def classic():
-        with rec_mod.classic_write(ctx.store.vault_root, tmp_path / "live", "promote"):
-            pass
-
     def organizer():
         with jr.liveop_lock(ctx, timeout=0.2):
             pass
 
     with jr.liveop_lock(ctx):
         preparing(ctx, OP1, T7)                                # store lock inside: fine
-        for name, fn in (("classic", classic), ("organizer", organizer)):
-            t = threading.Thread(target=second, args=(name, fn))
-            t.start()
-            t.join(10)
-    assert outcome == {"classic": "busy", "organizer": "busy"}
+        t = threading.Thread(target=second, args=("organizer", organizer))
+        t.start()
+        t.join(10)
+    assert outcome == {"organizer": "busy"}
     with jr.liveop_lock(ctx, timeout=0.2):                     # released again
         pass
 

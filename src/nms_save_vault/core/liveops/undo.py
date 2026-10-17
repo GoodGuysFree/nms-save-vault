@@ -19,7 +19,7 @@ from . import opjournal
 from .context import OpContext
 from .errors import LiveOpError, SourceUnreadable
 from .model import Estimate, OpSummary, PairSource, PlacePlan, Warning
-from .planner import _plan, _plan_warnings, _refusal, _summary, duration, durable, warning
+from .planner import _live_pair, _plan, _plan_warnings, _refusal, _summary, duration, durable, warning
 from .slots import SlotNow, read_account
 from .source import load_source
 from .targets import resolve_account, resolve_target
@@ -39,6 +39,12 @@ def plan_undo(ctx: OpContext, op_id: str) -> PlacePlan:
         entries = [_Entry.of(t) for t in writing["targets"]]
     except (KeyError, TypeError, ValueError, opjournal.JournalError, LiveOpError):
         return _unavailable(ctx)
+    if rec.kind == "panic_restore":          # the inverse is the restore of its own snapshot
+        from .panic import plan_panic_restore
+
+        t = writing["targets"][0]
+        plan = plan_panic_restore(ctx, target_from_json(t["target"]).ref, t["snapshot_id"])
+        return dataclasses.replace(plan, undo_of=op_id)
     swap = rec.kind == "swap"
     parts, warnings, blocks = [], [], []
     for e in entries:
@@ -58,10 +64,16 @@ def plan_undo(ctx: OpContext, op_id: str) -> PlacePlan:
         elif state == "progressed":
             played = slot.head.meta.play_time - e.written_play if slot.head else 0
             warnings.append(warning("PLAYED_SINCE", slot=rt.label, played=duration(played),
-                                    name=e.evicted_name))
+                                    name=_name(slot)))      # the save that was played
     if blocks:
         return _with_blocks(_refusal(ctx, parts[0][0], "undo", blocks[0], parts[0][3]),
                             blocks, op_id)
+    if swap and len(parts) == 2:
+        # Progress travels with its save: each slot gets what the other holds now, which is
+        # the evicted pair unless it was played since (then the played version goes back).
+        (rt0, now0, slot0, _s0), (rt1, now1, slot1, _s1) = parts
+        parts = [(rt0, now0, slot0, _live_pair(entries[1].target, slot1)),
+                 (rt1, now1, slot1, _live_pair(entries[0].target, slot0))]
     loaded = []
     try:
         for rt, now, slot, source in parts:

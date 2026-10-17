@@ -66,16 +66,21 @@ def failed_op(world, monkeypatch, action):
 # 1 -----------------------------------------------------------------------------------------
 
 
-def test_back_over_new_game_progress_keeps_it_in_the_vault_first(world, monkeypatch):
+def test_back_is_not_offered_over_new_game_progress_and_leave_keeps_it(world, monkeypatch):
     played = {}
 
     def progress():
         steam_save(world.live, 1, 0, "Played", 9000, 0x1111, T0 + 900, extra="new-progress")
         played["vid"] = _sha(world.live / "save.hg")
 
-    op_id = failed_op(world, monkeypatch, progress)
+    op_id = failed_op(
+        world, monkeypatch, lambda: (world.live / "save.hg").write_bytes(b"broken"))
+    progress()                                   # the owner plays after the failure
+    world.refresh()
     assert not world.ctx.locator.is_durable(played["vid"])
-    assert resolve_recovery(world.ctx, op_id, "back").status == "rolled_back"
+    assert resolve_recovery(world.ctx, op_id, "back").status == "refused"
+    assert _sha(world.live / "save.hg") == played["vid"]          # the game's save stays
+    assert resolve_recovery(world.ctx, op_id, "leave").status == "rolled_back"
     assert world.ctx.locator.is_durable(played["vid"])
 
 
@@ -135,15 +140,17 @@ def test_recovery_with_an_unknown_game_state_asks_for_a_confirmation(world):
 # 5 -----------------------------------------------------------------------------------------
 
 
-def test_classic_undo_does_not_step_past_a_live_operation(world):
+def test_the_whole_folder_undo_restores_the_snapshot_the_live_operation_took(world):
+    before = tree_hash(world.live)
     plan = plan_place(world.ctx, world.polestar(), LIVE.target(1))
-    assert execute(world.ctx, plan, plan.confirmations).status == "done"
-    after = tree_hash(world.live)
-    with pytest.raises(operations.OperationError, match="organizer's Undo"):
-        operations.plan_undo(world.ctx.vault, world.live)
-    with pytest.raises(operations.OperationError, match="organizer's Undo"):
-        operations.undo_last(world.ctx.vault, world.live, allow_game_running=True)
-    assert tree_hash(world.live) == after
+    out = execute(world.ctx, plan, plan.confirmations)
+    assert out.status == "done"
+    snapshot = jr.read_ops(world.ctx)[out.op_id].last("writing")["targets"][0]["snapshot_id"]
+
+    assert operations.plan_undo(world.ctx.vault, world.live).snapshot_id == snapshot
+    operations.undo_last(world.ctx.vault, world.live, allow_game_running=True)
+
+    assert tree_hash(world.live)["save.hg"][0] == before["save.hg"][0]   # slot 1 is Main again
 
 
 # 6 -----------------------------------------------------------------------------------------

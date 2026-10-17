@@ -89,8 +89,11 @@ def default_load(src_platform: Platform, a: SourceMember | None,
     return "B" if (fb.meta_ts, fb.play_time) > (fa.meta_ts, fa.play_time) else "A"
 
 
-def compute(src: SourcePair, rt: ResolvedTarget, now: int) -> tuple[PlannedMember, PlannedMember]:
-    """The two members a pair write puts into ``rt``'s slot: (loading, other)."""
+def compute(src: SourcePair, rt: ResolvedTarget, now: int, *,
+            stamped: bool = True) -> tuple[PlannedMember, PlannedMember]:
+    """The two members a pair write puts into ``rt``'s slot: (loading, other). ``stamped``
+    False (the panic restore, which puts a recorded state back) keeps each meta's own save
+    time; the disk times are still ``now`` and ``now - 1``."""
     platform = rt.target.platform
     if src.platform != platform:
         raise ValueError("a save moves between Steam and Xbox only by a transfer (F6)")
@@ -104,16 +107,18 @@ def compute(src: SourcePair, rt: ResolvedTarget, now: int) -> tuple[PlannedMembe
     # playthrough's own pair.
     use_partner = partner is not None and partner.pid == v.pid
     written = partner if use_partner else v
-    return (_member(platform, rt.target.slot, load, v, now, None),
+    return (_member(platform, rt.target.slot, load, v, now, None, stamped),
             _member(platform, rt.target.slot, other(load), written, now - 1,
-                    None if use_partner else load))
+                    None if use_partner else load, stamped))
 
 
 def _member(platform: Platform, slot: int, position: Position, src: SourceMember, ts: int,
-            copy_of: Position | None) -> PlannedMember:
+            copy_of: Position | None, stamped: bool = True) -> PlannedMember:
     captured = facts(platform, src.meta_plain)
     plain = src.meta_plain
-    if captured.meta_ts:                  # a meta without a save time keeps its bytes
+    if not stamped and copy_of is not None and captured.meta_ts:
+        ts, stamped = captured.meta_ts - 1, True       # a copy is one second older than its original
+    if captured.meta_ts and stamped:      # a meta without a save time keeps its bytes
         plain = _with_ts(platform, plain, ts)
     if platform == "steam":
         ordinal = slotmap.storage_ordinal(slotmap.file_no(slot, slotmap.member_index(position)))
@@ -124,7 +129,7 @@ def _member(platform: Platform, slot: int, position: Position, src: SourceMember
         ordinal, disk = None, plain       # Xbox metas are plaintext, the same in wgs and xgs
     write = MemberWrite(
         position=position, vid=src.vid, pid=src.pid, play_time=captured.play_time,
-        meta_ts=ts if captured.meta_ts else 0,
+        meta_ts=(ts if stamped else captured.meta_ts) if captured.meta_ts else 0,
         source_meta_ts=captured.meta_ts or None,
         meta_plain_sha256=sha256_bytes(plain), meta_disk_sha256=sha256_bytes(disk),
         disk_time=float(ts), ordinal=ordinal, copy_of=copy_of, origin=dict(src.origin))

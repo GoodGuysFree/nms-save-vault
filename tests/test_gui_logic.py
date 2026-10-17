@@ -20,29 +20,10 @@ def test_a_row_takes_exactly_what_fits_and_an_oversized_button_gets_its_own():
     assert gui._flow_rows([1200, 10], 1000) == [0, 1]
 
 
-# --- clear slot: identical, unverifiable, not checked -------------------------------------------
 
 
-def _plan(**kw) -> ops.ClearPlan:
-    return ops.ClearPlan(slot=4, occupied=True, live_name="Run", live_play_time=7200, **kw)
 
 
-def test_the_clear_question_says_when_the_vault_holds_this_very_save():
-    text = gui._clear_question(_plan(entry_id="full-1", backup_play_time=7200, identical=True), "st_1")
-    assert "Best copy in the vault: full-1" in text and "identical copy" in text
-    assert "WARNING" not in text
-
-
-def test_the_clear_question_says_when_a_copy_cannot_be_verified():
-    text = gui._clear_question(_plan(unverifiable=True), "st_1")
-    assert "CANNOT VERIFY: " in text
-
-
-def test_the_clear_question_lists_what_could_not_be_checked():
-    notes = [f"entry-{i} could not be checked (drive unplugged)." for i in range(7)]
-    text = gui._clear_question(_plan(notes=notes), "st_1")
-    assert "Not checked" in text and notes[0] in text and notes[4] in text
-    assert notes[5] not in text and "and 2 more" in text
 
 
 # --- undo: the folder, the change, damaged history ---------------------------------------------
@@ -72,9 +53,9 @@ def test_the_damaged_history_question_shows_what_is_damaged():
 # --- copy (P6) and warnings ---------------------------------------------------------------------
 
 
-def test_the_copy_rule_says_a_single_save_can_be_refused():
-    assert "only one save is refused" in gui.COPY_RULE.replace("\n", " ")
-    assert "Both saves of the slot are copied" in gui.COPY_RULE
+def test_the_copy_rule_says_both_positions_are_always_written():
+    assert "fills the other position" in gui.COPY_RULE.replace("\n", " ")
+    assert "Both saves of the slot are written" in gui.COPY_RULE
 
 
 def test_warnings_are_listed_under_the_message():

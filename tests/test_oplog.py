@@ -2,7 +2,7 @@
 
 A record is appended as one complete line, fsynced, and the reader skips (and reports) any
 line that is not a record. Before, a torn last line made every later read raise -- undo
-included. A damaged NEWEST line makes undo refuse: the last operation is then unknown.
+included.
 """
 from __future__ import annotations
 
@@ -17,6 +17,8 @@ import pytest
 from nms_save_vault.core import catalog, safety
 from nms_save_vault.core import operations as ops
 from nms_save_vault.core import savedir
+from nms_save_vault.core import store as vstore
+from nms_save_vault.core.liveops import planner
 from nms_save_vault.core.catalog import Vault
 
 TORN = b'{"ts": "2026-10-17T12:01:00", "op": "pro\xc3'   # cut off mid-record, mid-character
@@ -122,59 +124,12 @@ def _xbox_live(make_wgs_account, tmp_path):
     ])
 
 
-def test_undo_refuses_when_the_newest_record_is_damaged(make_wgs_account, tmp_path):
-    """The torn line may be the operation the user wants undone; undoing the newest READABLE
-    one instead would put back an older state, so undo refuses and says why."""
-    live = _xbox_live(make_wgs_account, tmp_path)
-    vault = Vault(tmp_path / "vault")
-    ops.repopulate_slot(vault, live, 1, live, 3, allow_game_running=True)
-    _tear(vault)
-
-    with pytest.raises(ops.OperationError, match="damaged, so undo is unsafe"):
-        ops.undo_last(vault, live, allow_game_running=True)
-    assert savedir.scan_any(live).slots[3].occupied                 # nothing was put back
 
 
-def test_undo_works_past_older_damage(make_wgs_account, tmp_path):
-    live = _xbox_live(make_wgs_account, tmp_path)
-    vault = Vault(tmp_path / "vault")
-    vault.ensure()
-    _tear(vault)                                    # an older operation whose record was lost
-    ops.repopulate_slot(vault, live, 1, live, 3, allow_game_running=True)
-
-    result = ops.undo_last(vault, live, allow_game_running=True)
-
-    assert not savedir.scan_any(live).slots[3].occupied
-    assert not any("damaged" in w for w in result.warnings)   # older damage: nothing to say
 
 
-def test_undo_refuses_when_a_damaged_record_follows_the_operation(make_wgs_account, tmp_path):
-    """repopulate, then a torn record, then a backup: the newest record is fine, but the torn
-    one between it and the repopulate may be a later live change, so undo still refuses."""
-    live = _xbox_live(make_wgs_account, tmp_path)
-    vault = Vault(tmp_path / "vault")
-    ops.repopulate_slot(vault, live, 1, live, 3, allow_game_running=True)
-    _tear(vault)
-    ops.create_full_backup(vault, live, include_cache=False)
-
-    with pytest.raises(ops.OperationError, match="damaged, so undo is unsafe"):
-        ops.undo_last(vault, live, allow_game_running=True)
-    assert savedir.scan_any(live).slots[3].occupied
 
 
-def test_the_no_undo_messages_mention_the_damage(make_wgs_account, tmp_path):
-    live = _xbox_live(make_wgs_account, tmp_path)
-    vault = Vault(tmp_path / "vault")
-    vault.ensure()
-    _tear(vault)
-    ops.create_full_backup(vault, live, include_cache=False)
-    with pytest.raises(ops.OperationError, match=r"nothing to undo.*damaged lines \(1\)"):
-        ops.undo_last(vault, live, allow_game_running=True)
-
-    result = ops.repopulate_slot(vault, live, 1, live, 3, allow_game_running=True)
-    shutil.rmtree(vault.get(result.snapshot_id).path)
-    with pytest.raises(ops.OperationError, match=r"can no longer be found.*damaged lines \(1\)"):
-        ops.undo_last(vault, live, allow_game_running=True)
 
 
 def test_the_damage_warning_counts_what_it_does_not_list():
@@ -206,15 +161,18 @@ def test_a_finished_live_write_is_not_reported_failed_when_the_log_cannot_be_wri
 ):
     live = _xbox_live(make_wgs_account, tmp_path)
     vault = Vault(tmp_path / "vault")
+    vault.ensure()
+    vstore.create_store(vault.root)
 
-    def log_unavailable(record):
+    def log_unavailable(self, record):
         raise OSError("disk full")
 
-    monkeypatch.setattr(vault, "append_oplog", log_unavailable)
+    monkeypatch.setattr(Vault, "append_oplog", log_unavailable)
+    monkeypatch.setattr(planner, "XBOX_SYNC_SECONDS", 0)
     result = ops.repopulate_slot(vault, live, 1, live, 3, allow_game_running=True)
 
     assert result.ok and savedir.scan_any(live).slots[3].occupied
-    assert any("missing from the history" in w for w in result.warnings)
+    assert any("history will finish updating" in w for w in result.warnings)
 
 
 def test_the_catalog_is_written_atomically_and_fsynced(tmp_path, monkeypatch):

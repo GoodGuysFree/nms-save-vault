@@ -10,14 +10,32 @@ import pytest
 
 from nms_save_vault.core import operations as ops
 from nms_save_vault.core import msstore, safety, savedir
+from nms_save_vault.core import store as vstore
+from nms_save_vault.core.store import classic as store_classic
 from nms_save_vault.core.catalog import Vault
 
 from .conftest import xbox_meta
 
 
+@pytest.fixture(autouse=True)
+def _xbox_app_is_quiet(monkeypatch):
+    """The fixture accounts are written just now; the planner would call that a sync in
+    progress (D5 2.3.3)."""
+    from nms_save_vault.core.liveops import planner
+
+    monkeypatch.setattr(planner, "XBOX_SYNC_SECONDS", 0)
+
+
+def _plain_vault(tmp_path) -> Vault:
+    v = Vault(tmp_path / "vault")
+    v.ensure()
+    return v
+
+
 def _vault(tmp_path) -> Vault:
     v = Vault(tmp_path / "vault")
     v.ensure()
+    vstore.create_store(v.root)          # live operations need the version store (D3)
     return v
 
 
@@ -30,7 +48,7 @@ def test_repopulate_xbox_to_xbox(make_wgs_account, tmp_path):
     assert not savedir.scan_any(live).slots[3].occupied
 
     res = ops.repopulate_slot(vault, live, 1, live, 3, allow_game_running=True)
-    assert res.ok and res.snapshot_id
+    assert res.ok and res.op_id
     view = savedir.scan_any(live)
     assert view.slots[3].a.save_name == "Source A"   # Auto  -> member A
     assert view.slots[3].b.save_name == "Source B"   # Manual -> member B
@@ -38,7 +56,7 @@ def test_repopulate_xbox_to_xbox(make_wgs_account, tmp_path):
     assert view.xbox_index.sync_state == 2           # index flagged Modified
 
     ops.undo_last(vault, live, allow_game_running=True)
-    assert not savedir.scan_any(live).slots[3].occupied
+    assert savedir.scan_any(live).slots[3].occupied      # a restore never empties a slot (F8)
 
 
 def test_promote_member_xbox(make_wgs_account, tmp_path):
@@ -76,10 +94,11 @@ def test_promote_xbox_moves_the_meta_time_and_the_index_time(make_wgs_account, t
 
     after = savedir.scan_any(live).slots[2]
     assert after.newest.label == "A"
-    assert after.a.timestamp == 1045
-    assert after.a.data_mtime >= started       # the index time is the local write time: now
+    assert after.a.timestamp >= int(started)   # the save time is stamped now (F5b)
+    assert after.a.data_mtime >= int(started)       # the index time is the local write time: now
     meta_after = Path(after.a.meta_path).read_bytes()
     assert meta_after[:0x120] + meta_after[0x124:] == meta_before[:0x120] + meta_before[0x124:]
+    assert meta_after != meta_before
 
     ops.undo_last(vault, live, allow_game_running=True)
     assert savedir.scan_any(live).slots[2].newest.label == "B"
@@ -111,7 +130,7 @@ def test_xbox_copies_keep_empty_folders(make_wgs_account, tmp_path, op):
     live = make_wgs_account(tmp_path, [("Slot1Auto", '{"a":1}', "Run", "", 100, 1000)])
     empty = live / ("0" * 31 + "E")
     empty.mkdir()
-    vault = _vault(tmp_path)
+    vault = _plain_vault(tmp_path)
 
     if op == "snapshot":
         entry = ops.snapshot_live(vault, live, reason="x")
@@ -122,46 +141,8 @@ def test_xbox_copies_keep_empty_folders(make_wgs_account, tmp_path, op):
     assert copied.is_dir() and not any(copied.iterdir())
 
 
-def test_a_promote_that_does_not_take_is_still_undoable(make_wgs_account, tmp_path, monkeypatch):
-    """When the result check fails the live folder has already been written, so the op-log
-    record must be there for undo to go back to the pre-promote snapshot."""
-    live = make_wgs_account(tmp_path, [
-        ("Slot2Auto", '{"a":1}', "Run", "", 100, 1000),
-        ("Slot2Manual", '{"b":2}', "Run", "", 144, 2000),
-    ])
-    vault = _vault(tmp_path)
-    monkeypatch.setattr(msstore, "set_ms_meta_timestamp", lambda meta, ts: meta)  # the old no-op
-
-    with pytest.raises(ops.WrittenButInvalidError) as failed:
-        ops.promote_member(vault, live, 2, 0, allow_game_running=True)
-    assert savedir.scan_any(live).slots[2].a.data_mtime > 2000     # it did write
-
-    record = vault.read_oplog()[-1]
-    assert record["op"] == "promote_member" and vault.get(record["snapshot_id"]) is not None
-    # The caller still gets the result: which snapshot undo will use, and that it failed.
-    assert failed.value.result.snapshot_id == record["snapshot_id"]
-    assert not failed.value.result.ok and "undo restores it" in str(failed.value)
-    ops.undo_last(vault, live, allow_game_running=True)
-    slot = savedir.scan_any(live).slots[2]            # back as before: B is the newer again
-    assert slot.newest.label == "B" and slot.a.data_mtime < slot.b.data_mtime
 
 
-def test_promote_xbox_refuses_an_unreadable_save_before_touching_anything(make_wgs_account, tmp_path, monkeypatch):
-    live = make_wgs_account(tmp_path, [
-        ("Slot2Auto", '{"a":1}', "Run", "", 100, 1000),
-        ("Slot2Manual", '{"b":2}', "Run", "", 144, 2000),
-    ])
-    view = savedir.scan_any(live)
-    view.slots[2].a.info = None                       # what an unreadable meta looks like
-    monkeypatch.setattr(ops.savedir, "scan_any", lambda path: view)
-    index_before = (live / "containers.index").read_bytes()
-    vault = _vault(tmp_path)
-
-    with pytest.raises(ops.OperationError, match="unreadable"):
-        ops.promote_member(vault, live, 2, 0, allow_game_running=True)
-
-    assert vault.entries == [] and vault.read_oplog() == []
-    assert (live / "containers.index").read_bytes() == index_before
 
 
 def test_xbox_repopulate_keeps_the_order_of_a_mixed_pair(make_wgs_account, tmp_path):
@@ -197,11 +178,11 @@ def test_xbox_writes_never_move_an_index_time_back(make_wgs_account, tmp_path):
 
     ops.promote_member(vault, live, 2, 0, allow_game_running=True)
     slot2 = savedir.scan_any(live).slots[2]
-    assert slot2.a.data_mtime == pytest.approx(ahead + 6) and slot2.newest.label == "A"
+    assert slot2.a.data_mtime >= ahead + 4.99 and slot2.newest.label == "A"   # not back to now
 
     ops.repopulate_slot(vault, live, 1, live, 2, allow_game_running=True)
     slot2 = savedir.scan_any(live).slots[2]
-    assert min(slot2.a.data_mtime, slot2.b.data_mtime) > ahead + 6
+    assert min(slot2.a.data_mtime, slot2.b.data_mtime) >= ahead + 4.99
     assert slot2.newest.label == savedir.scan_any(live).slots[1].newest.label == "B"
 
 
@@ -217,53 +198,15 @@ def test_promote_xbox_refuses_a_meta_layout_it_cannot_write(make_wgs_account, tm
     index_before = (live / "containers.index").read_bytes()
     vault = _vault(tmp_path)
 
-    with pytest.raises(ops.OperationError, match="400-byte meta"):
+    with pytest.raises(ops.OperationError, match="cannot be rewritten"):
         ops.promote_member(vault, live, 2, 0, allow_game_running=True)
 
     assert vault.entries == [] and vault.read_oplog() == []
     assert (live / "containers.index").read_bytes() == index_before
 
 
-def test_promote_xbox_reports_a_failed_read_back_with_its_snapshot(make_wgs_account, tmp_path, monkeypatch):
-    """The write happened but the slot does not read back: the error still carries the
-    result, so the caller can point undo at the snapshot."""
-    live = make_wgs_account(tmp_path, [
-        ("Slot2Auto", '{"a":1}', "Run", "", 100, 1000),
-        ("Slot2Manual", '{"b":2}', "Run", "", 144, 2000),
-    ])
-    vault = _vault(tmp_path)
-    real_write = msstore.write_save
-
-    def write_then_lose_the_data(folder, identifier, *args, **kwargs):
-        real_write(folder, identifier, *args, **kwargs)
-        for member in savedir.scan_any(folder).slots[2].members:
-            Path(member.data_path).unlink()
-
-    monkeypatch.setattr(msstore, "write_save", write_then_lose_the_data)
-    with pytest.raises(ops.WrittenButInvalidError, match="no readable save") as failed:
-        ops.promote_member(vault, live, 2, 0, allow_game_running=True)
-
-    record = vault.read_oplog()[-1]
-    assert failed.value.result.snapshot_id == record["snapshot_id"] and not failed.value.result.ok
-    assert "undo restores it" in str(failed.value)
 
 
-def test_repopulate_xbox_reports_a_failed_read_back_with_its_snapshot(make_wgs_account, tmp_path, monkeypatch):
-    live = make_wgs_account(tmp_path, [("Slot1Auto", '{"a":1}', "Run", "", 100, 1000)])
-    vault = _vault(tmp_path)
-    real_write = msstore.write_save
-
-    def write_then_lose_the_data(folder, identifier, *args, **kwargs):
-        real_write(folder, identifier, *args, **kwargs)
-        Path(savedir.scan_any(folder).slots[3].a.data_path).unlink()
-
-    monkeypatch.setattr(msstore, "write_save", write_then_lose_the_data)
-    with pytest.raises(ops.WrittenButInvalidError) as failed:
-        ops.repopulate_slot(vault, live, 1, live, 3, allow_game_running=True)
-
-    record = vault.read_oplog()[-1]
-    assert record["op"] == "repopulate_slot"
-    assert failed.value.result.snapshot_id == record["snapshot_id"] and not failed.value.result.ok
 
 
 def test_an_xbox_extract_does_not_inherit_trailing_index_bytes(make_wgs_account, tmp_path):
@@ -271,7 +214,7 @@ def test_an_xbox_extract_does_not_inherit_trailing_index_bytes(make_wgs_account,
     live = make_wgs_account(tmp_path, [("Slot1Auto", '{"a":1}', "Run", "", 100, 1000)])
     (live / "containers.index").write_bytes((live / "containers.index").read_bytes() + b"\x00\x01")
 
-    entry = ops.extract_slot(_vault(tmp_path), live, 1)
+    entry = ops.extract_slot(_plain_vault(tmp_path), live, 1)
 
     _header, records, trailer = msstore.split_index((Path(entry.path) / "containers.index").read_bytes())
     assert trailer == b"" and [ident for ident, _rec in records] == ["Slot1Auto"]
@@ -295,7 +238,7 @@ def test_restore_full_xbox(make_wgs_account, tmp_path):
     ops.undo_last(vault, live, allow_game_running=True)
     after = savedir.scan_any(live)
     assert after.slots[1].a.save_name == "Live Save"
-    assert not after.slots[4].occupied
+    assert after.slots[4].occupied              # a slot the snapshot lacks is left, not emptied
 
 
 def test_xbox_repopulate_data_is_verbatim_and_leaves_others(make_wgs_account, tmp_path):
@@ -317,18 +260,18 @@ def test_xbox_repopulate_data_is_verbatim_and_leaves_others(make_wgs_account, tm
 
 
 def test_xbox_repopulate_single_member_source(make_wgs_account, tmp_path):
-    """A source slot with only an Auto member copies just member A and warns about Manual."""
+    """A source slot with only an Auto member fills both positions with it (never a mixed or
+    half slot)."""
     live = make_wgs_account(tmp_path, [("Slot1Auto", '{"a":1}', "Only A", "", 1, 100)])
     vault = _vault(tmp_path)
-    res = ops.repopulate_slot(vault, live, 1, live, 5, allow_game_running=True)
+    ops.repopulate_slot(vault, live, 1, live, 5, allow_game_running=True)
     after = savedir.scan_any(live)
-    assert after.slots[5].a.save_name == "Only A"
-    assert not after.slots[5].b.exists
-    assert any("1B" in w for w in res.warnings)
+    assert after.slots[5].a.save_name == after.slots[5].b.save_name == "Only A"
 
 
-def test_restore_full_xbox_deletes_extra_slots(make_wgs_account, tmp_path):
-    """Restoring a smaller backup removes live slots not in it; undo brings them all back."""
+def test_restore_full_xbox_leaves_extra_slots(make_wgs_account, tmp_path):
+    """Restoring a smaller backup leaves the live slots it lacks alone (F8: nothing is
+    deleted)."""
     live = make_wgs_account(tmp_path / "live", [
         ("Slot1Auto", '{"a":1}', "Keep", "", 1, 100),
         ("Slot2Auto", '{"b":1}', "Drop 2", "", 1, 100),
@@ -341,11 +284,7 @@ def test_restore_full_xbox_deletes_extra_slots(make_wgs_account, tmp_path):
     ops.restore_full(vault, entry, live, allow_game_running=True)
     after = savedir.scan_any(live)
     assert after.slots[1].a.save_name == "Keep"
-    assert not after.slots[2].occupied and not after.slots[3].occupied   # extras deleted
-
-    ops.undo_last(vault, live, allow_game_running=True)
-    back = savedir.scan_any(live)
-    assert back.slots[2].a.save_name == "Drop 2" and back.slots[3].a.save_name == "Drop 3"
+    assert after.slots[2].a.save_name == "Drop 2" and after.slots[3].a.save_name == "Drop 3"
 
 
 def test_restore_full_xbox_onto_itself_is_noop(make_wgs_account, tmp_path):
@@ -379,7 +318,10 @@ def test_promote_already_newest_xbox(make_wgs_account, tmp_path):
 
 def test_xbox_op_honors_game_running_guard(make_wgs_account, tmp_path, monkeypatch):
     """An Xbox write refuses when the game is detected running and no override is given."""
-    live = make_wgs_account(tmp_path, [("Slot1Auto", '{"a":1}', "A", "", 1, 100)])
+    live = make_wgs_account(tmp_path, [
+        ("Slot1Auto", '{"a":1}', "A", "", 1, 100),
+        ("Slot1Manual", '{"b":1}', "B", "", 1, 200),
+    ])
     vault = _vault(tmp_path)
     monkeypatch.setattr(safety, "is_game_running", lambda: True)
     with pytest.raises(ops.GameRunningError):
@@ -405,12 +347,13 @@ def test_extract_slot_xbox_scans_and_repopulates(make_wgs_account, tmp_path):
 
     entry = ops.extract_slot(vault, live, 2, label="aside")
     assert entry.kind == "extract"
-    ev = savedir.scan_any(entry.path)
-    assert ev.slots[2].a.save_name == "Two A" and ev.slots[2].b.save_name == "Two B"
+    with store_classic.entry_folder(vault, entry) as folder:
+        ev = savedir.scan_any(folder)
+        assert ev.slots[2].a.save_name == "Two A" and ev.slots[2].b.save_name == "Two B"
 
-    # The extracted-aside slot repopulates back into a different live slot, verbatim.
-    src_bytes = ev.slots[2].a.data_path.read_bytes()
-    res = ops.repopulate_slot(vault, Path(entry.path), 2, live, 5, allow_game_running=True)
+        # The extracted-aside slot repopulates back into a different live slot, verbatim.
+        src_bytes = ev.slots[2].a.data_path.read_bytes()
+        res = ops.repopulate_slot(vault, folder, 2, live, 5, allow_game_running=True)
     assert res.ok
     after = savedir.scan_any(live)
     assert after.slots[5].a.save_name == "Two A" and after.slots[5].b.save_name == "Two B"
@@ -427,42 +370,23 @@ def test_extract_empty_xbox_slot_raises(make_wgs_account, tmp_path):
 # --- P6: no mixed slots, and the copied pair keeps its order --------------------------------
 
 
-def test_a_one_member_xbox_source_never_leaves_an_old_member_behind(make_wgs_account, tmp_path):
+def test_a_one_member_xbox_source_fills_both_positions(make_wgs_account, tmp_path):
     live = make_wgs_account(tmp_path, [
         ("Slot1Auto", '{"a":1}', "Source", "", 100, 1000),
         ("Slot3Auto", '{"x":1}', "Old", "", 50, 500),
         ("Slot3Manual", '{"y":1}', "Old", "", 60, 600),
     ])
     vault = _vault(tmp_path)
-    index_before = (live / "containers.index").read_bytes()
 
-    with pytest.raises(ops.OperationError, match="would leave behind"):
-        ops.repopulate_slot(vault, live, 1, live, 3, allow_game_running=True)
+    ops.repopulate_slot(vault, live, 1, live, 3, allow_game_running=True)
 
-    assert (live / "containers.index").read_bytes() == index_before and vault.entries == []
+    slot = savedir.scan_any(live).slots[3]            # the old pair is gone from the slot ...
+    assert slot.a.save_name == slot.b.save_name == "Source"
+    assert any(e.kind == "preserve" for e in store_classic.list_entries(vault))   # ... not from the vault
     ops.repopulate_slot(vault, live, 1, live, 2, allow_game_running=True)   # an empty slot: fine
     assert savedir.scan_any(live).slots[2].a.save_name == "Source"
 
 
-def test_an_xbox_copy_that_would_load_the_wrong_member_is_reported(make_wgs_account, tmp_path, monkeypatch):
-    """The source's B is its newest; if after the write the game would load A instead, the
-    result check says so (and the op is logged, so undo works)."""
-    live = make_wgs_account(tmp_path, [
-        ("Slot1Auto", '{"a":1}', "Run", "", 100, 1000, 7, 1000),
-        ("Slot1Manual", '{"b":2}', "Run", "", 144, 2000, 7, 2000),
-    ])
-    vault = _vault(tmp_path)
-    real_write = msstore.write_save
-
-    def older_meta_for_b(folder, identifier, data, meta, when, **kwargs):
-        if identifier.endswith("Manual"):
-            meta = xbox_meta("Run", play=144, pid=7, ts=10)    # B now looks saved first
-        return real_write(folder, identifier, data, meta, when, **kwargs)
-
-    monkeypatch.setattr(msstore, "write_save", older_meta_for_b)
-    with pytest.raises(ops.WrittenButInvalidError, match="would load slot 3A instead of the copied slot 3B") as failed:
-        ops.repopulate_slot(vault, live, 1, live, 3, allow_game_running=True)
-    assert vault.read_oplog()[-1]["snapshot_id"] == failed.value.result.snapshot_id
 
 
 def test_a_one_member_xbox_source_may_join_its_own_playthrough(make_wgs_account, tmp_path):

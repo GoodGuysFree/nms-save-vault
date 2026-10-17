@@ -204,6 +204,8 @@ def test_one_store_per_operation_and_the_configured_live_folders(legacy, tmp_pat
     vault, live = legacy
     vstore.run_upgrade(_plan(vault, live))
     full = operations.create_full_backup(vault, live, warnings=[])
+    fresh = Vault(vault.root)
+    entry = classic.find_entry(fresh, full.id)
     opened = []
     real_open = vstore.VersionStore.open.__func__
 
@@ -212,8 +214,7 @@ def test_one_store_per_operation_and_the_configured_live_folders(legacy, tmp_pat
         return real_open(cls, *a, **k)
 
     monkeypatch.setattr(vstore.VersionStore, "open", classmethod(counting))
-    fresh = Vault(vault.root)
-    operations.restore_full(fresh, classic.find_entry(fresh, full.id), live)
+    operations.restore_full(fresh, entry, live)
     assert opened == [1]                         # snapshot, materialize, oplog: one store
     configured = tmp_path / "configured live"
     state = AppState(sources=[Source(id="s", platform="steam", account="1",

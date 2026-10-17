@@ -73,6 +73,8 @@ class OpTarget:
     steam: steamwrite.SteamWritePlan | None = None
     xbox: msstore.XboxPairPlan | None = None
     payload: dict = field(default_factory=dict)
+    records: list = field(default_factory=list)      # Xbox: this target's XboxRecordWrite
+    stamped: bool = True                              # False: a panic restore (metas verbatim)
     outside: dict = field(default_factory=dict)
     excluded: tuple = (frozenset(), frozenset())      # (file names, record dirs) the op writes
 
@@ -92,6 +94,8 @@ def execute(ctx: OpContext, plan: PlacePlan, confirmed: Iterable[str] = frozense
     missing = plan.confirmations - confirmed
     if missing:
         raise ConfirmationRequired(missing)
+    if plan.kind == "panic_restore" and plan.restores and not note:
+        note = f"{'undoes' if plan.via_undo else 'restores'}:{plan.restores}"
     run = _keep if plan.kind == "keep" else _run
     try:
         with opjournal.liveop_lock(ctx, timeout=LIVEOP_TIMEOUT):
@@ -160,11 +164,12 @@ def _run(ctx: OpContext, plan: PlacePlan, confirmed: frozenset[str],
     progress(Progress("writing", 0, len(wts)))
     applied: list[OpTarget] = []
     applying = False
+    written_plans: set = set()
     try:
         for i, wt in enumerate(wts, 1):
             applied.append(wt)
             applying = True
-            _apply(ctx, wt)
+            _apply(ctx, wt, written_plans)
             applying = False
             progress(Progress("writing", i, len(wts)))
         progress(Progress("verifying", 0, 1))
@@ -305,7 +310,7 @@ def _prepare(ctx: OpContext, plan: PlacePlan, rts: list[ResolvedTarget], op_id: 
             raise _Abandon("not_started", "SOURCE_UNREADABLE", str(exc)) from exc
         now = (scanned or {}).get(rt.target.ref) or             read_account(ctx, resolve_account(ctx, rt.target.ref))
         before = now.slots[rt.target.slot]       # a change since is caught by the pre-image checks
-        wts.append(OpTarget(tp, rt, src, before))
+        wts.append(OpTarget(tp, rt, src, before, stamped=plan.kind != "panic_restore"))
     progress(Progress("preserving", 0, len(wts)))
     for wt in wts:
         wt.preserved = _preserve(ctx, wt, op_id, plan.kind)
@@ -320,6 +325,7 @@ def _prepare(ctx: OpContext, plan: PlacePlan, rts: list[ResolvedTarget], op_id: 
     now = int(ctx.clock())
     for wt in wts:
         _prepare_writer(ctx, wt, now, tag)
+    _prepare_xbox(wts)
     set_containment(wts)
     return wts
 
@@ -365,7 +371,7 @@ def _snapshot(ctx: OpContext, wt: OpTarget, op_id: str, kind: str) -> str:
 def _prepare_writer(ctx: OpContext, wt: OpTarget, now: int, tag: str) -> None:
     """The writes stamped now (F5b), the writer's plan, its payload; the slot as the writer
     sees it must still be what was preserved."""
-    wt.writes = pairmeta.compute(wt.src.pair, wt.rt, now)
+    wt.writes = pairmeta.compute(wt.src.pair, wt.rt, now, stamped=wt.stamped)
     slot = wt.rt.target.slot
     data = wt.src.data
     if wt.rt.target.platform == "steam":
@@ -379,18 +385,32 @@ def _prepare_writer(ctx: OpContext, wt: OpTarget, now: int, tag: str) -> None:
                 raise _Abandon("stale", "STALE")
         _check_against_snapshot(ctx, wt)
     else:
-        records = [msstore.XboxRecordWrite(identifier(slot, pm.write.position),
-                                           data[pm.write.vid], pm.meta_disk, pm.write.disk_time)
-                   for pm in wt.writes]
+        wt.records = [msstore.XboxRecordWrite(identifier(slot, pm.write.position),
+                                              data[pm.write.vid], pm.meta_disk,
+                                              pm.write.disk_time) for pm in wt.writes]
+
+
+def _prepare_xbox(wts: list[OpTarget]) -> None:
+    """One combined plan per Xbox account folder: a swap of two slots of one account writes
+    both through one index (a second plan would see the first one's write as a change)."""
+    groups: dict[Path, list[OpTarget]] = {}
+    for wt in wts:
+        if wt.steam is None:
+            groups.setdefault(wt.folder, []).append(wt)
+    for folder, group in groups.items():
+        records = [r for wt in group for r in wt.records]
         try:
-            wt.xbox = msstore.prepare_pair(wt.folder, records)
+            plan = msstore.prepare_pair(folder, records)
         except msstore.XgsMismatch as exc:
             raise _Abandon("not_started", "XGS_MISMATCH",
                            "The game's second copy of this slot differs from its save. "
                            "Start and quit the game once, then try again.") from exc
-        wt.payload = {r.identifier: (r.data, r.meta) for r in records}
-        if _xbox_vids(wt.folder, slot) != {m.position: m.vid for m in wt.before.present}:
-            raise _Abandon("stale", "STALE")
+        payload = {r.identifier: (r.data, r.meta) for r in records}
+        for wt in group:
+            wt.xbox, wt.payload = plan, payload
+            if _xbox_vids(folder, wt.rt.target.slot) != {m.position: m.vid
+                                                         for m in wt.before.present}:
+                raise _Abandon("stale", "STALE")
 
 
 def _check_against_snapshot(ctx: OpContext, wt: OpTarget) -> None:
@@ -473,12 +493,18 @@ def _writing(wt: OpTarget) -> dict:
 # --- writing, checking, putting back ---------------------------------------------------------
 
 
-def _apply(ctx: OpContext, wt: OpTarget) -> None:
+def _apply(ctx: OpContext, wt: OpTarget, written_plans: set) -> None:
     if wt.steam is not None:
         steamwrite.stage(wt.steam, wt.payload, ctx.faults)
         steamwrite.swap(wt.steam, ctx.faults)
-    else:
+    elif plan_key(wt) not in written_plans:       # one plan can cover two slots
         msstore.apply_pair(wt.xbox, wt.payload, ctx.faults)
+        written_plans.add(plan_key(wt))
+
+
+def plan_key(wt: OpTarget) -> tuple:
+    """Identifies an Xbox plan shared by the targets of one account."""
+    return (wt.folder, wt.xbox.pre_index_sha256, wt.xbox.new_header_raw)
 
 
 def validate(wt: OpTarget, tag: str) -> None:
@@ -566,7 +592,8 @@ def rollback_and_report(ctx: OpContext, op_id: str, plan: PlacePlan, applied: li
             problems.append(f"{wt.rt.label}: {rollback_exc}")
     if problems:
         append_quietly(ctx, op_id, "failed", {"stage": stage, "error": str(exc),
-                                               "rollback_error": "; ".join(problems)})
+                                               "rollback_error": "; ".join(problems),
+                                               "settled": settled_files(applied)})
         _oplog_quietly(ctx, op_id, plan, applied, "failed", confirmed, note, str(exc))
         return OpOutcome(op_id, "failed",
                          f"The move failed and {labels} could not be put back automatically. "
@@ -583,6 +610,18 @@ def rollback_and_report(ctx: OpContext, op_id: str, plan: PlacePlan, applied: li
     return OpOutcome(op_id, "rolled_back",
                      f"Nothing changed in {labels}. The move failed: {exc}", (), None, "n/a",
                      str(exc), "ROLLED_BACK")
+
+
+def settled_files(wts: list[OpTarget]) -> dict:
+    """Steam: what each file of the op's slots holds at the moment it failed, so recovery can
+    tell the op's own damaged output (still as it was left) from a save the game wrote since."""
+    out = {}
+    for wt in wts:
+        if wt.steam is not None:
+            for name in wt.steam.pre:
+                state = steamwrite.file_state(wt.folder / name)
+                out[f"{wt.rt.target.slot}/{name}"] = state.sha256 if state else None
+    return out
 
 
 def rollback_target(ctx: OpContext, wt: OpTarget) -> None:
@@ -616,7 +655,7 @@ def record_oplog(ctx: OpContext, op_id: str, kind: str, undo_of: str | None,
         if wt.steam is not None:
             changed += [f.name for f in wt.steam.files]
         else:
-            changed += [b.identifier for b in wt.xbox.blobs]
+            changed += [identifier(wt.rt.target.slot, pm.write.position) for pm in wt.writes]
     evicted = [m.meta.name or "<unnamed>" for m in first.before.present if m.position ==
                first.before.newer]
     detail = f"{kind} '{first.src.name}' into {first.rt.label}"
@@ -722,7 +761,11 @@ def _stale(ctx: OpContext, plan: PlacePlan, op_id: str | None = None) -> OpOutco
     replan = None
     tp = plan.targets[0] if plan.targets else None
     try:
-        if plan.kind == "promote" and tp is not None and tp.source is not None:
+        if plan.kind == "undo" and plan.undo_of:      # keeps undo_of and the UNDO_STALE block
+            from .undo import plan_undo
+
+            replan = plan_undo(ctx, plan.undo_of)
+        elif plan.kind == "promote" and tp is not None and tp.source is not None:
             replan = planner.plan_promote(ctx, tp.target, tp.source.load or "A")
         elif plan.kind == "swap" and len(plan.targets) == 2:
             replan = planner.plan_swap(ctx, plan.targets[0].target, plan.targets[1].target)
@@ -750,6 +793,8 @@ def outcome_text(plan: PlacePlan, wts: list[OpTarget]) -> str:
         return f"The {which} of {label} loads now."
     if plan.kind == "restore_older":
         return f"{label} holds this version of '{name}' now. The one it replaced is in the vault."
+    if plan.kind == "panic_restore":
+        return f"The folder is restored from the snapshot ({len(wts)} slots)."
     if plan.kind == "swap":
         return f"Swapped {label} and {wts[1].rt.label}."
     if plan.kind == "undo":
@@ -762,6 +807,8 @@ def outcome_text(plan: PlacePlan, wts: list[OpTarget]) -> str:
 
 def undo_offer(plan: PlacePlan, wts: list[OpTarget], op_id: str) -> UndoOffer | None:
     wt = wts[0]
+    if plan.kind == "panic_restore":
+        return UndoOffer(op_id, "Undo: restore the folder from the safety snapshot")
     if plan.kind == "swap" or len(wts) == 2:
         return UndoOffer(op_id, f"Undo: swap {wt.rt.label} and {wts[1].rt.label} back")
     if not wt.before.present:

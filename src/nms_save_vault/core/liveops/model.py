@@ -235,6 +235,8 @@ class PlacePlan(_JsonForm):
     fingerprint: str
     estimate: Estimate
     created_at: float
+    restores: str | None = None           # panic_restore: the snapshot or backup it puts back
+    via_undo: bool = False                # panic_restore started by the whole-folder Undo
 
 
 @dataclass(frozen=True)

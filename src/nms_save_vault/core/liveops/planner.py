@@ -119,6 +119,20 @@ TEXTS = {
                      "stays in the vault as the newest version of '{name}'."),
     "NOTHING_TO_KEEP": ("block", "{slot} is empty: there is nothing to keep."),
     "EMPTY_SLOT_MAY_REFILL": ("info", "{refill}"),
+    "META_LAYOUT": ("block", "The save's file layout cannot be rewritten safely, so it was not "
+                    "touched. Nothing was changed."),
+    "NO_SNAPSHOT": ("block", "There is no snapshot or full backup of this folder to restore. "
+                    "Nothing was changed."),
+    "SNAPSHOT_NOT_THIS_FOLDER": ("block", "That snapshot was not taken of this folder. "
+                                 "Nothing was changed."),
+    "SNAPSHOT_EMPTY": ("block", "That snapshot holds no saves. Nothing was changed."),
+    "FOREIGN_ACCOUNT": ("block", "That backup was taken from another Xbox account. Restoring "
+                        "it would write that account's save index into this one. "
+                        "Nothing was changed."),
+    "SLOTS_LEFT": ("info", "Slots {slots} are empty in the snapshot and were left as they are."),
+    "ACCOUNTDATA_XBOX": ("block", "Restoring an Xbox account's data is not available."),
+    "ACCOUNTDATA_ROLLBACK": ("confirm", "This also restores the account data, which rolls back "
+                             "unlocks and settings."),
 }
 
 
@@ -549,7 +563,10 @@ def _plan(ctx: OpContext, kind: str, parts, warnings: list[Warning], outcome: st
     for rt, now, slot, src, pair_source in parts:
         writes = ()
         if src.platform == rt.target.platform:
-            planned = pairmeta.compute(src.pair, rt, stamp)
+            try:
+                planned = pairmeta.compute(src.pair, rt, stamp, stamped=kind != "panic_restore")
+            except ValueError:
+                return _refusal(ctx, parts[0][0], kind, warning("META_LAYOUT"), parts[0][4])
             writes = tuple(p.write for p in planned)
             write_bytes += sum(len(src.data[p.write.vid]) + len(p.meta_disk) for p in planned)
         evictions = tuple(_eviction(ctx, m) for m in slot.present)
