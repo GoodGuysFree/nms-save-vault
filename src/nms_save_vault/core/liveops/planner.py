@@ -17,7 +17,7 @@ import uuid
 from collections.abc import Iterable, Sequence
 from pathlib import Path
 
-from .. import aliases, msstore
+from .. import aliases, gameversion, msstore
 from ..organizer.locator import LiveMember, Location
 from ..organizer.model import LiveRef, LiveTarget
 from ..store import CaptureScope, vault_mode
@@ -122,6 +122,7 @@ TEXTS = {
                      "stays in the vault as the newest version of '{name}'."),
     "NOTHING_TO_KEEP": ("block", "{slot} is empty: there is nothing to keep."),
     "EMPTY_SLOT_MAY_REFILL": ("info", "{refill}"),
+    "GAME_NEWER": ("block", gameversion.GAME_NEWER_TEXT),
     "META_LAYOUT": ("block", "The save's file layout cannot be rewritten safely, so it was not "
                     "touched. Nothing was changed."),
     "NO_SNAPSHOT": ("block", "There is no snapshot or full backup of this folder to restore. "
@@ -303,9 +304,23 @@ def outcome_text(kind: str, label: str, src: LoadedSource, slot: SlotNow) -> str
     return f"Swap into {label}"
 
 
+def newer_source(src: LoadedSource) -> bool:
+    """The source (either member) was written by a newer game version than the app knows."""
+    return any(m is not None and gameversion.newer_plain(src.platform, m.meta_plain)
+               for m in (src.pair.a, src.pair.b))
+
+
+def newer_slot(slot: SlotNow) -> bool:
+    """A save in the slot was written by a newer game version than the app knows."""
+    return any(gameversion.newer(slot.target.platform, m.meta.meta_format, m.meta.base_version)
+               for m in slot.present)
+
+
 def _slot_warnings(ctx: OpContext, src: LoadedSource, now: AccountNow, slot: SlotNow,
                    kind: str, label: str, kept: dict) -> list[Warning]:
     out = []
+    if newer_slot(slot):
+        out.append(warning("GAME_NEWER"))
     head = slot.head
     if kind == "noop":
         out.append(warning("ALREADY_LIVE", slot=label))
@@ -354,6 +369,8 @@ def _plan_warnings(ctx: OpContext, src: LoadedSource, account: LiveRef,
                    now: AccountNow | None) -> list[Warning]:
     """The warnings of the operation as a whole (not of one slot)."""
     out = []
+    if newer_source(src):
+        out.append(warning("GAME_NEWER"))
     vault = vault_problem(ctx)
     if vault:
         out.append(vault)
@@ -602,6 +619,9 @@ def _plan(ctx: OpContext, kind: str, parts, warnings: list[Warning], outcome: st
         quota = _quota(parts, write_bytes)
         if quota:
             warnings = list(warnings) + [quota]
+    if any(newer_slot(slot) or (src is not None and newer_source(src))
+           for _rt, _now, slot, src, _ps in parts):
+        warnings = list(warnings) + [warning("GAME_NEWER")]       # swap, promote, undo, restore
     warnings = _unique(warnings)
     blocked = tuple(w for w in warnings if w.severity == "block")
     confirmations = frozenset(w.code for w in warnings if w.severity == "confirm")

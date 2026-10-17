@@ -29,6 +29,8 @@ from .words import METHOD_WORDS, find_row, line_name, slot_words, version_number
 #: of the shown save file, ``("link", head, pid)`` to one of another.
 Segment = tuple[str, tuple]
 
+NEWER_NOTICE = ("written by a newer game version than this app knows - it cannot be moved "
+                "until the app is updated")
 NO_PARENT = "no recorded parent - not linked; listed by date, nothing to compare with"
 
 
@@ -183,6 +185,8 @@ def _version_state(row: VersionRow) -> str:
         words.append("edited outside the game")
     if "unreadable" in row.flags:
         words.append("unreadable - cannot be a source")
+    if "newer" in row.flags:
+        words.append(NEWER_NOTICE)
     if "gone" in row.flags:
         words.append("no copy left")
     return "; ".join(words)

@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Literal, Protocol, runtime_checkable
 
-from .. import aliases, formats
+from .. import aliases, formats, gameversion
 from ..state import Source
 from .journal import JournalState, ObsRecord, OpRecord
 from .history import CrossLink, HistoryGraph, HNode, project
@@ -616,6 +616,9 @@ class _Builder:
             flags.add("evicted")
         if meta is not None and not meta.valid:
             flags.add("unreadable")
+        if meta is not None and meta.valid and gameversion.newer(
+                self.platform(p.head), meta.meta_format, meta.base_version):
+            flags.add("newer")           # written by a newer game version: no live write (D5)
         return VersionRow(
             pid=pid, pair=p.pair, head=p.head, head_member=p.head_member, partner=p.partner,
             name=meta.name if meta else "", summary=meta.summary if meta else "",
@@ -752,6 +755,8 @@ class _Builder:
             flags.add("has-note")
         if any("unreadable" in r.flags for r in rows):
             flags.add("unreadable")
+        if any("newer" in r.flags for r in rows):
+            flags.add("newer")
         raw_pids = sorted({self.raw_pid(v) for v in vids if self.raw_pid(v)})
         return Line(
             pid=pid, raw_pids=tuple(raw_pids), identified=is_identified(pid),

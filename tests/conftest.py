@@ -252,7 +252,7 @@ def xbox_meta(name: str = "", summary: str = "", *, play: int = 0, size: int = 0
     if length not in (280, 296, 360):
         raise ValueError(f"no Xbox meta is {length} bytes")
     b = bytearray(length)
-    struct.pack_into("<I", b, 0, 4700)                    # base version
+    struct.pack_into("<I", b, 0, 4220)                    # base version (below the app's known one)
     struct.pack_into("<H", b, 4, 1)                       # game mode
     struct.pack_into("<Q", b, 8, play)                    # total play time
     struct.pack_into("<I", b, 16, size)                   # decompressed size
@@ -331,7 +331,8 @@ def make_wgs_account():
 
 
 def steam_save(folder: Path, slot: int, member: int, name: str, play: int, ident: int, ts: int,
-               *, extra: str = "", data_ident: int | None = None) -> None:
+               *, extra: str = "", data_ident: int | None = None, base_version: int = 0,
+               meta_format: int = formats.META_FORMAT_4) -> None:
     """Write one Steam save pair (data + encrypted meta) into ``folder``. ``extra`` goes into
     the data, so two saves alike in every meta field still differ in bytes; ``data_ident`` is
     the id the data carries when it differs from the meta's (None: the same; 0: none)."""
@@ -347,7 +348,8 @@ def steam_save(folder: Path, slot: int, member: int, name: str, play: int, ident
 
     plain = bytearray(formats.META_LEN_WORLDS_II)
     struct.pack_into("<I", plain, formats.OFF_HEADER, formats.META_HEADER)
-    struct.pack_into("<I", plain, formats.OFF_META_FORMAT, formats.META_FORMAT_4)
+    struct.pack_into("<I", plain, formats.OFF_META_FORMAT, meta_format)
+    struct.pack_into("<I", plain, formats.OFF_BASE_VERSION, base_version)
     struct.pack_into("<I", plain, formats.OFF_SIZE_DECOMPRESSED, len(payload))
     struct.pack_into("<I", plain, formats.OFF_SIZE_DISK, len(chunked(payload)))
     struct.pack_into("<H", plain, formats.OFF_GAME_MODE, 1)
@@ -357,7 +359,7 @@ def steam_save(folder: Path, slot: int, member: int, name: str, play: int, ident
     struct.pack_into("<I", plain, formats.OFF_DIFFICULTY, 2)
     struct.pack_into("<Q", plain, formats.OFF_SLOT_IDENTIFIER, ident)
     struct.pack_into("<I", plain, formats.OFF_TIMESTAMP, ts)
-    struct.pack_into("<I", plain, formats.OFF_META_FORMAT_TAIL, formats.META_FORMAT_4)
+    struct.pack_into("<I", plain, formats.OFF_META_FORMAT_TAIL, meta_format)
     ordinal = slotmap.storage_ordinal(fno)
     (folder / slotmap.meta_filename(fno)).write_bytes(meta.encrypt(bytes(plain), ordinal))
 

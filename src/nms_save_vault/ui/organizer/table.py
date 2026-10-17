@@ -114,6 +114,8 @@ def state_words(line: Line) -> str:
         words.append("vault only")
     if "unreadable" in line.flags:
         words.append("unreadable")
+    if "newer" in line.flags:
+        words.append("NEWER GAME VERSION")
     if "edited" in line.flags:
         words.append("edited")
     if line.pinned:
@@ -155,6 +157,8 @@ def version_values(row: VersionRow, live_labels: dict, view=None, active: bool =
         words.append("edited outside game")
     if "unreadable" in row.flags:
         words.append("unreadable")
+    if "newer" in row.flags:
+        words.append("NEWER GAME VERSION")
     if "gone" in row.flags:
         words.append("no copy left")
     if row.locked:
