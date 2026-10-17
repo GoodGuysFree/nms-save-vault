@@ -307,6 +307,11 @@ class Dispatcher:
     def paused(self) -> bool:
         return self._paused
 
+    @property
+    def playing(self) -> bool:
+        """The game was running (or unknown) at the last check: one worker, no backfill."""
+        return self._playing is not False
+
     def cancel(self) -> None:
         """Stop what is running now and pause; running and held jobs go back to the queue."""
         with self._lock:

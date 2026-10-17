@@ -268,6 +268,10 @@ class IndexCache:
         return [v for (v,) in self._reader().execute(
             "SELECT vid FROM version WHERE decoder < ? AND status IN (?, ?, ?)", (DECODER_VERSION, *FAILED_STATUSES))]
 
+    def failures(self) -> dict[str, int]:
+        """vid -> attempts, for every version with a transient failure."""
+        return dict(self._reader().execute("SELECT vid, attempts FROM failure").fetchall())
+
     def failure(self, vid: str) -> tuple[int, str, str] | None:
         """(attempts, kind, last error) of a transient failure, or None."""
         row = self._reader().execute("SELECT attempts, kind, last_error FROM failure WHERE vid = ?", (vid,)).fetchone()
