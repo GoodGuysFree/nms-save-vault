@@ -86,7 +86,7 @@ primitives live in modules allowed to branch: `platform.user_cache_dir` and
 | Steam meta u64 @0x15C != 0 (`MetaInfo.slot_identifier`) | `f"{id:016X}"` | `meta` |
 | Xbox meta (P1 fixed): length >= 296, u32 @0x124 in {2003, 2004}, u64 @0x118 != 0 | `f"{id:016X}"` | `meta` |
 | meta id 0, first data chunk holds `WmU`/`ActiveSaveSlotId` (`playtime._id_from_bytes`, ~23 ms, cached per vid) | `f"{id:016X}"` | `data` |
-| no id anywhere, meta readable | `legacy:<platform>:<slot>:<name or <unnamed>>` | `legacy` |
+| no id anywhere, meta readable | `legacy:<platform>:<slot>:<name>` (ends in `:` when the save has no name) | `legacy` |
 | meta unreadable and no data id | `unknown:<vid[:16]>` | `unknown` |
 | owner Split (2.7.4) | `split:<raw pid>:<n>` | `owner` |
 
@@ -152,6 +152,9 @@ class MetaSnap:         # what the organizer keeps of a meta; enough for gone ve
     data_size: int
     meta_sha: str       # sha256 hex of the meta plaintext; "" when unreadable. One vid can have
                         # several metas (a Place re-stamps the time, F5b; promote edits it)
+    valid: bool         # the meta decoded with the right header (MemberView.valid)
+    file_time: float    # data file mtime (Xbox: containers.index time) exactly as savedir reads
+                        # it; the clock of the head rule when a member lacks a meta time
 
 @dataclass(frozen=True)
 class MemberObs:
@@ -172,18 +175,21 @@ class Capture:          # one observation of one slot (section 6 "capture")
     observed_at: int    # UTC unix
     time_quality: Literal["exact", "estimated"]
     src: Literal["scan", "entry", "op"]
+    head_member: Member | None   # SlotView.newest when the slot was read, else head_of(a, b)
     @property
     def pair(self) -> "PairKey": ...
     @property
-    def head(self) -> MemberObs | None: ...
+    def head(self) -> MemberObs | None: ...   # the member named by head_member
 
 PairKey = tuple[Vid | None, Vid | None]     # (A, B); string form "<A or ->/<B or ->"
 ```
 
-**Head rule** (the member the game loads, the label of a pair): the present member with the
-highest `(meta_ts, play_time)`; a full tie picks A. This matches `SlotView.newest`, which keeps
-the first maximum (SOURCED `savedir.py:110-116`); it differs from today's Xbox order only
-until P1 is fixed (index time vs meta time, R7 2.3).
+**Head rule** (the member the game loads, the label of a pair): one rule, `SlotView.newest`
+(SOURCED `savedir.py`, phase 0). Candidates are the present members with a valid meta, else
+every present member; one clock orders them all - the meta save time when every candidate has
+one, else the file time (Xbox: the `containers.index` time); a tie picks A. Play time is not
+used. The scanner records the result as `Capture.head_member`; `model.head_of(a, b)` applies
+the same rule to data read back without its slot (store manifests, journal records).
 
 **Order of versions** (used everywhere a "before/after" is needed):
 `order(v) = (meta_ts, play_time, first_seen, vid)`, with `first_seen` an `ObsOrder`
@@ -251,7 +257,8 @@ class JournalEvent:
 Edge **kind** is decided by the meta deltas from parent `p` to child `c`: `play` if
 `c.play_time > p.play_time`; `touch` if equal play time and later `meta_ts` (the game re-saved
 after a load, R7 2.4); `edit` if equal play time and equal `meta_ts` with different bytes
-("edited outside the game", R7 2.6 row 6); `unknown` otherwise (owner corrections only). Every
+("edited outside the game", R7 2.6 row 6); `unknown` otherwise (owner corrections only), and
+whenever `touch` / `edit` would compare times from different clocks (`ts_src`). Every
 edge is evidence, never a guess: there is no inferred tier and no `confidence`. Place, swap,
 restore-older and undo are **operation kinds** reached through `op_id`; deletions and cloud
 reverts are **journal events**, not edges (Deviations, item 1). Hello Games cross-save copies a
@@ -489,7 +496,8 @@ target (or on first sight):
  "m": {"f073ea37...": {"member": "B", "pid": "DDDAD1BDD39F9C72", "pid_src": "meta",
         "plat": "steam", "pt": 1916188, "ts": 1791924000, "ts_src": "meta",
         "name": "Main Save (S2)", "summary": "...", "diff": 2, "mode": 1, "season": 0,
-        "bv": 4220, "fmt": 2004, "dsize": 18812345, "size": 8812345}},
+        "bv": 4220, "fmt": 2004, "dsize": 18812345, "size": 8812345,
+        "msha": "6d1f03aa...", "valid": true, "ft": 1791924003.25}},
  "note_revs": {"DDDAD1BDD39F9C72": 3},
  "entry": null, "q": "exact"}
 ```
