@@ -54,6 +54,7 @@ from .targets import (
 
 EXPEDITION_MODE = 6
 XBOX_SYNC_SECONDS = 60
+OWN_WRITE_SLACK = 2.0           # seconds a journal stamp may trail the index mtime
 XBOX_QUOTA_WARN = 200 * 1024 * 1024
 XBOX_QUOTA_MAX = 256 * 1024 * 1024
 SPACE_FACTOR = 1.5
@@ -101,6 +102,8 @@ TEXTS = {
     "VAULT_SPACE": ("block", "Not enough free disk space."),
     "SOURCE_UNREADABLE": ("block", "That version cannot be read from the vault."),
     "RECOVERY_PENDING": ("block", "An earlier move was interrupted. Resolve it first."),
+    "RECOVERY_UNKNOWN": ("block", "Cannot tell whether an earlier move is waiting to be "
+                         "recovered. Nothing was changed."),
     "STALE_SOURCE_MIXED": ("warn", "The saved slot held two different saves; only the chosen "
                            "one is used."),
     "SWAP_EMPTY_SIDE": ("block", "{slot} is empty, and the app never empties a slot. Use Move "
@@ -320,8 +323,9 @@ def _plan_warnings(ctx: OpContext, src: LoadedSource, account: LiveRef,
     game = game_warning(ctx)
     if game:
         out.append(game)
-    if recovery_pending(ctx, [account]):
-        out.append(warning("RECOVERY_PENDING"))
+    pending = recovery_pending(ctx, [account])
+    if pending is not None:
+        out.append(pending)
     other = _other_account(src, account)
     if other:
         out.append(other)
@@ -364,13 +368,16 @@ def game_warning(ctx: OpContext) -> Warning | None:
     return None
 
 
-def recovery_pending(ctx: OpContext, accounts: Iterable[LiveRef]) -> bool:
-    """An open op of this machine on one of ``accounts`` (2.10): no new live op there."""
+def recovery_pending(ctx: OpContext, accounts: Iterable[LiveRef]) -> Warning | None:
+    """Why no new live op may start on one of ``accounts`` (2.10): an open op of this machine
+    there, or a journal that cannot be read (unknown is not "nothing pending")."""
     wanted = set(accounts)
     try:
-        return any(t.ref in wanted for op in opjournal.open_ops(ctx) for t in op.targets)
+        if any(t.ref in wanted for op in opjournal.open_ops(ctx) for t in op.targets):
+            return warning("RECOVERY_PENDING")
     except OSError:
-        return False
+        return warning("RECOVERY_UNKNOWN")
+    return None
 
 
 def _other_account(src: LoadedSource, account: LiveRef) -> Warning | None:
@@ -386,8 +393,16 @@ def _same_account(a: LiveRef, b: LiveRef) -> bool:
 
 
 def _sync_busy(ctx: OpContext, now: AccountNow | None) -> bool:
-    return (now is not None and now.index_mtime is not None
-            and ctx.clock() - now.index_mtime < XBOX_SYNC_SECONDS)
+    """A recent write to the Xbox index that is not this app's own last write."""
+    if now is None or now.index_mtime is None:
+        return False
+    if ctx.clock() - now.index_mtime >= XBOX_SYNC_SECONDS:
+        return False
+    try:
+        own = opjournal.last_activity(ctx, now.account.account)
+    except OSError:
+        own = None
+    return own is None or now.index_mtime > own + OWN_WRITE_SLACK
 
 
 # --- plans --------------------------------------------------------------------------------

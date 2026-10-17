@@ -31,6 +31,7 @@ from .. import msstore, platform, safety
 from ..organizer.cache import cache_dir
 from ..organizer.locator import Location
 from ..organizer.model import (
+    LiveRef,
     LiveTarget,
     ModelError,
     is_op_id,
@@ -276,6 +277,26 @@ def read_ops(ctx: OpContext) -> dict[str, OpRecord]:
 def open_ops(ctx: OpContext) -> list[OpRecord]:
     """This machine's open ops (another machine's are its own to recover)."""
     return [r for r in read_ops(ctx).values() if r.open and r.machine == ctx.machine_id]
+
+
+def last_activity(ctx: OpContext, ref: LiveRef) -> float | None:
+    """When this machine's most recent op on ``ref`` last wrote a lifecycle event (epoch
+    seconds): the app's own last write to that account cannot be told from the game's or
+    a sync's without it. ``verify`` events are later looks, not writes."""
+    latest = None
+    for rec in read_ops(ctx).values():
+        if rec.machine != ctx.machine_id or not any(t.ref == ref for t in rec.targets):
+            continue
+        for e in rec.events:
+            if e["event"] == "verify":
+                continue
+            try:
+                at = datetime.strptime(e["utc"].rstrip("Z"), "%Y-%m-%dT%H:%M:%S.%f").replace(
+                    tzinfo=timezone.utc).timestamp()
+            except ValueError:
+                continue
+            latest = at if latest is None else max(latest, at)
+    return latest
 
 
 def busy_targets(ctx: OpContext) -> frozenset[LiveTarget]:

@@ -7,7 +7,6 @@ Reading only: nothing here writes, not even the scan cache.
 """
 from __future__ import annotations
 
-import dataclasses
 import hashlib
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -16,6 +15,7 @@ from pathlib import Path
 from .. import msstore, savedir
 from ..organizer.cache import FILENAME, ScanCache, cache_dir
 from ..organizer.model import LiveRef, LiveTarget, MemberObs, MetaSnap, PairKey
+from ..organizer.recorder import _renamed        # the scanner's lone-folder naming, once
 from ..organizer.scanner import ScanResult, scan
 from ..state import Source
 from .context import OpContext
@@ -149,14 +149,3 @@ def _cache(ctx: OpContext) -> ScanCache:
     vault_id = ctx.store.vault_id
     return ScanCache.load(cache_dir(ctx.store.vault_root, vault_id, ctx.host) / FILENAME,
                           vault_id, read_only=True)
-
-
-def _renamed(result: ScanResult, ref: LiveRef) -> ScanResult:
-    """``result`` with its one live folder named ``ref`` (the scanner names a lone folder
-    without an instance tag)."""
-    (old, folder), = result.live.items()
-    if old == ref:
-        return result
-    captures = tuple(dataclasses.replace(c, where=ref) for c in folder.captures)
-    return dataclasses.replace(result, live={ref: dataclasses.replace(folder, ref=ref,
-                                                                       captures=captures)})

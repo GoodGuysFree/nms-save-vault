@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import logging
 import os
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -49,6 +50,7 @@ from .execute import (
     validate,
 )
 from .errors import LiveOpError, SourceUnreadable, TargetError
+from .planner import game_warning
 from .model import OpOutcome, PairSource, RecoveryItem, TargetPlan
 from .pairmeta import PlannedMember, SourcePair
 from .slots import MemberNow, SlotNow, read_account
@@ -108,11 +110,13 @@ def pending_recovery(ctx: OpContext) -> list[RecoveryItem]:
     return items + _missing_vaults(ctx)
 
 
-def resolve_recovery(ctx: OpContext, op_id: str, choice: Choice) -> OpOutcome:
-    """Apply the owner's choice to one open op of this machine."""
+def resolve_recovery(ctx: OpContext, op_id: str, choice: Choice,
+                     confirmed: Iterable[str] = frozenset()) -> OpOutcome:
+    """Apply the owner's choice to one open op of this machine. When the game cannot be
+    checked, the owner confirms ``GAME_STATE_UNKNOWN`` first (as for a move)."""
     try:
         with opjournal.liveop_lock(ctx, timeout=LIVEOP_TIMEOUT):
-            return _resolve(ctx, op_id, choice)
+            return _resolve(ctx, op_id, choice, frozenset(confirmed))
     except LiveOpBusy:
         return refused(op_id, "BUSY", "Another operation is still running. Try again in a moment.")
 
@@ -132,13 +136,18 @@ def _pending(ctx: OpContext) -> list[RecoveryItem]:
             continue
         op = _open(ctx, rec)
         if rec.status == "validated" and not op.problem:
-            if game_free:
-                _finish_validated(ctx, op)
-                continue
+            # Only a slot that still holds exactly what was written is finished by itself;
+            # one that changed since (the game ran) is the owner's to decide.
+            if game_free and _is_post(op):
+                if _finish_validated(ctx, op).status == "done":
+                    continue
         elif rec.status == "writing" and op.state == "pre" and game_free:
-            _back(ctx, op, recovered=False)
-            append_quietly(ctx, rec.op_id, "abandoned", {"reason": "not_started"})
-            opjournal.remove_marker(ctx, rec.op_id)
+            if _back(ctx, op, recovered=False).status == "rolled_back":
+                append_quietly(ctx, rec.op_id, "abandoned", {"reason": "not_started"})
+                opjournal.remove_marker(ctx, rec.op_id)
+                continue
+            log.warning("op %s: the temporary files could not be removed", rec.op_id)
+            items.append(_item(rec, "failed", "back", ("back", "leave")))
             continue
         items.append(_classify(ctx, op, game_free))
     _drop_stale_markers(ctx)
@@ -149,6 +158,8 @@ def _classify(ctx: OpContext, op: _Open, game_free: bool) -> RecoveryItem:
     rec = op.record
     if rec.status == "failed":
         item = _item(rec, "failed", "back", ("back", "leave"))
+    elif op.state == "other":
+        item = _item(rec, "superseded", "leave", ("leave",))
     elif rec.status == "validated" or op.state == "post":
         item = _item(rec, "complete", "forward", ("forward",))
     elif op.state == "other":
@@ -164,12 +175,17 @@ def _classify(ctx: OpContext, op: _Open, game_free: bool) -> RecoveryItem:
     return item
 
 
-def _resolve(ctx: OpContext, op_id: str, choice: Choice) -> OpOutcome:
+def _resolve(ctx: OpContext, op_id: str, choice: Choice,
+             confirmed: frozenset[str] = frozenset()) -> OpOutcome:
     rec = opjournal.read_ops(ctx).get(op_id)
     if rec is None or not rec.open or rec.machine != ctx.machine_id:
         return refused(op_id, "NOT_OPEN", "That move is not waiting to be recovered here.")
-    if ctx.game_probe() is not False:
+    probe = ctx.game_probe()
+    if probe is True:
         return refused(op_id, "GAME_RUNNING", GAME_TEXT)
+    if probe is None and "GAME_STATE_UNKNOWN" not in confirmed:
+        w = game_warning(ctx)
+        return refused(op_id, "GAME_STATE_UNKNOWN", w.text if w else GAME_TEXT)
     op = _open(ctx, rec)
     if op.problem:
         return refused(op_id, "DAMAGED", f"The record of that move cannot be used: {op.problem}")
@@ -180,9 +196,15 @@ def _resolve(ctx: OpContext, op_id: str, choice: Choice) -> OpOutcome:
     if choice == "leave":
         return _leave(ctx, op)
     # A failed op's own write may have left a slot that is neither image (a corrupt file):
-    # retrying its rollback is what "failed" offers. Anything else is someone else's save.
-    if op.state == "other" and not (rec.status == "failed" and choice == "back"):
-        return refused(op_id, "SLOT_CHANGED", TEXTS["superseded"].format(labels=_labels(rec)))
+    # retrying its rollback is what "failed" offers, once what the slot holds now is kept in
+    # the vault. Anything else is someone else's save, and is never rolled back over.
+    if op.state == "other":
+        if not (rec.status == "failed" and choice == "back"):
+            return refused(op_id, "SLOT_CHANGED",
+                           TEXTS["superseded"].format(labels=_labels(rec)))
+        kept = _keep_current(ctx, op)
+        if kept is not None:
+            return kept
     if choice == "forward" and rec.status == "failed":
         return refused(op_id, "NOT_OFFERED", "That move can only be put back or left.")
     if choice == "forward":
@@ -220,10 +242,27 @@ def _forward(ctx: OpContext, op: _Open) -> OpOutcome:
     return _finish_validated(ctx, op)
 
 
+def _is_post(op: _Open) -> bool:
+    """Every file (Steam) or the index and the xgs copies (Xbox) of every target is the
+    recorded post-image."""
+    for wt in op.targets:
+        if wt.steam is not None:
+            if any(_sha_of(wt.folder / f.name) != f.sha256 for f in wt.steam.files):
+                return False
+        elif msstore.pair_index_state(wt.xbox) != "post" or                 set(msstore.pair_xgs_states(wt.xbox).values()) - {"post"}:
+            return False
+    return bool(op.targets)
+
+
 def _finish_validated(ctx: OpContext, op: _Open) -> OpOutcome:
     rec = op.record
-    for wt in op.targets:
-        finalize(wt)
+    try:
+        for wt in op.targets:
+            finalize(wt)
+    except Exception as exc:  # noqa: BLE001 - the op stays open; said so
+        log.warning("op %s: could not be finalized: %s", rec.op_id, exc)
+        return refused(rec.op_id, "FINALIZE_FAILED",
+                       f"The move is written, but cleaning up failed ({exc}).")
     first = rec.events[0]
     warnings = finish(ctx, rec.op_id, rec.kind, first.get("undo_of"), op.targets,
                          first.get("confirmed", ()), first.get("note", ""))
@@ -262,9 +301,9 @@ def _back(ctx: OpContext, op: _Open, *, recovered: bool) -> OpOutcome:
                      (), None, "n/a", None)
 
 
-def _leave(ctx: OpContext, op: _Open) -> OpOutcome:
-    """Keep the slots as they are now: what they hold is kept in the vault when it is not
-    there yet; the op ends (superseded). The save the op replaced is in the vault already."""
+def _keep_current(ctx: OpContext, op: _Open) -> OpOutcome | None:
+    """Put what the target slots hold now into the vault when it is not there yet. None when
+    kept; else the refusal (nothing was changed)."""
     rec = op.record
     for wt in op.targets:
         try:
@@ -275,8 +314,19 @@ def _leave(ctx: OpContext, op: _Open) -> OpOutcome:
                 ctx.locator.preserve(members, op_id=rec.op_id, reason="recovery")
         except Exception as exc:  # noqa: BLE001 - the op is left as it is, said so
             return refused(rec.op_id, "PRESERVE_FAILED",
-                               f"What {wt.rt.label} holds now could not be kept in the vault "
-                               f"({exc}). Nothing was changed.")
+                           f"What {wt.rt.label} holds now could not be kept in the vault "
+                           f"({exc}). Nothing was changed.")
+    return None
+
+
+def _leave(ctx: OpContext, op: _Open) -> OpOutcome:
+    """Keep the slots as they are now: what they hold is kept in the vault when it is not
+    there yet; the op ends (superseded). The save the op replaced is in the vault already."""
+    rec = op.record
+    kept = _keep_current(ctx, op)
+    if kept is not None:
+        return kept
+    for wt in op.targets:
         if wt.steam is not None:
             steamwrite.sweep(wt.folder, steamwrite.op_tag(rec.op_id))
     opjournal.append(ctx, rec.op_id, "abandoned", {"reason": "superseded"})

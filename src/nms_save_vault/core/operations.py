@@ -1740,6 +1740,14 @@ def _find_undo(vault: Vault, live_dir: Path, other_live_dirs: Iterable[Path]) ->
         sid = record.get("snapshot_id")
         if not sid:
             continue
+        if record.get("v") == 2 and _live_op_touches(record, live_dir):
+            if record.get("status") == "rolled_back":
+                continue                  # it put everything back: nothing changed here
+            raise OperationError(
+                f"The last change to this folder was a Move to live ('{record.get('op')}' at "
+                f"{record.get('ts')}). Use the organizer's Undo for this move; this undo "
+                "does not step past it to an older change." + note
+            )
         mine = _changed_folder(entries, record, live_dir, others)
         if mine and last_here is None:
             last_here = record
@@ -1873,6 +1881,13 @@ def _already_undone(records: list[dict]) -> tuple[set[str], set[int]]:
         if before.get("op") == "restore_full" and before.get("entry_id") == restored:
             part_of_undo.add(i - 1)
     return undone, part_of_undo
+
+
+def _live_op_touches(record: dict, live_dir: Path) -> bool:
+    """Whether a live-operation (v2) oplog line wrote into ``live_dir``: its targets name
+    the account folder."""
+    return any(isinstance(t, dict) and t.get("account_key") == live_dir.name
+               for t in record.get("targets") or ())
 
 
 def _changed_folder(

@@ -35,7 +35,7 @@ from .errors import ConfirmationRequired, LiveChanged, LiveOpError, SourceUnread
 from .faults import at
 from .model import OpOutcome, PlacePlan, Progress, ResolvedTarget, TargetPlan, UndoOffer, Warning
 from .planner import fingerprint, game_warning, recovery_pending, vault_problem, warning
-from .slots import SlotNow, read_account
+from .slots import AccountNow, SlotNow, read_account
 from .source import LoadedSource, load_source
 from .targets import resolve_account, resolve_target
 
@@ -111,13 +111,13 @@ def _run(ctx: OpContext, plan: PlacePlan, confirmed: frozenset[str],
                    [tp.source for tp in plan.targets]) != plan.fingerprint:
         return _stale(ctx, plan)
     accounts = {rt.target.ref for rt in rts}
-    if recovery_pending(ctx, accounts):
-        w = warning("RECOVERY_PENDING")
-        return refused(None, w.code, w.text)
+    blocked = recovery_pending(ctx, accounts)
+    if blocked is not None:
+        return refused(None, blocked.code, blocked.text)
     game = _game_problem(ctx, confirmed)
     if game is not None:
         return refused(None, game.code, game.text)
-    _observe(ctx, accounts, "scan", opjournal.busy_targets(ctx))
+    scanned = _observe(ctx, accounts, "scan", opjournal.busy_targets(ctx))
 
     op_id = new_op_id(ctx.clock)
     tag = steamwrite.op_tag(op_id)
@@ -133,12 +133,17 @@ def _run(ctx: OpContext, plan: PlacePlan, confirmed: frozenset[str],
         return refused(None, "BUSY", f"The vault is busy. Try again. ({exc})")
     at(ctx.faults, "after_preparing")
     try:
-        wts = _prepare(ctx, plan, rts, op_id, tag, progress)
+        wts = _prepare(ctx, plan, rts, op_id, tag, progress, scanned)
     except _Abandon as why:
         append_quietly(ctx, op_id, "abandoned", {"reason": why.reason})
         if why.reason == "stale":
             return _stale(ctx, plan, op_id)
         return refused(op_id, why.code, why.text or warning_text(why.code))
+    except Exception as exc:  # noqa: BLE001 - nothing live was written: never left 'preparing'
+        log.warning("op %s: could not be prepared: %s", op_id, exc)
+        append_quietly(ctx, op_id, "abandoned", {"reason": "prepare_failed"})
+        return refused(op_id, "PREPARE_FAILED",
+                       f"The move could not be prepared ({exc}). Nothing was changed.")
     try:
         opjournal.append(ctx, op_id, "writing", {"targets": [_writing(wt) for wt in wts]})
     except (OrganizerBusy, StoreReadOnly) as exc:
@@ -154,20 +159,26 @@ def _run(ctx: OpContext, plan: PlacePlan, confirmed: frozenset[str],
 
     progress(Progress("writing", 0, len(wts)))
     applied: list[OpTarget] = []
+    applying = False
     try:
         for i, wt in enumerate(wts, 1):
             applied.append(wt)
+            applying = True
             _apply(ctx, wt)
+            applying = False
             progress(Progress("writing", i, len(wts)))
         progress(Progress("verifying", 0, 1))
         for wt in wts:
             validate(wt, tag)
     except (LiveChanged, msstore.IndexChanged) as exc:
-        if len(applied) == 1:           # the first target changed: nothing was written at all
+        # The target that changed was refused before anything was written to it: the game
+        # wrote it, so it is not put back. Only the targets this op wrote are.
+        written = applied[:-1] if applying else applied
+        if not written:
             append_quietly(ctx, op_id, "abandoned", {"reason": "stale"})
             opjournal.remove_marker(ctx, op_id)
             return _stale(ctx, plan, op_id)
-        return rollback_and_report(ctx, op_id, plan, applied, exc, "apply", confirmed, note)
+        return rollback_and_report(ctx, op_id, plan, written, exc, "apply", confirmed, note)
     except Exception as exc:
         log.warning("op %s: the write or its check failed: %s", op_id, exc)
         return rollback_and_report(ctx, op_id, plan, applied, exc, "apply", confirmed, note)
@@ -179,8 +190,13 @@ def _run(ctx: OpContext, plan: PlacePlan, confirmed: frozenset[str],
         return OpOutcome(op_id, "done", outcome_text(plan, wts), (RECORDING_PENDING,),
                          undo_offer(plan, wts, op_id), "pending", None)
     at(ctx.faults, "after_validated")
-    for wt in wts:
-        finalize(wt)
+    try:
+        for wt in wts:
+            finalize(wt)
+    except Exception as exc:  # noqa: BLE001 - the write is verified; recovery finishes this
+        log.warning("op %s: written and checked, not yet finalized: %s", op_id, exc)
+        return OpOutcome(op_id, "done", outcome_text(plan, wts), (RECORDING_PENDING,),
+                         undo_offer(plan, wts, op_id), "pending", None)
     progress(Progress("recording", 0, 1))
     warnings = finish(ctx, op_id, plan.kind, plan.undo_of, wts, confirmed, note)
     return OpOutcome(op_id, "done", outcome_text(plan, wts), tuple(warnings),
@@ -256,16 +272,22 @@ def finish(ctx: OpContext, op_id: str, kind: str, undo_of: str | None, wts: list
     try:
         record_oplog(ctx, op_id, kind, undo_of, wts, "done", confirmed, note, None)
         at(ctx.faults, "after_oplog")
-        record_lineage(ctx, op_id, kind, undo_of, wts, "done", note)
+        after = {ref: read_account(ctx, resolve_account(ctx, ref))
+                 for ref in {wt.rt.target.ref for wt in wts}}
+        record_lineage(ctx, op_id, kind, undo_of, wts, "done", note, after)
         at(ctx.faults, "after_record")
     except Exception as exc:  # noqa: BLE001 - history only: the write is verified
         log.warning("op %s: the history was not recorded yet: %s", op_id, exc)
         return [RECORDING_PENDING]
     own = {wt.rt.target for wt in wts}
     _observe(ctx, {wt.rt.target.ref for wt in wts}, "verify",
-             opjournal.busy_targets(ctx) - own)
-    opjournal.append(ctx, op_id, "done", {"oplog": True, "lineage": True})
-    opjournal.remove_marker(ctx, op_id)
+             opjournal.busy_targets(ctx) - own, after)
+    try:
+        opjournal.append(ctx, op_id, "done", {"oplog": True, "lineage": True})
+        opjournal.remove_marker(ctx, op_id)
+    except (OSError, OrganizerBusy, StoreReadOnly) as exc:
+        log.warning("op %s: recorded, not yet closed: %s", op_id, exc)
+        return [RECORDING_PENDING]
     return []
 
 
@@ -273,14 +295,16 @@ def finish(ctx: OpContext, op_id: str, kind: str, undo_of: str | None, wts: list
 
 
 def _prepare(ctx: OpContext, plan: PlacePlan, rts: list[ResolvedTarget], op_id: str, tag: str,
-             progress: Callable[[Progress], None]) -> list[OpTarget]:
+             progress: Callable[[Progress], None],
+             scanned: Mapping[LiveRef, AccountNow] | None = None) -> list[OpTarget]:
     wts = []
     for tp, rt in zip(plan.targets, rts):
         try:
             src = load_source(ctx, tp.source)
         except SourceUnreadable as exc:
             raise _Abandon("not_started", "SOURCE_UNREADABLE", str(exc)) from exc
-        before = read_account(ctx, resolve_account(ctx, rt.target.ref)).slots[rt.target.slot]
+        now = (scanned or {}).get(rt.target.ref) or             read_account(ctx, resolve_account(ctx, rt.target.ref))
+        before = now.slots[rt.target.slot]       # a change since is caught by the pre-image checks
         wts.append(OpTarget(tp, rt, src, before))
     progress(Progress("preserving", 0, len(wts)))
     for wt in wts:
@@ -295,7 +319,7 @@ def _prepare(ctx: OpContext, plan: PlacePlan, rts: list[ResolvedTarget], op_id: 
     at(ctx.faults, "after_snapshot")
     now = int(ctx.clock())
     for wt in wts:
-        _prepare_writer(wt, now, tag)
+        _prepare_writer(ctx, wt, now, tag)
     set_containment(wts)
     return wts
 
@@ -338,7 +362,7 @@ def _snapshot(ctx: OpContext, wt: OpTarget, op_id: str, kind: str) -> str:
     return entry.id
 
 
-def _prepare_writer(wt: OpTarget, now: int, tag: str) -> None:
+def _prepare_writer(ctx: OpContext, wt: OpTarget, now: int, tag: str) -> None:
     """The writes stamped now (F5b), the writer's plan, its payload; the slot as the writer
     sees it must still be what was preserved."""
     wt.writes = pairmeta.compute(wt.src.pair, wt.rt, now)
@@ -353,6 +377,7 @@ def _prepare_writer(wt: OpTarget, now: int, tag: str) -> None:
             pre = wt.steam.pre.get(name)
             if pre is None or pre.sha256 != m.vid:
                 raise _Abandon("stale", "STALE")
+        _check_against_snapshot(ctx, wt)
     else:
         records = [msstore.XboxRecordWrite(identifier(slot, pm.write.position),
                                            data[pm.write.vid], pm.meta_disk, pm.write.disk_time)
@@ -365,6 +390,18 @@ def _prepare_writer(wt: OpTarget, now: int, tag: str) -> None:
                            "Start and quit the game once, then try again.") from exc
         wt.payload = {r.identifier: (r.data, r.meta) for r in records}
         if _xbox_vids(wt.folder, slot) != {m.position: m.vid for m in wt.before.present}:
+            raise _Abandon("stale", "STALE")
+
+
+def _check_against_snapshot(ctx: OpContext, wt: OpTarget) -> None:
+    """Every file the op touches is, right now, exactly what the safety snapshot holds (a
+    member that appeared after the snapshot would be lost by a rollback): else abandon."""
+    snap = ctx.versions.entry(wt.snapshot_id)
+    for name, pre in wt.steam.pre.items():
+        if pre is None:
+            if snap.has_file(name):
+                raise _Abandon("stale", "STALE")
+        elif not snap.has_file(name) or snap.file(name).sha256 != pre.sha256:
             raise _Abandon("stale", "STALE")
 
 
@@ -550,8 +587,13 @@ def rollback_and_report(ctx: OpContext, op_id: str, plan: PlacePlan, applied: li
 
 def rollback_target(ctx: OpContext, wt: OpTarget) -> None:
     if wt.steam is not None:
-        pre = {name: ctx.versions.read_file(wt.snapshot_id, name)
-               for name, state in wt.steam.pre.items() if state is not None}
+        pre = {}
+        for name, state in wt.steam.pre.items():       # only what was actually changed
+            if state is None:
+                continue
+            now = steamwrite.file_state(wt.folder / name)
+            if now is None or (now.sha256, now.size) != (state.sha256, state.size):
+                pre[name] = ctx.versions.read_file(wt.snapshot_id, name)
         steamwrite.rollback(wt.steam, pre)
     else:
         msstore.rollback_pair(wt.xbox)
@@ -605,12 +647,15 @@ def _oplog_target(wt: OpTarget) -> dict:
 
 
 def record_lineage(ctx: OpContext, op_id: str, kind: str, undo_of: str | None,
-                   wts: list[OpTarget], status: str, note: str) -> None:
-    """D1's op record per target (idempotent on op id and target)."""
+                   wts: list[OpTarget], status: str, note: str,
+                   nows: Mapping[LiveRef, AccountNow] | None = None) -> None:
+    """D1's op record per target (idempotent on op id and target). ``nows``: the accounts
+    as they are, when the caller has just read them."""
     recs = []
     for wt in wts:
         placed = {pm.write.position: pm.write.vid for pm in wt.writes}
-        after = read_account(ctx, resolve_account(ctx, wt.rt.target.ref)).slots[wt.rt.target.slot]
+        now = (nows or {}).get(wt.rt.target.ref) or             read_account(ctx, resolve_account(ctx, wt.rt.target.ref))
+        after = now.slots[wt.rt.target.slot]
         members = {m.vid: m for m in after.members_obs if m.vid in placed.values()}
         evicted = wt.before.pair if wt.before.present else None
         loading = wt.writes[0].write
@@ -624,15 +669,20 @@ def record_lineage(ctx: OpContext, op_id: str, kind: str, undo_of: str | None,
 
 
 def _observe(ctx: OpContext, accounts: Iterable[LiveRef], src: str,
-             skip: frozenset[LiveTarget]) -> None:
+             skip: frozenset[LiveTarget],
+             nows: Mapping[LiveRef, AccountNow] | None = None) -> dict[LiveRef, AccountNow]:
     """D1's journal looks at the accounts (before the op: what it is about to replace;
-    after it: what it wrote). Recording is a by-product: a failure is logged only."""
+    after it: what it wrote). Recording is a by-product: a failure is logged only. Returns
+    the accounts as read, for the caller to reuse."""
+    out: dict[LiveRef, AccountNow] = {}
     for ref in accounts:
         try:
-            now = read_account(ctx, resolve_account(ctx, ref))
+            now = (nows or {}).get(ref) or read_account(ctx, resolve_account(ctx, ref))
+            out[ref] = now
             Journal(ctx.store, now.scan.versions).observe(now.scan, src=src, skip=skip)
         except Exception as exc:  # noqa: BLE001
             log.warning("the live slots were not journaled (%s): %s", src, exc)
+    return out
 
 
 def _oplog_quietly(ctx, op_id, plan, wts, status, confirmed, note, error) -> None:
