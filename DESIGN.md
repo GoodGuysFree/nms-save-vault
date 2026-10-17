@@ -124,7 +124,9 @@ Implemented in `core/msstore.py`, exposed via `savedir.scan_any()`.
 * Save identifiers map onto the shared model: `Slot{N}Auto`→ member A, `Slot{N}Manual`→
   member B; `AccountData`/`Settings` are not slots.
 * **Data blob**: current saves (Worlds 5.0+) use the *same* `0xFEEDA1E5` stream as Steam
-  (handled by `lz4_block`); older ones use a single LZ4 block or an `HGSAVEV2` chunk format.
+  (handled by `lz4_block`); the oldest are one bare LZ4 block (also decoded). Game versions
+  4.52-4.99 use an `HGSAVEV2` container, which is recognised but **not** decoded: the
+  decoder refuses it as unsupported rather than misread it.
 * **Meta blob**: plaintext (NOT XXTEA), 280 B (Waypoint), 296 B (Worlds I) or 360 B
   (Worlds II) — not the Steam lengths. MS-specific leading fields, then SaveName/Summary as
   **UTF-8** (offsets 0x14 / 0x94) and the difficulty at 0x114 (one byte at 280 B, u32 from

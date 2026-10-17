@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 
 from nms_save_vault.core import operations as ops
-from nms_save_vault.core import formats, savedir, slotmap
+from nms_save_vault.core import formats, lz4_block, savedir, slotmap
 from nms_save_vault.core.catalog import Vault
 
 from .conftest import steam_save
@@ -280,6 +280,28 @@ def test_xbox_plan_carries_no_steam_cloud_warning(make_wgs_account, tmp_path):
 
 
 # --- review: no fallback matching, unreadable vault files, the member the game loads ----------
+
+
+def test_a_live_save_in_an_unreadable_container_is_noted_and_unverifiable(make_wgs_account, tmp_path):
+    live = make_wgs_account(tmp_path / "live", [("Slot1Auto", '{"a":1}', "Voyagers", "", 3000, 2000, 0)])
+    savedir.scan_any(live).slots[1].members[0].data_path.write_bytes(lz4_block.HGSAVEV2_HEADER + b"\x00" * 64)
+
+    plan = ops.plan_clear_slot(_vault(tmp_path), live, 1)
+
+    assert plan.unverifiable and not plan.backed_up
+    assert any("HGSAVEV2" in n for n in plan.notes)
+
+
+def test_a_live_save_whose_id_cannot_be_read_is_noted_like_a_vault_copy(make_wgs_account, tmp_path, monkeypatch):
+    live = make_wgs_account(tmp_path / "live", [("Slot1Auto", '{"a":1}', "Voyagers", "", 3000, 2000, 0)])
+
+    def unreadable(*_a, **_k):
+        raise OSError("drive unplugged")
+
+    monkeypatch.setattr(ops.playtime, "identity", unreadable)
+    plan = ops.plan_clear_slot(_vault(tmp_path), live, 1)
+
+    assert plan.unverifiable and any("drive unplugged" in n for n in plan.notes)
 
 
 def test_a_save_without_an_id_needs_an_identical_copy(make_wgs_account, tmp_path):

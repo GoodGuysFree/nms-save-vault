@@ -19,9 +19,9 @@ Since 2026 the game also keeps a plain mirror beside wgs, with the same blob byt
 Every wgs write here is mirrored into it (when the game has created it), so the two never
 disagree about a save the vault changed. An account with xgs but no wgs is read-only.
 
-Current Xbox data blobs decompress with the shared
-``lz4_block`` code; older variants (single LZ4 block, or the "HGSAVEV2" chunk format) are
-also handled.
+Current Xbox data blobs decompress with the shared ``lz4_block`` code, and so do the
+oldest (one bare LZ4 block). The ``HGSAVEV2`` container of game versions 4.52-4.99 is
+recognised but not decoded: ``lz4_block`` refuses it as unsupported.
 
 Attribution: the wgs/containers.index format and offsets were learned from libNOM.io's
 ``PlatformMicrosoft`` by Christian Engelhardt (zencq),
@@ -59,7 +59,6 @@ SYNC_STATE_DELETED = 3          # == MicrosoftBlobSyncStateEnum.Deleted
 BLOB_SYNC_CREATED = 5
 INDEX_SYNC_MODIFIED = 2
 
-HGSAVEV2_HEADER = b"HGSAVEV2\x00"
 
 # MS meta field offsets (plaintext; differ from Steam)
 MS_OFF_BASE_VERSION = 0x00   # u32

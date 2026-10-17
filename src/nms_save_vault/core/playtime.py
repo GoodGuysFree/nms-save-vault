@@ -33,6 +33,10 @@ from .catalog import Vault
 ID_IN_DATA = re.compile(rb'"(?:WmU|ActiveSaveSlotId)"\s*:\s*"(0[xX][0-9A-Fa-f]{1,16})"')
 
 CACHE_NAME = "playthrough-ids.json"
+# Version 1 was a bare {key: id} mapping, written by a decoder that took an HGSAVEV2 blob
+# for "no id" (0): its entries are dropped rather than trusted.
+CACHE_VERSION = 2
+UNSUPPORTED = -1      # cached for a blob in a container this version cannot read
 
 
 @dataclass
@@ -73,6 +77,9 @@ class PlaytimeReport:
     playthroughs: list[Playthrough]
     folders: int = 0
     saves: int = 0
+    # Saves whose data container this version cannot read (Xbox HGSAVEV2): their id could
+    # not be looked for, so they were counted by name.
+    unsupported: int = 0
 
     @property
     def total_play_time(self) -> int:
@@ -103,10 +110,11 @@ def _id_from_bytes(raw: bytes, expected_size: int) -> int | None:
     try:
         chunks, _consumed = lz4_block.walk_chunks(raw)
         if chunks:
-            c = chunks[0]
-            head = lz4_block.decompress_block(raw[c.payload_offset : c.payload_offset + c.compressed_size], c.decompressed_size)
+            head = lz4_block.decode_chunk(raw, chunks[0])
         else:
             head = lz4_block.decompress(raw, expected_size)
+    except lz4_block.UnsupportedContainer:
+        raise                     # not "no id": the caller must say it could not look
     except (ValueError, IndexError):
         return None
     m = ID_IN_DATA.search(head)
@@ -125,7 +133,9 @@ class IdCache:
 
     Decoding a blob is the only expensive part of the whole report, and a save file that
     has not changed cannot have changed its id, so path+size+mtime is a sound key. A
-    missing or unreadable cache is not an error -- it just costs a decode.
+    missing, unreadable or older-format cache is not an error -- it just costs a decode. A
+    blob in a container this version cannot read is remembered as such, and raises
+    :class:`lz4_block.UnsupportedContainer` from the cache as it did when decoded.
     """
 
     def __init__(self, path: Path):
@@ -134,8 +144,10 @@ class IdCache:
         self._dirty = False
         try:
             if path.is_file():
-                self._map = {k: int(v) for k, v in json.loads(path.read_text("utf-8")).items()}
-        except (OSError, ValueError):
+                doc = json.loads(path.read_text("utf-8"))
+                if doc.get("version") == CACHE_VERSION:
+                    self._map = {k: int(v) for k, v in doc["ids"].items()}
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
             self._map = {}
 
     @staticmethod
@@ -146,8 +158,15 @@ class IdCache:
         k = self._key(data_path, size, mtime)
         if k in self._map:
             v = self._map[k]
+            if v == UNSUPPORTED:
+                raise lz4_block.UnsupportedContainer(lz4_block.HGSAVEV2_UNSUPPORTED)
             return v or None
-        found = _id_from_data(data_path, expected_size)
+        try:
+            found = _id_from_data(data_path, expected_size)
+        except lz4_block.UnsupportedContainer:
+            self._map[k] = UNSUPPORTED
+            self._dirty = True
+            raise
         self._map[k] = found or 0
         self._dirty = True
         return found
@@ -158,10 +177,16 @@ class IdCache:
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             tmp = self.path.with_name(self.path.name + ".tmp")
-            tmp.write_text(json.dumps(self._map), "utf-8")
+            tmp.write_text(json.dumps({"version": CACHE_VERSION, "ids": self._map}), "utf-8")
             os.replace(tmp, self.path)
         except OSError:
             pass  # a cache that cannot be written only costs time next run
+
+
+def name_key(member, platform: str) -> str:
+    """The fallback key of a save without a playthrough id: platform, slot and name."""
+    name = (member.info.save_name if member.info else "") or "<unnamed>"
+    return f"{platform}:{member.slot}:{name}"
 
 
 def identity(member, platform: str, cache: IdCache | None = None) -> tuple[str, bool]:
@@ -169,7 +194,8 @@ def identity(member, platform: str, cache: IdCache | None = None) -> tuple[str, 
 
     The meta hands the id over for free. A meta without one (0) falls back to decoding the
     blob -- through the cache when there is one, directly when the caller turned caching
-    off. Disabling the cache must cost time, not identity.
+    off. Disabling the cache must cost time, not identity. A blob in a container this
+    version cannot read raises :class:`lz4_block.UnsupportedContainer`.
     """
     info = member.info
     ident = getattr(info, "slot_identifier", 0) or 0
@@ -182,8 +208,7 @@ def identity(member, platform: str, cache: IdCache | None = None) -> tuple[str, 
             ident = _id_from_data(data_path, expected) or 0
     if ident:
         return f"{ident:016X}", True
-    name = (info.save_name if info else "") or "<unnamed>"
-    return f"{platform}:{member.slot}:{name}", False
+    return name_key(member, platform), False
 
 
 def collect(vault: Vault, live_dirs, use_cache: bool = True) -> PlaytimeReport:
@@ -193,7 +218,7 @@ def collect(vault: Vault, live_dirs, use_cache: bool = True) -> PlaytimeReport:
     folders += [(e.id, Path(e.path)) for e in vault.entries]
 
     found: dict[str, Playthrough] = {}
-    scanned = saves = 0
+    scanned = saves = unsupported = 0
     for source, folder in folders:
         if not folder.is_dir():
             continue
@@ -208,7 +233,11 @@ def collect(vault: Vault, live_dirs, use_cache: bool = True) -> PlaytimeReport:
                 if m.info is None:
                     continue
                 saves += 1
-                key, identified = identity(m, platform, cache)
+                try:
+                    key, identified = identity(m, platform, cache)
+                except lz4_block.UnsupportedContainer:
+                    unsupported += 1
+                    key, identified = name_key(m, platform), False
                 p = found.get(key)
                 if p is None:
                     p = found[key] = Playthrough(
@@ -236,4 +265,4 @@ def collect(vault: Vault, live_dirs, use_cache: bool = True) -> PlaytimeReport:
     if cache is not None:
         cache.flush()
     ordered = sorted(found.values(), key=lambda p: (-p.play_time, p.name.lower()))
-    return PlaytimeReport(playthroughs=ordered, folders=scanned, saves=saves)
+    return PlaytimeReport(playthroughs=ordered, folders=scanned, saves=saves, unsupported=unsupported)

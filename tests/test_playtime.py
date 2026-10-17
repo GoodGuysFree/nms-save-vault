@@ -7,11 +7,12 @@ play time seen.
 """
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
 
-from nms_save_vault.core import playtime, savedir, slotmap
+from nms_save_vault.core import lz4_block, playtime, savedir, slotmap
 from nms_save_vault.core.catalog import Vault
 
 from .conftest import chunked, lz4_literals, steam_save, xbox_meta
@@ -199,6 +200,63 @@ def test_saves_without_an_id_fall_back_to_name_and_are_flagged(tmp_path, make_wg
     assert len(report.playthroughs) == 2
     assert report.unidentified == 2
     assert report.total_play_time == 30865 + 21623
+
+
+def _with_hgsavev2_in_slot_1(xbox: Path) -> savedir.MemberView:
+    """Turn slot 1's data blob into an HGSAVEV2 container (Xbox, game 4.52-4.99)."""
+    Path(savedir.scan_any(xbox).slots[1].members[0].data_path).write_bytes(
+        lz4_block.HGSAVEV2_HEADER + b"\x00" * 64
+    )
+    return savedir.scan_any(xbox).slots[1].members[0]
+
+
+def test_a_save_in_a_container_this_version_cannot_read_is_counted_as_such(tmp_path, make_wgs_account):
+    """An HGSAVEV2 blob is not "a save without an id": the report says how many saves it
+    could not look into, and still counts them, by name."""
+    xbox = make_wgs_account(tmp_path / "xb", [
+        ("Slot1Auto", '{"a":1}', "Voyagers", "", 30865, 1000, 0),
+        ("Slot2Auto", '{"b":2}', "Singularity", "", 21623, 1000, 0),
+    ])
+    _with_hgsavev2_in_slot_1(xbox)
+
+    for use_cache in (False, True):
+        report = playtime.collect(_vault(tmp_path), [xbox], use_cache=use_cache)
+        assert report.unsupported == 1
+        assert len(report.playthroughs) == 2 and report.unidentified == 2
+
+
+def test_an_unreadable_container_is_cached_as_such_and_not_decoded_again(tmp_path, make_wgs_account, monkeypatch):
+    xbox = make_wgs_account(tmp_path / "xb", [("Slot1Auto", '{"a":1}', "Voyagers", "", 30865, 1000, 0)])
+    _with_hgsavev2_in_slot_1(xbox)
+    vault = _vault(tmp_path)
+    assert playtime.collect(vault, [xbox]).unsupported == 1
+
+    monkeypatch.setattr(playtime, "_id_from_data", lambda *a: pytest.fail("decoded again"))
+    assert playtime.collect(vault, [xbox]).unsupported == 1
+
+
+def test_a_cache_from_before_the_unsupported_marker_is_not_trusted(tmp_path, make_wgs_account):
+    """The old decoder took an HGSAVEV2 blob for "no id" and cached 0 for it."""
+    xbox = make_wgs_account(tmp_path / "xb", [("Slot1Auto", '{"a":1}', "Voyagers", "", 30865, 1000, 0)])
+    m = _with_hgsavev2_in_slot_1(xbox)
+    vault = _vault(tmp_path)
+    old_key = playtime.IdCache._key(Path(m.data_path), m.data_size, m.data_mtime)
+    (vault.root / playtime.CACHE_NAME).write_text(json.dumps({old_key: 0}), encoding="utf-8")
+
+    assert playtime.collect(vault, [xbox]).unsupported == 1
+
+
+def test_the_cli_gives_one_reason_for_saves_counted_by_name(tmp_path, make_wgs_account, monkeypatch, capsys):
+    from nms_save_vault import cli
+
+    xbox = make_wgs_account(tmp_path / "xb", [("Slot1Auto", '{"a":1}', "Voyagers", "", 30865, 1000, 0)])
+    _with_hgsavev2_in_slot_1(xbox)
+    monkeypatch.setattr(cli.appstate, "load", lambda *a, **k: None)
+
+    assert cli.main(["--live", str(xbox), "--vault", str(_vault(tmp_path).root), "playtime"]) == 0
+    lines = [ln for ln in capsys.readouterr().out.splitlines() if "counted by name" in ln]
+    assert len(lines) == 1
+    assert "HGSAVEV2" in lines[0] and "(1 save file)" in lines[0] and "it predates" not in lines[0]
 
 
 def test_an_unreadable_folder_does_not_sink_the_report(tmp_path):

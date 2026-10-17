@@ -1196,7 +1196,11 @@ def _best_vault_copy(
     target = sv.newest
     platform = savedir.platform_of(live_dir)
     cache = playtime.IdCache(vault.root / playtime.CACHE_NAME)
-    key, identified = playtime.identity(target, platform, cache)
+    try:
+        key, identified = playtime.identity(target, platform, cache)
+    except _READ_ERRORS as exc:
+        _note(notes, f"the live file {Path(target.data_path).name}", exc)
+        key, identified = "", False
     live_play = target.info.total_play_time if target.info else 0
     try:
         target_hash = safety.sha256_file(target.data_path)

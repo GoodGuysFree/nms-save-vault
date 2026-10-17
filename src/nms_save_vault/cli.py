@@ -256,11 +256,19 @@ def cmd_playtime(args) -> int:
         f"{ops.format_duration(report.total_play_time)} of play time."
     )
     if report.unidentified:
-        n = report.unidentified
-        print(
-            f"{n} of them {'is' if n == 1 else 'are'} counted by name: {'it predates' if n == 1 else 'they predate'} "
-            "the save id the game now writes, so two runs with the same name would merge."
-        )
+        n, u = report.unidentified, report.unsupported
+        if u:
+            print(
+                f"{n} of them {'is' if n == 1 else 'are'} counted by name, so two runs with the same "
+                "name would merge: no save id could be read, as a save predates the id the game now "
+                "writes or is in the Xbox HGSAVEV2 container this version cannot read "
+                f"({u} save file{'' if u == 1 else 's'})."
+            )
+        else:
+            print(
+                f"{n} of them {'is' if n == 1 else 'are'} counted by name: {'it predates' if n == 1 else 'they predate'} "
+                "the save id the game now writes, so two runs with the same name would merge."
+            )
     return 0
 
 
