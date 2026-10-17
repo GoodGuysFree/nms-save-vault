@@ -29,6 +29,7 @@ from .catalog import (
     KIND_IMPORTED,
     KIND_INPLACE,
     KIND_SNAPSHOT,
+    PRE_UPGRADE_COPY,
     CatalogEntry,
     OplogRead,
     Vault,
@@ -1549,6 +1550,8 @@ def preview_vault_import(vault: Vault, source_dir: Path) -> dict:
         raise OperationError(f"not an NMS Save Vault folder (no catalog.json): {source_dir}")
     if source_dir.resolve() == vault.root.resolve():
         raise OperationError("that is the current vault; nothing to import")
+    if (source_dir / PRE_UPGRADE_COPY).is_file():
+        raise OperationError("This is the pre-upgrade copy of a vault; use Undo the vault upgrade.")
     if _store().is_store_vault(source_dir):
         # Its entries live in a version store, not in folders: merging two stores is phase 5.
         raise OperationError("Importing an upgraded vault comes with a later version.")

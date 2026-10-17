@@ -59,6 +59,25 @@ class ObjectCorrupt(StoreError, VersionUnavailable):
         self.detail = detail
 
 
+class UpgradeError(StoreError):
+    """The vault upgrade did not run or stopped (D3 4.1); ``code`` says why: space,
+    path-too-long, bad-destination, in-progress, already-upgraded, vault-changing,
+    copy-failed, copy-mismatch, cancelled."""
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+class RollbackError(StoreError):
+    """Undoing the vault upgrade did not run or stopped (D3 4.4); ``code`` says why:
+    copy-missing, copy-mismatch, space, in-progress, not-upgraded, export-failed, cancelled."""
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
 class PreserveMismatch(StoreError, PreserveFailed):
     """A live slot no longer holds the version the caller planned to keep: re-plan."""
 

@@ -152,6 +152,8 @@ def _resolve_vault(args) -> Vault:
     else:
         st = appstate.load()
         root = Path(st.vault) if (st and st.vault) else locations.default_vault_dir()
+    if (root / catalog.PRE_UPGRADE_COPY).is_file():
+        _die("error: this is the pre-upgrade copy of a vault; use Undo the vault upgrade")
     return Vault(root).load()
 
 

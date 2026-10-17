@@ -7,12 +7,14 @@ from .errors import (
     ObjectCorrupt,
     ObjectMissing,
     PreserveMismatch,
+    RollbackError,
     SourceChanged,
     StoreBusy,
     StoreError,
     StoreNotUpgraded,
     StoreTooNew,
     StoreUnavailable,
+    UpgradeError,
 )
 from .damage import DamageRecord
 from .fsck import FsckProblem, FsckReport
@@ -26,6 +28,15 @@ from .listing import (
     store_status,
 )
 from .locator import StoreLocator
+from .upgrade import (
+    UpgradePlan,
+    UpgradeProgress,
+    UpgradeResult,
+    cleanup_interrupted_upgrade,
+    plan_upgrade,
+    run_upgrade,
+    upgrade_needed,
+)
 from .manifest import EntryKind, FileEntry, MemberRecord, StoreEntry
 from .materialize import MaterializeResult
 from .objects import ObjectStore, PutResult
