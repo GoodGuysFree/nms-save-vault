@@ -144,7 +144,7 @@ def test_a_rerequest_moves_up_and_nothing_is_queued_twice():
     r = Rig()
     assert r.d.submit(["a", "b"], Priority.BACKFILL) == 2
     assert r.d.submit(["a", "b"], Priority.BACKFILL) == 0
-    assert r.d.submit(["b"], Priority.LIVE) == 0                  # moved, not added
+    assert r.d.submit(["b"], Priority.LIVE) == 1                  # moved up a tier: counted
     assert r.d.queued() == [("b", Priority.LIVE), ("a", Priority.BACKFILL)]
     r.settle()
     assert r.d.submit(["b"], Priority.INTERACTIVE) == 0           # already running

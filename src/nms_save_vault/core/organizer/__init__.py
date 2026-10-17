@@ -150,7 +150,8 @@ class Organizer:
         else:
             queued += facts.request(sorted(rest - self._facts_seen), tier.NEW)
         self._facts_seen = (self._facts_seen or set()) | known
-        self.seen_marker.save(known)
+        if getattr(facts, "active", True):          # an index that is off keeps nothing: do not mark
+            self.seen_marker.save(known)
         return queued
 
     def bootstrap(self, *, dry_run: bool = False,

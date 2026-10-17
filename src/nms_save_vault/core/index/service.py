@@ -56,7 +56,7 @@ class IndexProgress:
 @dataclass(frozen=True)
 class IndexEvent:
     seq: int
-    kind: Literal["indexed", "failed", "stale", "cleared", "deep-ready", "finished", "milestone", "warmed"]
+    kind: Literal["indexed", "failed", "stale", "cleared", "deep-ready", "finished", "milestone", "changes", "warmed"]
     vid: str | None
     status: str | None
 
@@ -72,6 +72,7 @@ class IndexService:
     Priority = Priority
 
     def __init__(self, *, cache_path: Path | None, vault_id: str, locator, policy: ExecutionPolicy,
+                 defer_refresh: bool = False,
                  size_hint: Callable[[str], int | None] | None = None,
                  when: Callable[[str], float | None] | None = None,
                  game_running: Callable[[], bool | None] = _default_game_running,
@@ -99,6 +100,8 @@ class IndexService:
         self._views: dict[str, derive.FactsView] = {}
         self._milestones: dict[tuple[str, str], bool] = {}
         self._milestone_asked: set[tuple[str, str]] = set()
+        self._changes: dict[tuple, changes_mod.ChangeSet | None] = {}
+        self._changes_asked: set[tuple] = set()
         if policy.mode == "off":
             return
         self.cache = IndexCache(cache_path, vault_id=vault_id, app_version=app_version, forbidden=forbidden,
@@ -114,11 +117,24 @@ class IndexService:
         self._writes.put(("gc",))
         self._writes.put(("warm",))
         self.dispatcher.start()
+        if not defer_refresh:
+            self.queue_refresh()
+
+    def queue_refresh(self) -> int:
+        """Queue the stale and retryable versions at REFRESH. A service whose locator cannot
+        open anything yet (the organizer has not scanned) is built with ``defer_refresh`` and
+        refreshed after the scan, so a "not scanned yet" job never becomes a failed attempt."""
+        if self.dispatcher is None:
+            return 0
         refresh = self.cache.stale_vids() + self.cache.retry_vids()
-        if refresh:
-            self.dispatcher.submit(refresh, Priority.REFRESH)
+        return self.dispatcher.submit(refresh, Priority.REFRESH) if refresh else 0
 
     # --- D1's FactsProvider ----------------------------------------------------------------
+
+    @property
+    def active(self) -> bool:
+        """False when the index is off: requests are dropped, so nothing should be marked as asked."""
+        return self.dispatcher is not None
 
     def view(self, vid: str) -> derive.FactsView | None:
         """The version's facts view from memory: never a database read, never a wait. None
@@ -127,11 +143,24 @@ class IndexService:
             return self._views.get(vid)
 
     def changes(self, child: str, parent: str, *, edge_kind: str | None = None) -> changes_mod.ChangeSet | None:
-        c, p = self.facts(child), self.facts(parent)
-        if c is None or p is None:
-            self.request([v for v, f in ((child, c), (parent, p)) if f is None], Priority.NEW)
-            return None
-        return changes_mod.changes(c, p, edge_kind=edge_kind, child_vid=child, parent_vid=parent)
+        """The change set from what is computed so far: a memory read or a queue operation,
+        never a database read. None means "not ready": the missing versions are queued at
+        NEW, or the comparison is worked out on the writer thread (a ``changes`` event says
+        when it is ready)."""
+        key = (child, parent, edge_kind)
+        with self._lock:
+            if key in self._changes:
+                return self._changes[key]
+            missing = [v for v in (child, parent) if v not in self._views]
+            if not missing:
+                if key in self._changes_asked:
+                    return None
+                self._changes_asked.add(key)
+        if missing:
+            self.request(missing, Priority.NEW)
+        else:
+            self._writes.put(("changes", child, parent, edge_kind))
+        return None
 
     def is_milestone(self, child: str, parent: str) -> bool | None:
         """Whether the step from ``parent`` reached a milestone, from what is computed so
@@ -427,6 +456,17 @@ class IndexService:
             with self._lock:
                 self._milestones[(child, parent)] = found
             self._event("milestone", child, "yes" if found else "no")
+        elif kind == "changes":
+            _, child, parent, edge_kind = op
+            c, p = self.cache.facts(child), self.cache.facts(parent)
+            with self._lock:
+                self._changes_asked.discard((child, parent, edge_kind))
+            if c is None or p is None:
+                return
+            found = changes_mod.changes(c, p, edge_kind=edge_kind, child_vid=child, parent_vid=parent)
+            with self._lock:
+                self._changes[(child, parent, edge_kind)] = found
+            self._event("changes", child, "ready")
         elif kind == "clear":
             self.cache.clear()
             self._known.clear()
@@ -434,6 +474,8 @@ class IndexService:
                 self._views.clear()
                 self._milestones.clear()
                 self._milestone_asked.clear()
+                self._changes.clear()
+                self._changes_asked.clear()
             self._strikes.clear()
             self._event("cleared")
             op[1].set()
@@ -452,6 +494,8 @@ class IndexService:
             if forget_milestones:
                 for key in [k for k in self._milestones if vid in k]:
                     del self._milestones[key]
+                for key in [k for k in self._changes if vid in k[:2]]:
+                    del self._changes[key]
 
     def _deep_ready(self, result: IndexResult) -> None:
         if result.status != "ok" or result.deep is None:

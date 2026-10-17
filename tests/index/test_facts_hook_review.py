@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import dataclasses
 import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -132,7 +133,19 @@ def test_request_facts_returns_the_newly_queued_count(world, capsys):  # noqa: F
     assert "Indexing 2 of 2 versions" in capsys.readouterr().out
     assert run(world, "build", "--workers", "1") == 0
     out = capsys.readouterr().out
-    assert "Indexing 0 of 2 versions" in out and "2 already indexed" in out
+    assert "Indexing 0 of 2 versions" in out and "2 already indexed or queued" in out
+
+
+def test_the_cli_counts_stale_versions_moved_up_from_refresh(world, capsys, monkeypatch):  # noqa: F811
+    assert run(world, "build", "--workers", "1") == 0
+    capsys.readouterr()
+    from nms_save_vault.core.index import cache as cache_mod
+    monkeypatch.setattr(cache_mod, "EXTRACTOR_VERSION", cache_mod.EXTRACTOR_VERSION + 1)
+    monkeypatch.setattr(service_mod, "EXTRACTOR_VERSION", service_mod.EXTRACTOR_VERSION + 1)
+    # stale rows are queued at REFRESH at start; the build moves them up and must count them
+    assert run(world, "build", "--workers", "1") == 0
+    out = capsys.readouterr().out
+    assert "Indexing 2 of 2 versions" in out and "0 already indexed or queued" in out
 
 
 def test_the_cli_organizer_is_built_with_the_index_attached(world, capsys):  # noqa: F811
@@ -147,11 +160,97 @@ def test_the_cli_organizer_is_built_with_the_index_attached(world, capsys):  # n
         service.close()
 
 
-def test_one_helper_names_what_to_ask_for_first(world):  # noqa: F811
+def test_one_helper_names_what_to_ask_for_first(world, monkeypatch, capsys):  # noqa: F811
     org = Organizer(world["vault"], sources(world), read_only=True, machine_cache=False)
     org.refresh(record=False)
     live, tips = facts_targets(org.scan, org.model)
     assert live == [world["new"]] and tips == []               # the representative is live
+    from nms_save_vault import index_cli
+    calls = []
+
+    def spy(scan, model):
+        calls.append(1)
+        return facts_targets(scan, model)
+
+    monkeypatch.setattr(index_cli, "facts_targets", spy)
+    assert run(world, "build", "--workers", "1", "--live-only") == 0
+    assert calls, "the CLI must use the shared helper"
+
+
+def test_the_service_starts_its_jobs_only_after_the_first_scan(world, monkeypatch):  # noqa: F811
+    assert run(world, "build", "--workers", "1") == 0
+    from nms_save_vault.core.index import cache as cache_mod
+    monkeypatch.setattr(cache_mod, "EXTRACTOR_VERSION", cache_mod.EXTRACTOR_VERSION + 1)
+    unscanned = []
+    real_open = vaultlink.OrganizerLocator.open
+
+    def open_(self, vid, prefer=None):
+        if self.organizer.locator is None:
+            unscanned.append(vid)
+        return real_open(self, vid, prefer)
+
+    real_refresh = Organizer.refresh
+
+    def slow_refresh(self, *a, **kw):
+        time.sleep(0.4)                                         # the scan takes a while
+        return real_refresh(self, *a, **kw)
+
+    monkeypatch.setattr(vaultlink.OrganizerLocator, "open", open_)
+    monkeypatch.setattr(Organizer, "refresh", slow_refresh)
+    service, org = vaultlink.open_service(world["vault"], sources(world), workers=1)
+    try:
+        wait_for(lambda: service.idle() and service.flush())
+        assert unscanned == [] and service.cache.failures() == {}
+    finally:
+        service.close()
+
+
+def test_changes_is_a_memory_read_computed_on_the_writer(world, tmp_path, monkeypatch):  # noqa: F811
+    loc = SimpleNamespace()
+    svc = IndexService(cache_path=tmp_path / "index-v1.sqlite", vault_id="v1", locator=loc,
+                       policy=ExecutionPolicy("thread", 1, False), game_running=lambda: False)
+    org = Organizer(world["vault"], sources(world), read_only=True, machine_cache=False, facts=svc)
+    loc.open = lambda vid, prefer=None: org.locator.open(vid, prefer)
+    try:
+        org.refresh(record=False)
+        wait_for(lambda: svc.idle() and svc.flush() and svc.view(world["old"]) is not None)
+        threads = set()
+        real = service_mod.changes_mod.changes
+        monkeypatch.setattr(service_mod.changes_mod, "changes",
+                            lambda *a, **k: (threads.add(threading.current_thread().name), real(*a, **k))[1])
+        real_facts = svc.cache.facts
+        svc.cache.facts = lambda vid: (_ for _ in ()).throw(AssertionError("sqlite read"))
+        assert svc.changes(world["new"], world["old"]) is None      # asked off-thread, not computed here
+        svc.cache.facts = real_facts
+        wait_for(lambda: svc.changes(world["new"], world["old"]) is not None)
+        assert threads == {"index-write"}
+    finally:
+        svc.close()
+
+
+def test_drawn_parents_cover_pair_partners():
+    row = SimpleNamespace(head="h", partner="p", parent="x", parent_kind="play")
+    model = SimpleNamespace(lines=lambda: [SimpleNamespace(pid=1)], versions=lambda pid: [row])
+    assert vaultlink.drawn_parents(SimpleNamespace(model=model)) == {"h": ("x", "play"), "p": ("x", "play")}
+
+
+def test_the_relation_of_a_skipped_ancestor_is_not_the_direct_edges_kind(world, monkeypatch):  # noqa: F811
+    a, b, c = _chain(world)
+    drawn = "d" * 64
+    original = readmodel_mod._Builder._display_parent
+    monkeypatch.setattr(readmodel_mod._Builder, "_display_parent", staticmethod(
+        lambda vid, parent, candidates: drawn if vid == b else original(vid, parent, candidates)))
+    model = Organizer(world["vault"], sources(world), read_only=True, machine_cache=False).refresh(record=False)
+    rows = {r.head: r for line in model.lines() for r in model.versions(line.pid)}
+    assert rows[b].parent == drawn and rows[b].parent_kind is None and rows[b].parent_tier is None
+    assert rows[c].parent == b and rows[c].parent_kind == "play"
+
+
+def test_the_seen_marker_is_not_saved_when_the_index_is_off(world):  # noqa: F811
+    svc = IndexService(cache_path=None, vault_id="v1", locator=None, policy=ExecutionPolicy("off", 0, False))
+    org = Organizer(world["vault"], sources(world), read_only=True, machine_cache=True, facts=svc)
+    org.refresh(record=False)
+    assert not list((world["tmp"] / "localappdata").rglob(SEEN_FILENAME))
 
 
 def test_the_organizer_never_imports_the_index():

@@ -100,6 +100,7 @@ def test_the_service_is_d1s_facts_provider(make):
     assert svc.changes(child, parent) is None                        # and both are now queued at NEW
     settle(svc)
     assert isinstance(svc.view(child), FactsView)
+    wait_for(lambda: svc.changes(child, parent, edge_kind="play") is not None)     # worked out off this thread
     cs = svc.changes(child, parent, edge_kind="play")
     assert isinstance(cs, ChangeSet) and cs.header == "+1.5 h played"
     assert [c.text for c in cs.items] == ["glyphs 1 -> 3 of 16", "units +1"]

@@ -50,8 +50,15 @@ def drawn_parents(organizer: Organizer) -> dict[Vid, tuple[Vid, str | None]]:
     model = organizer.model
     if model is None:
         raise ValueError("refresh the organizer first")
-    return {r.head: (r.parent, r.parent_kind)
-            for line in model.lines() for r in model.versions(line.pid) if r.parent is not None}
+    out: dict[Vid, tuple[Vid, str | None]] = {}
+    for line in model.lines():
+        for r in model.versions(line.pid):
+            if r.parent is None:
+                continue
+            out[r.head] = (r.parent, r.parent_kind)
+            if r.partner is not None:                   # the pair is one drawn entry: its other member too
+                out.setdefault(r.partner, (r.parent, r.parent_kind))
+    return out
 
 
 def resolve(ref: str, vids: Sequence[Vid] | Mapping[Vid, object]) -> Vid:
@@ -88,13 +95,14 @@ def open_service(vault_root: Path, sources: Sequence[Source], *, workers: str | 
 
     service = IndexService(
         cache_path=cache_file(org_cache.cache_dir(Path(vault_root), vault_id, host)), vault_id=vault_id or "nostore",
-        locator=OrganizerLocator(organizer), policy=policy,
+        locator=OrganizerLocator(organizer), policy=policy, defer_refresh=True,
         size_hint=lambda vid: (m.size_decompressed or None) if (m := meta(vid)) else None,
         when=lambda vid: m.meta_ts if (m := meta(vid)) else None,
         forbidden=forbidden_roots(vault_root, sources, host), app_version=_app_version(), game_running=game_running)
     organizer.facts = service
     service.flush()                     # the cached views are loaded (a command line may wait)
     organizer.refresh(record=False, request_facts=False)
+    service.queue_refresh()                    # only now can the locator open bytes
     return service, organizer
 
 

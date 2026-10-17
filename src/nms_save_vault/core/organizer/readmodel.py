@@ -468,6 +468,7 @@ class _Builder:
         gone = not locations
         parent_vid = display.get(p.head)
         edge = self.edge_of.get(p.head)
+        direct = bool(edge and parent_vid and edge.parent == parent_vid)   # else an ancestor, not that edge
         live_in = tuple(t for t, lp in live.items() if lp.pair == p.pair)
         note = self.notes.versions.get(p.head)
         flags = set()
@@ -514,9 +515,9 @@ class _Builder:
             live_in=live_in,
             durable_copies=sum(1 for loc in head_locations if _durable(loc)),
             flags=frozenset(flags), parent=parent_vid,
-            parent_tier=edge.tier if edge and parent_vid else None,
-            parent_kind=edge.kind if edge and parent_vid else None,
-            parent_method=edge.method if edge and parent_vid else None,
+            parent_tier=edge.tier if direct else None,
+            parent_kind=edge.kind if direct else None,
+            parent_method=edge.method if direct else None,
             children=n_children, in_tree=in_tree, key=False,
             label=note.label if note else "", comment=note.comment if note else "",
             locked=bool(note and note.locked), note_rev=self.journal.note_rev.get(p.head),
