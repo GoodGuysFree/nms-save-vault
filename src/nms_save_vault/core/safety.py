@@ -96,6 +96,23 @@ def atomic_write_bytes(path: str | Path, data: bytes, temp_prefix: str = ".tmp_"
         raise
 
 
+def fsync_dir(path: str | Path) -> None:
+    """Make a rename or a new file inside ``path`` durable. POSIX: fsync the directory itself,
+    since a file's fsync does not cover its directory entry. Windows: no-op (no directory
+    handle to flush; NTFS journals the rename). A file system that cannot fsync a directory
+    (EINVAL, some network mounts) is accepted: nothing more can be done there."""
+    if os.name == "nt":
+        return
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    except OSError as e:
+        if e.errno != errno.EINVAL:
+            raise
+    finally:
+        os.close(fd)
+
+
 def atomic_copy(src: str | Path, dst: str | Path, preserve_mtime: bool = True) -> None:
     """Copy ``src`` to ``dst`` atomically, preserving modification time by default."""
     src = Path(src)
