@@ -98,10 +98,24 @@ src/nms_save_vault/
                   "Organizer", status bar (shell 10a)
 ```
 
-## Storage model (hybrid)
-* Existing backups (hand-made in-place backup folders, "Copy before…") are catalogued **in place**.
-* New app backups / auto-snapshots / single-slot extracts go in a **managed vault**
-  (default: a sibling of `st_…`), recorded in a JSON catalog.
+## Storage model (hybrid, then the version store)
+* Existing backups (hand-made in-place backup folders, "Copy before...") are catalogued **in place**.
+* A **legacy vault** (a sibling of `st_...` by default) keeps whole-folder copies under
+  `backups/`, `snapshots/` and `extracts/`, recorded in a JSON catalog.
+* The **version store** (design D3, `docs/organizer/designs/D3-storage-version-store.md`) is the
+  vault's next format, entered only by an explicit **upgrade**: `<vault>/store/` holds
+  content-addressed objects (`objects/<aa>/<sha256>`, verbatim bytes, each stored once) and one
+  immutable manifest per backup (`entries/<id>.json`); `store/FORMAT` carries the version.
+  A backup, snapshot or extract is then a manifest, so a backup that changes one file costs
+  that file only.
+* The **upgrade** first makes a verified copy of the whole vault next to it
+  (`<vault>.pre-store-<UTC>`, re-hashed against a recorded tree hash), then creates `store/`;
+  old backups are folded into the store on request and the old folders are never deleted by it.
+  **Undo the vault upgrade** (`nmsvault store rollback`) writes everything made since back out as
+  plain folders, restores the old ones from the copy, and moves `store/` out of the vault; the
+  copy is only read.
+* After the upgrade **older app versions cannot read the vault** and refuse to open it (it is
+  marked by `store/FORMAT`; owner decision Q2). Undo it first to go back.
 
 ## Safety invariants
 1. Never write while `NMS.exe` runs.
@@ -117,6 +131,11 @@ src/nms_save_vault/
    never copied, an Xbox backup of another account is refused, and the account data
    (unlocks, settings) stays unless the user asks to roll it back (or there is none live).
    A restored Xbox record is a fresh local write: its index time is now, never older.
+8. The version store never writes into a live save folder and never deletes an object or a
+   manifest by itself: damaged objects are quarantined, the pre-upgrade copy is read-only
+   input, and the upgrade and its undo leave a marker (`store/state/upgrade.json`) so an
+   interrupted run is finished or abandoned explicitly, with every other vault write refused
+   meanwhile.
 
 ## Verification strategy
 * **Read-only** unit tests against the real backups (decode every meta → header + ordinal
