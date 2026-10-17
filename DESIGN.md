@@ -99,6 +99,8 @@ src/nms_save_vault/
     organizer/    the Organizer tab
       table.py    OrganizerTable: lines with > / v, chips, Find, sort, column chooser
       live.py     LiveArea: one or two live folders as canvas lists, markers, refill warning
+      detail.py   DetailPane: save file summary, version card, empty-slot card, Where, Notes
+      words.py    shared words: names, #n numbers, how a version is linked
   theme.py        light/dark/system palettes (incl. the organizer keys) + ttk restyling,
                   dark title bar (front-end)
   updates.py      opt-in GitHub release check + in-place self-update (the only network access)

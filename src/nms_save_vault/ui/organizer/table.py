@@ -31,6 +31,7 @@ from ..fmt import local_time, play_time
 from ..redact import RedactingTreeview
 from ..themeaware import ThemeRegistry
 from ..tooltip import Tooltip
+from .words import line_name
 
 STYLE = "Organizer.Treeview"
 FIND_DELAY_MS = 150
@@ -88,15 +89,6 @@ CHIP = {c.name: c for c in CHIPS}
 # --- what a row says (pure) ----------------------------------------------------------
 
 
-def line_name(line: Line) -> str:
-    """The save file's name; a nameless one says what it was called before, or its id."""
-    if line.name:
-        return line.name
-    if line.former_names:
-        return f"(unnamed, was {line.former_names[0]})"
-    return f"(unnamed {line.pid[-4:]})" if line.identified else "(unnamed)"
-
-
 def state_words(line: Line) -> str:
     """The State column (D6 2.2): words, because a Tk 8.6 cell cannot be coloured."""
     words = []
@@ -141,7 +133,7 @@ def line_values(line: Line) -> dict[str, str]:
 def version_values(row: VersionRow, live_labels: dict) -> dict[str, str]:
     """A version row's cells (D6 2.3); its own words in State."""
     words = []
-    if "live" not in row.flags and row.durable_copies == 0 and "gone" not in row.flags:
+    if row.durable_copies == 0 and "gone" not in row.flags:
         words.append("only outside the vault" if "outside-only" in row.flags
                      else "NOT IN VAULT")
     if "fork" in row.flags:

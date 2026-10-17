@@ -3,7 +3,8 @@ save files through the real scanner and read model, so the fixture cannot drift 
 
 Two live sources - Steam (slot 1 empty) and Xbox - and a vault:
 
-- "Main Save" (MAIN): live in Steam slot 9, backed up (in the vault), noted and pinned;
+- "Main Save" (MAIN): live in Steam slot 9, noted and pinned; two versions linked by the
+  live journal - #1 backed up, #2 (played on since) not in the vault;
 - "Other Run" (OTHER): live in Steam slot 3, never backed up (NOT IN VAULT);
 - "Cross Save" (CROSS): Steam slot 5 and Xbox slot 1, the Xbox copy 2h behind;
 - "Old Run" (OLD): only in the vault (an old backup);
@@ -71,6 +72,11 @@ def build_world(tmp_path: Path, make_wgs_account) -> World:
     ]
     org = Organizer(vault.root, sources, cache=ScanCache(None, None),
                     game_running=lambda: False, clock=lambda: T0 + 3600)
+    org.refresh(record=True)
+    # The game saves Main Save again: the journal sees it in the live slot, so the two
+    # versions are linked ("seen in the live slot") and the new one is not in the vault.
+    steam_save(steam, 9, 0, "Main Save", 7800, MAIN, T0 + 600, extra="main-2")
+    org.clock = lambda: T0 + 7200
     org.refresh(record=True)
     org.notes.set_save_note(PIDS["main"], "Main run.\nNext: the Atlas path.", base_rev=None)
     org.notes.set_pinned(PIDS["main"], True)

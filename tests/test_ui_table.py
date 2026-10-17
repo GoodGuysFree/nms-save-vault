@@ -63,7 +63,8 @@ def test_the_world_has_the_lines_the_tests_need(world):
 
 def test_line_values(world):
     main = T.line_values(_line(world, "main"))
-    assert main["live"] == "S9" and main["play"] == "2h00" and main["state"] == "pinned"
+    assert main["live"] == "S9" and main["play"] == "2h10" and main["versions"] == "2"
+    assert main["state"] == "NOT IN VAULT; pinned"           # played on since the backup
     assert main["note"] == "Main run."
     other = T.line_values(_line(world, "other"))
     assert other["state"].startswith("NOT IN VAULT")
@@ -86,7 +87,7 @@ def test_chip_counts_come_from_every_line(world):
     counts = T.chip_counts(world.model.lines())
     assert counts["all"] == 5 and counts["live"] == 4 and counts["vault"] == 1
     assert counts["steam"] == 4 and counts["xbox"] == 2 and counts["both"] == 1
-    assert counts["note"] == 1 and counts["pinned"] == 1 and counts["risk"] == 3
+    assert counts["note"] == 1 and counts["pinned"] == 1 and counts["risk"] == 4
 
 
 def test_chips_or_within_a_group_and_across_groups(world):
@@ -97,7 +98,7 @@ def test_chips_or_within_a_group_and_across_groups(world):
     assert names({"live", "vault"}) == names(set())                 # OR inside a group
     assert names({"xbox"}) == {"Cross Save", "Xbox Only"}
     assert names({"vault", "risk"}) == set()                        # AND across groups
-    assert names({"steam", "risk"}) == {"Other Run", "Cross Save"}
+    assert names({"steam", "risk"}) == {"Main Save", "Other Run", "Cross Save"}
     assert names(set(), "main") == {"Main Save"}
     assert names(set(), "ATLAS") == {"Main Save"}           # the whole note is searched too
     assert {l.name for l in T.visible_lines(lines, (), "ATLAS")} == set()   # preview only
@@ -127,7 +128,7 @@ def test_opening_a_line_shows_its_versions_and_mutes_the_others(table, world):
     iid = table._iid_of[pid]
     assert _image(table.tree.item(iid, "image")) == str(table._images["open"])
     versions = table.tree.get_children(iid)
-    assert [table.tree.item(v, "text") for v in versions] == ["#1"]
+    assert [table.tree.item(v, "text") for v in versions] == ["#2", "#1"]
     for other in table.tree.get_children(""):
         dim = "dim" in table.tree.item(other, "tags")
         assert dim == (other != iid)

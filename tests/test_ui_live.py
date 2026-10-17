@@ -130,7 +130,8 @@ def test_markers_follow_the_slots(host, gui_app, world):
     by_label = {d.slot.label: d for d in area.drawn.values()}
     marks = {label: L.slot_markers(d.slot, d.source) for label, d in by_label.items()}
     assert marks["S3"] == ["risk"]                 # Other Run: never backed up
-    assert marks["S9"] == ["pin"]                  # Main Save: in the vault, pinned
+    assert marks["S9"] == ["risk", "pin"]          # Main Save: played on since, pinned
+    assert marks["S5"] == []                       # Cross Save: in the vault
     assert marks["S1"] == ["empty"]                # empty: the cloud may fill it again
     assert marks["X1"] == ["risk"] and marks["X2"] == ["risk"]
     c = area.canvas
