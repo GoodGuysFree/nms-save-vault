@@ -19,6 +19,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import time
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -51,14 +52,16 @@ class DecodedSave:
 
 
 def decode_save(data: bytes, *, bare_size_hint: int | None = None,
-                max_decompressed: int = lz4_block.MAX_SAVE_DECOMPRESSED) -> DecodedSave:
+                max_decompressed: int = lz4_block.MAX_SAVE_DECOMPRESSED,
+                timings: dict[str, int] | None = None) -> DecodedSave:
     """Decode a save data file into its JSON root.
 
     ``bare_size_hint`` is the decompressed size from the Xbox meta, needed only for an
     old unframed (pre-Waypoint) block, which carries no size of its own. Sizes are checked
     against ``max_decompressed`` (and :data:`lz4_block.MAX_BARE_BLOCK`) before anything is
-    allocated.
+    allocated. ``timings``, when given, receives ``decode`` and ``parse`` in milliseconds.
     """
+    started = time.perf_counter()
     if data.startswith(lz4_block.HGSAVEV2_HEADER):
         raise SaveDecodeError("unsupported", lz4_block.HGSAVEV2_UNSUPPORTED)
     chunks, _consumed = lz4_block.walk_chunks(data)
@@ -77,7 +80,11 @@ def decode_save(data: bytes, *, bare_size_hint: int | None = None,
         raise SaveDecodeError("corrupt", str(exc)) from None
 
     body = raw.split(b"\x00", 1)[0]
+    decoded = time.perf_counter()
     root, repaired = _parse(body)
+    if timings is not None:
+        timings["decode"] = round((decoded - started) * 1000)
+        timings["parse"] = round((time.perf_counter() - decoded) * 1000)
     return DecodedSave(
         root=root,
         container="chunked" if chunks else "unframed",
