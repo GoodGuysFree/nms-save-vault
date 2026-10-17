@@ -87,6 +87,8 @@ def text(v: object, limit: int = 128) -> str:
 
 def gid(v: object) -> str:
     """A game id without its leading ``^`` (``^ACT1_STEP1`` -> ``ACT1_STEP1``)."""
+    if isinstance(v, str) and v.isascii() and "<" not in v:
+        return v.strip()[:128].removeprefix("^")    # the common case, ~15,000 times per save
     return text(v).removeprefix("^")
 
 

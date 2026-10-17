@@ -74,8 +74,8 @@ def test_galaxy_is_bits_32_to_39_of_a_base_address():
 
 
 def test_text_strips_markup_and_replaces_invalid_bytes():
-    assert nodes.text("<PET1>The Hangar</>") == "The Hangar"
-    assert nodes.text("  Main Save  ") == "Main Save"
+    assert nodes.text("<PET1>Synth Den</>") == "Synth Den"
+    assert nodes.text("  Synth Main  ") == "Synth Main"
     broken = b"Ba\xffse".decode("utf-8", errors="surrogateescape")
     assert nodes.text(broken) == "Ba�se"
     assert nodes.text("\ud800x") == "�x"

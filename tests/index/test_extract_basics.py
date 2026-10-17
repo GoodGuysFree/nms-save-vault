@@ -24,14 +24,14 @@ def psd(**fields) -> dict:
 
 
 def test_a_base_only_save_has_one_context_and_save_facts():
-    common = {"SaveName": "Main Save", "TotalPlayTime": 7200, "SaveUniversalId": "0xA1B2C3D400000001"}
+    common = {"SaveName": "Synth Main", "TotalPlayTime": 7200, "SaveUniversalId": "0xA1B2C3D400000001"}
     f = facts_of(context_save(base=psd(), common=common, version=4740))
     assert f["status"] == "ok" and f["errors"] == []
     assert f["schema"] == 1 and f["extractor"] == schema.EXTRACTOR_VERSION
     assert f["primary"] == "base" and list(f["contexts"]) == ["base"]
     assert f["save"]["layout"] == "context"
     assert (f["save"]["json_version"], f["save"]["active_context"]) == (4740, "Main")
-    assert (f["save"]["save_name"], f["save"]["play_time_s"]) == ("Main Save", 7200)
+    assert (f["save"]["save_name"], f["save"]["play_time_s"]) == ("Synth Main", 7200)
     assert f["save"]["pid_in_data"] == "0xA1B2C3D400000001"
     assert f["container"]["kind"] == "chunked" and f["container"]["chunks"] == 1
 

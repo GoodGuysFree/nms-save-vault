@@ -119,12 +119,12 @@ def test_ships_skip_empty_slots_and_mark_the_primary():
 
 def test_freighter_frigates_and_multitools():
     ctx = base_facts(CurrentFreighter={"Filename": "MODELS/COMMON/SPACECRAFT/INDUSTRIAL/CAPITALFREIGHTER.SCENE.MBIN"},
-                     PlayerFreighterName="Harmonic", FreighterInventory={"Class": {"InventoryClass": "S"}},
+                     PlayerFreighterName="Synth Hauler", FreighterInventory={"Class": {"InventoryClass": "S"}},
                      FleetFrigates=[{}, {}, {}],
                      Multitools=[{"Name": "Staff", "Resource": {"Filename": "MODELS/WEAPONS/STAFF.SCENE.MBIN"},
                                   "Store": {"Class": {"InventoryClass": "S"}}},
                                  {"Name": "", "Resource": {"Filename": ""}}])
-    assert ctx["freighter"] == {"has": True, "name": "Harmonic", "model": "CAPITALFREIGHTER", "cls": "S"}
+    assert ctx["freighter"] == {"has": True, "name": "Synth Hauler", "model": "CAPITALFREIGHTER", "cls": "S"}
     assert ctx["frigates"] == 3
     assert ctx["multitools"] == [{"name": "Staff", "model": "STAFF", "cls": "S"}]
 
