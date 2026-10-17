@@ -1119,6 +1119,9 @@ def apply_pair(plan: XboxPairPlan, payload: Mapping[str, tuple[bytes, bytes]],
                 safety.set_file_mtime(d / name, b.mtime)
             safety.atomic_write_bytes(d / b.container_name, build_blob_container(
                 b.data_name, b.meta_name, b.data_cloud, b.meta_cloud))
+            safety.fsync_dir(d)              # the blobs exist before the index names them
+        if plan.new_dirs:
+            safety.fsync_dir(folder)
         _fault(faults, "before_index")
         raw = index.read_bytes()
         if hashlib.sha256(raw).hexdigest() != plan.pre_index_sha256:
@@ -1127,12 +1130,15 @@ def apply_pair(plan: XboxPairPlan, payload: Mapping[str, tuple[bytes, bytes]],
         _remove_new(plan)
         raise
     safety.atomic_write_bytes(index, _post_index(plan, raw))
+    safety.fsync_dir(folder)
     _fault(faults, "after_index")
     twin = xgs_twin(folder) if plan.xgs else None
     if twin is not None:
         for b in plan.blobs:
             _xgs_write(twin, b.identifier, *payload[b.identifier])
+            safety.fsync_dir(_xgs_identifier_dir(twin, b.identifier))
             _fault(faults, f"xgs:{b.identifier}")
+        safety.fsync_dir(twin)
 
 
 def finalize_pair(plan: XboxPairPlan) -> None:
@@ -1187,10 +1193,16 @@ def rollback_pair(plan: XboxPairPlan) -> None:
     if state == "post":
         safety.atomic_write_bytes(index, restored)
     _remove_new(plan)
+    for d in {b.dir_name for b in plan.blobs} - set(plan.new_dirs):
+        if (folder / d).is_dir():
+            safety.fsync_dir(folder / d)
+    safety.fsync_dir(folder)
     twin = xgs_twin(folder) if xgs_states else None
     for ident, st in xgs_states.items():
         if st != "pre" and twin is not None:
             _xgs_restore(_xgs_identifier_dir(twin, ident), plan.pre_xgs[ident], old.get(ident))
+    if twin is not None:
+        safety.fsync_dir(twin)
 
 
 def _index_state(plan: XboxPairPlan, raw: bytes) -> tuple[str, bytes | None]:
@@ -1270,6 +1282,8 @@ def _xgs_restore(d: Path, pre: tuple[str, str] | None, old: tuple[bytes, bytes] 
             safety.atomic_write_bytes(path, old[i])
     if pre is None and d.is_dir() and not any(d.iterdir()):
         d.rmdir()
+    elif d.is_dir():
+        safety.fsync_dir(d)
 
 
 def _free_extension(c: _Container) -> int:

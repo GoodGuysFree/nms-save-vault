@@ -147,6 +147,7 @@ def swap(plan: SteamWritePlan, faults: FaultInjector | None = None) -> None:
             raise WriteError(f"{f.name} could not be replaced: {exc.strerror}",
                              swapped=swapped) from exc
         at(faults, f"swapped:{i}")
+    safety.fsync_dir(plan.folder)          # the renames are durable before the next event
 
 
 def rollback(plan: SteamWritePlan, pre_bytes: Mapping[str, bytes]) -> None:
@@ -175,6 +176,7 @@ def rollback(plan: SteamWritePlan, pre_bytes: Mapping[str, bytes]) -> None:
         except (OSError, RollbackError) as exc:
             problems[name] = getattr(exc, "strerror", None) or str(exc)
     sweep(plan.folder, plan.op_tag)
+    safety.fsync_dir(plan.folder)
     for name, pre in plan.pre.items():
         if name not in problems and file_state(plan.folder / name) != pre:
             problems[name] = "not as before"

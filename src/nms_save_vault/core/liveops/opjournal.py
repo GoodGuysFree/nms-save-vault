@@ -92,7 +92,15 @@ def utc_text(at: float) -> str:
 
 def _append_line(path: Path, data: bytes) -> None:
     """One fsynced write; a line torn by an earlier crash is sealed off first, so it can
-    never merge with this one."""
+    never merge with this one. The first append also makes the new file's directory entry
+    durable."""
+    created = not path.exists()
+    _write_line(path, data)
+    if created:
+        safety.fsync_dir(path.parent)
+
+
+def _write_line(path: Path, data: bytes) -> None:
     with open(path, "a+b", buffering=0) as f:
         size = f.seek(0, os.SEEK_END)
         if size:
