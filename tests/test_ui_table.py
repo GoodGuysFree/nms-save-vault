@@ -344,6 +344,7 @@ def test_linked_versions_first_then_the_dated_list_under_a_separator(tmp_path, m
     assert texts[3] == "#1" and specs[2].tags == ("sep",)
     state = dict(zip([c.key for c in T.COLUMNS], specs[1].values))["state"]
     assert "+1 re-save folded" in state
-    assert specs[0].image == ("live", "steam") and specs[1].image == ("dot", "lane0")
+    assert specs[0].image[0] == "lane" and specs[0].image[1].kind == "live"
+    assert specs[1].image[0] == "lane" and specs[1].image[1].kind == "dot"
     assert specs[3].image == ("dot", "muted")
     assert all(s.head is None for s in specs if s.key == ("sep",))

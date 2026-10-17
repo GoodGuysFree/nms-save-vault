@@ -139,3 +139,40 @@ def version_dot(width: int, height: int, kind: str, *, colour: str, scale: float
     else:
         r.disc(cx, mid, 3.2 * scale, colour)
     return r
+
+
+def lane_row(width: int, height: int, cell, colours: list[str], *, scale: float,
+             live_colour: str = "", centre: str = "#ffffff") -> Raster:
+    """One version row's cell of the history lanes (D6 3.1.3): the lanes passing through
+    as vertical lines, the node's own lane joined up and down, the lanes of its branches
+    joining in at this row as slanted lines, and the node itself (a dot; a disc with a
+    white centre when live; a diamond for a restore-point-only fork member).
+    ``cell`` is a ``lanes.LaneCell``; lane ``i`` has ``colours[i % len(colours)]``."""
+    r = Raster(width, height)
+    step, mid, t = 12 * scale, height / 2, max(2.0, 1.8 * scale)
+
+    def x(lane: int) -> float:
+        return 6 * scale + lane * step
+
+    def colour(lane: int) -> str:
+        return colours[lane % len(colours)]
+
+    for lane in cell.passing:
+        r.line(x(lane), 0, x(lane), height, t, colour(lane))
+    for lane in cell.joins:
+        r.line(x(lane), 0, x(lane), mid * 0.5, t, colour(lane))
+        r.line(x(lane), mid * 0.5, x(cell.lane), mid, t, colour(lane))
+    cx, own = x(cell.lane), colour(cell.lane)
+    if cell.up:
+        r.line(cx, 0, cx, mid, t, own)
+    if cell.down:
+        r.line(cx, mid, cx, height, t, own)
+    if cell.kind == "live":
+        r.disc(cx, mid, 5.2 * scale, live_colour or own)
+        r.disc(cx, mid, 2 * scale, centre)
+    elif cell.kind == "member":
+        s = 4.5 * scale
+        r.poly([(cx, mid - s), (cx + s, mid), (cx, mid + s), (cx - s, mid)], own)
+    else:
+        r.disc(cx, mid, 3.4 * scale, own)
+    return r

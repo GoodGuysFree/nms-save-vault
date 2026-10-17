@@ -33,6 +33,7 @@ from ..fmt import local_time, play_time
 from ..redact import RedactingTreeview
 from ..themeaware import ThemeRegistry
 from ..tooltip import Tooltip
+from .lanes import lane_cells, lane_width
 from .words import line_name, version_numbers
 
 STYLE = "Organizer.Treeview"
@@ -185,13 +186,14 @@ def _dot(row: VersionRow, linked: bool) -> tuple[str, str]:
 
 
 def _version_spec(row: VersionRow, number: int, folded: int, live_labels: dict,
-                  linked: bool) -> RowSpec:
+                  linked: bool, cell=None) -> RowSpec:
     values = version_values(row, live_labels)
     if folded:
         marker = f"+{folded} re-save{'s' if folded > 1 else ''} folded"
         values["state"] = f"{values['state']}; {marker}" if values["state"] else marker
     return RowSpec(("v", row.head), f"#{number}", tuple(values[c.key] for c in COLUMNS),
-                   ("ver",), _dot(row, linked), row.head)
+                   ("ver",),
+                   ("lane", cell) if cell is not None else _dot(row, linked), row.head)
 
 
 def version_specs(model: ReadModel, pid: str, live_labels: dict) -> list[RowSpec]:
@@ -205,10 +207,14 @@ def version_specs(model: ReadModel, pid: str, live_labels: dict) -> list[RowSpec
     numbers = version_numbers(model, pid)
     folded = Counter(r.folded_into for r in rows if r.folded_into)
     shown = [r for r in rows if not r.folded_into]
-    linked = [r for r in shown if r.in_tree]
     dated = [r for r in shown if not r.in_tree]
-    out = [_version_spec(r, numbers[r.head], folded[r.head], live_labels, True)
-           for r in linked]
+    graph = model.history(pid, "default")        # the linked rows, in the lanes' order
+    cells = lane_cells(graph)
+    linked = [n.version for n in graph.nodes if n.kind == "version"]
+    seen = {r.head for r in linked}
+    linked += [r for r in shown if r.in_tree and r.head not in seen]   # no drawn lane
+    out = [_version_spec(r, numbers[r.head], folded[r.head], live_labels, True,
+                         cells.get(r.head)) for r in linked]
     if dated:
         count = f"{len(dated)} version{'s' if len(dated) != 1 else ''}"
         note = {c.key: "" for c in COLUMNS}
@@ -452,7 +458,20 @@ class OrganizerTable(ttk.Frame):
             for iid in children.values():
                 spec = self._values.get(iid)
                 if isinstance(spec, RowSpec):
-                    self.tree.item(iid, image=self._images.get(spec.image, ""))
+                    self.tree.item(iid, image=self._image(spec.image))
+
+    def _image(self, key):
+        """The image a row's spec names; a lane cell is drawn on first use and kept until
+        the zoom or the theme draws the images again."""
+        if isinstance(key, tuple) and key and key[0] == "lane":
+            if key not in self._images:
+                p, cell = self._palette, key[1]
+                self._images[key] = raster.lane_row(
+                    px(lane_width(cell.lanes)), self._row_height(), cell,
+                    theme.lanes(p), scale=dpi.factor(), live_colour=p[cell.platform],
+                    centre=p["card"]).image(self)
+            return self._images[key]
+        return self._images.get(key, "")
 
     def _dot_images(self, h: int, scale: float) -> dict:
         p = self._palette
@@ -548,10 +567,10 @@ class OrganizerTable(ttk.Frame):
                 viid = self._new_iid("V")
                 known[spec.key] = viid
                 tree.insert(iid, "end", viid, text=spec.text, values=spec.values,
-                            tags=spec.tags, image=self._images.get(spec.image, ""))
+                            tags=spec.tags, image=self._image(spec.image))
             elif self._values.get(viid) != spec:
                 tree.item(viid, text=spec.text, values=spec.values, tags=spec.tags,
-                          image=self._images.get(spec.image, ""))
+                          image=self._image(spec.image))
             self._values[viid] = spec
             if spec.head is not None:
                 self._version_of[viid] = (pid, spec.head)
