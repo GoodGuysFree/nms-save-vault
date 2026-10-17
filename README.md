@@ -26,24 +26,32 @@ shortcuts? `install.bat` in the zip adds them. Full details under
    name/mode/play-time/date; lift a single slot aside; and repopulate any live slot from
    any save in any cataloged backup (re-keying the meta when the slot number differs).
    You can also inspect a slot's two saves (the Auto-Save and the Restore-Point)
-   individually and force either one to become the newest, and **clear** a live slot to
-   free it - which first compares that slot's play time with the newest copy of it in the
-   vault and warns you if clearing would lose progress.
-3. **Import** — register an existing manual backup folder into the catalog, or import an
+   individually and force either one to become the newest. The app **only replaces**, it
+   never empties a slot: **Empty a slot** shows the steps to do it yourself (they differ for
+   Steam Cloud, Steam without Cloud and Xbox) and first offers to keep a copy of the slot in
+   the vault.
+3. **Live operations** - every write into a live slot (put a save there, swap two slots,
+   make the other save load, put an extract back) is one checked operation: what the slot
+   held is kept in the vault first, both positions are always written (a slot never holds
+   two different saves), the result is validated and rolled back exactly if it is wrong,
+   an interrupted one is recovered at the next start, and each one has its own **Undo**.
+   After a game launch the app looks again and tells you if Steam Cloud or Xbox sync put
+   the old save back. The whole-folder restore is the **panic restore** (below).
+4. **Import** — register an existing manual backup folder into the catalog, or import an
    entire copied Save Vault folder: it compares that vault's entries with yours and offers
    to copy the new ones in or index them in place (idempotent — re-importing is harmless).
-4. **Account display names** — give each account a name of your choosing and the app shows
+5. **Account display names** — give each account a name of your choosing and the app shows
    that instead of the real id everywhere, so a screenshot or a screen-share never exposes
    your `st_<steamid64>` or Xbox `<xuid>_<titleid>`. See
    [Account display names](#account-display-names).
-5. **Total play time** — how long you have actually played, counted once per playthrough
+6. **Total play time** — how long you have actually played, counted once per playthrough
    rather than once per file: the two saves in a slot, every dated backup of them, and the
    same run carried to another platform by the NMS cloud all fold into a single row, and
    the highest play time wins. **Play time...** in the GUI, `nmsvault playtime` on the CLI.
    The same identity drives **Save file** above the backups: pick a save (listed with the
    names it had before) or right-click a slot, and the backups narrow to every copy of it,
    renamed or moved, so its backup history reads top to bottom.
-6. **Know what you are looking at** — each slot's two saves are named for what they are
+7. **Know what you are looking at** — each slot's two saves are named for what they are
    (**Auto-Save** vs **Restore-Point**), the difficulty preset is shown by name, Xbox saves
    report their cloud sync state, and hovering any row explains it. See
    [The two saves in every slot](#the-two-saves-in-every-slot).
@@ -52,9 +60,10 @@ shortcuts? `install.bat` in the zip adds them. Full details under
 
 * The save **data** file is copied **verbatim** — never recompressed — so it can't drift.
 * Only the small 432-byte **meta** is transformed (XXTEA re-encryption / timestamp edit).
-* Every destructive operation auto-snapshots first, writes atomically (stage → validate →
-  swap), validates by header + size cross-checks + hashes, and refuses to run while the
-  game is open.
+* Every live write keeps what it replaces in the vault first, auto-snapshots the folder,
+  writes atomically (stage → validate → swap), validates by header + size cross-checks +
+  hashes, rolls itself back exactly when the check fails, and refuses to run while the game
+  is open. The app never deletes a save: it only replaces.
 * Every auto-snapshot is kept, so each live write adds a full copy of the live folder
   (roughly 40-65 MB); a later deduplicated store will reclaim that space.
 
@@ -315,10 +324,10 @@ offered that cannot work, and nothing sensible is missing.
 
 | You right-clicked | You can |
 |---|---|
-| **A live save folder** | Back it up · make it the active write target · copy a save into one of its slots · undo the last change |
-| **A live slot** | **Replace it with a save from anywhere** · copy it into another live slot · extract it to the vault · **clear it** (deletes both its saves, after warning if the vault has no copy this far on) · show its history |
+| **A live save folder** | Back it up · make it the active write target · copy a save into one of its slots · restore the newest snapshot of the whole folder (panic restore) |
+| **A live slot** | **Replace it with a save from anywhere** · copy it into another live slot · extract it to the vault · **the steps to empty it yourself** (after offering to keep a copy in the vault) · show its history |
 | **One of the two saves in a live slot** | All of the above, plus **Promote** — make *that* save the one the game loads |
-| **A backup** (full / snapshot / imported / in-place) | Restore all of it, which **replaces** the live folder |
+| **A backup** (full / snapshot / imported / in-place) | Restore all of it slot by slot (the panic restore: slots it lacks are left alone, nothing is deleted) |
 | **A single-slot extract** | Put it back in its own slot · **or** copy it into any live slot you choose |
 | **A slot inside a backup, or either save in it** | Copy it into the same-numbered live slot · copy it into a slot you choose · extract it to the vault · show its history |
 
@@ -395,12 +404,20 @@ nmsvault playtime                        # total play time, one row per playthro
 nmsvault discover --add                  # find existing backups, add them in place
 nmsvault backup --label "before update"  # full snapshot into the vault
 nmsvault extract 9 --label "main"        # lift slot 9 aside
-nmsvault clear 9 [--yes]                 # empty live slot 9; warns if that loses progress
-nmsvault repopulate --from <id|folder> --src-slot 9 --to-slot 3   # re-keys the meta
-nmsvault promote --slot 9 --member B     # force B (the restore-point) to be newest
-nmsvault restore <entry-id>              # mirror the live folder to a backup (keeps its account data;
-                                         #   --with-accountdata rolls that back too)
-nmsvault undo                            # undo the last change to this live folder (repeat to go back further)
+nmsvault clear steam:9                   # the steps to empty a live slot yourself (deletes nothing)
+nmsvault place steam:3 --from <id> --src-slot 9 [--member A|B] [--yes --confirm CODE]
+                                         # put a save into a live slot; what it replaces is kept first
+nmsvault swap steam:3 steam:9            # exchange two occupied slots
+nmsvault keep steam:9                    # copy a live slot into the vault, changing nothing live
+nmsvault ops steam:9                     # the moves made to a slot, newest first
+nmsvault undo [--to steam:9 | --op <op-id>]   # undo a move of one slot (it can be undone again)
+nmsvault recover [--op <op-id> --choice forward|back|leave]   # an interrupted move
+nmsvault repopulate --from <id|folder> --src-slot 9 --to-slot 3   # the same as place, for old scripts
+nmsvault promote --slot 9 --member B     # make B (the restore-point) the save the game loads
+nmsvault panic-restore [<entry-id>]      # a whole snapshot / backup back, slot by slot
+nmsvault restore <entry-id>              # an extract goes back to its slot; a backup is a panic restore
+                                         #   (keeps the account data; --with-accountdata rolls it back too)
+nmsvault undo --whole-folder             # restore the newest snapshot of this folder (panic restore)
 nmsvault verify [live|<id>|<folder>]
 nmsvault accounts [--set <id>=NAME] [--clear <id>]   # hide the real account ids
 nmsvault saves [--sort play_time] [--live-only] [--find TEXT] [--json]   # every save file, one line each
@@ -413,11 +430,15 @@ nmsvault scan                            # record what the live slots hold now
 nmsvault organizer bootstrap [--dry-run] # read in the history of an existing vault
 ```
 
-Every write first checks the game is closed (override `--force`), auto-snapshots the
-live state, writes atomically, validates, and logs to `oplog.jsonl` for `undo`. Live writes
-wait for one another (one window at a time) and are recorded in the organizer's journal
-(`<vault>/organizer/`), which is how it knows what put a save into a slot. Listing commands
-never write the vault; `scan`, notes and pins do, and only there.
+Targets are `steam:7`, `xbox:4`, or `steam:<account>:7` when there is more than one
+account. Every live write needs the vault upgraded to the version store, checks the game is
+closed (`--force` only answers "could not tell"; a running game always refuses), keeps what it
+replaces in the vault, auto-snapshots the folder, writes atomically, validates, rolls itself
+back exactly on a failed check, and is journaled (`<vault>/organizer/ops.jsonl`) and logged to
+`oplog.jsonl`. The commands print the plan's warnings and ask; a non-interactive run needs
+`--yes` plus `--confirm CODE` for each confirmation the plan names. Live writes wait for one
+another (one window at a time). Listing commands never write the vault; `scan`, notes and
+pins do, and only there.
 
 ## Xbox / Game Pass (read **and write**)
 
@@ -432,8 +453,8 @@ nmsvault discover --add        # also catalogs the Xbox folder if present
 ```
 
 **Same-platform writes are supported** — backup, restore, per-slot extract / repopulate, and
-promote all work within Xbox, exactly as for Steam (every write auto-snapshots first, so
-`undo` works). The wgs writer rotates the blob GUIDs, updates only the changed saves' records
+promote all work within Xbox, exactly as for Steam (every write keeps what it replaces and
+auto-snapshots first, so `undo` works). The wgs writer rotates the blob GUIDs, updates only the changed saves' records
 in `containers.index` (with the correct sync state), and copies the save data verbatim — it follows the layout used by
 [libNOM.io](https://github.com/zencq/libNOM.io) (see Credits).
 
@@ -458,27 +479,28 @@ No Man's Sky uses Steam Cloud, which syncs the `st_<id>` folder. To avoid cloud 
 2. Make your changes (restore / repopulate / promote).
 3. Launch the game. If Steam shows a cloud conflict, choose the **local** copy.
 
-**Deleting is the exception.** Steam's manifest still lists a save it has uploaded, so a
-file that is merely *missing* locally is downloaded again at the next launch: clear a slot
-and it comes back. Overwrites are safe (a changed file is seen as a change, and the app
-stamps every live write with the current time so the cloud copy never looks newer), but to
-make a deletion stick:
+**Deleting is the exception, and the app does not do it.** Steam's manifest still lists a
+save it has uploaded, so a file that is merely *missing* locally is downloaded again at the
+next launch: an emptied slot comes back. Overwrites are safe (a changed file is seen as a
+change, and the app stamps every live write with the current time so the cloud copy never
+looks newer), so the app only replaces. To empty a slot yourself (**Empty a slot** or
+`nmsvault clear` shows these):
 
 1. Steam → No Man's Sky → Properties → General → turn off **Keep game saves in the Steam
    Cloud**.
-2. Clear the slot in NMS Save Vault, with the game closed.
+2. With the game closed, delete the four files of the slot in the save folder.
 3. Launch the game, check the slot is gone, quit.
 4. Turn Cloud back on; if Steam asks, keep the **local** copy.
 
-Xbox / Game Pass is not affected: a cleared save keeps its `containers.index` record
-flagged `Deleted`, which is the cloud's instruction to remove it.
+On Xbox / Game Pass a slot is emptied in the game's own load menu (the app cannot edit slot
+records by hand), then let Xbox sync finish.
 
 The vault lives outside `st_<id>`, so it is never scanned by the game or synced by Steam.
 
 ## Status
 
 Working. Core format/crypto and all operations are verified against the real save files and
-in a temp sandbox (1506 tests). Xbox / Game Pass saves are supported for reading **and**
+in a temp sandbox (1445 tests; `uv run pytest`, plus the 2 slow ones with `-m slow`). Xbox / Game Pass saves are supported for reading **and**
 same-platform writing — verified against a real install (reads) and synthetic `wgs` fixtures
 (writes). A full file-copy safety backup of the live folder was made before development
 (`C:\Devel\NMS-SaveBackup-SAFETY-2026-06-24`).

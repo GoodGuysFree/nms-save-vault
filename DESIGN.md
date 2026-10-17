@@ -56,9 +56,26 @@ The first key word depends on the slot ordinal ⇒ **the meta is slot-bound**.
 ## Core consequences for operations
 * **Re-slot a save** = copy the data file verbatim + (if slot differs) decrypt the meta
   with the source ordinal and re-encrypt with the destination ordinal. No recompression.
-* **Force older→newest** within a slot = decrypt that member's meta, bump `Timestamp`
-  (0x164) above its sibling, re-encrypt with the **same** ordinal, set file mtimes. Data
-  untouched.
+* **Both positions are always written** (a one-save source fills the other position with a
+  copy), so a slot never holds two different saves. The loading member is stamped "now" in
+  its meta and as its file / index time, the other "now - 1": it is the newest by every
+  signal the game or a cloud looks at.
+* **Force older→newest** (promote) = the slot's own pair written back with the chosen member
+  loading, stamped as above. Data untouched; what it replaces is kept in the vault first.
+* **The app only replaces.** It never deletes a save file and never empties a slot; the
+  steps to do it by hand are shown instead.
+* **A live op is one unit**: preserve what is replaced (a verified store entry), snapshot,
+  write-ahead record in `ops.jsonl`, write, validate (bytes, metas, order, mirror,
+  containment), then record; a failed check rolls the slot back exactly. An interrupted op is
+  recovered at the next start; a slot the game has written since is only ever *left* (its
+  content is kept in the vault), never rolled back over. An Xbox op on one account (a swap)
+  is one containers.index write.
+* **After a launch** the app looks again: `confirmed` needs a game session that has ended
+  after the op (and, on Xbox, the sync window), `reverted` is the evicted save (or any older
+  version of it, or the old metas) coming back.
+* **Panic restore** (whole-folder snapshot or backup, slot by slot): metas verbatim, slots
+  the snapshot lacks left alone, account data kept unless asked (Steam only),
+  `steam_autocloud.vdf` never copied, an Xbox backup of another account refused.
 
 ## Architecture
 ```
@@ -70,7 +87,20 @@ src/nms_save_vault/
     lz4_block.py  pure-python LZ4 block decode (deep verify)
     savedir.py    enumerate a folder's slots/members, decode metas
     catalog.py    JSON index of backups; scan/import; dedup by sha256
-    operations.py backup/restore/extract/repopulate/promote
+    operations.py backup/extract/import, and the classic names (repopulate, promote, restore,
+                  undo_last) as thin adapters over liveops
+    liveops/      live operations (docs/organizer/designs/D5-live-operations.md)
+      planner.py  plan_place / plan_swap / plan_promote / plan_keep: the plan, its warnings,
+                  confirmations and blocks, nothing written
+      execute.py  one op under the live-op lock: preserve, snapshot, journal, write, validate,
+                  exact rollback, record
+      steamwrite.py, msstore.py (pair writer)  the slot writers; one combined plan per Xbox account
+      pairmeta.py which bytes and metas go to which position (both positions always written)
+      opjournal.py ops.jsonl (write-ahead record of every file), markers, the live-op lock
+      recovery.py an interrupted op, at the next start: forward, back or leave
+      undo.py, verify.py  slot-scoped undo and the history; post-launch verification
+      panic.py    the panic restore: a whole snapshot back, slot by slot, metas verbatim
+      classic.py  the adapters for today's names; guide.py: the steps to empty a slot
     safety.py     game-running check, atomic staged writes, auto-snapshot, op-log/undo, inter-process lock
     aliases.py    account-id -> display-name filter (accounts.ini); display only
     organizer/    save-file organizer (docs/organizer/designs/D1-core-model.md)
@@ -79,7 +109,7 @@ src/nms_save_vault/
       cache.py    per-machine scan cache (hashes, entry captures, data ids); never in the vault
       scanner.py  captures of every live slot and vault entry; version and pair registry
       journal.py  live journal: observe (obs records), replay -> edges, events, op outcomes
-      recorder.py op records; the phase-1 hook: classic live writes under the live-op lock
+      recorder.py op records (LineageRecorder) and the one look a backup takes
       bootstrap.py history from before recording: backups (seen in backups) + old oplog
       notes.py    save-file notes with every revision, pins, version labels/comments/locks
       lineage.py  lineage.json: owner corrections, Combine aliases, the bootstrap record
@@ -93,7 +123,8 @@ src/nms_save_vault/
   theme.py        light/dark/system palettes (incl. the organizer keys) + ttk restyling,
                   dark title bar (front-end)
   updates.py      opt-in GitHub release check + in-place self-update (the only network access)
-  cli.py          argparse front end
+  cli.py          argparse front end (cli_store.py: the version store; cli_live.py: place, swap,
+                  keep, undo, ops, recover, clear, panic-restore)
   gui.py          Tkinter app: menu bar, tabs "Live saves and backups" (the two panes) and
                   "Organizer", status bar (shell 10a)
 ```
@@ -121,17 +152,22 @@ src/nms_save_vault/
 1. Never write while `NMS.exe` runs.
 2. Auto-snapshot live before every destructive op; every snapshot is kept.
 3. Atomic: stage to temp → validate → swap.
-4. Validate: meta header + `SizeDisk == file size` + `SizeDecompressed == Σ chunk sizes`
-   + sha256 on copies + re-key round-trip.
-5. Dry-run preview; operation log with one-click undo.
+4. Validate: meta header + `SizeDecompressed == Σ chunk sizes` + sha256 on copies + re-key
+   round-trip.
+5. Plan first (the plan names what is replaced, the warnings and the confirmations); a
+   per-slot undo for every op, and the panic restore for the whole folder.
 6. Steam Cloud: operate with game closed; vault lives outside `st_…`. Live writes are
    stamped with the write time under Cloud, so Steam never judges its copy the newer one;
-   deletions cannot be propagated at all and the clear plan says how to do it by hand.
-7. A restore (and so undo) keeps the live account's own identity: `steam_autocloud.vdf` is
-   never copied, an Xbox backup of another account is refused, and the account data
-   (unlocks, settings) stays unless the user asks to roll it back (or there is none live).
-   A restored Xbox record is a fresh local write: its index time is now, never older.
-8. The version store never writes into a live save folder and never deletes an object or a
+   deletions cannot be propagated at all, so the app does not delete: it shows the steps.
+7. A restore (the panic restore, and so the whole-folder undo) keeps the live account's own
+   identity: `steam_autocloud.vdf` is never copied, an Xbox backup of another account is
+   refused, and the account data (unlocks, settings) stays unless the user asks to roll it
+   back (Steam only; or there is none live). A restored Xbox record is a fresh local write:
+   its index time is now, never older, and never moved back.
+8. No live byte is lost: whatever a live write replaces is a verified vault copy first; a
+   recovery or a rollback never writes over a slot the game has written since. The app never
+   empties a slot.
+9. The version store never writes into a live save folder and never deletes an object or a
    manifest by itself: damaged objects are quarantined, the pre-upgrade copy is read-only
    input, and the upgrade and its undo leave a marker (`store/state/upgrade.json`) so an
    interrupted run is finished or abandoned explicitly, with every other vault write refused
