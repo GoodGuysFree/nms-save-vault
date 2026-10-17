@@ -352,21 +352,12 @@ def cmd_import(args) -> int:
 
 def cmd_discover(args) -> int:
     vault = _resolve_vault(args)
-    found: list = []
-    roots = locations.nms_roots()  # several on Linux, one (or none) elsewhere
-    if roots:
-        live_dirs = {p.resolve() for p in locations.find_live_save_dirs()}
-        seen: set[Path] = set()
-        for root in roots:
-            for d in ops_discover(root, list(live_dirs) + [vault.root]):
-                rd = d.resolve()
-                if rd not in seen:
-                    seen.add(rd)
-                    found.append(d)
-    found += locations.find_microsoft_save_dirs()  # Xbox / Game Pass
+    live = discover.live_folders(discover.all_live_paths(appstate.load()))
+    search = discover.find_backups(live=live, exclude=[vault.root])
+    found = search.backups
     if not found:
-        print("(no backups found under the Steam NMS root or the Xbox wgs folder)")
-        return 0
+        where = ", ".join(str(r) for r in search.roots) or "any NMS save folder (none found)"
+        print(f"(no backups found under {where}; Xbox folders hold only live saves and are not searched)")
     known = {Path(e.path).resolve() for e in vault.entries}
     for d in found:
         new = d.resolve() not in known
@@ -376,6 +367,24 @@ def cmd_discover(args) -> int:
             entry = ops.import_backup(vault, d, label=d.name, copy_into_vault=False, warnings=warns)
             print(f"      added as {entry.id}")
             _print_warnings(warns)
+    if search.skipped_live:
+        n = len(search.skipped_live)
+        print(f"skipped {n} live save folder{'' if n == 1 else 's'} (not backups)")
+    vault_root = vault.root.resolve()
+    vault_is_live = discover.is_inside(vault_root, live)
+    if vault_is_live:
+        print(
+            f"note: the vault {vault.root} is or lies inside a live save folder; its entries "
+            "are left as they are."
+        )
+    for e in vault.entries:
+        if vault_is_live and discover.is_inside(e.path, [vault_root]):
+            continue
+        if discover.is_inside(e.path, live):
+            print(
+                f"note: catalog entry '{e.id}' ({e.path}) is or lies inside a live save folder, "
+                "not a backup; it is left as it is."
+            )
     return 0
 
 
@@ -414,12 +423,6 @@ def cmd_verify(args) -> int:
         return 1
     print("\nall present saves valid.")
     return 0
-
-
-def ops_discover(root, exclude):
-    from .core.catalog import discover_save_dirs
-
-    return discover_save_dirs(root, exclude=exclude)
 
 
 def _print_warnings(warnings: list[str]) -> None:

@@ -1615,10 +1615,11 @@ class App(tk.Tk):
         )
 
     def on_discover(self) -> None:
-        # Exclude every live source (so a copy-paste "st_... - Copy" is still seen as a
-        # backup, but the real live folders are not) plus the vault itself.
-        exclude = [s.path for s in self.state.live_sources] + [self.vault.root]
-        dirs = discover.discover_inplace_backups(exclude=exclude)
+        # No live folder, enabled or not, is a backup (a copy-paste "st_... - Copy" still
+        # is one); the vault itself is not searched.
+        dirs = discover.discover_inplace_backups(
+            live=discover.all_live_paths(self.state), exclude=[self.vault.root]
+        )
         known = {Path(e.path).resolve() for e in self.vault.entries}
         added = 0
         for d in dirs:
