@@ -571,7 +571,7 @@ Read-only CLI listings do not observe (2.13, O-D1-3).
 Replay runs per target over its records sorted by `(at, seq)`. `first_seen(v)` is the smallest
 `ObsOrder` at which `v` appears anywhere: journal records, or entry captures at
 `(created, -1)`. `compatible(p, n)` is `pid(p) == pid(n)` or both legacy with the same platform
-and name.
+and the same non-empty name (two unnamed saves match only as the same pid).
 
 ```text
 state = None                     # what the slot holds now, per the records
@@ -588,7 +588,7 @@ for rec in records(target):
         emit first-seen; state = State(cur, "obs", rec.order)
         if not empty(cur): last_full = cur
         continue
-    if state.src == "op" and set(cur) == set(state.evicted) and set(cur) != set(state.vids):
+    if state.src == "op" and cur == state.evicted and cur != state.vids:   # ordered pairs
         emit reverted(op_id=state.op.op_id)        # the cloud or another tool put the old save back
         state = State(cur, "obs", rec.order); last_full = cur or last_full
         continue                                   # no edges
@@ -608,7 +608,8 @@ for rec in records(target):
     made_from_placed = False
     for n in sorted(new, key=lambda v: (meta_ts(v), play_time(v), v)):
         ok = [c for c in cands if compatible(c, n)
-              and play_time(c) <= play_time(n) and meta_ts(c) <= meta_ts(n)]
+              and play_time(c) <= play_time(n)
+              and (ts_src(c) != ts_src(n) or meta_ts(c) <= meta_ts(n))]   # times on one clock
         if ok:
             p = max(ok, key=lambda c: (play_time(c), meta_ts(c), cands.index(c)))
             if state.src == "op" and p in state.vids:

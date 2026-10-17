@@ -297,6 +297,9 @@ class StoreTx:
         self._pending: list[dict] = []
         self._docs: dict[str, dict] = {}
         self._read_as: dict[str, bytes] = {}    # each document as first handed out
+        # Running maxima, so appending many records (a bootstrap) costs no rescan each.
+        self._last_seq = max((r["seq"] for r in journal), default=0)
+        self._last_at = max((r["at"] for r in journal), default=0)
 
     @property
     def vault_id(self) -> str:
@@ -324,16 +327,16 @@ class StoreTx:
         order never goes backwards when the clock does; backfill passes its own time."""
         if record.get("t") not in RECORD_TYPES or {"id", "seq", "at"} & record.keys():
             raise ValueError("a journal record is its type and fields; id, seq, at are assigned")
-        records = self.journal()
-        seq = max((r["seq"] for r in records), default=0) + 1
+        seq = self._last_seq + 1
         if at is None:
-            at = max([int(self._store.clock())] + [r["at"] for r in records])
+            at = max(int(self._store.clock()), self._last_at)
         full = {"t": record["t"], "id": f"{self.vault_id[:8]}-{seq}", "seq": seq, "at": at}
         full.update((k, v) for k, v in record.items() if k != "t")
         if not _valid_envelope(full):
             raise ValueError("not a valid journal record")
         _dump_record(full)          # refuse what cannot be written before anything is
         self._pending.append(full)
+        self._last_seq, self._last_at = seq, max(self._last_at, at)
         return full
 
 

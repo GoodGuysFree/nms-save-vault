@@ -235,6 +235,38 @@ def test_a_cloud_revert_after_an_operation(tmp_path):
     assert [e for e in state.edges if e.child == V(1)] == []
 
 
+def test_a_reverted_member_swap_is_caught(tmp_path):
+    """An operation swapped the slot's two members; the cloud put them back as they were."""
+    book = Book(tmp_path)
+    book.obs(T9, mobs(V(1), play=500, ts=1000), mobs(V(2), "B", play=400, ts=900), at=1000)
+    book.op(T9, (V(2), V(1)), (V(1), V(2)), at=1100, op_id=OP1, kind="swap")
+    book.obs(T9, mobs(V(1), play=500, ts=1000), mobs(V(2), "B", play=400, ts=900), at=2000)
+    state = book.replay()
+    assert state.ops[(OP1, T9)].outcome == "reverted"
+    assert [e.kind for e in state.events if e.at == 2000] == ["reverted"]
+
+
+def test_unnamed_legacy_saves_in_one_slot_are_replaced_not_linked(tmp_path):
+    book = Book(tmp_path)
+    book.obs(T9, mobs(V(1), play=100, ts=1000, pid="legacy:steam:9:"), at=1000)
+    book.obs(T9, mobs(V(2), play=200, ts=2000, pid="legacy:steam:3:"), at=2000)
+    state = book.replay()
+    assert state.edges == () and [e.vids for e in _events(state, "replaced")] == [(V(2),)]
+
+
+def test_times_on_two_clocks_do_not_block_an_edge(tmp_path):
+    """A save without a meta time carries its file time: it cannot be compared with a meta
+    time, so only play time decides."""
+    book = Book(tmp_path)
+    book.obs(T9, mobs(V(1), play=100, ts=5000), at=1000)
+    later = mobs(V(2), play=200, ts=4000)
+    later = MemberObs(later.member, later.vid, later.pid, later.pid_src, later.platform,
+                      MetaSnap(200, 4000, "mtime", "Main", "", 2, 1, 0, 4220, 2004, 100, 50, "",
+                               True, 4000.0))
+    book.obs(T9, later, at=6000)
+    assert _edges(book.replay()) == [(V(1), V(2), "observed", "play", "journal", None)]
+
+
 def test_something_else_after_an_operation_is_unexpected(tmp_path):
     book = Book(tmp_path)
     book.obs(T7, mobs(V(2), play=300, ts=900), at=1000)
@@ -338,6 +370,21 @@ def test_observe_skips_busy_unstable_and_running(tmp_path):
     later = Journal(store, scan.versions).observe(scan, src="scan", skip=frozenset())
     assert later.written == 1                                    # journaled at the next refresh
     assert store.journal_records()[-1]["target"]["slot"] == 9
+
+
+def test_observe_decodes_each_record_once(tmp_path, monkeypatch):
+    live = _live(tmp_path)
+    steam_save(live, 9, 0, "Main", 100, 0xDDDAD1BDD39F9C72, 1000, extra="a")
+    store = OrganizerStore(tmp_path / "vault", create=True)
+    scan = _scan(tmp_path, live)
+    Journal(store, scan.versions).observe(scan, src="scan", skip=frozenset())   # 15 records
+    steam_save(live, 9, 1, "Main", 200, 0xDDDAD1BDD39F9C72, 2000, extra="b")
+    scan = _scan(tmp_path, live)
+    decoded = []
+    real = jr.decode_record
+    monkeypatch.setattr(jr, "decode_record", lambda d: decoded.append(1) or real(d))
+    assert Journal(store, scan.versions).observe(scan, src="scan", skip=frozenset()).written == 1
+    assert len(decoded) == 16
 
 
 def test_a_verify_observe_journals_its_own_targets_only(tmp_path):

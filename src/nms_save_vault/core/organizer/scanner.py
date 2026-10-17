@@ -10,6 +10,7 @@ fails is shown but never journaled. Problems are collected, never raised.
 from __future__ import annotations
 
 import hashlib
+import logging
 import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
@@ -17,7 +18,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .. import catalog, discover, formats, lz4_block, playtime, safety, savedir
+from .. import catalog, discover, formats, lz4_block, msstore, playtime, safety, savedir
 from ..catalog import CatalogEntry, Vault
 from ..savedir import MemberView, SlotView
 from ..state import Source
@@ -44,6 +45,8 @@ from .model import (
     pid_from_id,
     unknown_pid,
 )
+
+log = logging.getLogger(__name__)
 
 ProblemKind = str   # one of the kinds listed on ScanProblem
 
@@ -217,6 +220,8 @@ class _Run:
             for capture in captures:
                 for m in capture.members:
                     self.pids.setdefault(m.vid, (m.pid, m.pid_src))
+                    if m.pid_src == "legacy" and self.cache.legacy_pid(m.vid) is None:
+                        self.cache.put_legacy_pid(m.vid, m.pid)
         return EntryScan(entry.id, entry.kind, entry.managed, created or 0, entry.source, captures)
 
     def _entry_captures(self, entry: CatalogEntry, folder: Path, where: EntryRef,
@@ -271,17 +276,19 @@ class _Run:
 
     def _capture(self, sv: SlotView, where: SourceRef, platform: Platform, *, live: bool,
                  at: int, quality: str, src: str) -> tuple[Capture, bool]:
-        """One slot's capture, and whether a live member of it failed the check."""
+        """One slot's capture, and whether a live member of it failed the check or could not
+        be read at all - such a slot is never journaled, so a save that is there but
+        unreadable is never recorded as gone."""
         members: dict[str, MemberObs] = {}
         unstable = False
         for mv in sv.members:
             obs, ok = self._member(mv, where, platform, live)
             if obs is not None:
                 members[obs.member] = obs
-            if live and obs is not None and not ok:
+            if live and not ok and (obs is not None or _present_but_unread(mv)):
                 unstable = True
                 self.problem("member-unstable", where, sv.slot,
-                             f"slot {sv.slot}{mv.label}: not a whole, consistent save")
+                             f"slot {sv.slot}{mv.label}: not a whole, readable save")
         newest = sv.newest
         if newest is not None and newest.label in members:
             head = newest.label
@@ -303,12 +310,14 @@ class _Run:
             st = path.stat()
             hit = None if self.deep else self.cache.file(path, st.st_size, st.st_mtime_ns)
             data = None
-            if hit is None or (live and hit[1] is None):
+            # The verdict ties the data to its meta: a new meta beside the same data (moved,
+            # promoted, edited) is checked again.
+            if hit is None or (live and (hit.whole is None or hit.meta_sha != mv.meta_sha256)):
                 data = path.read_bytes()
                 vid, ok = safety.sha256_bytes(data), (_whole(mv, data, platform) if live else None)
-                self.cache.put_file(path, st.st_size, st.st_mtime_ns, vid, ok)
+                self.cache.put_file(path, st.st_size, st.st_mtime_ns, vid, ok, mv.meta_sha256)
             else:
-                vid, ok = hit
+                vid, ok = hit.vid, hit.whole
         except OSError as exc:
             self.problem("member-unreadable", where, mv.slot, f"slot {mv.slot}{mv.label}: {exc.strerror}")
             return None, False
@@ -332,15 +341,18 @@ class _Run:
             return pid_from_id(info.slot_identifier), "meta"
         ident = self.cache.data_id(vid)
         if ident is None:
-            ident = _data_id(mv, data)
-            self.cache.put_data_id(vid, ident)
+            ident = _data_id(mv, vid, data)
+            if ident is not None:       # "could not look" is not "has none": ask again later
+                self.cache.put_data_id(vid, ident)
         if ident:
             try:
                 return pid_from_id(ident), "data"
             except ModelError:
                 pass
         if mv.valid and info is not None:
-            return legacy_pid(platform, mv.slot, info.save_name), "legacy"
+            pid = self.cache.legacy_pid(vid) or legacy_pid(platform, mv.slot, info.save_name)
+            self.cache.put_legacy_pid(vid, pid)
+            return pid, "legacy"
         return unknown_pid(vid), "unknown"
 
 
@@ -377,14 +389,28 @@ def _whole(mv: MemberView, data: bytes, platform: Platform) -> bool:
     return True     # a pre-Waypoint bare LZ4 block has no chunks to walk
 
 
-def _data_id(mv: MemberView, data: bytes | None) -> int:
-    """The playthrough id inside the save data (first chunk only), 0 when there is none."""
+def _data_id(mv: MemberView, vid: Vid, data: bytes | None) -> int | None:
+    """The playthrough id inside the save data (first chunk only), 0 when it has none, None
+    when the data could not be looked into."""
     try:
         raw = data if data is not None else mv.data_path.read_bytes()
         expected = mv.info.size_decompressed if mv.info else 0
         return playtime._id_from_bytes(raw, expected) or 0
-    except (OSError, ValueError):     # lz4_block.UnsupportedContainer is a ValueError
-        return 0
+    except lz4_block.UnsupportedContainer as exc:
+        log.warning("version %s: could not look for its id in the data: %s", vid[:8], exc)
+    except OSError as exc:
+        log.warning("version %s: could not read its data for the id: %s", vid[:8], exc.strerror)
+    return None
+
+
+def _present_but_unread(mv: MemberView) -> bool:
+    """A member that is there but could not be taken in: half of a Steam pair, or an Xbox
+    record whose blob is missing (a record marked deleted is a save that is gone)."""
+    if mv.exists:
+        return True
+    if mv.xbox is not None:
+        return getattr(mv.xbox, "sync_state", None) != msstore.SYNC_STATE_DELETED
+    return mv.data_path.is_file() or mv.meta_path.is_file()
 
 
 def _created_utc(entry: CatalogEntry) -> int | None:

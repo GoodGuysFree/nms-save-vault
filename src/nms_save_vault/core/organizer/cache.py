@@ -12,16 +12,20 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 from pathlib import Path
+from typing import NamedTuple
 
 from .. import platform as host_platform
 from .. import safety
-from .model import Capture, ModelError, capture_from_json, capture_to_json, is_vid
+from .model import Capture, ModelError, capture_from_json, capture_to_json, is_vid, pid_kind
 
 log = logging.getLogger(__name__)
 
-SCHEMA = 1
+SCHEMA = 2
 FILENAME = "scan-cache.json"
+
+_HEX_ID = re.compile(r"0|[1-9A-F][0-9A-F]{0,15}")
 
 
 def cache_dir(vault_root: Path, vault_id: str | None,
@@ -34,15 +38,22 @@ def cache_dir(vault_root: Path, vault_id: str | None,
     return host_platform.user_cache_dir(host) / "vaults" / vault_id
 
 
+class FileHit(NamedTuple):
+    vid: str
+    whole: bool | None      # the live check's verdict; None when never checked (entry copies)
+    meta_sha: str           # the meta the verdict was reached with: it ties sizes to chunks
+
+
 class ScanCache:
     """``path`` None keeps the cache in memory only (``--no-cache``)."""
 
     def __init__(self, path: Path | None, vault_id: str | None) -> None:
         self.path = path
         self.vault_id = vault_id
-        self._files: dict[str, list] = {}        # path -> [size, mtime_ns, vid, ok]
+        self._files: dict[str, list] = {}        # path -> [size, mtime_ns, vid, whole, meta_sha]
         self._entries: dict[str, dict] = {}      # entry id -> {"fp", "captures"}
         self._ids: dict[str, str] = {}           # vid -> data id hex, "0" for none
+        self._legacy: dict[str, str] = {}        # vid -> legacy pid fixed at first sight
         self._dirty = False
 
     @classmethod
@@ -53,35 +64,39 @@ class ScanCache:
         except FileNotFoundError:
             return cache
         except OSError as exc:
-            log.warning("scan cache not read, starting afresh: %s", exc)
+            log.warning("scan cache not read, starting afresh: %s", exc.strerror)
             return cache
         try:
             data = json.loads(raw.decode("utf-8"))
             if data.get("schema") != SCHEMA or data.get("vault_id") != vault_id:
                 return cache
-            cache._files = {k: v for k, v in data["files"].items() if _file_ok(v)}
-            cache._entries = {k: v for k, v in data["entries"].items()
-                              if isinstance(v, dict) and isinstance(v.get("fp"), str)
-                              and isinstance(v.get("captures"), list)}
-            cache._ids = {k: v for k, v in data["ids"].items()
-                          if is_vid(k) and isinstance(v, str)}
+            files, entries, ids, legacy = (data["files"], data["entries"], data["ids"],
+                                           data["legacy"])
+            if not (all(_file_ok(v) for v in files.values())
+                    and all(isinstance(v, dict) and isinstance(v.get("fp"), str)
+                            and isinstance(v.get("captures"), list) for v in entries.values())
+                    and all(is_vid(k) and isinstance(v, str) and _HEX_ID.fullmatch(v)
+                            for k, v in ids.items())
+                    and all(is_vid(k) and _is_legacy(v) for k, v in legacy.items())):
+                raise ValueError("an entry is not in the expected form")
         except (ValueError, KeyError, TypeError, AttributeError) as exc:
             log.warning("scan cache damaged, starting afresh: %s", exc)
-            return cls(path, vault_id)
+            return cache
+        cache._files, cache._entries, cache._ids, cache._legacy = files, entries, ids, legacy
         return cache
 
     # --- files ----------------------------------------------------------------
 
-    def file(self, path: Path, size: int, mtime_ns: int) -> tuple[str, bool | None] | None:
-        """``(vid, validated)`` for a file that has not changed, else None. ``validated`` is
-        None when the file was never checked (entry copies are not)."""
+    def file(self, path: Path, size: int, mtime_ns: int) -> FileHit | None:
+        """What is known of a data file that has not changed since, else None."""
         hit = self._files.get(str(path))
         if hit is None or hit[0] != size or hit[1] != mtime_ns:
             return None
-        return hit[2], hit[3]
+        return FileHit(hit[2], hit[3], hit[4])
 
-    def put_file(self, path: Path, size: int, mtime_ns: int, vid: str, ok: bool | None) -> None:
-        value = [size, mtime_ns, vid, ok]
+    def put_file(self, path: Path, size: int, mtime_ns: int, vid: str, whole: bool | None,
+                 meta_sha: str) -> None:
+        value = [size, mtime_ns, vid, whole, meta_sha]
         if self._files.get(str(path)) != value:
             self._files[str(path)] = value
             self._dirty = True
@@ -103,7 +118,7 @@ class ScanCache:
                                    "captures": [capture_to_json(c) for c in captures]}
         self._dirty = True
 
-    # --- data ids -------------------------------------------------------------
+    # --- ids ------------------------------------------------------------------
 
     def data_id(self, vid: str) -> int | None:
         """The id found in a version's data (0 = it has none), or None when not looked up."""
@@ -114,10 +129,21 @@ class ScanCache:
         self._ids[vid] = f"{ident:X}" if ident else "0"
         self._dirty = True
 
+    def legacy_pid(self, vid: str) -> str | None:
+        """The legacy pid a version got when first seen: it names the slot it was in then,
+        so a save without an id keeps its line when it moves."""
+        return self._legacy.get(vid)
+
+    def put_legacy_pid(self, vid: str, pid: str) -> None:
+        if self._legacy.get(vid) != pid:
+            self._legacy[vid] = pid
+            self._dirty = True
+
     # --- upkeep ---------------------------------------------------------------
 
     def prune(self, paths: set[str], entry_ids: set[str]) -> None:
-        """After a full scan: forget files and entries that were not seen."""
+        """After a full scan: forget files and entries that were not seen. Ids stay: the id
+        of given bytes never changes."""
         for key in [k for k in self._files if k not in paths]:
             del self._files[key]
             self._dirty = True
@@ -131,17 +157,24 @@ class ScanCache:
         if self.path is None or not self._dirty:
             return
         data = {"schema": SCHEMA, "vault_id": self.vault_id, "files": self._files,
-                "entries": self._entries, "ids": self._ids}
+                "entries": self._entries, "ids": self._ids, "legacy": self._legacy}
         try:
             safety.atomic_write_bytes(
                 self.path, json.dumps(data, ensure_ascii=True, separators=(",", ":")).encode("ascii"))
         except OSError as exc:
-            log.warning("scan cache not saved: %s", exc)
+            log.warning("scan cache not saved: %s", exc.strerror)
             return
         self._dirty = False
 
 
 def _file_ok(value: object) -> bool:
-    return (isinstance(value, list) and len(value) == 4 and isinstance(value[0], int)
+    return (isinstance(value, list) and len(value) == 5 and isinstance(value[0], int)
             and isinstance(value[1], int) and is_vid(value[2])
-            and (value[3] is None or isinstance(value[3], bool)))
+            and (value[3] is None or isinstance(value[3], bool)) and isinstance(value[4], str))
+
+
+def _is_legacy(value: object) -> bool:
+    try:
+        return isinstance(value, str) and pid_kind(value) == "legacy"
+    except ModelError:
+        return False

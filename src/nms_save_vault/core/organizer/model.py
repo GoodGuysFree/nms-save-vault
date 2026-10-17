@@ -123,11 +123,12 @@ def is_identified(pid: Pid) -> bool:
 
 def pids_compatible(a: Pid, b: Pid) -> bool:
     """May a version of ``b`` descend from one of ``a``? The same pid, or two legacy pids with
-    the same platform and name (a pre-Waypoint save moved to another slot)."""
+    the same platform and name (a pre-Waypoint save moved to another slot). Unnamed saves
+    have nothing in common but the slot, so two of them match only as the same pid."""
     if a == b:
         return True
     la, lb = _LEGACY_PID.fullmatch(a), _LEGACY_PID.fullmatch(b)
-    return bool(la and lb) and (la[1], la[3]) == (lb[1], lb[3])
+    return bool(la and lb and la[3]) and (la[1], la[3]) == (lb[1], lb[3])
 
 
 def is_vid(value: object) -> bool:

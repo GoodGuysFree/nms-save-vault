@@ -5,13 +5,14 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import struct
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 
-from nms_save_vault.core import meta, operations, savedir, slotmap
+from nms_save_vault.core import formats, meta, operations, savedir, slotmap
 from nms_save_vault.core.catalog import KIND_INPLACE, Vault
 from nms_save_vault.core.organizer import cache as cache_mod
 from nms_save_vault.core.organizer import scanner
@@ -153,6 +154,50 @@ def test_an_xbox_live_folder(tmp_path, make_wgs_account):
         savedir.scan_any(acct).slots[1].a.meta_path.read_bytes()).hexdigest()
 
 
+def test_a_new_meta_beside_the_same_data_is_checked_again(tmp_path):
+    """The cached verdict belongs to the data and its meta together."""
+    live = _live(tmp_path)
+    steam_save(live, 4, 0, "Main", 7200, MAIN, T0)
+    cache = ScanCache(None, None)
+    assert _scan(_vault(tmp_path), [_source(live)], cache).live[
+        LiveRef("steam", ACCOUNT)].unstable == frozenset()
+    fno = slotmap.slot_file_numbers(4)[0]
+    meta_path, ordinal = live / slotmap.meta_filename(fno), slotmap.storage_ordinal(fno)
+    plain = bytearray(meta.decrypt(meta_path.read_bytes(), ordinal))
+    struct.pack_into("<I", plain, formats.OFF_SIZE_DECOMPRESSED, 999_999)   # no longer ties
+    meta_path.write_bytes(meta.encrypt(bytes(plain), ordinal))
+    result = _scan(_vault(tmp_path), [_source(live)], cache)
+    assert result.live[LiveRef("steam", ACCOUNT)].unstable == frozenset({4})
+
+
+def test_a_live_save_that_cannot_be_read_is_unstable_not_absent(tmp_path, monkeypatch):
+    live = _live(tmp_path)
+    steam_save(live, 1, 0, "Main", 10, MAIN, T0, extra="half")
+    steam_save(live, 2, 0, "Main", 10, MAIN, T0, extra="locked")
+    steam_save(live, 3, 0, "Main", 10, MAIN, T0, extra="fine")
+    (live / slotmap.meta_filename(slotmap.slot_file_numbers(1)[0])).unlink()   # data, no meta
+    locked = _data(live, 2, 0)
+    real_read = Path.read_bytes
+
+    def read_bytes(self):
+        if self == locked:
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_read(self)
+
+    monkeypatch.setattr(Path, "read_bytes", read_bytes)
+    folder = _scan(_vault(tmp_path), [_source(live)]).live[LiveRef("steam", ACCOUNT)]
+    assert folder.unstable == frozenset({1, 2})
+
+
+def test_an_xbox_record_without_its_blob_is_unstable(tmp_path, make_wgs_account):
+    acct = make_wgs_account(tmp_path, [("Slot1Auto", '{"x":1}', "Xbox Save", "", 10, T0)])
+    for blob in [p for p in acct.rglob("*") if p.is_file() and p.parent != acct
+                 and p.name != "container.1"]:
+        blob.unlink()
+    folder = _scan(_vault(tmp_path), [_source(acct, "xbox")]).live[LiveRef("xbox", acct.name)]
+    assert 1 in folder.unstable and folder.captures[0].a is None
+
+
 # --- pid rules ----------------------------------------------------------------
 
 
@@ -168,6 +213,41 @@ def test_without_a_meta_id_the_id_comes_from_the_data_once(tmp_path, monkeypatch
         a = _scan(_vault(tmp_path), [_source(live)], cache).captures[0].a
         assert (a.pid, a.pid_src) == ("DDDAD1BDD39F9C72", "data")
     assert decoded == [1]           # the id of given bytes never changes: looked up once
+
+
+@pytest.mark.parametrize("failure", ["unsupported", "unreadable"])
+def test_a_data_id_that_could_not_be_looked_up_is_not_cached(tmp_path, monkeypatch, caplog,
+                                                              failure):
+    live = _live(tmp_path)
+    steam_save(live, 1, 0, "Main", 10, 0, T0, data_ident=MAIN)
+
+    def broken(raw, size):
+        if failure == "unsupported":
+            raise scanner.lz4_block.UnsupportedContainer("HGSAVEV2 is not supported")
+        raise OSError(5, "Input/output error")
+
+    monkeypatch.setattr(scanner.playtime, "_id_from_bytes", broken)
+    cache = ScanCache(None, None)
+    with caplog.at_level("WARNING"):
+        a = _scan(_vault(tmp_path), [_source(live)], cache).captures[0].a
+    assert a.pid_src == "legacy" and cache.data_id(a.vid) is None
+    assert "could not" in caplog.text and a.vid[:8] in caplog.text
+    monkeypatch.undo()
+    again = _scan(_vault(tmp_path), [_source(live)], cache).captures[0].a
+    assert (again.pid, again.pid_src) == ("DDDAD1BDD39F9C72", "data")   # looked again
+
+
+def test_a_live_only_legacy_save_keeps_its_key_when_it_moves(tmp_path):
+    live = _live(tmp_path)
+    steam_save(live, 3, 0, "Voyagers", 10, 0, T0, data_ident=0)
+    path = tmp_path / "scan-cache.json"
+    first = _scan(_vault(tmp_path), [_source(live)], ScanCache.load(path, None)).captures[2].a
+    assert first.pid == "legacy:steam:3:Voyagers"
+    for f in (_data(live, 3, 0), live / slotmap.meta_filename(slotmap.slot_file_numbers(3)[0])):
+        f.unlink()
+    steam_save(live, 7, 0, "Voyagers", 10, 0, T0, data_ident=0)       # the same bytes, slot 7
+    moved = _scan(_vault(tmp_path), [_source(live)], ScanCache.load(path, None)).captures[6].a
+    assert moved.vid == first.vid and moved.pid == "legacy:steam:3:Voyagers"
 
 
 def test_a_save_with_no_id_anywhere_keeps_its_first_slot_key(tmp_path):
@@ -311,14 +391,16 @@ def test_a_thumbnail_does_not_make_an_entry_look_changed(tmp_path, monkeypatch):
 def test_the_cache_file(tmp_path):
     path = tmp_path / "c" / "scan-cache.json"
     cache = ScanCache.load(path, "v1")
-    cache.put_file(Path("/x/save.hg"), 10, 20, "a" * 64, True)
+    cache.put_file(Path("/x/save.hg"), 10, 20, "a" * 64, True, "m" * 64)
     cache.put_data_id("a" * 64, 0xDDDAD1BDD39F9C72)
     cache.put_data_id("b" * 64, 0)
+    cache.put_legacy_pid("a" * 64, "legacy:steam:3:Voyagers")
     cache.save()
     raw = path.read_bytes()
     assert raw.isascii() and json.loads(raw)["vault_id"] == "v1"
     again = ScanCache.load(path, "v1")
-    assert again.file(Path("/x/save.hg"), 10, 20) == ("a" * 64, True)
+    assert again.file(Path("/x/save.hg"), 10, 20) == ("a" * 64, True, "m" * 64)
+    assert again.legacy_pid("a" * 64) == "legacy:steam:3:Voyagers"
     assert again.file(Path("/x/save.hg"), 10, 21) is None             # touched: hash again
     assert again.data_id("a" * 64) == 0xDDDAD1BDD39F9C72 and again.data_id("b" * 64) == 0
     assert again.data_id("c" * 64) is None
@@ -327,9 +409,38 @@ def test_the_cache_file(tmp_path):
     assert ScanCache.load(path, "v1").file(Path("/x/save.hg"), 10, 20) is None   # rebuilt
 
     memory = ScanCache(None, "v1")
-    memory.put_file(Path("/y"), 1, 2, "a" * 64, None)
+    memory.put_file(Path("/y"), 1, 2, "a" * 64, None, "")
     memory.save()                   # --no-cache: never written anywhere
-    assert memory.file(Path("/y"), 1, 2) == ("a" * 64, None)
+    assert memory.file(Path("/y"), 1, 2) == ("a" * 64, None, "")
+
+
+@pytest.mark.parametrize("bad", ["zz", "0x12", "-5", "00012", ""])
+def test_a_damaged_data_id_starts_the_cache_afresh(tmp_path, bad):
+    path = tmp_path / "scan-cache.json"
+    cache = ScanCache.load(path, "v1")
+    cache.put_file(Path("/x/save.hg"), 10, 20, "a" * 64, True, "")
+    cache.put_data_id("a" * 64, 0x1234)
+    cache.save()
+    data = json.loads(path.read_text(encoding="ascii"))
+    data["ids"]["a" * 64] = bad
+    path.write_text(json.dumps(data), encoding="ascii")
+    again = ScanCache.load(path, "v1")
+    assert again.data_id("a" * 64) is None                       # never int("zz", 16)
+    assert again.file(Path("/x/save.hg"), 10, 20) is None
+
+
+def test_cache_problems_are_logged_without_paths(tmp_path, caplog):
+    unreadable = tmp_path / "secret-folder-name" / "scan-cache.json"
+    unreadable.mkdir(parents=True)                              # a folder where the file goes
+    with caplog.at_level("WARNING"):
+        ScanCache.load(unreadable, "v1")
+        blocked = tmp_path / "secret-file" / "scan-cache.json"
+        blocked.parent.write_text("x", encoding="ascii")        # its folder is a file
+        failing = ScanCache(blocked, "v1")
+        failing.put_data_id("a" * 64, 1)
+        failing.save()
+    assert "not read" in caplog.text and "not saved" in caplog.text
+    assert "secret" not in caplog.text and str(tmp_path) not in caplog.text
 
 
 def test_paths_that_are_gone_are_dropped_after_a_full_scan(tmp_path):

@@ -219,6 +219,20 @@ def test_seq_and_at_are_assigned_and_at_never_goes_backwards(tmp_path):
         assert (tx.append({"t": "op"})["seq"], tx.append({"t": "op"})["at"]) == (4, 1000)
 
 
+def test_appending_many_records_does_not_rescan_the_journal(tmp_path):
+    store = OrganizerStore(tmp_path, create=True)
+    with store.transaction() as tx:
+        tx.append({"t": "obs"})
+    with store.transaction() as tx:
+        def no_rescan():
+            raise AssertionError("append read the whole journal again")
+
+        tx.journal = no_rescan
+        records = [tx.append({"t": "obs"}) for _ in range(500)]
+    assert [r["seq"] for r in records] == list(range(2, 502))
+    assert len(store.journal_records()) == 501
+
+
 @pytest.mark.parametrize("record, kw", [
     ({"t": "note"}, {}),
     ({"src": "scan"}, {}),

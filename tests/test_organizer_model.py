@@ -105,6 +105,12 @@ def test_an_unnamed_legacy_save_cannot_meet_one_named_like_the_marker():
     assert m.split_source(m.split_pid(unnamed, 1)) == unnamed
 
 
+def test_two_unnamed_legacy_saves_are_not_one_save():
+    """With no name, nothing but the slot ties them: only the same pid matches."""
+    assert m.pids_compatible("legacy:steam:3:", "legacy:steam:3:")
+    assert not m.pids_compatible("legacy:steam:3:", "legacy:steam:7:")
+
+
 def test_pids_compatible_follows_a_legacy_save_across_slots():
     assert m.pids_compatible(PID, PID)
     assert not m.pids_compatible(PID, "9E8385F0AB12CD34")

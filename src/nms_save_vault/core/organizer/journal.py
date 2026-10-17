@@ -246,7 +246,7 @@ class Journal:
         written: list[dict] = []
         try:
             with self.store.transaction() as tx:
-                records, _ = _decode_all(tx.journal())
+                records, problems = _decode_all(tx.journal())
                 last = _last_pairs(records)
                 described = {vid for r in records if isinstance(r, ObsRecord) for vid in r.members}
                 notes = tx.doc(NOTES).get("save_files", {}) if wanted else {}
@@ -263,7 +263,8 @@ class Journal:
         except StoreReadOnly:
             reason = [(target, SKIP_READ_ONLY) for target, _ in wanted]
             return ObserveResult(0, (), tuple(skipped + reason))
-        state = self.replay()
+        new, _ = _decode_all(written)
+        state = replay(records + new, self.registry, problems)   # no second read and decode
         events = tuple(e for rec in written for e in state.events_by_seq.get(rec["seq"], ()))
         return ObserveResult(len(written), events, tuple(skipped))
 
@@ -358,9 +359,12 @@ class _Replay:
         return pa is not None and pb is not None and not pids_compatible(pa, pb)
 
     def _not_later(self, parent: Vid, child: Vid) -> bool:
+        """The parent has no more play than the child and, where both times are on one
+        clock, is not saved after it. A meta time against a file time orders nothing."""
         p, c = self._meta(parent), self._meta(child)
-        return (p is not None and c is not None and p.play_time <= c.play_time
-                and p.meta_ts <= c.meta_ts)
+        if p is None or c is None or p.play_time > c.play_time:
+            return False
+        return p.ts_src != c.ts_src or p.meta_ts <= c.meta_ts
 
     # --- one slot ---------------------------------------------------------------
 
@@ -389,8 +393,8 @@ class _Replay:
                 continue
             before = state.vids
             op_id = state.op.op_id if state.src == "op" else None
-            if (state.src == "op" and set(cur) == set(state.evicted)
-                    and set(cur) != set(state.vids)):
+            # Ordered pairs: a swap of the two members is reverted by the members swapping back.
+            if state.src == "op" and cur == state.evicted and cur != state.vids:
                 self._event("reverted", rec, op_id, before, ())   # the old save came back
                 self._outcome(state.op, "reverted")
                 state = _State(cur, "obs", rec.order)
