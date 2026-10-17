@@ -29,6 +29,7 @@ from .catalog import (
     KIND_IMPORTED,
     KIND_INPLACE,
     KIND_SNAPSHOT,
+    PRE_UPGRADE_COPY,
     CatalogEntry,
     OplogRead,
     Vault,
@@ -344,7 +345,8 @@ def _new_managed_entry(
         entry = vault.make_entry_from_dir(
             entry_id, kind, label, dest, managed=True, source=source, slots=slots
         )
-        vault.upsert(entry)
+        with _store().guarded_write(vault.root):
+            vault.upsert(entry)
     except BaseException as exc:
         _remove_partial(dest)
         gone = next((f for f in files if not f.exists()), None)
@@ -354,9 +356,22 @@ def _new_managed_entry(
     return entry
 
 
+def _store():
+    """The store's classic-operation helpers (D3 2.10), imported late: the store imports this
+    module for its errors."""
+    from .store import classic
+
+    return classic
+
+
 def snapshot_live(vault: Vault, live_dir: Path, reason: str) -> CatalogEntry:
-    """Copy the live save state into the vault as an auto-snapshot entry."""
+    """Copy the live save state into the vault as an auto-snapshot entry (in store mode, a
+    store entry; refused while the vault is being upgraded)."""
     live_dir = Path(live_dir)
+    store = _store().store_of(vault)
+    if store is not None:
+        return _store().keep_live(store, live_dir, kind=KIND_SNAPSHOT, label=f"auto: {reason}",
+                                  scope=_store().CaptureScope(), reason=reason)
     files = _save_state_files(live_dir)
     return _new_managed_entry(
         vault, KIND_SNAPSHOT, vault.snapshots_dir, tag=savedir.platform_of(live_dir),
@@ -386,10 +401,17 @@ def create_full_backup(
         else:
             _copy_save_state(live_dir, dest, files, copy)
 
-    entry = _new_managed_entry(
-        vault, KIND_FULL, vault.backups_dir, tag=savedir.platform_of(live_dir),
-        source_root=live_dir, files=files, fill=fill, label=label, source=live_dir.name, live=True,
-    )
+    store = _store().store_of(vault)
+    if store is not None:
+        entry = _store().keep_live(
+            store, live_dir, kind=KIND_FULL, label=label,
+            scope=_store().CaptureScope(cache="include" if include_cache else "omit"))
+    else:
+        entry = _new_managed_entry(
+            vault, KIND_FULL, vault.backups_dir, tag=savedir.platform_of(live_dir),
+            source_root=live_dir, files=files, fill=fill, label=label, source=live_dir.name,
+            live=True,
+        )
     _log_op(vault, _oplog("full_backup", entry_id=entry.id), collected)
     _hand_over(collected, warnings)
     from .organizer import recorder
@@ -441,9 +463,10 @@ def restore_entry(
     lifted aside. Restoring it means putting that slot back where it came from and leaving
     every other slot alone. Running it through :func:`restore_full` instead would mirror
     the live folder onto a one-slot backup and delete every other save in it, which is
-    exactly the accident this function exists to prevent.
+    exactly the accident this function exists to prevent. A version store's ``preserve``
+    entry (one slot kept before a live write) is restored the same way (D3 2.9 rule 5).
     """
-    if entry.kind != KIND_EXTRACT:
+    if entry.kind not in _store().SLOT_KINDS:
         return restore_full(
             vault, entry, live_dir, allow_game_running=allow_game_running,
             restore_accountdata=restore_accountdata,
@@ -458,9 +481,10 @@ def restore_entry(
             "with repopulate, choosing the destination slot for each."
         )
     slot = slots[0]
-    result = repopulate_slot(
-        vault, Path(entry.path), slot, live_dir, slot, allow_game_running=allow_game_running
-    )
+    with _store().entry_folder(vault, entry, slots=[slot]) as folder:
+        result = repopulate_slot(
+            vault, folder, slot, live_dir, slot, allow_game_running=allow_game_running
+        )
     return replace(
         result,
         op="restore_extract",
@@ -481,8 +505,14 @@ def restore_full(
     ``restore_accountdata`` -- rolling it back rolls back unlocks and settings too.
     ``undo_of`` (used by :func:`undo_last`) records the restore as the undo of the op whose
     snapshot that was. A failure part-way is reported (``WrittenButInvalidError``), never
-    hidden: the folder is then only partly restored, and undo puts it back.
+    hidden: the folder is then only partly restored, and undo puts it back. A version-store
+    entry (no folder of its own) is restored from a verified temporary copy (D3 2.10).
     """
+    if not entry.path:
+        with _store().entry_folder(vault, entry) as folder:
+            return restore_full.__wrapped__(   # the recording hook is already around this call
+                vault, replace(entry, path=str(folder)), live_dir, mirror, allow_game_running,
+                undo_of=undo_of, restore_accountdata=restore_accountdata)
     warnings: list[str] = []
     op = "undo" if undo_of else "restore_full"
     _guard_game(allow_game_running, warnings)
@@ -490,7 +520,7 @@ def restore_full(
     src = Path(entry.path)
     if not src.is_dir():
         raise OperationError(f"backup folder not found: {src}")
-    if mirror and entry.kind == KIND_EXTRACT:
+    if mirror and entry.kind in _store().SLOT_KINDS:
         # Refused structurally, not just in the UI: mirroring the live folder onto a
         # single-slot extract deletes every other save (and the account data) in it.
         raise OperationError(
@@ -608,11 +638,31 @@ def extract_slot(
     _check_slot(slot)
     collected: list[str] = []
     live = any(safety.same_path(source_dir, d) for d in live_dirs)
-    if _is_xbox(source_dir):
+    store = _store().store_of(vault)
+    if store is not None:
+        entry = _extract_into_store(vault, store, source_dir, slot, label, live, collected)
+    elif _is_xbox(source_dir):
         entry = _extract_slot_xbox(vault, source_dir, slot, label, collected, live)
     else:
         entry = _extract_slot_steam(vault, source_dir, slot, label, collected, live)
     _hand_over(collected, warnings)
+    return entry
+
+
+def _extract_into_store(vault: Vault, store, source_dir: Path, slot: int, label: str,
+                        live: bool, collected: list[str]) -> CatalogEntry:
+    """Store mode: the slot becomes a store entry (an Xbox slot with an index of its own)."""
+    classic = _store()
+    label = label or f"slot {slot} from {source_dir.name}"
+    scope = classic.CaptureScope(slots=(slot,))
+    if live:
+        entry = classic.keep_live(store, source_dir, kind=KIND_EXTRACT, label=label, scope=scope)
+    else:
+        entry = classic.keep_folder(store, source_dir, kind=KIND_EXTRACT, label=label,
+                                    scope=scope)
+    platform = "xbox " if _is_xbox(source_dir) else ""
+    _log_op(vault, _oplog("extract_slot", entry_id=entry.id, detail=f"{platform}slot {slot}"),
+            collected)
     return entry
 
 
@@ -1257,6 +1307,19 @@ class _VaultCopy:
     identical: bool
 
 
+@dataclass(frozen=True)
+class _StoredInfo:
+    total_play_time: int
+
+
+class _StoredMember:
+    """What the clear plan reads of a member: a store entry's record of it."""
+
+    def __init__(self, name: str, play_time: int) -> None:
+        self.save_name = name
+        self.info = _StoredInfo(play_time)
+
+
 # What reading a save can raise: I/O, and the decoders' ValueError / IndexError /
 # struct.error on damaged bytes. Anything else is a bug and is let through.
 _READ_ERRORS = (OSError, ValueError, IndexError, struct.error)
@@ -1321,6 +1384,10 @@ def _best_vault_copy(
                 except _READ_ERRORS as exc:
                     _note(notes, f"{entry.id} slot {other.slot}{m.label}", exc)
     cache.flush()
+    store = _store().store_of(vault)
+    if store is not None:           # store entries hold no folder: their records say it all
+        for entry, name, play, same in _store().store_copies(store, target_hash, key, identified):
+            copies.append(_VaultCopy(entry, _StoredMember(name, play), same))   # type: ignore[arg-type]
     if not copies:
         return None, identified
     best = max(copies, key=lambda c: (
@@ -1444,7 +1511,11 @@ def import_backup(
         raise OperationError(f"not an NMS save folder: {path}")
     plat = savedir.platform_of(path)
     collected: list[str] = []
-    if copy_into_vault:
+    store = _store().store_of(vault) if copy_into_vault else None
+    if store is not None:
+        entry = _store().keep_folder(store, path, kind=KIND_IMPORTED, label=label or path.name,
+                                     scope=_store().CaptureScope(cache="include"))
+    elif copy_into_vault:
         files = _all_files(path)
         entry = _new_managed_entry(
             vault, KIND_IMPORTED, vault.backups_dir, tag=plat, source_root=path, files=files,
@@ -1454,7 +1525,8 @@ def import_backup(
     else:
         iid = vault.new_id(KIND_INPLACE, tag=plat)
         entry = vault.make_entry_from_dir(iid, KIND_INPLACE, label or path.name, path, managed=False, source=path.name)
-        vault.upsert(entry)
+        with _store().guarded_write(vault.root):
+            vault.upsert(entry)
     _log_op(vault, _oplog("import", entry_id=entry.id, detail=str(path)), collected)
     _hand_over(collected, warnings)
     return entry
@@ -1478,6 +1550,11 @@ def preview_vault_import(vault: Vault, source_dir: Path) -> dict:
         raise OperationError(f"not an NMS Save Vault folder (no catalog.json): {source_dir}")
     if source_dir.resolve() == vault.root.resolve():
         raise OperationError("that is the current vault; nothing to import")
+    if (source_dir / PRE_UPGRADE_COPY).is_file():
+        raise OperationError("This is the pre-upgrade copy of a vault; use Undo the vault upgrade.")
+    if _store().is_store_vault(source_dir):
+        # Its entries live in a version store, not in folders: merging two stores is phase 5.
+        raise OperationError("Importing an upgraded vault comes with a later version.")
     src_entries = Vault(source_dir).load().entries
     have = {e.id for e in vault.entries}
     return {
@@ -1495,19 +1572,30 @@ def import_vault(vault: Vault, source_dir: Path, copy_into_vault: bool) -> OpRes
     overwritten."""
     source_dir = Path(source_dir)
     total = preview_vault_import(vault, source_dir)["total"]  # also validates source_dir
-    vault.ensure()
+    store = _store().store_of(vault) if copy_into_vault else None
+    if store is None:
+        vault.ensure()
     src = Vault(source_dir).load()
 
     added: list[str] = []
     warnings: list[str] = []
     have = {e.id for e in vault.entries}
+    if store is not None:
+        have |= {e.id for e in store.entries()}
     for e in src.entries:
         if e.id in have:
+            continue
+        if store is not None:
+            new_id = _fold_imported(vault, store, src, e, warnings)
+            if new_id is not None:
+                have.add(e.id)
+                added.append(new_id)
             continue
         new_entry = _relocate_entry(vault, src, e, copy_into_vault, warnings)
         if new_entry is None:
             continue
-        vault.upsert(new_entry)
+        with _store().guarded_write(vault.root):
+            vault.upsert(new_entry)
         have.add(e.id)
         added.append(e.id)
 
@@ -1519,6 +1607,25 @@ def import_vault(vault: Vault, source_dir: Path, copy_into_vault: bool) -> OpRes
     )
     _log_op(vault, _oplog("import_vault", detail=f"{source_dir} [{mode}] +{len(added)}"), warnings)
     return OpResult(True, "import_vault", detail, changed=added, warnings=warnings)
+
+
+def _fold_imported(vault: Vault, store, src: Vault, entry: CatalogEntry,
+                   warnings: list[str]) -> str | None:
+    """Store mode, copying: an entry of another (old-layout) vault becomes a store entry of
+    this one under its own id, deduplicated and verified (D3 4.8). The caller skips ids this
+    vault already has, so importing the same vault again adds nothing."""
+    folder = _entry_folder(src, entry) if entry.managed and entry.kind != KIND_INPLACE \
+        else Path(entry.path)
+    if not folder.is_dir():
+        warnings.append(f"{entry.id}: its folder is missing ({folder.name}); not imported")
+        return None
+    classic = _store()
+    kind = entry.kind if entry.kind in (KIND_FULL, KIND_SNAPSHOT, KIND_EXTRACT) else KIND_IMPORTED
+    kept = classic.keep_folder(store, folder, kind=kind, label=entry.label, entry_id=entry.id,
+                               created_local=entry.created,
+                               scope=classic.CaptureScope(cache="include"),
+                               origin={"imported_entry": entry.id})
+    return kept.id
 
 
 def _entry_folder(vault: Vault, entry: CatalogEntry) -> Path:
@@ -1600,7 +1707,7 @@ class _UndoTarget:
     def snapshot(self) -> CatalogEntry:
         sid = self.record.get("snapshot_id")
         snap = self.entries.get(sid)
-        if snap is None or not Path(snap.path).is_dir():
+        if snap is None or (snap.path and not Path(snap.path).is_dir()):    # store: no folder
             # Never fall through to an older operation: that would skip this one silently.
             why = "not in the catalog" if snap is None else "its folder is gone"
             raise OperationError(
@@ -1621,6 +1728,9 @@ def _find_undo(vault: Vault, live_dir: Path, other_live_dirs: Iterable[Path]) ->
         raise OperationError("Nothing has been done yet, so there is nothing to undo.")
 
     entries = {e.id: e for e in vault.entries}
+    store = _store().store_of(vault)
+    if store is not None:       # a snapshot made in store mode is a store entry (D3 2.10)
+        entries.update({e.id: _store().as_catalog_entry(e) for e in store.entries()})
     others = [Path(d) for d in other_live_dirs]
     undone, part_of_undo = _already_undone(records)
     passed_over: list[dict] = []
@@ -1630,6 +1740,14 @@ def _find_undo(vault: Vault, live_dir: Path, other_live_dirs: Iterable[Path]) ->
         sid = record.get("snapshot_id")
         if not sid:
             continue
+        if record.get("v") == 2 and _live_op_touches(record, live_dir):
+            if record.get("status") == "rolled_back":
+                continue                  # it put everything back: nothing changed here
+            raise OperationError(
+                f"The last change to this folder was a Move to live ('{record.get('op')}' at "
+                f"{record.get('ts')}). Use the organizer's Undo for this move; this undo "
+                "does not step past it to an older change." + note
+            )
         mine = _changed_folder(entries, record, live_dir, others)
         if mine and last_here is None:
             last_here = record
@@ -1765,6 +1883,13 @@ def _already_undone(records: list[dict]) -> tuple[set[str], set[int]]:
     return undone, part_of_undo
 
 
+def _live_op_touches(record: dict, live_dir: Path) -> bool:
+    """Whether a live-operation (v2) oplog line wrote into ``live_dir``: its targets name
+    the account folder."""
+    return any(isinstance(t, dict) and t.get("account_key") == live_dir.name
+               for t in record.get("targets") or ())
+
+
 def _changed_folder(
     entries: dict[str, CatalogEntry], record: dict, live_dir: Path, others: list[Path]
 ) -> bool | None:
@@ -1834,8 +1959,9 @@ def _log_op(vault: Vault, record: dict, warnings: list[str]) -> None:
     here does not make it a failed one: it is logged and reported in ``warnings`` -- Undo
     cannot reach an operation the log does not hold."""
     try:
-        vault.append_oplog(record)
-    except OSError as exc:
+        with _store().guarded_write(vault.root):
+            vault.append_oplog(record)
+    except (OSError, OperationError) as exc:     # OperationError: the vault lock was busy
         log.warning("the op-log record of '%s' could not be written: %s", record.get("op"), exc)
         warnings.append(f"Done, but missing from the history: the undo log could not be written ({exc}).")
 

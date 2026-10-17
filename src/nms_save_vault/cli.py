@@ -34,6 +34,7 @@ import argparse
 import builtins
 import json
 import sys
+from contextlib import ExitStack, contextmanager
 from datetime import datetime
 from pathlib import Path
 
@@ -152,7 +153,19 @@ def _resolve_vault(args) -> Vault:
     else:
         st = appstate.load()
         root = Path(st.vault) if (st and st.vault) else locations.default_vault_dir()
+    if (root / catalog.PRE_UPGRADE_COPY).is_file():
+        _die("error: this is the pre-upgrade copy of a vault; use Undo the vault upgrade")
+    _upgrade_notice(root)
     return Vault(root).load()
+
+
+def _upgrade_notice(root: Path) -> None:
+    """An upgrade interrupted by a crash is cleaned up (only its own leftovers) and said."""
+    from .core.store import upgrade
+
+    notice = upgrade.startup_notice(root)
+    if notice:
+        print(f"note: {notice}", file=sys.stderr)
 
 
 def _resolve_source(vault: Vault, value: str) -> Path:
@@ -163,6 +176,20 @@ def _resolve_source(vault: Vault, value: str) -> Path:
     if p.is_dir():
         return p
     _die(f"error: source '{value}' is neither a catalog entry id nor a folder")
+
+
+@contextmanager
+def _source_folder(vault: Vault, value: str):
+    """The folder of an entry id (a version-store entry through a verified temporary copy) or
+    of a folder path."""
+    from .core.store import classic
+
+    entry = classic.find_entry(vault, value)
+    if entry is None:
+        yield _resolve_source(vault, value)
+        return
+    with classic.entry_folder(vault, entry) as folder:
+        yield folder
 
 
 # --- commands ----------------------------------------------------------------
@@ -180,8 +207,10 @@ def cmd_status(args) -> int:
 
 
 def cmd_list(args) -> int:
+    from .core.store import classic
+
     vault = _resolve_vault(args)
-    entries = sorted(vault.entries, key=lambda e: e.id)
+    entries = sorted(classic.list_entries(vault), key=lambda e: e.id)
     if not entries:
         print("(catalog is empty; use 'backup', 'import' or 'discover --add')")
         return 0
@@ -196,13 +225,15 @@ def cmd_show(args) -> int:
     if args.target == "live":
         _print_view(savedir.scan_any(_resolve_live(args)))
         return 0
+    from .core.store import classic
+
     vault = _resolve_vault(args)
-    entry = vault.get(args.target)
+    entry = classic.find_entry(vault, args.target)
     if entry is None:
         _print_view(savedir.scan_any(_resolve_source(vault, args.target)))
         return 0
     print(f"{entry.id}  [{entry.kind}]  {entry.label}")
-    print(f"path: {entry.path}")
+    print(f"path: {entry.path or '(in the version store)'}")
     print(f"{'Slot':<5}{'Name':<28}{'Newest':<15}{'Saved'}")
     print("-" * 70)
     for s in entry.slots:
@@ -224,12 +255,14 @@ def cmd_backup(args) -> int:
 
 
 def cmd_restore(args) -> int:
+    from .core.store import classic
+
     live = _resolve_live(args)
     vault = _resolve_vault(args)
-    entry = vault.get(args.entry_id)
+    entry = classic.find_entry(vault, args.entry_id)
     if entry is None:
         _die(f"error: no catalog entry '{args.entry_id}'")
-    if entry.kind == catalog.KIND_EXTRACT:
+    if entry.kind in classic.SLOT_KINDS:
         # A single-slot extract goes back into its own slot; mirroring the live folder
         # onto it would delete every other save.
         res = ops.restore_entry(
@@ -246,14 +279,17 @@ def cmd_restore(args) -> int:
 
 def cmd_extract(args) -> int:
     vault = _resolve_vault(args)
-    source = _resolve_source(vault, args.source) if args.source else _resolve_live(args)
     warns: list[str] = []
     st = appstate.load()
     live_dirs = [Path(s.path) for s in st.live_sources] if st is not None else []
-    if not args.source:
-        live_dirs.append(source)                     # the live folder itself
-    entry = ops.extract_slot(vault, source, args.slot, label=args.label or "", warnings=warns, live_dirs=live_dirs)
-    print(f"extracted slot {args.slot} -> '{entry.id}' at {entry.path}")
+    with ExitStack() as stack:
+        if args.source:
+            source = stack.enter_context(_source_folder(vault, args.source))
+        else:
+            source = _resolve_live(args)
+            live_dirs.append(source)                     # the live folder itself
+        entry = ops.extract_slot(vault, source, args.slot, label=args.label or "", warnings=warns, live_dirs=live_dirs)
+    print(f"extracted slot {args.slot} -> '{entry.id}' at {entry.path or '(the version store)'}")
     _print_warnings(warns)
     return 0
 
@@ -345,8 +381,9 @@ def _confirm(question: str) -> bool:
 def cmd_repopulate(args) -> int:
     live = _resolve_live(args)
     vault = _resolve_vault(args)
-    source = _resolve_source(vault, args.source) if args.source else live
-    res = ops.repopulate_slot(vault, source, args.src_slot, live, args.to_slot, allow_game_running=args.force)
+    with ExitStack() as stack:
+        source = stack.enter_context(_source_folder(vault, args.source)) if args.source else live
+        res = ops.repopulate_slot(vault, source, args.src_slot, live, args.to_slot, allow_game_running=args.force)
     _report(res)
     return 0
 
@@ -740,6 +777,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--live", help="path to the live st_<id> save folder")
     p.add_argument("--vault", help="path to the vault folder")
     sub = p.add_subparsers(dest="command", required=True)
+    from . import cli_store
+    cli_store.add_commands(sub)
 
     sub.add_parser("status", help="show the live folder and slot table").set_defaults(func=cmd_status)
     sub.add_parser("list", help="list catalog entries").set_defaults(func=cmd_list)

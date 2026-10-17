@@ -18,6 +18,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from .. import catalog, discover, formats, lz4_block, msstore, playtime, safety, savedir
 from ..catalog import CatalogEntry, Vault
@@ -39,6 +40,7 @@ from .model import (
     Platform,
     RawLocation,
     SourceRef,
+    StoreRef,
     VersionInfo,
     Vid,
     head_of,
@@ -46,6 +48,10 @@ from .model import (
     pid_from_id,
     unknown_pid,
 )
+
+if TYPE_CHECKING:
+    from ..store import StoreEntry, VersionStore
+    from ..store.manifest import MemberRecord
 
 log = logging.getLogger(__name__)
 
@@ -56,6 +62,7 @@ WHOLE_FOLDER_KINDS = (catalog.KIND_FULL, catalog.KIND_SNAPSHOT, catalog.KIND_INP
                       catalog.KIND_IMPORTED)
 #: Entries the app made by copying a live folder at their ``created`` time.
 EXACT_TIME_KINDS = (catalog.KIND_FULL, catalog.KIND_SNAPSHOT)
+STORE_EXACT_TIME_KINDS = EXACT_TIME_KINDS + ("preserve",)
 
 
 @dataclass(frozen=True)
@@ -87,6 +94,7 @@ class EntryScan:
     source: str | None              # the live folder name the entry was taken from
     captures: tuple[Capture, ...]
     label: str = ""                 # the owner's name for it (user text)
+    platform: str = ""              # a version-store entry's platform ("" for catalog entries)
 
 
 @dataclass(frozen=True)
@@ -127,28 +135,36 @@ def scan(vault: Vault | None, sources: Sequence[Source], cache: ScanCache, *,
          game_running: bool | None, deep: bool = False,
          now: Callable[[], float] = time.time,
          progress: Callable[[int, int], None] | None = None,
-         cancel: threading.Event | None = None, look_live: bool = True) -> ScanResult:
-    """Observe ``sources`` (the enabled live folders) and every catalog entry of ``vault``;
-    with no vault only the live folders (the operation hook's quick look at one folder).
-    ``deep`` hashes every file again and rescans every entry. ``look_live`` False scans
-    the entries only (the live folders still tell an entry that IS one): the caller looks
-    at the live folders itself, under the live-op lock, and joins the two (:func:`with_live`)."""
+         cancel: threading.Event | None = None, look_live: bool = True,
+         store: VersionStore | None = None) -> ScanResult:
+    """Observe ``sources`` (the enabled live folders) and every entry of ``vault``: its
+    catalog entries and, with ``store``, its version-store entries, as the one listing of the
+    vault gives them (D3 2.9: a folded entry is read from its manifest, never twice). With no
+    vault only the live folders (the operation hook's quick look at one folder). ``deep``
+    hashes every file again and rescans every entry. ``look_live`` False scans the entries
+    only (the live folders still tell an entry that IS one): the caller looks at the live
+    folders itself, under the live-op lock, and joins the two (:func:`with_live`)."""
+    from ..store import StoreEntry
+
     run = _Run(cache, deep, int(now()))
     if game_running is None:
         run.problem("game-unknown", None, None, "could not tell whether the game is running")
     elif game_running:
         run.problem("game-running", None, None, "the game is running: live saves are not recorded")
-    entries = sorted(vault.entries if vault is not None else [],
-                     key=lambda e: (_created_utc(e) or 0, e.id))
+    live_paths = [s.path for s in sources]
+    entries = vault_entries(vault, store, live_paths) if vault is not None else []
+    entries.sort(key=lambda e: (_created_utc(e) or 0, e.id))
     looked = list(zip(sources, live_refs(sources))) if look_live else []
     total, done = len(entries) + len(looked), 0
-    live_paths = [s.path for s in sources]
 
     started = time.perf_counter()
     entry_scans: dict[str, EntryScan] = {}
     for entry in entries:
         _check(cancel)
-        found = run.scan_entry(entry, live_paths)
+        if isinstance(entry, StoreEntry):
+            found = run.scan_store_entry(entry, store)
+        else:
+            found = run.scan_entry(entry, live_paths)
         if found is not None:
             entry_scans[entry.id] = found
         done += 1
@@ -181,6 +197,20 @@ def scan(vault: Vault | None, sources: Sequence[Source], cache: ScanCache, *,
         versions=versions, pairs=pairs, problems=tuple(run.problems),
         game_running=game_running, timings=timings,
     )
+
+
+def vault_entries(vault: Vault, store: VersionStore | None,
+                  live_paths: Sequence[str]) -> list[CatalogEntry | StoreEntry]:
+    """The entries to scan, oldest first, as D3's one listing gives them (a store entry, and
+    a catalog entry no store entry has taken over), then the catalog entries the listing
+    leaves out as live folders, so the scan can say why it skips them."""
+    from ..store import list_vault_entries
+
+    listed = list_vault_entries(vault, store, live_roots=[Path(p) for p in live_paths])
+    out: list = [store.entry(v.id) if isinstance(v.ref, StoreRef) and store is not None
+                 else vault.get(v.id) for v in listed]
+    shown = {v.id for v in listed} | ({e.id for e in store.entries()} if store else set())
+    return out + [e for e in vault.entries if e.id not in shown]
 
 
 class _Run:
@@ -269,6 +299,82 @@ class _Run:
             at = max(times, default=created)
         return tuple(self._capture(view.slots[s], where, platform, live=False, at=at,
                                    quality=quality, src="entry")[0] for s in slots)
+
+    # --- version-store entries (D3 2.9) ----------------------------------------
+    #
+    # Read from the manifest: no folder, no hashing. Each slot is observed as a scan of the
+    # same folder observes it, so a folded backup reads exactly as its old folder did.
+
+    def scan_store_entry(self, entry: StoreEntry, store: VersionStore) -> EntryScan:
+        from ..store.listing import entry_slots, epoch_utc
+
+        where = StoreRef(entry.id)
+        created = epoch_utc(entry.created_utc)
+        quality = "exact" if entry.kind in STORE_EXACT_TIME_KINDS else "estimated"
+        captures = tuple(self._store_capture(entry, store, slot, where, created, quality)
+                         for slot in entry_slots(entry))
+        source = entry.source.get("account_key") or entry.source.get("name")
+        return EntryScan(entry.id, entry.kind, True, created, source, captures, entry.label,
+                         platform=entry.platform)
+
+    def _store_capture(self, entry: StoreEntry, store: VersionStore, slot: int,
+                       where: StoreRef, at: int, quality: str) -> Capture:
+        from ..store.listing import has_info, newest_record
+
+        members: dict[str, MemberObs] = {}
+        for label in ("A", "B"):
+            r = entry.member(slot, label)       # type: ignore[arg-type]
+            if r is None:
+                note = entry.absent.get(f"{slot}{label}")
+                if note:
+                    self.problem("member-unreadable", where, slot, f"slot {slot}{label}: {note}")
+                continue
+            if not has_info(entry, r):
+                self.problem("member-unreadable", where, slot,
+                             f"slot {slot}{label}: meta unreadable{': ' + r.note if r.note else ''}")
+            if r.vid not in self.pids:
+                self.pids[r.vid] = self._store_pid(entry, store, r)
+            pid, pid_src = self.pids[r.vid]
+            members[label] = MemberObs(label, r.vid, pid, pid_src, entry.platform,  # type: ignore[arg-type]
+                                       _store_snap(entry, r))
+        newest = newest_record(entry, slot)
+        if newest is not None and newest.member in members:
+            head = newest.member
+        else:
+            found = head_of(members.get("A"), members.get("B"))
+            head = found.member if found else None
+        return Capture(where, slot, members.get("A"), members.get("B"), at, quality,  # type: ignore[arg-type]
+                       "entry", head)
+
+    def _store_pid(self, entry: StoreEntry, store: VersionStore,
+                   r: MemberRecord) -> tuple[Pid, str]:
+        """:meth:`_pid`'s chain on a stored member: the meta's id; else the id in the data
+        (read from the store once per vid); else the legacy key; else unknown."""
+        from ..store import StoreError
+        from ..store.listing import has_info
+
+        info = has_info(entry, r)
+        if info and r.pid:
+            return r.pid, "meta"
+        ident = self.cache.data_id(r.vid)
+        if ident is None:
+            try:
+                data = store.read_file(entry.id, r.data)
+                ident = playtime._id_from_bytes(data, r.size_decompressed if info else 0) or 0
+                self.cache.put_data_id(r.vid, ident)
+            except (StoreError, OSError, lz4_block.UnsupportedContainer) as exc:
+                log.warning("version %s: could not look for its id in the data: %s",
+                            r.vid[:8], exc)
+        if ident:
+            try:
+                return pid_from_id(ident), "data"
+            except ModelError:
+                pass
+        if info:
+            pid = self.cache.legacy_pid(r.vid) or legacy_pid(entry.platform, r.slot, r.name)
+            self.cache.put_legacy_pid(r.vid, pid)
+            return pid, "legacy"
+        return unknown_pid(r.vid), "unknown"
 
     def _fingerprint(self, folder: Path) -> str:
         """sha256 over ``relpath|size|mtime_ns`` of the files that make the entry's saves:
@@ -409,6 +515,29 @@ def _snap(mv: MemberView, platform: Platform) -> MetaSnap:
     )
 
 
+def _store_snap(entry: StoreEntry, r: MemberRecord) -> MetaSnap:
+    """:func:`_snap` of a stored member, from its record (the same values a scan of the
+    entry's folder gives)."""
+    from ..store.listing import file_time, has_info
+
+    info = has_info(entry, r)
+    stamp = r.meta_ts if info else 0
+    if stamp:
+        ts_src = "meta"
+    else:
+        ts_src = "index" if entry.platform == "xbox" and entry.xbox is not None else "mtime"
+    return MetaSnap(
+        play_time=r.play_time if info else 0, meta_ts=stamp or int(file_time(r)), ts_src=ts_src,
+        name=r.name if info else "", summary=r.summary if info else "",
+        difficulty=r.difficulty if info else 0, game_mode=r.game_mode if info else 0,
+        season=r.season if info else 0, base_version=r.base_version if info else 0,
+        meta_format=r.meta_format if info else 0,
+        size_decompressed=r.size_decompressed if info else 0,
+        data_size=entry.file(r.data).size, meta_sha=r.meta_plain_sha256 or "", valid=info,
+        file_time=file_time(r),
+    )
+
+
 def _whole(mv: MemberView, data: bytes, platform: Platform) -> bool:
     """A live save is recorded only when it is whole: Steam's chunks add up to the meta's
     SizeDecompressed (the reliable tie, DESIGN.md); an Xbox stream walks to its end."""
@@ -452,7 +581,8 @@ def _present_but_unread(mv: MemberView) -> bool:
 def _created_utc(entry: CatalogEntry) -> int | None:
     """Catalog v1 stores local naive ISO times; this machine's zone turns them into UTC."""
     try:
-        return int(datetime.fromisoformat(entry.created).astimezone(timezone.utc).timestamp())
+        stamp = getattr(entry, "created", None) or entry.created_local
+        return int(datetime.fromisoformat(stamp).astimezone(timezone.utc).timestamp())
     except (TypeError, ValueError, OverflowError, OSError):
         return None
 
@@ -484,9 +614,10 @@ def _registry(ordered: list[tuple[Capture, ObsOrder]], entries: Mapping[str, Ent
     pair_builders: dict[PairKey, dict] = {}
     for capture, first in sorted(ordered, key=lambda item: item[1]):
         where = capture.where
-        if isinstance(where, EntryRef):
-            kind: EntryKind = kinds[where.entry_id]  # type: ignore[assignment]
-            is_managed = managed[where.entry_id]
+        if isinstance(where, (EntryRef, StoreRef)):
+            entry_id = where.entry_id if isinstance(where, EntryRef) else where.key
+            kind: EntryKind = kinds[entry_id]  # type: ignore[assignment]
+            is_managed = managed[entry_id]
         else:
             kind, is_managed = "live", False
         for m in capture.members:

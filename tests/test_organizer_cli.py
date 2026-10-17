@@ -40,6 +40,10 @@ def isolated(tmp_path, monkeypatch):
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "Local"))
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache-home"))
     monkeypatch.setattr(safety, "is_game_running", lambda: False)
+    # Organizer binds its default probe at definition time, so patching safety is not enough.
+    real_init = Organizer.__init__
+    monkeypatch.setattr(Organizer, "__init__", lambda self, *a, **k: real_init(
+        self, *a, **{"game_running": lambda: False, **k}))
 
 
 @pytest.fixture
