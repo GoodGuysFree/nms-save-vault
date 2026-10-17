@@ -87,6 +87,8 @@ src/nms_save_vault/
       locator.py  where a version's bytes are (VersionLocator, VaultLocator, Location)
       folders.py  FolderLocator: the read side over live and catalog folders
       __init__.py Organizer facade: scan, record, build the model, bootstrap
+  ui/             Tk building blocks for the views (docs/organizer/designs/D6-ui-tk.md)
+    dpi.py        DPI awareness, px() for every pixel constant, first-start size, dialog fit
   theme.py        light/dark/system palettes + ttk restyling (front-end)
   updates.py      opt-in GitHub release check + in-place self-update (the only network access)
   cli.py          argparse front end

@@ -27,6 +27,8 @@ import tkinter as tk
 from tkinter import font as tkfont
 from tkinter import ttk
 
+from .ui.dpi import px, pxs
+
 SYSTEM = "system"
 LIGHT = "light"
 DARK = "dark"
@@ -257,9 +259,9 @@ def ttk_theme_for(root: tk.Misc, name: str, native_ttk_theme: str) -> str:
 def _row_height(root: tk.Misc) -> int:
     """Tree row height with a little air, derived from the font so it survives any DPI."""
     try:
-        return tkfont.nametofont("TkDefaultFont").metrics("linespace") + 8
+        return tkfont.nametofont("TkDefaultFont").metrics("linespace") + px(8)
     except tk.TclError:
-        return 24
+        return px(24)
 
 
 def apply(root: tk.Misc, choice: str, native_ttk_theme: str) -> str:
@@ -293,7 +295,7 @@ def apply(root: tk.Misc, choice: str, native_ttk_theme: str) -> str:
     style.configure("TLabel", background=p["bg"], foreground=p["fg"])
     style.map("TLabel", foreground=[("disabled", p["disabled_fg"])])
     style.configure("TPanedwindow", background=p["bg"])
-    style.configure("Sash", sashthickness=6, gripcount=12, background=p["bg"])
+    style.configure("Sash", sashthickness=px(6), gripcount=12, background=p["bg"])
     style.configure("Status.TLabel", background=p["status_bg"], foreground=p["fg"])
     style.configure("Banner.TLabel", background=p["banner_bg"], foreground=p["banner_fg"])
     style.configure("Banner.TFrame", background=p["banner_bg"])
@@ -321,7 +323,7 @@ def apply(root: tk.Misc, choice: str, native_ttk_theme: str) -> str:
         foreground=p["heading_fg"],
         bordercolor=p["border"],
         relief="flat",
-        padding=(6, 4),
+        padding=pxs(6, 4),
     )
     # Hovering a sortable heading used to turn it selection-blue, which read as "this
     # column is chosen". A slight lift says "clickable" without claiming state.
@@ -341,7 +343,7 @@ def apply(root: tk.Misc, choice: str, native_ttk_theme: str) -> str:
         foreground=p["fg"],
         arrowcolor=p["fg"],
         bordercolor=p["border"],
-        padding=3,
+        padding=px(3),
     )
     style.map(
         "TCombobox",
@@ -365,7 +367,7 @@ def apply(root: tk.Misc, choice: str, native_ttk_theme: str) -> str:
         foreground=p["fg"],
         insertcolor=p["fg"],
         bordercolor=p["border"],
-        padding=3,
+        padding=px(3),
     )
     style.map(
         "TEntry",
@@ -440,7 +442,7 @@ def _style_button(style: ttk.Style, widget: str, p: dict, base: str, fg: str) ->
         darkcolor=base,
         focuscolor=p["accent"],
         relief="flat",
-        padding=(10, 5),
+        padding=pxs(10, 5),
     )
     style.map(
         widget,
