@@ -151,6 +151,13 @@ def _copy_save_state(src: Path, dst: Path, files: list[Path]) -> None:
             shutil.copy2(p, dst / p.name)
 
 
+def _changed_during_copy(name: str) -> ValidationError:
+    return ValidationError(
+        f"The save file {name} changed while it was being copied into the vault, so nothing "
+        "was saved. Close the game (or let the Xbox app finish syncing) and try again."
+    )
+
+
 def _changed_while_copying(name: str) -> OperationError:
     return OperationError(
         f"The save file {name} disappeared while it was being copied into the vault, so "
@@ -185,18 +192,23 @@ def _new_managed_entry(
     parent: Path,
     *,
     tag: str,
+    source_root: Path,
     files: list[Path],
     fill: Callable[[Path], None],
     label: str,
     source: str,
     slots: list[int] | None = None,
+    live: bool = False,
 ) -> CatalogEntry:
     """Copy into a new managed vault folder and catalogue it -- or leave nothing behind.
 
     The folder is always a fresh one (never a leftover of an earlier failure, whose contents
-    are unknown); ``fill`` copies ``files`` into it. If the copy, the scan or the catalog
-    write fails, the half-written folder is removed and the error re-raised: a partial or
-    uncatalogued copy is not a backup and must never be mistaken for one.
+    are unknown); ``fill`` copies ``files`` into it, each to its place relative to
+    ``source_root``, and every copy is then checked by sha256 against its source. If the
+    copy, the check, the scan or the catalog write fails, the half-written folder is removed
+    and the error re-raised: a partial, corrupt or uncatalogued copy is not a backup and must
+    never be mistaken for one. ``live``: the source is a live save folder, so a mismatch most
+    likely means the game or the Xbox app changed it mid-copy, and the error says so.
     """
     vault.ensure()
     try:
@@ -209,6 +221,7 @@ def _new_managed_entry(
     dest.mkdir()
     try:
         fill(dest)
+        _verify_copy(source_root, dest, files, live)
         entry = vault.make_entry_from_dir(
             entry_id, kind, label, dest, managed=True, source=source, slots=slots
         )
@@ -227,9 +240,9 @@ def snapshot_live(vault: Vault, live_dir: Path, reason: str) -> CatalogEntry:
     live_dir = Path(live_dir)
     files = _save_state_files(live_dir)
     return _new_managed_entry(
-        vault, KIND_SNAPSHOT, vault.snapshots_dir, tag=savedir.platform_of(live_dir), files=files,
-        fill=lambda dest: _copy_save_state(live_dir, dest, files),
-        label=f"auto: {reason}", source=live_dir.name,
+        vault, KIND_SNAPSHOT, vault.snapshots_dir, tag=savedir.platform_of(live_dir),
+        source_root=live_dir, files=files, fill=lambda dest: _copy_save_state(live_dir, dest, files),
+        label=f"auto: {reason}", source=live_dir.name, live=True,
     )
 
 
@@ -245,22 +258,23 @@ def create_full_backup(vault: Vault, live_dir: Path, label: str = "", include_ca
             shutil.copytree(live_dir, dest, dirs_exist_ok=True)
         else:
             _copy_save_state(live_dir, dest, files)
-        _verify_copy(live_dir, dest, files)
 
     entry = _new_managed_entry(
-        vault, KIND_FULL, vault.backups_dir, tag=savedir.platform_of(live_dir), files=files,
-        fill=fill, label=label, source=live_dir.name,
+        vault, KIND_FULL, vault.backups_dir, tag=savedir.platform_of(live_dir),
+        source_root=live_dir, files=files, fill=fill, label=label, source=live_dir.name, live=True,
     )
     vault.append_oplog(_oplog("full_backup", entry_id=entry.id))
     return entry
 
 
-def _verify_copy(src: Path, dst: Path, files: list[Path]) -> None:
+def _verify_copy(src: Path, dst: Path, files: list[Path], live: bool) -> None:
     for p in files:
         rel = p.relative_to(src)
         d = dst / rel
         if not d.is_file() or safety.sha256_file(p) != safety.sha256_file(d):
-            raise ValidationError(f"backup verification failed for {rel}")
+            if live:
+                raise _changed_during_copy(str(rel))
+            raise ValidationError(f"the copy of {rel} in the vault does not match the original")
 
 
 def restore_entry(
@@ -357,18 +371,16 @@ def extract_slot(vault: Vault, source_dir: Path, slot: int, label: str = "") -> 
     _check_slot(slot)
     if _is_xbox(source_dir):
         return _extract_slot_xbox(vault, source_dir, slot, label)
-    files = [
-        p
-        for fno in slot_file_numbers(slot)
-        for pair in [_member_paths(source_dir, fno)]
-        if all(q.is_file() for q in pair)
-        for p in pair
-    ]
+    files: list[Path] = []
+    for fno in slot_file_numbers(slot):
+        data, meta_file = _member_paths(source_dir, fno)
+        if data.is_file() and meta_file.is_file():
+            files += [data, meta_file]
     if not files:
         raise OperationError(f"slot {slot} has no saves to extract in {source_dir}")
     entry = _new_managed_entry(
-        vault, KIND_EXTRACT, vault.extracts_dir, tag=savedir.platform_of(source_dir), files=files,
-        fill=lambda dest: _copy_save_state(source_dir, dest, files),
+        vault, KIND_EXTRACT, vault.extracts_dir, tag=savedir.platform_of(source_dir),
+        source_root=source_dir, files=files, fill=lambda dest: _copy_save_state(source_dir, dest, files),
         label=label or f"slot {slot} from {source_dir.name}", source=source_dir.name, slots=[slot],
     )
     vault.append_oplog(_oplog("extract_slot", entry_id=entry.id, detail=f"slot {slot}"))
@@ -445,15 +457,21 @@ def promote_member(vault: Vault, live_dir: Path, slot: int, member: int, allow_g
     live_dir = Path(live_dir)
     _check_slot(slot)
     promote = _promote_member_xbox if _is_xbox(live_dir) else _promote_member_steam
-    result, view = promote(vault, live_dir, slot, member, allow_game_running)
-    newest = view.slots[slot].newest
+    result, after = promote(vault, live_dir, slot, member, allow_game_running)
+    newest = after.newest
     if newest is None or newest.label != "AB"[member]:
-        raise WrittenButInvalidError(
-            f"Slot {slot}{'AB'[member]} is still not the newest after promoting it, but the "
-            f"live folder was changed. Undo restores it from snapshot {result.snapshot_id}.",
-            replace(result, ok=False),
+        raise _written_but_invalid(
+            f"Slot {slot}{'AB'[member]} is still not the newest after promoting it.", result
         )
     return result
+
+
+def _written_but_invalid(problem: str, result: OpResult) -> WrittenButInvalidError:
+    return WrittenButInvalidError(
+        f"{problem} The live folder was changed: undo restores it from snapshot "
+        f"{result.snapshot_id}.",
+        replace(result, ok=False),
+    )
 
 
 def _newest_file_time(*paths: Path) -> float:
@@ -463,7 +481,7 @@ def _newest_file_time(*paths: Path) -> float:
 
 def _promote_member_steam(
     vault: Vault, live_dir: Path, slot: int, member: int, allow_game_running: bool
-) -> tuple[OpResult, savedir.SaveDirView]:
+) -> tuple[OpResult, savedir.SlotView]:
     warnings: list[str] = []
     _guard_game(allow_game_running, warnings)
     view = savedir.scan(live_dir)
@@ -502,7 +520,7 @@ def _promote_member_steam(
     changed = [target.meta_path.name, target.data_path.name]
     vault.append_oplog(_oplog("promote_member", snapshot_id=snap.id, detail=f"slot {slot}{'AB'[member]} ts->{new_ts}", changed=changed))
     result = OpResult(True, "promote_member", f"slot {slot}{'AB'[member]} promoted", snapshot_id=snap.id, changed=changed, warnings=warnings)
-    return result, savedir.scan(live_dir)
+    return result, savedir.scan_slot(live_dir, slot)
 
 
 # --- Xbox / Game Pass (wgs) variants -----------------------------------------
@@ -524,15 +542,18 @@ def _require_wgs(live_dir: Path) -> None:
         raise OperationError(f"{live_dir} is an xgs-only Xbox folder; the vault can read it but not write it")
 
 
-def _validate_xbox_slot(live_dir: Path, slot: int, warnings: list[str]) -> savedir.SaveDirView:
-    """Check the slot reads back after a write; returns the view it scanned."""
+def _validate_xbox_slot(live_dir: Path, slot: int, result: OpResult) -> savedir.SaveDirView:
+    """Check the slot reads back after a write; returns the view it scanned. The write has
+    happened, so a failure carries ``result`` (snapshot id, warnings) for undo."""
     view = savedir.scan_any(live_dir)
     present = view.slots[slot].present_members if slot in view.slots else []
     if not present:
-        raise ValidationError(f"slot {slot} has no readable save after the write")
+        raise _written_but_invalid(f"Slot {slot} has no readable save after the write.", result)
     for m in present:
         if m.info is None:
-            raise ValidationError(f"slot {slot}{m.label} is unreadable after the write: {m.note}")
+            raise _written_but_invalid(
+                f"Slot {slot}{m.label} is unreadable after the write ({m.note}).", result
+            )
     return view
 
 
@@ -546,7 +567,7 @@ def _validate_xbox_dir(live_dir: Path, warnings: list[str]) -> None:
 
 def _promote_member_xbox(
     vault: Vault, live_dir: Path, slot: int, member: int, allow_game_running: bool
-) -> tuple[OpResult, savedir.SaveDirView]:
+) -> tuple[OpResult, savedir.SlotView]:
     warnings: list[str] = []
     _require_wgs(live_dir)
     _guard_game(allow_game_running, warnings)
@@ -559,13 +580,20 @@ def _promote_member_xbox(
         raise OperationError(f"slot {slot}{'AB'[member]} is unreadable")
     data_bytes = Path(target.data_path).read_bytes()
     meta_bytes = Path(target.meta_path).read_bytes()
-    # The index FILETIME (write_save's `when`) never moves backwards and ends past the
-    # sibling's, so whichever clock orders the pair (SlotView.order_time), the target wins.
-    when = max(target.data_mtime, sibling.data_mtime if sibling.exists else 0.0) + 1
+    # The index FILETIME is the record's local write time, so: now (R8 Q8) -- but never back
+    # from its own time, and past the sibling's, so whichever clock orders the pair
+    # (SlotView.order_time) the target wins.
+    when = max(_now(), target.data_mtime + 1, sibling.data_mtime + 1 if sibling.exists else 0.0)
     if target.timestamp:
         # The meta save time moves too; a meta without one (280 bytes) is left as it is.
         new_ts = max(target.timestamp, sibling.timestamp if sibling.exists else 0) + 1
-        meta_bytes = msstore.set_ms_meta_timestamp(meta_bytes, new_ts)
+        try:
+            meta_bytes = msstore.set_ms_meta_timestamp(meta_bytes, new_ts)
+        except ValueError as exc:
+            raise OperationError(
+                f"slot {slot}{'AB'[member]} has a {len(meta_bytes)}-byte meta, a layout this "
+                "version cannot write a save time into. Nothing was changed."
+            ) from exc
         when = max(when, float(new_ts))
     else:
         new_ts = int(when)
@@ -573,9 +601,9 @@ def _promote_member_xbox(
     msstore.write_save(live_dir, target.xbox.identifier, data_bytes, meta_bytes, when)
     changed = [target.xbox.identifier]
     vault.append_oplog(_oplog("promote_member", snapshot_id=snap.id, detail=f"xbox slot {slot}{'AB'[member]} ts->{new_ts}", changed=changed))
-    after = _validate_xbox_slot(live_dir, slot, warnings)
     result = OpResult(True, "promote_member", f"slot {slot}{'AB'[member]} promoted", snapshot_id=snap.id, changed=changed, warnings=warnings)
-    return result, after
+    after = _validate_xbox_slot(live_dir, slot, result)
+    return result, after.slots[slot]
 
 
 def _extract_slot_xbox(vault: Vault, source_dir: Path, slot: int, label: str) -> CatalogEntry:
@@ -595,10 +623,11 @@ def _extract_slot_xbox(vault: Vault, source_dir: Path, slot: int, label: str) ->
             shutil.copytree(c.directory, dest / c.dir_guid)  # the GUID blob folder, verbatim
         # Rebuild the index from just the picked records; build uses their dir_guid (not
         # absolute paths), so the copied folders resolve under dest.
-        safety.atomic_write_bytes(dest / "containers.index", msstore.build_containers_index(info, picked))
+        subset = replace(info, trailer=b"")      # the source's trailing bytes are not ours
+        safety.atomic_write_bytes(dest / "containers.index", msstore.build_containers_index(subset, picked))
 
     entry = _new_managed_entry(
-        vault, KIND_EXTRACT, vault.extracts_dir, tag="xbox", files=files, fill=fill,
+        vault, KIND_EXTRACT, vault.extracts_dir, tag="xbox", source_root=source_dir, files=files, fill=fill,
         label=label or f"slot {slot} from {source_dir.name}", source=source_dir.name, slots=[slot],
     )
     vault.append_oplog(_oplog("extract_slot", entry_id=entry.id, detail=f"xbox slot {slot}"))
@@ -612,7 +641,7 @@ def _repopulate_slot_xbox(vault: Vault, source_dir: Path, source_slot: int, live
     src_view = savedir.scan_any(source_dir)
     src_sv = src_view.slots.get(source_slot)
 
-    planned = []  # (dest_identifier, data_bytes, meta_bytes, when)
+    planned = []  # (source member, dest_identifier, data_bytes, meta_bytes)
     for member in (0, 1):
         sm = src_sv.members[member] if src_sv else None
         if sm is None or not sm.exists or sm.xbox is None or sm.info is None:
@@ -620,23 +649,31 @@ def _repopulate_slot_xbox(vault: Vault, source_dir: Path, source_slot: int, live
             continue
         data_bytes = Path(sm.data_path).read_bytes()
         meta_bytes = Path(sm.meta_path).read_bytes()
-        # The source's index time, not its meta time, so the pair keeps the order it had
-        # whichever clock orders it (SlotView.order_time). 0 == unknown time -> stamp now.
-        when = sm.data_mtime or _now()
-        planned.append((_ms_identifier(dest_slot, member), data_bytes, meta_bytes, when))
+        planned.append((sm, _ms_identifier(dest_slot, member), data_bytes, meta_bytes))
 
     if not planned:
         raise OperationError(f"source slot {source_slot} has no readable saves in {source_dir}")
 
+    # Index FILETIMEs are local write times: now (R8 Q8), never back from what either record of
+    # the destination slot holds, and one second apart in the source's order, so the pair
+    # keeps the order it had whichever clock orders it (SlotView.order_time).
+    dest_sv = savedir.scan_any(live_dir).slots[dest_slot]
+    floor = max((m.xbox.last_write for m in dest_sv.members if m.xbox is not None), default=0.0)
+    newest = max(_now(), floor + len(planned))
+    planned.sort(key=lambda p: p[0] is src_sv.newest)       # the source's newer member last
+    times = [newest - (len(planned) - 1 - i) for i in range(len(planned))]
+
     snap = snapshot_live(vault, live_dir, reason=f"pre-repopulate slot {dest_slot}")
     changed: list[str] = []
-    for dest_ident, data_bytes, meta_bytes, when in planned:
+    for (_sm, dest_ident, data_bytes, meta_bytes), when in zip(planned, times):
         msstore.write_save(live_dir, dest_ident, data_bytes, meta_bytes, when, create_if_missing=True)
         changed.append(dest_ident)
 
-    _validate_xbox_slot(live_dir, dest_slot, warnings)
+    # Logged before the read-back check, so a failed check still leaves undo its snapshot.
     vault.append_oplog(_oplog("repopulate_slot", snapshot_id=snap.id, detail=f"xbox {Path(source_dir).name} slot {source_slot} -> slot {dest_slot}", changed=changed))
-    return OpResult(True, "repopulate_slot", f"slot {source_slot} -> {dest_slot}", snapshot_id=snap.id, changed=changed, warnings=warnings)
+    result = OpResult(True, "repopulate_slot", f"slot {source_slot} -> {dest_slot}", snapshot_id=snap.id, changed=changed, warnings=warnings)
+    _validate_xbox_slot(live_dir, dest_slot, result)
+    return result
 
 
 def _restore_full_xbox(vault: Vault, entry: CatalogEntry, src: Path, live_dir: Path, warnings: list[str]) -> OpResult:
@@ -888,7 +925,7 @@ def import_backup(vault: Vault, path: Path, label: str = "", copy_into_vault: bo
     if copy_into_vault:
         files = _all_files(path)
         entry = _new_managed_entry(
-            vault, KIND_IMPORTED, vault.backups_dir, tag=plat, files=files,
+            vault, KIND_IMPORTED, vault.backups_dir, tag=plat, source_root=path, files=files,
             fill=lambda dest: shutil.copytree(path, dest, dirs_exist_ok=True),
             label=label or path.name, source=path.name,
         )

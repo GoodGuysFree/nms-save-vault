@@ -109,6 +109,11 @@ Implemented in `core/msstore.py`, exposed via `savedir.scan_any()`.
 * `containers.index` — header `0xE`, little-endian. Length-prefixed **UTF-16** strings
   (process id, account id, save identifiers), an `0x10000000` footer, then one record per
   save: identifier, sync state, a directory **GUID**, last-write (FILETIME) and size.
+  Writes edit it at the record level: records an operation does not change (and any bytes
+  after the last record) are written back byte for byte, and FILETIMEs stay integers (a
+  float of seconds cannot hold 100 ns ticks; rebuilding from floats moved other saves' times
+  and perturbed their sync). A changed record's FILETIME is its local write time, now, and
+  never moves back from its own or its slot sibling's; the header time never moves back.
 * Each save's GUID folder holds `container.<n>` (328 bytes: header, blob count, then per
   blob a 128-byte UTF-16 identifier + cloud GUID + **local GUID**) and the blob files,
   named by `GUID.ToString("N").ToUpper()` (= Python `uuid.UUID(bytes_le=...).hex.upper()`).

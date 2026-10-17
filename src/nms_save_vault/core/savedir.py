@@ -193,10 +193,7 @@ def _load_member(folder: Path, file_no: int) -> MemberView:
 def scan(path: str | Path) -> SaveDirView:
     """Scan a folder and return a structured, read-only view of its slots."""
     folder = Path(path)
-    slots: dict[int, SlotView] = {}
-    for slot in range(1, MAX_SAVE_SLOTS + 1):
-        fa, fb = slot_file_numbers(slot)
-        slots[slot] = SlotView(slot=slot, a=_load_member(folder, fa), b=_load_member(folder, fb))
+    slots = {slot: scan_slot(folder, slot) for slot in range(1, MAX_SAVE_SLOTS + 1)}
     account = (folder / ACCOUNT_DATA_NAME).is_file() and (folder / ACCOUNT_META_NAME).is_file()
     return SaveDirView(
         path=folder,
@@ -204,6 +201,12 @@ def scan(path: str | Path) -> SaveDirView:
         account_present=account,
         steam_cloud=(folder / formats.STEAM_AUTOCLOUD).is_file(),
     )
+
+
+def scan_slot(path: str | Path, slot: int) -> SlotView:
+    """One slot of a Steam-style folder, without reading the other fourteen."""
+    fa, fb = slot_file_numbers(slot)
+    return SlotView(slot=slot, a=_load_member(Path(path), fa), b=_load_member(Path(path), fb))
 
 
 def looks_like_save_dir(path: str | Path) -> bool:

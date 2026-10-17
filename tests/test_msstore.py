@@ -163,12 +163,14 @@ def test_set_ms_meta_timestamp_refuses_a_meta_without_a_save_time(length):
 
 
 def test_a_meta_longer_than_360_bytes_keeps_the_360_layout():
-    """A longer meta is taken to extend the newest layout; an unknown shorter one is not
-    guessed at, beyond the names every layout from 280 bytes on shares."""
+    """A longer meta is read as an extension of the newest layout, but never written into;
+    an unknown shorter one is not guessed at, beyond the names every layout from 280 bytes
+    on shares."""
     longer = xbox_meta("Run", play=100, pid=7, ts=1000, difficulty=3) + bytes(40)
     fields = msstore.parse_ms_meta(longer)
     assert (fields["slot_id"], fields["timestamp"], fields["difficulty"]) == (7, 1000, 3)
-    assert msstore.parse_ms_meta(msstore.set_ms_meta_timestamp(longer, 2000))["timestamp"] == 2000
+    with pytest.raises(ValueError):
+        msstore.set_ms_meta_timestamp(longer, 2000)
 
     unknown = xbox_meta("Run", play=100, pid=7, ts=1000, difficulty=3, length=296) + bytes(4)
     fields = msstore.parse_ms_meta(unknown)
@@ -335,6 +337,169 @@ def test_containers_index_roundtrip(tmp_path):
     view = msstore.scan(acct)
     assert view.slots[1].a.save_name == "A"
     assert view.slots[3].b.save_name == "B"
+
+
+# --- record-bytes editing (P-X1): untouched records stay byte-identical ------------------
+#
+# FILETIMEs are 100 ns ticks; a float of unix seconds cannot hold every one of them, so
+# rebuilding the index from floats moved the times of records nobody touched.
+
+SUB_SECOND_TICKS = 133_420_000_001_234_567     # a float round trip loses 23 ticks of this
+
+
+def _set_filetimes(acct: Path, ticks: int, sync_states: dict[str, int] | None = None) -> bytes:
+    """Rewrite the index with sub-second FILETIMEs (header and every record, each different)
+    and optional per-record sync states; returns the new index bytes."""
+    header, records, trailer = msstore.split_index((acct / "containers.index").read_bytes())
+    n = struct.unpack_from("<i", header, 0)[0]
+    header = bytearray(header)
+    struct.pack_into("<q", header, 4 + 2 * n, ticks)
+    patched = []
+    for i, (ident, rec) in enumerate(records):
+        rec = bytearray(rec)
+        tail = len(rec) - msstore.RECORD_TAIL_LENGTH
+        struct.pack_into("<q", rec, tail + 21, ticks + 7 * (i + 1))
+        if sync_states and ident in sync_states:
+            struct.pack_into("<i", rec, tail + 1, sync_states[ident])
+        patched.append((ident, bytes(rec)))
+    raw = msstore.join_index(bytes(header), patched, trailer)
+    (acct / "containers.index").write_bytes(raw)
+    return raw
+
+
+def _records(acct: Path) -> dict[str, bytes]:
+    return dict(msstore.split_index((acct / "containers.index").read_bytes())[1])
+
+
+SAVES_FOR_INDEX = [
+    ("AccountData", '{"acct":1}', "", "", 0, 50),
+    ("Slot1Auto", '{"a":1}', "One A", "", 100, 1000),
+    ("Slot1Manual", '{"b":1}', "One B", "", 90, 2000),
+    ("Slot2Auto", '{"a":2}', "Two A", "", 80, 800),
+]
+
+
+def test_parse_and_rebuild_with_no_edit_is_byte_identical(make_wgs_account, tmp_path):
+    assert msstore._unix_to_filetime(msstore._filetime_to_unix(SUB_SECOND_TICKS)) != SUB_SECOND_TICKS
+    acct = make_wgs_account(tmp_path, SAVES_FOR_INDEX)
+    raw = _set_filetimes(acct, SUB_SECOND_TICKS)
+
+    assert msstore.join_index(*msstore.split_index(raw)) == raw
+    info, containers = msstore.parse_containers_index(acct)
+    assert msstore.build_containers_index(info, containers) == raw
+    for c in containers:                 # even serialised from fields: FILETIMEs are integers
+        c.raw = b""
+    assert msstore.build_containers_index(info, containers) == raw
+
+
+@pytest.mark.parametrize("edit", ["write", "delete"])
+def test_editing_one_record_leaves_every_other_record_byte_identical(make_wgs_account, tmp_path, edit):
+    acct = make_wgs_account(tmp_path, SAVES_FOR_INDEX)
+    _set_filetimes(acct, SUB_SECOND_TICKS)
+    header_before = msstore.split_index((acct / "containers.index").read_bytes())[0]
+    before = _records(acct)
+
+    when = 1_800_000_000.25                # later than every time in the index
+    if edit == "write":
+        msstore.write_save(acct, "Slot1Auto", chunked(b'{"new":1}'), xbox_meta("New", ts=3000), when)
+    else:
+        assert msstore.delete_save(acct, "Slot1Auto", when)
+
+    after = _records(acct)
+    assert after["Slot1Auto"] != before["Slot1Auto"]
+    assert {k: v for k, v in after.items() if k != "Slot1Auto"} == {
+        k: v for k, v in before.items() if k != "Slot1Auto"
+    }
+    # The header keeps its identity strings; only its FILETIME and sync state move.
+    info = msstore.parse_containers_index(acct)[0]
+    assert (info.process_id, info.account_id) == ("proc", "acct")
+    assert info.filetime == msstore._unix_to_filetime(when)
+    assert msstore.split_index((acct / "containers.index").read_bytes())[0] != header_before
+
+
+@pytest.mark.parametrize("edit", ["write", "delete"])
+def test_record_and_index_times_never_move_back(make_wgs_account, tmp_path, edit):
+    """Written with an older time than the record already carries, the record still moves
+    forward (a record going back in time looks older than a copy the sync has) and the
+    index time stays where it was."""
+    acct = make_wgs_account(tmp_path, SAVES_FOR_INDEX)
+    _set_filetimes(acct, SUB_SECOND_TICKS)
+    info, containers = msstore.parse_containers_index(acct)
+    own = next(c for c in containers if c.identifier == "Slot1Auto").filetime
+
+    if edit == "write":
+        msstore.write_save(acct, "Slot1Auto", chunked(b'{"new":1}'), xbox_meta("New", ts=3000), 3000.25)
+    else:
+        assert msstore.delete_save(acct, "Slot1Auto", 3000.25)
+
+    after_info, after = msstore.parse_containers_index(acct)
+    assert next(c for c in after if c.identifier == "Slot1Auto").filetime == own + 1
+    assert after_info.filetime == max(info.filetime, own + 1)
+
+
+def test_mark_modified_changes_only_the_sync_state_of_synced_records(make_wgs_account, tmp_path):
+    acct = make_wgs_account(tmp_path, SAVES_FOR_INDEX)
+    _set_filetimes(acct, SUB_SECOND_TICKS, sync_states={"Slot1Auto": msstore.BLOB_SYNC_SYNCED})
+    before = _records(acct)
+
+    msstore.mark_modified(acct)
+
+    after = _records(acct)
+    for ident in ("AccountData", "Slot1Manual", "Slot2Auto"):   # already Modified: untouched
+        assert after[ident] == before[ident]
+    changed = [i for i, (x, y) in enumerate(zip(before["Slot1Auto"], after["Slot1Auto"])) if x != y]
+    state_at = len(before["Slot1Auto"]) - msstore.RECORD_TAIL_LENGTH + 1
+    assert changed and set(changed) <= set(range(state_at, state_at + 4))
+    info = msstore.parse_containers_index(acct)[0]
+    assert info.filetime == SUB_SECOND_TICKS and info.sync_state == msstore.INDEX_SYNC_MODIFIED
+
+
+def test_nothing_is_ever_written_with_a_1601_time(make_wgs_account, tmp_path):
+    """A FILETIME of 0 reads as 1601-01-01: a record cannot be made without a time, and a
+    write without a real time is refused before anything changes."""
+    with pytest.raises(TypeError):
+        msstore._Container(identifier="Slot1Auto", directory=tmp_path, sync_state=1, extension=1, size_disk=0)
+    acct = make_wgs_account(tmp_path, SAVES_FOR_INDEX)
+    before = (acct / "containers.index").read_bytes()
+    with pytest.raises(ValueError):
+        msstore.write_save(acct, "Slot1Auto", chunked(b'{"new":1}'), xbox_meta("New"), 0)
+    with pytest.raises(ValueError):
+        msstore.delete_save(acct, "Slot1Auto", 0)
+    assert (acct / "containers.index").read_bytes() == before
+
+
+def test_trailing_bytes_after_the_records_are_kept_verbatim(make_wgs_account, tmp_path):
+    """Bytes the format does not describe are not ours to drop: they survive a parse, a
+    rebuild and an edit, still at the end."""
+    acct = make_wgs_account(tmp_path, SAVES_FOR_INDEX)
+    padding = b"\x00\x01\xfe\xff"
+    raw = (acct / "containers.index").read_bytes() + padding
+    (acct / "containers.index").write_bytes(raw)
+
+    assert msstore.join_index(*msstore.split_index(raw)) == raw
+    info, containers = msstore.parse_containers_index(acct)
+    assert info.trailer == padding and msstore.build_containers_index(info, containers) == raw
+    assert msstore.scan(acct).slots[1].a.save_name == "One A"
+
+    before = _records(acct)
+    msstore.write_save(acct, "Slot1Auto", chunked(b'{"new":1}'), xbox_meta("New", ts=3000), 1_800_000_000.0)
+    edited = (acct / "containers.index").read_bytes()
+    assert edited.endswith(padding)
+    after = _records(acct)
+    assert {k: v for k, v in after.items() if k != "Slot1Auto"} == {
+        k: v for k, v in before.items() if k != "Slot1Auto"
+    }
+
+
+def test_real_containers_index_rebuilds_byte_identically(live_wgs_dir, tmp_path):
+    """Read-only check on a copy of the real Game Pass index (skips when there is none)."""
+    copy = tmp_path / "containers.index"
+    shutil.copyfile(live_wgs_dir / "containers.index", copy)
+    raw = copy.read_bytes()
+
+    assert msstore.join_index(*msstore.split_index(raw)) == raw
+    info, containers = msstore.parse_containers_index(tmp_path)
+    assert msstore.build_containers_index(info, containers) == raw
 
 
 # --- writer (Phase 2b): mutate a wgs save in a sandbox fixture --------------------------

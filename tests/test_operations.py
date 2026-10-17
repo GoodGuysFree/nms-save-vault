@@ -498,6 +498,51 @@ def test_a_failed_vault_copy_leaves_nothing_behind(tmp_path, monkeypatch, make):
     assert vault.entries == [] and Vault(vault.root).load().entries == []
 
 
+@pytest.mark.parametrize(
+    ("make", "message"),
+    [
+        (lambda vault, live: ops.snapshot_live(vault, live, reason="x"), "changed while it was being copied"),
+        (_MANAGED_COPIES["full backup"], "changed while it was being copied"),
+        (_MANAGED_COPIES["extract"], "does not match the original"),
+        (_MANAGED_COPIES["copied import"], "does not match the original"),
+    ],
+    ids=["snapshot", "full backup", "extract", "copied import"],
+)
+def test_a_corrupted_vault_copy_is_caught_and_removed(tmp_path, monkeypatch, make, message):
+    """Every copy is checked by sha256 against its source; a copy that came out different
+    is removed and nothing is catalogued. Copying a live folder, the likely cause is the game
+    or the Xbox app writing to it meanwhile, and the message says so."""
+    live = tmp_path / "live"
+    steam_save(live, 1, 0, "Run", 3600, 0x1234, 1_700_000_000)
+    vault = Vault(tmp_path / "vault")
+    real_copy2, real_copytree = shutil.copy2, shutil.copytree
+
+    def corrupt(path: Path) -> None:
+        data = bytearray(path.read_bytes())
+        data[-1] ^= 0xFF
+        path.write_bytes(bytes(data))
+
+    def copy2_corrupting(src, dst, *args, **kwargs):
+        result = real_copy2(src, dst, *args, **kwargs)
+        corrupt(Path(result))
+        return result
+
+    def copytree_corrupting(src, dst, *args, **kwargs):
+        result = real_copytree(src, dst, *args, **kwargs)
+        corrupt(next(p for p in sorted(Path(result).rglob("*.hg")) if p.is_file()))
+        return result
+
+    monkeypatch.setattr(ops.shutil, "copy2", copy2_corrupting)
+    monkeypatch.setattr(ops.shutil, "copytree", copytree_corrupting)
+    with pytest.raises(ops.ValidationError, match=message):
+        make(vault, live)
+    monkeypatch.undo()
+
+    folders = (vault.snapshots_dir, vault.backups_dir, vault.extracts_dir)
+    assert [p for d in folders for p in d.iterdir()] == []
+    assert vault.entries == [] and Vault(vault.root).load().entries == []
+
+
 @pytest.mark.parametrize("make", list(_MANAGED_COPIES.values()), ids=list(_MANAGED_COPIES))
 def test_every_vault_copy_checks_free_space(tmp_path, monkeypatch, make):
     live = tmp_path / "live"

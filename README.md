@@ -396,8 +396,8 @@ nmsvault discover --add        # also catalogs the Xbox folder if present
 
 **Same-platform writes are supported** — backup, restore, per-slot extract / repopulate, and
 promote all work within Xbox, exactly as for Steam (every write auto-snapshots first, so
-`undo` works). The wgs writer rotates the blob GUIDs, rewrites `containers.index` with the
-correct sync state, and copies the save data verbatim — it follows the layout used by
+`undo` works). The wgs writer rotates the blob GUIDs, updates only the changed saves' records
+in `containers.index` (with the correct sync state), and copies the save data verbatim — it follows the layout used by
 [libNOM.io](https://github.com/zencq/libNOM.io) (see Credits).
 
 The game now also keeps a plain copy of each save in `SystemAppData\xgs\<accountfolder>\`
@@ -441,7 +441,7 @@ The vault lives outside `st_<id>`, so it is never scanned by the game or synced 
 ## Status
 
 Working. Core format/crypto and all operations are verified against the real save files and
-in a temp sandbox (451 tests). Xbox / Game Pass saves are supported for reading **and**
+in a temp sandbox (469 tests). Xbox / Game Pass saves are supported for reading **and**
 same-platform writing — verified against a real install (reads) and synthetic `wgs` fixtures
 (writes). A full file-copy safety backup of the live folder was made before development
 (`C:\Devel\NMS-SaveBackup-SAFETY-2026-06-24`).
