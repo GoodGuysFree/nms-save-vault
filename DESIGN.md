@@ -329,3 +329,24 @@ check itself is plain `urllib` that works everywhere.
 ## Manual safety backup
 A full file-copy of the live folder was taken before development began:
 `C:\Devel\NMS-SaveBackup-SAFETY-2026-06-24\` (215 files, verified byte-count match).
+
+## Maintenance after a game update
+
+The app is tested against one save format (`core/gameversion.py`: the newest meta format and
+BaseVersion per platform, and the container kinds it decodes). A save written by a newer game
+stays readable, but no live write may read from it or replace it until the app is updated
+(`GAME_NEWER`). After each game update:
+
+1. Run `nmsvault selftest` (read-only, counts only). Exit 0 means every live save and vault
+   version still decodes, no unknown top-level key appeared and no extractor failed; exit 1
+   means something needs an app update (the lines say which kind).
+2. Run `python tools/check_upstream.py`: it asks the GitHub releases API for new releases of
+   `zencq/libNOM.io` (save format) and `monkeyman192/MBINCompiler` (field names), compared with
+   `tools/upstream.json`. Read what changed there.
+3. Regenerate the pins and lookups: `python tools/gen_lookups.py --meta <meta sqlite> --build
+   <build>`; add any new top-level name to `PINNED_TOP_LEVEL` in `core/selftest.py`.
+4. Bump the guard's known version in `core/gameversion.py` (`KNOWN`), run the full suite and
+   `nmsvault selftest` once more, then `python tools/check_upstream.py --record`.
+
+`tools/check_upstream.py` is a development tool: the app never imports it and never calls the
+network for this.
