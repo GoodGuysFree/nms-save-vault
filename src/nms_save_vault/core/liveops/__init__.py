@@ -7,7 +7,14 @@ write target itself.
 from __future__ import annotations
 
 from .context import OpContext, Policies, VersionStore
-from .errors import ConfirmationRequired, LiveOpError, RollbackError, TargetError, WriteError
+from .errors import (
+    ConfirmationRequired,
+    LiveChanged,
+    LiveOpError,
+    RollbackError,
+    TargetError,
+    WriteError,
+)
 from .faults import FaultInjector, SimulatedCrash
 from .model import (
     AccountChoice,
@@ -40,7 +47,8 @@ from .targets import resolve_target
 
 __all__ = [
     "AccountChoice", "CloudInfo", "CloudMode", "ConfirmationRequired", "EmptySlotGuide",
-    "Estimate", "EvictionPicker", "Eviction", "FaultInjector", "LiveAccount", "LiveOpError",
+    "Estimate", "EvictionPicker", "Eviction", "FaultInjector", "LiveAccount", "LiveChanged",
+    "LiveOpError",
     "MemberFacts", "MemberWrite", "OpContext", "OpOutcome", "OpSummary", "PairSource",
     "PlacePlan", "Policies", "Position", "Progress", "RecoveryItem", "ResolvedTarget",
     "RollbackError", "SimulatedCrash", "SlotCandidate", "SourceSummary", "TargetError",

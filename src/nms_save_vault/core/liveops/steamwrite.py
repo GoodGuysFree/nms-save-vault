@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .. import safety, slotmap
-from .errors import RollbackError, WriteError
+from .errors import LiveChanged, RollbackError, WriteError
 from .faults import FaultInjector, at
 from .model import MemberWrite, Position
 
@@ -127,9 +127,15 @@ def stage(plan: SteamWritePlan, payload: Mapping[str, bytes],
 
 
 def swap(plan: SteamWritePlan, faults: FaultInjector | None = None) -> None:
-    """Rename the staged files in, in plan order, each followed by its mtime. On a rename
-    that keeps failing, raise :class:`WriteError` naming what was already swapped; the
-    caller then rolls the slot back."""
+    """Rename the staged files in, in plan order, each followed by its mtime. First the
+    slot is checked against ``plan.pre``: when the game or another tool wrote it since the
+    plan, raise :class:`LiveChanged` with nothing written (the staged files are removed).
+    On a rename that keeps failing, raise :class:`WriteError` naming what was already
+    swapped; the caller then rolls the slot back."""
+    changed = [name for name, pre in plan.pre.items() if file_state(plan.folder / name) != pre]
+    if changed:
+        sweep(plan.folder, plan.op_tag)
+        raise LiveChanged("the slot changed since it was planned: " + ", ".join(changed))
     swapped: list[str] = []
     for i, f in enumerate(plan.files, 1):
         target = plan.folder / f.name
@@ -146,10 +152,23 @@ def swap(plan: SteamWritePlan, faults: FaultInjector | None = None) -> None:
 def rollback(plan: SteamWritePlan, pre_bytes: Mapping[str, bytes]) -> None:
     """Put every name of the plan back as ``pre`` says: its pre-op bytes and ``mtime_ns``,
     or no file when there was none (a file this op created). ``pre_bytes`` needs only the
-    names whose content changed; each is checked against its recorded sha256. The op's
+    names whose content changed; each is checked against its recorded sha256 before any
+    file is touched, and when one is missing or wrong nothing is changed. The op's
     temporary files are removed. Raises :class:`RollbackError` if any name is not exactly
     as before afterwards."""
     problems: dict[str, str] = {}
+    for name, pre in plan.pre.items():
+        now = file_state(plan.folder / name)
+        if pre is None or (now is not None and (now.sha256, now.size) == (pre.sha256, pre.size)):
+            continue
+        data = pre_bytes.get(name)
+        if data is None:
+            problems[name] = "no pre-op bytes"
+        elif _sha(data) != pre.sha256:
+            problems[name] = "the pre-op bytes do not match the recorded hash"
+    if problems:
+        raise RollbackError("nothing was changed, the slot cannot be put back: "
+                            + "; ".join(f"{n}: {why}" for n, why in problems.items()))
     for name, pre in plan.pre.items():
         try:
             _restore(plan.folder / name, pre, pre_bytes.get(name), plan.op_tag)

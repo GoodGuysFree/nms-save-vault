@@ -129,9 +129,18 @@ def test_a_single_member_or_mixed_source_fills_the_other_position_with_a_copy(pl
     lw, ow = compute(SourcePair(platform, "B", stranger, v), target(platform), NOW)
     assert ow.write.vid == V(2) and ow.write.pid == PID and ow.write.copy_of == "B"
     unknown = member("A", 1, platform, play=50, ts=1_791_000_000, pid=None)
-    nameless = SourceMember("B", V(2), None, v.meta_plain)
-    _lw, ow = compute(SourcePair(platform, "B", unknown, nameless), target(platform), NOW)
-    assert ow.write.vid == V(2)                      # no id to match: never assume a partner
+    _lw, ow = compute(SourcePair(platform, "B", unknown, v), target(platform), NOW)
+    assert ow.write.vid == V(2)                      # an id against none: not one playthrough
+
+
+@pytest.mark.parametrize("platform", ["steam", "xbox"])
+def test_a_pair_captured_together_without_ids_keeps_its_partner(platform):
+    """D5 2.5: P.pid == V.pid, None == None included - the two were captured together."""
+    a = member("A", 1, platform, play=50, ts=1_791_000_000, pid=None)
+    b = member("B", 2, platform, play=40, ts=1_790_000_000, pid=None)
+    lw, ow = compute(SourcePair(platform, "A", a, b), target(platform), NOW)
+    assert (lw.write.vid, ow.write.vid) == (V(1), V(2))
+    assert ow.write.copy_of is None and ow.write.pid is None
 
 
 def test_the_live_copy_is_a_meta_only_variant_of_the_version():

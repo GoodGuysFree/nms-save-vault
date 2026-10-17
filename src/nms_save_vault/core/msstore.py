@@ -955,10 +955,44 @@ def mirror_xgs(folder: str | Path) -> list[str]:
 # reads only and pre-generates every name; apply_pair writes the new blobs under those names,
 # then the index, then the xgs mirror; until finalize_pair the replaced blobs stay on disk,
 # unreferenced, so rollback_pair restores the slot exactly without anything from the vault.
+# The xgs mirror of a replaced save must hold its wgs bytes (or nothing): bytes only xgs
+# holds are never overwritten, so the mirror's pre-image is always rebuildable.
 
 
 class IndexChanged(Exception):
-    """containers.index changed between planning and the write (the Xbox app syncing)."""
+    """containers.index is neither as planned nor as this write left it (the Xbox app
+    syncing, or another tool): neither the write nor its rollback acts on it."""
+
+
+class XgsMismatch(ValueError):
+    """The xgs copy of a save the write would replace holds bytes its wgs record does not
+    (or a save wgs does not have): writing would destroy the only copy of those bytes."""
+
+
+class RollbackError(Exception):
+    """rollback_pair cannot put the slot back exactly; it changed nothing."""
+
+
+@dataclass(frozen=True)
+class RecordInfo:
+    identifier: str
+    second_identifier: str
+    dir_guid: str
+    extension: int
+    sync_state: int
+    filetime: int
+
+
+def record_info(raw: bytes) -> RecordInfo:
+    """The fields of one raw containers.index record, read from its bytes alone."""
+    identifier, off = _read_lp_string(raw, 0)
+    second, off = _read_lp_string(raw, off)
+    _sync, off = _read_lp_string(raw, off)
+    if off + RECORD_TAIL_LENGTH != len(raw):
+        raise ValueError("not one containers.index record")
+    return RecordInfo(identifier, second, _guid_name(raw[off + 5 : off + 21]), raw[off],
+                      struct.unpack_from("<i", raw, off + 1)[0],
+                      struct.unpack_from("<q", raw, off + 21)[0])
 
 
 @dataclass(frozen=True)
@@ -998,12 +1032,16 @@ class XboxPairPlan:
     superseded: tuple[str, ...]                  # old blobs + old container.<n>, for finalize
     xgs: bool
     blobs: tuple[XboxBlobWrite, ...]             # in write order (the loading member last)
+    pre_xgs: Mapping[str, tuple[str, str] | None] = field(default_factory=dict)
+                                                 # identifier -> sha256 of xgs (data, meta),
+                                                 # "" = no file; None = no folder
 
 
 def prepare_pair(folder: str | Path, writes: Sequence[XboxRecordWrite]) -> XboxPairPlan:
-    """Plan the records of one write: new blob names, new record bytes, the patched header.
-    Reads only. A record's FILETIME never goes back from its old one, and the records keep
-    the order of their ``when`` strictly (the loading member is written latest)."""
+    """Plan the records of one write: new blob names, new record bytes, the patched header,
+    the xgs pre-image. Reads only. A record's FILETIME never goes back from its old one, and
+    the records keep the order of their ``when`` strictly (the loading member is written
+    latest). Raises :class:`XgsMismatch` when xgs holds bytes wgs does not."""
     folder = Path(folder)
     idents = [w.identifier for w in writes]
     if not writes or len(set(idents)) != len(idents):
@@ -1015,17 +1053,21 @@ def prepare_pair(folder: str | Path, writes: Sequence[XboxRecordWrite]) -> XboxP
     if len({ident for ident, _rec in records}) != len(records):
         raise ValueError("containers.index names a save twice")
     current = {ident: rec for ident, rec in records}
-    double_id = any(_parse_record(rec, folder).second_identifier for _i, rec in records)
+    double_id = any(record_info(rec).second_identifier for _i, rec in records)
     index_ft = struct.unpack_from("<q", header, 4 + 2 * struct.unpack_from("<i", header, 0)[0])[0]
+    twin = xgs_twin(folder)
 
     prev_ft = 0
     new_records: dict[str, bytes] = {}
+    pre_xgs: dict[str, tuple[str, str] | None] = {}
     blobs, new_files, new_dirs, superseded = [], [], [], []
     for w in sorted(writes, key=lambda w: w.when):
         _require_time(w.when)
         rec = current.get(w.identifier)
         c = _parse_record(rec, folder) if rec is not None else _new_container(
             folder, w.identifier, w.when, double_identifier=double_id)
+        if twin is not None:
+            pre_xgs[w.identifier] = _xgs_pre(twin, c)
         if not c.directory.is_dir():
             new_dirs.append(c.dir_guid)
         superseded += [p.relative_to(folder).as_posix()
@@ -1051,7 +1093,8 @@ def prepare_pair(folder: str | Path, writes: Sequence[XboxRecordWrite]) -> XboxP
         pre_records_raw={i: current.get(i) for i in idents},
         new_header_raw=_patched_header(header, max(index_ft, prev_ft), INDEX_SYNC_MODIFIED),
         new_records_raw=new_records, new_files=tuple(new_files), new_dirs=tuple(new_dirs),
-        superseded=tuple(superseded), xgs=xgs_twin(folder) is not None, blobs=tuple(blobs))
+        superseded=tuple(superseded), xgs=twin is not None, blobs=tuple(blobs),
+        pre_xgs=pre_xgs)
 
 
 def apply_pair(plan: XboxPairPlan, payload: Mapping[str, tuple[bytes, bytes]],
@@ -1083,12 +1126,7 @@ def apply_pair(plan: XboxPairPlan, payload: Mapping[str, tuple[bytes, bytes]],
     except Exception:
         _remove_new(plan)
         raise
-    _header, records, trailer = split_index(raw)
-    present = {ident for ident, _rec in records}
-    out = [(ident, plan.new_records_raw.get(ident, rec)) for ident, rec in records]
-    out += [(b.identifier, plan.new_records_raw[b.identifier])
-            for b in plan.blobs if b.identifier not in present]
-    safety.atomic_write_bytes(index, join_index(plan.new_header_raw, out, trailer))
+    safety.atomic_write_bytes(index, _post_index(plan, raw))
     _fault(faults, "after_index")
     twin = xgs_twin(folder) if plan.xgs else None
     if twin is not None:
@@ -1104,38 +1142,134 @@ def finalize_pair(plan: XboxPairPlan) -> None:
         (plan.folder / rel).unlink(missing_ok=True)
 
 
+def pair_index_state(plan: XboxPairPlan) -> str:
+    """``pre`` (as planned), ``post`` (exactly as apply_pair wrote it) or ``other``."""
+    return _index_state(plan, (plan.folder / "containers.index").read_bytes())[0]
+
+
+def pair_xgs_states(plan: XboxPairPlan) -> dict[str, str]:
+    """Per identifier: ``pre``, ``post``, ``torn`` (each file one or the other) or
+    ``other``; empty when the account has no xgs mirror."""
+    twin = xgs_twin(plan.folder) if plan.xgs else None
+    if twin is None:
+        return {}
+    post = {b.identifier: (b.data_sha256, b.meta_sha256) for b in plan.blobs}
+    states = {}
+    for ident, pre in plan.pre_xgs.items():
+        now = _xgs_hashes(_xgs_identifier_dir(twin, ident))
+        kinds = {"pre" if n == b else "post" if n == p else "other"
+                 for n, b, p in zip(now, pre or ("", ""), post[ident])}
+        states[ident] = "other" if "other" in kinds else "torn" if len(kinds) > 1 else kinds.pop()
+    return states
+
+
 def rollback_pair(plan: XboxPairPlan) -> None:
     """Put the slot back exactly: the index gets its old header and the op's records their
-    old bytes (records the op added are dropped; every other record stays as it is now), the
-    new blobs and dirs go, and the xgs mirror is rewritten from the old blobs (or removed
-    for a save that did not exist)."""
+    old bytes (records the op added are dropped), the new blobs and dirs go, and the xgs
+    mirror gets its pre-image back. Every check runs first; on any doubt it changes nothing:
+    :class:`IndexChanged` when the index is neither as planned nor as the write left it,
+    :class:`RollbackError` when the replaced blobs are gone (the write was finalized) or an
+    xgs copy holds bytes that are neither its pre- nor its post-image."""
     folder = plan.folder
     index = folder / "containers.index"
-    raw = index.read_bytes()
-    _header, records, trailer = split_index(raw)
+    state, restored = _index_state(plan, index.read_bytes())
+    if state == "other":
+        raise IndexChanged("containers.index is neither as planned nor as the write left it; "
+                           "nothing was changed")
+    if any(not (folder / rel).is_file() for rel in plan.superseded):
+        raise RollbackError("the replaced saves are gone (the write was finalized); "
+                            "nothing was changed")
+    xgs_states = pair_xgs_states(plan)
+    if "other" in xgs_states.values():
+        raise RollbackError("an xgs copy changed since the write; nothing was changed")
+    old = {ident: _old_blobs(plan, ident) for ident, st in xgs_states.items()
+           if st != "pre" and any(plan.pre_xgs[ident] or ())}
+    if state == "post":
+        safety.atomic_write_bytes(index, restored)
+    _remove_new(plan)
+    twin = xgs_twin(folder) if xgs_states else None
+    for ident, st in xgs_states.items():
+        if st != "pre" and twin is not None:
+            _xgs_restore(_xgs_identifier_dir(twin, ident), plan.pre_xgs[ident], old.get(ident))
+
+
+def _index_state(plan: XboxPairPlan, raw: bytes) -> tuple[str, bytes | None]:
+    """The index's state and, for ``post``, the pre-image bytes to write back."""
+    if hashlib.sha256(raw).hexdigest() == plan.pre_index_sha256:
+        return "pre", raw
+    try:
+        _header, records, trailer = split_index(raw)
+    except ValueError:
+        return "other", None
     out = []
     for ident, rec in records:
         if ident not in plan.pre_records_raw:
             out.append((ident, rec))
         elif plan.pre_records_raw[ident] is not None:
             out.append((ident, plan.pre_records_raw[ident]))
-    present = {ident for ident, _rec in out}
-    out += [(ident, rec) for ident, rec in plan.pre_records_raw.items()
-            if rec is not None and ident not in present]
     restored = join_index(plan.pre_header_raw, out, trailer)
-    if restored != raw:
-        safety.atomic_write_bytes(index, restored)
-    _remove_new(plan)
-    twin = xgs_twin(folder) if plan.xgs else None
-    if twin is None:
-        return
-    for ident, rec in plan.pre_records_raw.items():
-        old = _parse_record(rec, folder) if rec is not None else None
-        if (old is not None and old.data_file is not None and old.data_file.is_file()
-                and old.meta_file is not None and old.meta_file.is_file()):
-            _xgs_write(twin, ident, old.data_file.read_bytes(), old.meta_file.read_bytes())
-        else:
-            _xgs_delete(twin, ident)
+    if (hashlib.sha256(restored).hexdigest() != plan.pre_index_sha256
+            or _post_index(plan, restored) != raw):
+        return "other", None
+    return "post", restored
+
+
+def _post_index(plan: XboxPairPlan, pre_raw: bytes) -> bytes:
+    """The index apply_pair writes over ``pre_raw``: the op's records replaced in place (new
+    ones appended), every other record raw, the patched header."""
+    _header, records, trailer = split_index(pre_raw)
+    present = {ident for ident, _rec in records}
+    out = [(ident, plan.new_records_raw.get(ident, rec)) for ident, rec in records]
+    out += [(b.identifier, plan.new_records_raw[b.identifier])
+            for b in plan.blobs if b.identifier not in present]
+    return join_index(plan.new_header_raw, out, trailer)
+
+
+def _xgs_hashes(d: Path) -> tuple[str, str]:
+    return tuple(safety.sha256_file(d / n) if (d / n).is_file() else "" for n in ("data", "meta"))
+
+
+def _xgs_pre(twin: Path, c: _Container) -> tuple[str, str] | None:
+    """The xgs pre-image of one record (None: no folder). Refuses an xgs copy holding bytes
+    that are not the record's own wgs blobs: nothing could rebuild them after the write."""
+    d = _xgs_identifier_dir(twin, c.identifier)
+    if not d.is_dir():
+        return None
+    found = _xgs_hashes(d)
+    if found == ("", ""):
+        return found
+    wgs = None
+    if (c.sync_state != SYNC_STATE_DELETED and c.data_file is not None and c.data_file.is_file()
+            and c.meta_file is not None and c.meta_file.is_file()):
+        wgs = (safety.sha256_file(c.data_file), safety.sha256_file(c.meta_file))
+    if found != wgs:
+        raise XgsMismatch(f"{c.identifier}: the xgs copy holds bytes the wgs save does not")
+    return found
+
+
+def _old_blobs(plan: XboxPairPlan, ident: str) -> tuple[bytes, bytes]:
+    """The replaced wgs blobs of ``ident``, checked against its xgs pre-image."""
+    rec = plan.pre_records_raw.get(ident)
+    c = _parse_record(rec, plan.folder) if rec is not None else None
+    if c is None or c.data_file is None or c.meta_file is None:
+        raise RollbackError(f"{ident}: the replaced save cannot be read; nothing was changed")
+    data, meta_bytes = c.data_file.read_bytes(), c.meta_file.read_bytes()
+    if (hashlib.sha256(data).hexdigest(), hashlib.sha256(meta_bytes).hexdigest()) != \
+            plan.pre_xgs[ident]:
+        raise RollbackError(f"{ident}: the replaced save is not the xgs pre-image; "
+                            "nothing was changed")
+    return data, meta_bytes
+
+
+def _xgs_restore(d: Path, pre: tuple[str, str] | None, old: tuple[bytes, bytes] | None) -> None:
+    for i, name in enumerate(("data", "meta")):
+        want, path = (pre or ("", ""))[i], d / name
+        if not want:
+            path.unlink(missing_ok=True)          # a file this write created
+        elif (safety.sha256_file(path) if path.is_file() else "") != want:
+            safety.atomic_write_bytes(path, old[i])
+    if pre is None and d.is_dir() and not any(d.iterdir()):
+        d.rmdir()
 
 
 def _free_extension(c: _Container) -> int:

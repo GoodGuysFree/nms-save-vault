@@ -19,21 +19,22 @@ import logging
 import os
 import re
 import secrets
+import threading
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import ExitStack, contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .. import msstore, platform, safety, slotmap
+from .. import msstore, platform, safety
 from ..organizer.cache import cache_dir
 from ..organizer.model import LiveTarget, ModelError, is_op_id, target_from_json, target_to_json
 from ..organizer.recorder import LIVEOP_TIMEOUT, LiveOpBusy
 from ..organizer.store import liveop_lock_path
 from .context import OpContext
 from .model import MemberWrite
-from .steamwrite import FileState, SteamFileWrite, SteamWritePlan
+from .steamwrite import FileState, SteamFileWrite, SteamWritePlan, file_names, op_tag
 
 log = logging.getLogger(__name__)
 
@@ -74,7 +75,8 @@ def append(ctx: OpContext, op_id: str, event: str, payload: Mapping[str, Any] | 
         raise ValueError("the envelope keys are assigned by the journal")
     path = ops_path(ctx)
     with ctx.store.transaction():
-        seq = 1 + sum(1 for e in read_events(path) if e["op_id"] == op_id)
+        with _tails_guard:      # under the store lock the tail holds every append so far
+            seq = 1 + len(_refresh(path).by_op.get(op_id, ()))
         record = {"j": JOURNAL_VERSION, "op_id": op_id, "seq": seq, "event": event,
                   "utc": utc_text(ctx.clock()), "machine": ctx.machine_id, **payload}
         line = json.dumps(record, ensure_ascii=True, allow_nan=False, separators=(",", ":"))
@@ -109,29 +111,71 @@ def _append_line(path: Path, data: bytes) -> None:
 def read_events(path: Path) -> list[dict]:
     """Every readable event in file order. A last line without its newline is an append
     that did not finish (a crash, or one in progress) and is skipped; a damaged line is
-    skipped. Both are logged; the file is never rewritten."""
+    skipped. Both are logged; the file is never rewritten. Only what was appended since the
+    last read is read and parsed (a per-process cache of the file's tail)."""
+    with _tails_guard:
+        return list(_refresh(Path(path)).events)
+
+
+@dataclass
+class _Tail:
+    """What this process has read of one journal file."""
+
+    ino: int | None = None
+    offset: int = 0                       # bytes read through (up to the last newline)
+    lines: int = 0
+    events: list = field(default_factory=list)
+    by_op: dict = field(default_factory=dict)       # op_id -> its events, ops in first-seen order
+    records: dict = field(default_factory=dict)     # op_id -> OpRecord, rebuilt when dirty
+    dirty: set = field(default_factory=set)
+
+
+_tails: dict[str, _Tail] = {}
+_tails_guard = threading.RLock()
+
+
+def _refresh(path: Path) -> _Tail:
+    """The cached tail of ``path`` brought up to date. Call under ``_tails_guard``."""
+    key = os.path.abspath(path)
     try:
-        data = Path(path).read_bytes()
+        st = path.stat()
     except FileNotFoundError:
-        return []
+        _tails[key] = _Tail()
+        return _tails[key]
+    tail = _tails.get(key)
+    if tail is None or tail.ino != st.st_ino or st.st_size < tail.offset:   # new, replaced, cut
+        tail = _tails[key] = _Tail(ino=st.st_ino)
+    if st.st_size == tail.offset:
+        return tail
+    with open(path, "rb") as f:
+        f.seek(tail.offset)
+        data = f.read()
     lines = data.split(b"\n")
-    tail = lines.pop()
-    if tail.strip():
+    if lines.pop().strip():
         log.warning("%s: the last line is incomplete (an append did not finish); ignored", OPS)
-    events = []
-    for number, raw in enumerate(lines, 1):
-        if not raw.strip():
-            continue
-        try:
-            record = json.loads(raw.decode("utf-8"))
-        except ValueError as exc:
-            log.warning("%s: line %d is damaged and was skipped (%s)", OPS, number, exc)
-            continue
-        if not _valid_envelope(record):
-            log.warning("%s: line %d is not an operation event and was skipped", OPS, number)
-            continue
-        events.append(record)
-    return events
+    for raw in lines:
+        tail.offset += len(raw) + 1
+        tail.lines += 1
+        record = _parse_line(raw, tail.lines)
+        if record is not None:
+            tail.events.append(record)
+            tail.by_op.setdefault(record["op_id"], []).append(record)
+            tail.dirty.add(record["op_id"])
+    return tail
+
+
+def _parse_line(raw: bytes, number: int) -> dict | None:
+    if not raw.strip():
+        return None
+    try:
+        record = json.loads(raw.decode("utf-8"))
+    except ValueError as exc:
+        log.warning("%s: line %d is damaged and was skipped (%s)", OPS, number, exc)
+        return None
+    if not _valid_envelope(record):
+        log.warning("%s: line %d is not an operation event and was skipped", OPS, number)
+        return None
+    return record
 
 
 def _valid_envelope(record: object) -> bool:
@@ -204,7 +248,13 @@ def _target_or_none(raw: object) -> LiveTarget | None:
 
 
 def read_ops(ctx: OpContext) -> dict[str, OpRecord]:
-    return fold(read_events(ops_path(ctx)))
+    """Every op in the order they started. Only the ops with new events are folded again."""
+    with _tails_guard:
+        tail = _refresh(ops_path(ctx))
+        for op_id in tail.dirty:
+            tail.records[op_id] = _record(op_id, tail.by_op[op_id])
+        tail.dirty.clear()
+        return {op_id: tail.records[op_id] for op_id in tail.by_op}
 
 
 def open_ops(ctx: OpContext) -> list[OpRecord]:
@@ -332,7 +382,7 @@ def _read_machine_id(path: Path) -> str | None:
 _GUID = r"[0-9A-F]{32}"
 _BLOB_FILE = re.compile(rf"{_GUID}/(?:{_GUID}|container\.[0-9]{{1,3}})")
 _DIR = re.compile(_GUID)
-_TAG = re.compile(r"[0-9a-f]{4}")
+_CONTAINER = re.compile(r"container\.[0-9]{1,3}")
 
 
 def file_state_to_json(state: FileState | None) -> dict | None:
@@ -375,22 +425,25 @@ def steam_plan_to_json(plan: SteamWritePlan) -> dict:
             "pre": {name: file_state_to_json(st) for name, st in plan.pre.items()}}
 
 
-def steam_plan_from_json(value: object, folder: Path) -> SteamWritePlan:
-    """Decode and check: only slot file names and this op's temp names, so a damaged
-    journal can never point a rollback at another file."""
+def steam_plan_from_json(value: object, folder: Path, *, slot: int, op_id: str) -> SteamWritePlan:
+    """Decode and check against the op it belongs to: only the four files of the op's
+    ``slot`` and the op's own temp names, so a damaged journal can never point a rollback
+    at another file. Anything else is a damaged record (JournalError): never acted on."""
     d = _obj(value)
     tag = d.get("tag")
-    if not isinstance(tag, str) or not _TAG.fullmatch(tag):
-        raise JournalError("not an op tag")
+    if not is_op_id(op_id) or tag != op_tag(op_id):
+        raise JournalError("the plan is not this op's")
+    names = {n for position in ("A", "B") for n in file_names(slot, position)}
     files = []
     for f in _list(d.get("files")):
         f = _obj(f)
-        name = _slot_file(f.get("name"))
+        name = _member_of(names, f.get("name"))
         if f.get("temp") != f".tmp_{tag}_{name}.part":
             raise JournalError(f"not the op's temp name for {name}")
         files.append(SteamFileWrite(name, _sha(f.get("sha256")), _number(f.get("mtime")),
                                     f.get("temp")))
-    pre = {_slot_file(name): file_state_from_json(st) for name, st in _obj(d.get("pre")).items()}
+    pre = {_member_of(names, name): file_state_from_json(st)
+           for name, st in _obj(d.get("pre")).items()}
     return SteamWritePlan(Path(folder), tuple(files), pre, tag)
 
 
@@ -404,6 +457,7 @@ def xbox_plan_to_json(plan: msstore.XboxPairPlan) -> dict:
         "new_records_b64": {k: _b64(v) for k, v in plan.new_records_raw.items()},
         "new_files": list(plan.new_files), "new_dirs": list(plan.new_dirs),
         "superseded": list(plan.superseded), "xgs": plan.xgs,
+        "pre_xgs": {k: None if v is None else list(v) for k, v in plan.pre_xgs.items()},
         "blobs": [{"identifier": b.identifier, "dir": b.dir_name, "data": b.data_name,
                    "meta": b.meta_name, "container": b.container_name,
                    "data_cloud": b.data_cloud, "meta_cloud": b.meta_cloud,
@@ -412,32 +466,69 @@ def xbox_plan_to_json(plan: msstore.XboxPairPlan) -> dict:
     }
 
 
-def xbox_plan_from_json(value: object, folder: Path) -> msstore.XboxPairPlan:
-    """Decode and check: only GUID-named blob files and record dirs of the account folder,
-    and slot identifiers, so a damaged journal can never point a rollback elsewhere."""
+def xbox_plan_from_json(value: object, folder: Path, *, slot: int) -> msstore.XboxPairPlan:
+    """Decode and check against the op's ``slot``: only that slot's two records, blob files
+    and dirs that belong to those records (new files and dirs to the records the op wrote,
+    replaced blobs to the records it replaced), so a damaged journal can never point a
+    rollback elsewhere. Anything else is a damaged record (JournalError): never acted on."""
     d = _obj(value)
+    idents = {f"Slot{slot}Auto", f"Slot{slot}Manual"}
     blobs = []
     for b in _list(d.get("blobs")):
         b = _obj(b)
-        dir_name = _match(_DIR, b.get("dir"))
         blobs.append(msstore.XboxBlobWrite(
-            _slot_id(b.get("identifier")), dir_name, _match(_DIR, b.get("data")),
-            _match(_DIR, b.get("meta")),
-            _match(re.compile(r"container\.[0-9]{1,3}"), b.get("container")),
+            _member_of(idents, b.get("identifier")), _match(_DIR, b.get("dir")),
+            _match(_DIR, b.get("data")), _match(_DIR, b.get("meta")),
+            _match(_CONTAINER, b.get("container")),
             _guid_or_empty(b.get("data_cloud")), _guid_or_empty(b.get("meta_cloud")),
             _sha(b.get("data_sha256")), _sha(b.get("meta_sha256")), _number(b.get("mtime"))))
+    written = {b.identifier: b for b in blobs}
+    pre_records = {_member_of(idents, k): None if v is None else _unb64(v)
+                   for k, v in _obj(d.get("pre_records_b64")).items()}
+    new_records = {_member_of(idents, k): _unb64(v)
+                   for k, v in _obj(d.get("new_records_b64")).items()}
+    if not written or len(written) != len(blobs) or not (
+            set(written) == set(pre_records) == set(new_records)):
+        raise JournalError("the plan's records do not agree")
+    for ident, raw in new_records.items():
+        info = _record_info(raw)
+        if info.identifier != ident or info.dir_guid != written[ident].dir_name:
+            raise JournalError(f"the new record of {ident} is not the planned one")
+    pre_dirs = set()
+    for ident, raw in pre_records.items():
+        if raw is not None:
+            info = _record_info(raw)
+            if info.identifier != ident:
+                raise JournalError(f"the old record of {ident} is another save's")
+            pre_dirs.add(info.dir_guid)
+    planned = {f"{b.dir_name}/{n}" for b in blobs for n in (b.data_name, b.meta_name,
+                                                             b.container_name)}
+    new_files = tuple(_match(_BLOB_FILE, p) for p in _list(d.get("new_files")))
+    new_dirs = tuple(_member_of({b.dir_name for b in blobs}, p) for p in _list(d.get("new_dirs")))
+    superseded = tuple(_match(_BLOB_FILE, p) for p in _list(d.get("superseded")))
+    if set(new_files) != planned or len(new_files) != len(planned):
+        raise JournalError("the new files are not the planned blobs")
+    if any(p.split("/")[0] not in pre_dirs for p in superseded):
+        raise JournalError("a replaced blob is not in a replaced record's folder")
+    pre_xgs = {}
+    for k, v in _obj(d.get("pre_xgs", {})).items():
+        pre_xgs[_member_of(idents, k)] = None if v is None else tuple(
+            "" if h == "" else _sha(h) for h in _list(v))
+        if pre_xgs[k] is not None and len(pre_xgs[k]) != 2:
+            raise JournalError("an xgs pre-image is two hashes")
     return msstore.XboxPairPlan(
         folder=Path(folder), pre_index_sha256=_sha(d.get("pre_index_sha256")),
-        pre_header_raw=_unb64(d.get("pre_header_b64")),
-        pre_records_raw={_slot_id(k): None if v is None else _unb64(v)
-                         for k, v in _obj(d.get("pre_records_b64")).items()},
-        new_header_raw=_unb64(d.get("new_header_b64")),
-        new_records_raw={_slot_id(k): _unb64(v)
-                         for k, v in _obj(d.get("new_records_b64")).items()},
-        new_files=tuple(_match(_BLOB_FILE, p) for p in _list(d.get("new_files"))),
-        new_dirs=tuple(_match(_DIR, p) for p in _list(d.get("new_dirs"))),
-        superseded=tuple(_match(_BLOB_FILE, p) for p in _list(d.get("superseded"))),
-        xgs=_bool(d.get("xgs")), blobs=tuple(blobs))
+        pre_header_raw=_unb64(d.get("pre_header_b64")), pre_records_raw=pre_records,
+        new_header_raw=_unb64(d.get("new_header_b64")), new_records_raw=new_records,
+        new_files=new_files, new_dirs=new_dirs, superseded=superseded,
+        xgs=_bool(d.get("xgs")), blobs=tuple(blobs), pre_xgs=pre_xgs)
+
+
+def _record_info(raw: bytes) -> msstore.RecordInfo:
+    try:
+        return msstore.record_info(raw)
+    except (ValueError, UnicodeDecodeError, IndexError) as exc:
+        raise JournalError(f"a containers.index record does not decode ({exc})") from None
 
 
 def _obj(value: object) -> dict:
@@ -500,19 +591,10 @@ def _guid_or_empty(value: object) -> str:
     return "" if value == "" else _match(_DIR, value)
 
 
-def _slot_file(value: object) -> str:
-    """A slot's data or meta file name in its canonical spelling."""
-    if isinstance(value, str):
-        fno = slotmap.parse_data_filename(value) or slotmap.parse_meta_filename(value)
-        if fno in slotmap.all_file_numbers() and value in (
-                slotmap.data_filename(fno), slotmap.meta_filename(fno)):
-            return value
-    raise JournalError(f"not a slot file name: {value!r}")
-
-
-def _slot_id(value: object) -> str:
-    if not isinstance(value, str) or not re.fullmatch(r"Slot([1-9]|1[0-5])(Auto|Manual)", value):
-        raise JournalError(f"not a slot save identifier: {value!r}")
+def _member_of(allowed: set[str], value: object) -> str:
+    """``value`` when it is one of the op's own names (its slot's files, records, dirs)."""
+    if not isinstance(value, str) or value not in allowed:
+        raise JournalError(f"not one of the op's own names: {value!r}")
     return value
 
 

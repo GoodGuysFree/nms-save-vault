@@ -195,3 +195,103 @@ def test_filetimes_never_go_back_and_keep_the_loading_member_last(tmp_path, make
     now = by_id(acct)
     assert now["Slot1Manual"].filetime == ahead + 1
     assert now["Slot1Auto"].filetime == ahead + 2
+
+
+# --- review fixes -----------------------------------------------------------------------
+
+
+def written(tmp_path, make_wgs_account, slot: int = 1):
+    acct = account(tmp_path, make_wgs_account)
+    writes = pair(slot)
+    plan = msstore.prepare_pair(acct, writes)
+    return acct, writes, plan
+
+
+def test_rollback_after_finalize_refuses_and_keeps_the_written_slot(tmp_path, make_wgs_account):
+    """Review item 1: the replaced blobs are gone, so the old records would point at
+    nothing; the rollback refuses and changes nothing."""
+    acct, writes, plan = written(tmp_path, make_wgs_account)
+    msstore.apply_pair(plan, payload(writes))
+    msstore.finalize_pair(plan)
+    after = contents(tmp_path / "SystemAppData")
+    with pytest.raises(msstore.RollbackError, match="finalized"):
+        msstore.rollback_pair(plan)
+    assert contents(tmp_path / "SystemAppData") == after
+    assert msstore.scan(acct).slots[1].a.data_path.read_bytes() == writes[1].data
+
+
+def test_rollback_refuses_an_index_someone_else_changed(tmp_path, make_wgs_account):
+    """Review item 2: the index is neither as planned nor as the write left it (the Xbox
+    app recorded an upload since): IndexChanged, nothing touched."""
+    acct, writes, plan = written(tmp_path, make_wgs_account)
+    assert msstore.pair_index_state(plan) == "pre"
+    msstore.apply_pair(plan, payload(writes))
+    assert msstore.pair_index_state(plan) == "post"
+    _set_state(acct, "Slot2Auto", msstore.BLOB_SYNC_SYNCED)
+    assert msstore.pair_index_state(plan) == "other"
+    after = contents(tmp_path / "SystemAppData")
+    with pytest.raises(msstore.IndexChanged):
+        msstore.rollback_pair(plan)
+    assert contents(tmp_path / "SystemAppData") == after
+
+
+def xgs_dir(acct: Path, identifier: str) -> Path:
+    return acct.parent.parent / "xgs" / acct.name / identifier
+
+
+def test_xgs_bytes_wgs_does_not_hold_are_never_written_over(tmp_path, make_wgs_account):
+    """Review item 3: an xgs-only save, or an xgs copy that differs from its wgs save,
+    would be destroyed by the write: the plan refuses."""
+    acct = account(tmp_path, make_wgs_account)
+    only = xgs_dir(acct, "Slot3Manual")
+    only.mkdir()
+    (only / "data").write_bytes(b"a save only xgs holds")
+    with pytest.raises(msstore.XgsMismatch):
+        msstore.prepare_pair(acct, pair(3))
+    (xgs_dir(acct, "Slot1Auto") / "data").write_bytes(b"newer than wgs")
+    with pytest.raises(msstore.XgsMismatch):
+        msstore.prepare_pair(acct, pair(1))
+    assert (only / "data").read_bytes() == b"a save only xgs holds"
+
+
+def test_xgs_states_classify_pre_post_torn_and_other(tmp_path, make_wgs_account):
+    """Review item 3: what recovery needs - and a rollback over an xgs copy someone else
+    wrote refuses and changes nothing."""
+    acct, writes, plan = written(tmp_path, make_wgs_account)
+    assert plan.pre_xgs["Slot1Manual"] is not None and all(plan.pre_xgs["Slot1Auto"])
+    with pytest.raises(SimulatedCrash):
+        msstore.apply_pair(plan, payload(writes), FaultInjector({"xgs:Slot1Manual"}))
+    assert msstore.pair_xgs_states(plan) == {"Slot1Manual": "post", "Slot1Auto": "pre"}
+    auto = xgs_dir(acct, "Slot1Auto")
+    (auto / "data").write_bytes(writes[1].data)                    # data written, meta not
+    assert msstore.pair_xgs_states(plan)["Slot1Auto"] == "torn"
+    (auto / "meta").write_bytes(b"the game wrote this")
+    assert msstore.pair_xgs_states(plan)["Slot1Auto"] == "other"
+    after = contents(tmp_path / "SystemAppData")
+    with pytest.raises(msstore.RollbackError, match="xgs"):
+        msstore.rollback_pair(plan)
+    assert contents(tmp_path / "SystemAppData") == after
+
+
+def test_a_torn_xgs_mirror_rolls_back_exactly(tmp_path, make_wgs_account):
+    acct, writes, plan = written(tmp_path, make_wgs_account)
+    before = contents(tmp_path / "SystemAppData")
+    before_raw = (acct / "containers.index").read_bytes()
+    with pytest.raises(SimulatedCrash):
+        msstore.apply_pair(plan, payload(writes), FaultInjector({"xgs:Slot1Manual"}))
+    (xgs_dir(acct, "Slot1Auto") / "data").write_bytes(writes[1].data)
+    msstore.rollback_pair(plan)
+    assert contents(tmp_path / "SystemAppData") == before
+    assert (acct / "containers.index").read_bytes() == before_raw
+
+
+def test_planning_reads_no_other_records_blobs(tmp_path, make_wgs_account, monkeypatch):
+    """Review item 10: the tree's identifier convention comes from the raw records; only the
+    records being written are resolved to their blob files."""
+    acct = account(tmp_path, make_wgs_account)
+    resolved = []
+    real = msstore._resolve_blobs
+    monkeypatch.setattr(msstore, "_resolve_blobs", lambda c: (resolved.append(c.identifier),
+                                                              real(c))[1])
+    msstore.prepare_pair(acct, pair(2))                 # Slot2Auto exists, Slot2Manual is new
+    assert resolved == ["Slot2Auto"]

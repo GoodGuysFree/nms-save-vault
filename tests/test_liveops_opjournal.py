@@ -250,6 +250,32 @@ def test_the_machine_id_is_made_once_and_survives(tmp_path):
     assert repaired != "garbage" and jr.machine_id(host) == repaired
 
 
+def test_appends_and_refreshes_read_only_the_new_tail(tmp_path, monkeypatch):
+    """Review item 9: the n-th append parses its new lines, not the whole journal again; a
+    refresh folds only the ops that got events; lines another process appended are seen."""
+    ctx = make_ctx(tmp_path)
+    for op_id, target in ((OP1, T7), (OP2, T8), (OP3, T9)):
+        preparing(ctx, op_id, target)
+        jr.append(ctx, op_id, "abandoned", {"reason": "not_started"})
+    jr.read_ops(ctx)
+    parsed, folded = [], []
+    real_parse, real_fold = jr._parse_line, jr._record
+    monkeypatch.setattr(jr, "_parse_line", lambda raw, n: (parsed.append(n), real_parse(raw, n))[1])
+    monkeypatch.setattr(jr, "_record", lambda op_id, evs: (folded.append(op_id),
+                                                           real_fold(op_id, evs))[1])
+    last = preparing(ctx, OP4, T9)
+    assert last["seq"] == 1 and parsed == []            # 6 lines on disk, none parsed again
+    ops = jr.read_ops(ctx)
+    assert parsed == [7] and folded == [OP4]
+    assert [r.status for r in ops.values()] == ["abandoned"] * 3 + ["preparing"]
+
+    other = dict(last, seq=2, event="writing", machine="m-00000000000b")
+    with open(jr.ops_path(ctx), "ab") as f:              # another process's append
+        f.write(json.dumps(other, separators=(",", ":")).encode("ascii") + b"\n")
+    assert jr.append(ctx, OP4, "abandoned", {"reason": "stale"})["seq"] == 3
+    assert jr.read_ops(ctx)[OP4].status == "abandoned"
+
+
 def test_writer_plans_round_trip_through_the_journal(tmp_path, make_wgs_account):
     steam = SteamWritePlan(
         tmp_path, (SteamFileWrite("save14.hg", SHA, 1_792_500_902.0, ".tmp_3fa2_save14.hg.part"),
@@ -258,15 +284,12 @@ def test_writer_plans_round_trip_through_the_journal(tmp_path, make_wgs_account)
         {"save14.hg": FileState(SHA, 1800, 1_791_900_000_000_000_000), "mf_save13.hg": None},
         "3fa2")
     text = json.dumps(jr.steam_plan_to_json(steam), ensure_ascii=True)
-    assert jr.steam_plan_from_json(json.loads(text), tmp_path) == steam
+    assert jr.steam_plan_from_json(json.loads(text), tmp_path, slot=7, op_id=OP1) == steam
 
-    acct = make_wgs_account(tmp_path / "SystemAppData",
-                            [("Slot1Auto", '{"a":1}', "Main", "", 60, 1_790_000_000.5)])
-    writes = [msstore.XboxRecordWrite(i, chunked(b'{"b":2}'), xbox_meta("Main", ts=int(t)), t)
-              for i, t in (("Slot1Manual", 1_792_500_902.0), ("Slot1Auto", 1_792_500_903.0))]
-    xbox = msstore.prepare_pair(acct, writes)
+    xbox = xbox_plan(tmp_path, make_wgs_account)
+    assert xbox.pre_xgs and xbox.pre_xgs["Slot1Manual"] is None     # captured, and journaled
     text = json.dumps(jr.xbox_plan_to_json(xbox), ensure_ascii=True)
-    assert jr.xbox_plan_from_json(json.loads(text), acct) == xbox
+    assert jr.xbox_plan_from_json(json.loads(text), xbox.folder, slot=1) == xbox
 
     for copy_of, source_ts, ordinal in (("A", 1_791_500_000, 15), (None, None, None)):
         mw = MemberWrite("B", SHA, "DDDAD1BDD39F9C72", 3700, 1_792_500_902, source_ts, SHA,
@@ -279,44 +302,87 @@ def test_writer_plans_round_trip_through_the_journal(tmp_path, make_wgs_account)
         jr.member_write_from_json({"position": "C"})
 
 
-@pytest.mark.parametrize("field,value", [
-    ("new_files", ["../../accountdata.hg"]),
-    ("new_files", ["C:/Windows/x"]),
-    ("new_dirs", [".."]),
-    ("superseded", ["AccountData"]),
+def xbox_plan(tmp_path, make_wgs_account) -> msstore.XboxPairPlan:
+    """A planned write of slot 1 (Auto replaced, Manual new) beside slot 2 and AccountData,
+    with an xgs mirror."""
+    acct = make_wgs_account(tmp_path / "SystemAppData", [
+        ("AccountData", '{"acct":1}', "", "", 0, 1_790_000_000.5),
+        ("Slot1Auto", '{"a":1}', "Main", "", 60, 1_790_000_000.5),
+        ("Slot2Auto", '{"o":1}', "Other", "", 60, 1_790_000_000.5)])
+    (acct.parent.parent / "xgs" / acct.name).mkdir(parents=True)
+    msstore.mirror_xgs(acct)
+    writes = [msstore.XboxRecordWrite(i, chunked(b'{"b":2}'), xbox_meta("Main", ts=int(t)), t)
+              for i, t in (("Slot1Manual", 1_792_500_902.0), ("Slot1Auto", 1_792_500_903.0))]
+    return msstore.prepare_pair(acct, writes)
+
+
+def _dir_of(plan, identifier):
+    _h, records, _t = msstore.split_index((plan.folder / "containers.index").read_bytes())
+    return msstore.record_info(dict(records)[identifier]).dir_guid
+
+
+def _damaged(plan, change):
+    d = jr.xbox_plan_to_json(plan)
+    change(d)
+    return d
+
+
+@pytest.mark.parametrize("damage", [
+    "path outside", "absolute", "dir up", "account record", "another record's dir",
+    "replaced blob in the new dir", "record of another save", "another slot",
 ])
-def test_a_damaged_xbox_payload_cannot_point_outside_the_slot(tmp_path, make_wgs_account,
-                                                              field, value):
-    acct = make_wgs_account(tmp_path / "SystemAppData",
-                            [("Slot1Auto", '{"a":1}', "Main", "", 60, 1_790_000_000.5)])
-    plan = msstore.prepare_pair(acct, [msstore.XboxRecordWrite(
-        "Slot1Auto", chunked(b'{"b":2}'), xbox_meta("Main", ts=5), 1_792_500_903.0)])
-    d = jr.xbox_plan_to_json(plan)
-    d[field] = value
+def test_a_damaged_xbox_payload_is_never_acted_on(tmp_path, make_wgs_account, damage):
+    """Review item 8: names must be the op's own - its slot's records, the new blobs of the
+    records it wrote, the replaced blobs of the records it replaced."""
+    plan = xbox_plan(tmp_path, make_wgs_account)
+    other_dir = _dir_of(plan, "Slot2Auto")
+    new_dir = next(b.dir_name for b in plan.blobs if b.identifier == "Slot1Manual")  # created
+
+    def swap_records(d):
+        d["new_records_b64"]["Slot1Auto"], d["new_records_b64"]["Slot1Manual"] = (
+            d["new_records_b64"]["Slot1Manual"], d["new_records_b64"]["Slot1Auto"])
+
+    changes = {
+        "path outside": lambda d: d["new_files"].__setitem__(0, "../../accountdata.hg"),
+        "absolute": lambda d: d["new_files"].__setitem__(0, "C:/Windows/x"),
+        "dir up": lambda d: d.__setitem__("new_dirs", [".."]),
+        "account record": lambda d: d["pre_records_b64"].__setitem__("AccountData", None),
+        "another record's dir": lambda d: d["new_files"].__setitem__(
+            0, other_dir + "/" + d["new_files"][0].split("/")[1]),
+        "replaced blob in the new dir": lambda d: d["superseded"].__setitem__(
+            0, new_dir + "/" + d["superseded"][0].split("/")[1]),
+        "record of another save": swap_records,
+        "another slot": None,
+    }
+    if damage == "another slot":
+        with pytest.raises(jr.JournalError):
+            jr.xbox_plan_from_json(jr.xbox_plan_to_json(plan), plan.folder, slot=2)
+        return
     with pytest.raises(jr.JournalError):
-        jr.xbox_plan_from_json(d, acct)
-    d = jr.xbox_plan_to_json(plan)
-    d["pre_records_b64"] = {"AccountData": None}
-    with pytest.raises(jr.JournalError):
-        jr.xbox_plan_from_json(d, acct)
+        jr.xbox_plan_from_json(_damaged(plan, changes[damage]), plan.folder, slot=1)
 
 
 @pytest.mark.parametrize("name", ["accountdata.hg", "..\\save13.hg", "SAVE13.HG",
-                                  "steam_autocloud.vdf", "save31.hg"])
-def test_a_damaged_steam_payload_names_only_slot_files(tmp_path, name):
+                                  "steam_autocloud.vdf", "save31.hg", "save1.hg",
+                                  "mf_save15.hg"])
+def test_a_damaged_steam_payload_names_only_the_ops_slot_files(tmp_path, name):
+    """Review item 8: slot 7's four files only (save1.hg is slot 1's, mf_save15.hg slot 8's)."""
     as_file = {"tag": "3fa2", "pre": {}, "files": [
         {"name": name, "temp": f".tmp_3fa2_{name}.part", "sha256": SHA, "mtime": 1.0}]}
     as_pre = {"tag": "3fa2", "files": [], "pre": {name: None}}
     for payload in (as_file, as_pre):
         with pytest.raises(jr.JournalError):
-            jr.steam_plan_from_json(payload, tmp_path)
+            jr.steam_plan_from_json(payload, tmp_path, slot=7, op_id=OP1)
 
 
 @pytest.mark.parametrize("tag,temp", [("3fa2", "../save13.hg"),
                                       ("3fa2", ".tmp_9999_save13.hg.part"),
+                                      ("0b1c", ".tmp_0b1c_save13.hg.part"),
                                       ("../x", ".tmp_../x_save13.hg.part")])
 def test_a_damaged_steam_payload_names_only_its_own_temp_files(tmp_path, tag, temp):
+    """Review item 8: the tag must be the op's own (OP1 ends in 3fa2)."""
     payload = {"tag": tag, "pre": {}, "files": [
         {"name": "save13.hg", "temp": temp, "sha256": SHA, "mtime": 1.0}]}
     with pytest.raises(jr.JournalError):
-        jr.steam_plan_from_json(payload, tmp_path)
+        jr.steam_plan_from_json(payload, tmp_path, slot=7, op_id=OP1)
+

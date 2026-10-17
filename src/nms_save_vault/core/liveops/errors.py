@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
+from .. import msstore
 from ..operations import OperationError
 
 TARGET_UNAVAILABLE = "That live slot is not available."
@@ -49,5 +50,11 @@ class WriteError(LiveOpError):
         self.swapped = tuple(swapped)
 
 
-class RollbackError(LiveOpError):
-    """A rollback could not put the slot back exactly as it was."""
+class LiveChanged(LiveOpError):
+    """The live slot changed after it was planned (the game or another tool wrote it). The
+    writer wrote nothing; the slot must not be rolled back, it holds someone else's save."""
+
+
+class RollbackError(LiveOpError, msstore.RollbackError):
+    """A rollback cannot put the slot back exactly as it was. Also an
+    ``msstore.RollbackError``, so one handler catches the Steam and the Xbox refusals."""

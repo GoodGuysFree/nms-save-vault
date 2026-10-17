@@ -38,6 +38,9 @@ class SourceMember:
 
 @dataclass(frozen=True)
 class SourcePair:
+    """A captured pair: ``a`` and ``b`` come from one entry or live slot, captured together
+    (never two members assembled from different places)."""
+
     platform: Platform
     load: Position                        # the position whose member must load
     a: SourceMember | None
@@ -96,7 +99,10 @@ def compute(src: SourcePair, rt: ResolvedTarget, now: int) -> tuple[PlannedMembe
     if v is None:
         raise ValueError(f"the source has no member {load} to load")
     partner = src.member(other(load))
-    use_partner = (partner is not None and v.pid is not None and partner.pid == v.pid)
+    # D5 2.5: the two members of a SourcePair were captured together (one entry or live
+    # slot), so equal pids - None for both included, a save with no id read - make them one
+    # playthrough's own pair.
+    use_partner = partner is not None and partner.pid == v.pid
     written = partner if use_partner else v
     return (_member(platform, rt.target.slot, load, v, now, None),
             _member(platform, rt.target.slot, other(load), written, now - 1,

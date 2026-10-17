@@ -11,7 +11,7 @@ import pytest
 
 from nms_save_vault.core import meta, savedir, slotmap
 from nms_save_vault.core.liveops import FaultInjector, ResolvedTarget, RollbackError, SimulatedCrash
-from nms_save_vault.core.liveops import WriteError
+from nms_save_vault.core.liveops import LiveChanged, WriteError
 from nms_save_vault.core.liveops import steamwrite as sw
 from nms_save_vault.core.liveops.pairmeta import SourceMember, SourcePair, compute
 from nms_save_vault.core.organizer.model import LiveTarget
@@ -231,6 +231,38 @@ def test_wrong_bytes_are_refused_before_anything_is_written(tmp_path):
     with pytest.raises(WriteError):
         sw.stage(plan, payload)
     assert tree_hash(folder) == before                   # what was staged is swept
+
+
+def test_a_slot_written_after_the_plan_is_never_swapped(tmp_path):
+    """Review item 5: the game saved between plan and swap; nothing is renamed, the staged
+    files go, and the error is not a WriteError (a rollback would overwrite the game's
+    save with the pre-image)."""
+    folder = live_folder(tmp_path)
+    writes = source_writes(tmp_path)
+    plan = sw.prepare(folder, writes, 7, TAG)
+    sw.stage(plan, sw.payload_of(writes, 7))
+    steam_save(folder, 7, 1, "Polestar", 95, 0x1111, 1_791_950_000, extra="game saved")
+    game_state = {k: v for k, v in tree_hash(folder).items() if not k.startswith(".tmp_")}
+    with pytest.raises(LiveChanged) as info:
+        sw.swap(plan)
+    assert not isinstance(info.value, WriteError)
+    assert tree_hash(folder) == game_state
+
+
+def test_rollback_without_every_pre_image_changes_nothing(tmp_path):
+    """Review item 4: one name's pre-op bytes are missing, so no name is restored and the
+    post state stays whole (not half put back)."""
+    folder = live_folder(tmp_path)
+    writes = source_writes(tmp_path)
+    plan = sw.prepare(folder, writes, 7, TAG)
+    saved = pre_bytes(folder, plan)
+    sw.stage(plan, sw.payload_of(writes, 7))
+    sw.swap(plan)
+    after = tree_hash(folder)
+    del saved["mf_save13.hg"]
+    with pytest.raises(RollbackError, match="nothing was changed"):
+        sw.rollback(plan, saved)
+    assert tree_hash(folder) == after
 
 
 def test_rollback_refuses_bytes_that_are_not_the_recorded_ones(tmp_path):
