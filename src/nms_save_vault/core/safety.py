@@ -75,6 +75,19 @@ def copy_and_hash(src: str | Path, dst: str | Path, chunk: int = 1 << 20) -> str
     return h.hexdigest()
 
 
+def same_path(a: str | os.PathLike, b: str | os.PathLike) -> bool:
+    """Whether two paths name the same file or folder here: resolved (junctions, ``..``,
+    8.3 names) and compared as the OS compares names. A path that cannot be resolved is
+    compared as written, made absolute."""
+    def key(path) -> str:
+        try:
+            return os.path.normcase(str(Path(path).resolve()))
+        except OSError:
+            return os.path.normcase(os.path.abspath(os.fspath(path)))
+
+    return key(a) == key(b)
+
+
 def sha256_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 

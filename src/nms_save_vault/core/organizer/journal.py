@@ -9,6 +9,7 @@ current state of each slot, the edges (evidence of descent only, never a guess),
 """
 from __future__ import annotations
 
+import dataclasses
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, Literal
@@ -58,6 +59,7 @@ SKIP_GAME = "game running"
 SKIP_UNSTABLE = "unstable"
 SKIP_UNREADABLE = "unreadable"
 SKIP_READ_ONLY = "organizer read-only"
+SKIP_LOCK_FAILED = "live-op lock failed"
 
 
 # --- records ------------------------------------------------------------------
@@ -100,6 +102,7 @@ class OpRecord:
     app: str
     members: Mapping[Vid, MemberObs] = field(default_factory=dict)   # "m": placed vids the
                                         # journal had not described, so it alone draws history
+    snapshot: str | None = None         # the entry the app kept the slot in before writing
 
     @property
     def order(self) -> ObsOrder:
@@ -122,9 +125,10 @@ def op_fields(src: OpSrc, op_id: str, kind: str, target: LiveTarget, placed: Pai
               evicted: PairKey | None, *, source: Mapping[str, Any] | None = None,
               preserved: Mapping[Vid, Mapping[str, Any]] | None = None,
               status: OpStatus = "done", undo_of: str | None = None, note: str = "",
-              app: str = "", members: Mapping[Vid, MemberObs] | None = None) -> dict:
+              app: str = "", members: Mapping[Vid, MemberObs] | None = None,
+              snapshot: str | None = None) -> dict:
     """An ``op`` record before the store gives it ``id``, ``seq`` and ``at``."""
-    return {"t": "op", "src": src, "op_id": op_id, "kind": kind,
+    return {"t": "op", "src": src, "op_id": op_id, "kind": kind, "snapshot": snapshot,
             "target": target_to_json(target), "pair": pair_to_json(placed),
             "evicted": pair_to_json(evicted) if evicted is not None else None,
             "source": dict(source) if source is not None else None,
@@ -176,9 +180,12 @@ def _decode_op(d: Mapping[str, Any]) -> OpRecord:
     if not isinstance(d["note"], str) or not isinstance(d["app"], str):
         raise ModelError("op record: bad note or app")
     members = {vid: member_from_json(m, vid=vid) for vid, m in _dict(d.get("m", {})).items()}
+    snapshot = d.get("snapshot")
+    if snapshot is not None and not isinstance(snapshot, str):
+        raise ModelError("op record: bad snapshot")
     return OpRecord(d["id"], d["seq"], d["at"], d["src"], d["op_id"], d["kind"],
                     target_from_json(d["target"]), pair_from_json(d["pair"]), evicted, source,
-                    preserved, d["status"], undo_of, d["note"], d["app"], members)
+                    preserved, d["status"], undo_of, d["note"], d["app"], members, snapshot)
 
 
 def _dict(value: object) -> dict:
@@ -207,6 +214,7 @@ class OpBinding:
     pair: PairKey
     evicted: PairKey | None
     outcome: OpOutcome          # at the first observation of the slot after the operation
+    seq: int = 0
 
 
 @dataclass(frozen=True)
@@ -220,6 +228,7 @@ class JournalState:
     first_seen: Mapping[Vid, ObsOrder]
     note_rev: Mapping[Vid, int]         # the save-file note revision when first journaled
     problems: tuple[str, ...]
+    records: tuple[Record, ...] = ()    # every record, in replay order
 
 
 @dataclass(frozen=True)
@@ -330,7 +339,7 @@ def replay(records: tuple[Record, ...], registry: Mapping[Vid, VersionInfo],
     return JournalState(
         targets=run.states, edges=tuple(run.edges), events=tuple(e for _, e in run.events),
         events_by_seq={k: tuple(v) for k, v in by_seq.items()}, ops=run.ops, metas=metas,
-        first_seen=first_seen, note_rev=note_rev, problems=problems,
+        first_seen=first_seen, note_rev=note_rev, problems=problems, records=tuple(ordered),
     )
 
 
@@ -396,7 +405,8 @@ class _Replay:
                 if state is not None and state.src == "op":
                     self._outcome(state.op, "superseded")
                 self.ops[(rec.op_id, target)] = OpBinding(rec.op_id, rec.kind, target, rec.at,
-                                                          rec.pair, rec.evicted, "pending")
+                                                          rec.pair, rec.evicted, "pending",
+                                                          rec.seq)
                 state = _State(rec.pair, "op", rec.order, rec,
                                state.vids if state else EMPTY_PAIR)
                 if not _empty(rec.pair):
@@ -495,8 +505,7 @@ class _Replay:
         key = (op.op_id, op.target)
         binding = self.ops.get(key)
         if binding is not None and binding.outcome == "pending":
-            self.ops[key] = OpBinding(binding.op_id, binding.kind, binding.target, binding.at,
-                                      binding.pair, binding.evicted, outcome)
+            self.ops[key] = dataclasses.replace(binding, outcome=outcome)
 
 
 # --- helpers ------------------------------------------------------------------
