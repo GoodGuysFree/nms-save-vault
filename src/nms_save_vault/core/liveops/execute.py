@@ -94,6 +94,8 @@ def execute(ctx: OpContext, plan: PlacePlan, confirmed: Iterable[str] = frozense
     missing = plan.confirmations - confirmed
     if missing:
         raise ConfirmationRequired(missing)
+    if plan.kind == "panic_restore" and plan.restores and not note:
+        note = f"{'undoes' if plan.via_undo else 'restores'}:{plan.restores}"
     run = _keep if plan.kind == "keep" else _run
     try:
         with opjournal.liveop_lock(ctx, timeout=LIVEOP_TIMEOUT):

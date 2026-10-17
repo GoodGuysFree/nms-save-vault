@@ -182,6 +182,17 @@ def create_store(vault_root: str | Path, *, clock: Callable[[], datetime] = utc_
 ReadOnlyReason = Literal["too-new", "medium", "no-lock", "asked"]
 
 
+def folder_identity(folder: str | Path) -> str:
+    """Which live folder (not which name): two folders of one name are two folders."""
+    import hashlib
+
+    try:
+        text = str(Path(folder).resolve())
+    except OSError:
+        text = str(folder)
+    return hashlib.sha1(text.lower().encode("utf-8")).hexdigest()[:12]
+
+
 class VersionStore:
     """One vault's version store. Open it with :meth:`open` (or :func:`open_store`)."""
 
@@ -433,7 +444,8 @@ class VersionStore:
         target_dir = Path(target_dir)
         if target_dir.is_dir() and savedir.platform_of(target_dir) != platform:
             raise StoreError(f"That folder is not a {platform} save folder.")
-        source = {"type": "live", "platform": platform, "account_key": account_key}
+        source = {"type": "live", "platform": platform, "account_key": account_key,
+                  "folder": folder_identity(target_dir)}
         return self._add(target_dir, platform=platform, account_key=account_key, live=True,
                          kind=kind, label=label, source=source, scope=scope, entry_id=None,
                          origin=None, created_local=None, op_id=op_id, reason=reason,

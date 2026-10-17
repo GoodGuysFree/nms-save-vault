@@ -287,6 +287,44 @@ def split_index(raw: bytes) -> tuple[bytes, list[tuple[str, bytes]], bytes]:
     return header, records, raw[off:]
 
 
+def salvage_index(raw: bytes) -> tuple[bytes | None, list[tuple[str, bytes]]]:
+    """What a damaged ``containers.index`` still holds: its header and every whole record
+    before the damage. The header is None when not even that reads."""
+    try:
+        if len(raw) < 12 or struct.unpack_from("<i", raw, 0)[0] != CONTAINERSINDEX_HEADER:
+            return None, []
+        count = struct.unpack_from("<q", raw, 4)[0]
+        _proc, off = _read_lp_string(raw, 12)
+        _acct, off = _read_lp_string(raw, off + 12)
+        if off + 8 > len(raw) or struct.unpack_from("<q", raw, off)[0] != CONTAINERSINDEX_FOOTER:
+            return None, []
+        off += 8
+        header = raw[12:off]
+    except Exception:  # noqa: BLE001 - anything unreadable is "no header"
+        return None, []
+    records: list[tuple[str, bytes]] = []
+    for _ in range(max(0, min(count, len(raw)))):
+        try:
+            start = off
+            identifier, off = _read_lp_string(raw, off)
+            _second, off = _read_lp_string(raw, off)
+            _sync, off = _read_lp_string(raw, off)
+            off += RECORD_TAIL_LENGTH
+            if off > len(raw):
+                break
+            records.append((identifier, raw[start:off]))
+        except Exception:  # noqa: BLE001 - the damage starts here
+            break
+    return header, records
+
+
+def index_header_account(header: bytes) -> str:
+    """The account identifier in a header from :func:`split_index`."""
+    _proc, off = _read_lp_string(header, 0)
+    acct, _off = _read_lp_string(header, off + 12)
+    return acct
+
+
 def join_index(header: bytes, records: list[tuple[str, bytes]], trailer: bytes = b"") -> bytes:
     """Inverse of :func:`split_index`; the record count is taken from ``records``."""
     out = struct.pack("<i", CONTAINERSINDEX_HEADER) + struct.pack("<q", len(records)) + header
@@ -1218,6 +1256,8 @@ def rollback_pair(plan: XboxPairPlan) -> None:
     old = {ident: _old_blobs(plan, ident) for ident, st in xgs_states.items()
            if st != "pre" and any(plan.pre_xgs[ident] or ())}
     if state == "post":
+        if index.read_bytes() != _post_index(plan, restored):
+            restored = _flag_for_upload(plan, restored)    # the Xbox app uploaded our write
         safety.atomic_write_bytes(index, restored)
     _remove_new(plan)
     for d in {b.dir_name for b in plan.blobs} - set(plan.new_dirs):
@@ -1261,6 +1301,24 @@ def _ignoring_sync(plan: XboxPairPlan, raw: bytes) -> bytes:
     (the record identity, the blobs, the times)."""
     header, records, trailer = split_index(raw)
     own = {b.identifier for b in plan.blobs}
+    out = []
+    for ident, rec in records:
+        if ident in own:
+            buf = bytearray(rec)
+            struct.pack_into("<i", buf, len(rec) - RECORD_TAIL_LENGTH + 1, BLOB_SYNC_MODIFIED)
+            rec = bytes(buf)
+        out.append((ident, rec))
+    off = 4 + 2 * struct.unpack_from("<i", header, 0)[0]
+    head = bytearray(header)
+    struct.pack_into("<i", head, off + 8, INDEX_SYNC_MODIFIED)
+    return join_index(bytes(head), out, trailer)
+
+
+def _flag_for_upload(plan: XboxPairPlan, pre_raw: bytes) -> bytes:
+    """``pre_raw`` with the op's old records and the index marked Modified: the cloud holds our
+    write, so the app must upload the put-back one instead of seeing a conflict."""
+    header, records, trailer = split_index(pre_raw)
+    own = {i for i, rec in plan.pre_records_raw.items() if rec is not None}
     out = []
     for ident, rec in records:
         if ident in own:

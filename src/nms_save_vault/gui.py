@@ -226,7 +226,7 @@ def _restore_menu_label(entry) -> str:
     slot = _extract_slot_number(entry)
     if slot is not None:
         return f"Put slot {slot} back into live slot {slot}"
-    return f"Restore all of '{entry.id}' into live (replaces other slots)"
+    return f"Restore all of '{entry.id}' into live (slots it lacks are left alone)"
 
 
 #: The account-data choice Restore and Undo offer; unticked unless the user ticks it.
@@ -261,7 +261,7 @@ def _undo_question(plan, directory) -> str:
     ]
     if plan.with_accountdata:
         lines.append("That restore put back the account data too, so undoing it does as well.")
-    lines += ["", "Each Undo steps one change further back. The current state is auto-snapshotted first."]
+    lines += ["", "Each Undo steps one change further back (it never undoes an Undo). Slots the snapshot lacks are left alone. The current state is auto-snapshotted first."]
     return "\n".join(lines)
 
 
@@ -1790,11 +1790,13 @@ class App(tk.Tk):
             question = (
                 f"Replace the live saves in {Path(self.live_dir).name} with backup '{entry.id}'?\n\n"
                 f"The backup holds {len(slots)} slot(s): {', '.join(map(str, slots)) or 'none'}.\n"
-                "Any live save NOT in the backup is REMOVED.\n"
+                "Live slots the backup lacks are left as they are - nothing is removed.\n"
                 "The live folder keeps its own account data (unlocks, settings) unless you tick the box.\n"
                 "The current state is auto-snapshotted first."
             )
-            ok, with_account = _confirm(self, "Restore", question, check=ACCOUNT_DATA_CHOICE)
+            xbox = savedir.platform_of(Path(self.live_dir)) == "xbox"
+            ok, with_account = _confirm(self, "Restore", question,
+                                        check=None if xbox else ACCOUNT_DATA_CHOICE)
             if not ok:
                 return
         live_dir = self.live_dir
@@ -1854,11 +1856,13 @@ class App(tk.Tk):
                 "Keep a copy first?",
                 f"{guide.label} holds a save with no copy in the vault. Keep a copy in the "
                 "vault now?"):
-            self._run(
-                lambda _force: classic.keep_copy(self.vault, directory, slot),
-                success=f"Kept a copy of slot {slot} in the vault.",
-                message=f"Keeping slot {slot} - please wait...",
-            )
+            kept = self._run_worker(
+                lambda _force: classic.keep_copy(self.vault, directory, slot), False,
+                f"Keeping slot {slot} - please wait...")
+            if "error" in kept:      # no copy, no steps: the save is not yet safe (F9)
+                _showerror("Keep a copy", "The copy could not be kept, so no steps are "
+                           "shown and nothing was emptied:" + chr(10) + str(kept["error"]))
+                return
         _showinfo("Empty a slot - steps", classic.guide_text(guide))
 
     def on_copy_slot(self, source=None, dest_dir=None, dest_slot=None, ask: bool = True) -> None:
@@ -2065,7 +2069,8 @@ class App(tk.Tk):
             return
         # When the change was a restore that put the account data back, undoing it does too:
         # the question says so, and offers no choice that would not be honoured.
-        check = None if plan.with_accountdata else ACCOUNT_DATA_CHOICE
+        check = None if plan.with_accountdata or savedir.platform_of(directory) == "xbox" \
+            else ACCOUNT_DATA_CHOICE
         ok, with_account = _confirm(self, "Undo", _undo_question(plan, directory), check=check)
         if not ok:
             return
@@ -2528,8 +2533,8 @@ BUTTONS
   any risky change.
 - Restore: Select a backup (a top-level row) and put it back. What that means depends on
   what you picked, and the menu says which before you commit:
-    * a full backup / snapshot / imported folder REPLACES the live folder -- any live
-      save not in the backup is removed;
+    * a full backup / snapshot / imported folder is put back slot by slot -- live slots
+      it lacks are left alone, nothing is removed;
     * a single-slot extract goes back into ITS OWN slot and nothing else is touched.
   Either way the current state is auto-snapshotted first, so it is reversible with Undo.
   A full restore keeps the live folder's own account data (unlocks, settings) unless you

@@ -130,7 +130,8 @@ def _context(args):
     sources = list(state.live_sources if state is not None else discover.discover_live_sources())
     if getattr(args, "live", None):
         live = Path(args.live)
-        if not any(Path(s.path) == live for s in sources):
+        classic.refuse_disabled(live)
+        if not any(classic._key(s.path) == classic._key(live) for s in sources):
             sources.append(classic._ad_hoc(live))
     try:
         org = Organizer(root, sources, read_only=False)

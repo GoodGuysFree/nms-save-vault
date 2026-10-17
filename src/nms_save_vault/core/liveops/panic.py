@@ -9,6 +9,7 @@ account data stays the live account's own, and ``steam_autocloud.vdf`` is never 
 """
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -19,12 +20,15 @@ from ..formats import MAX_SAVE_SLOTS
 from ..organizer.locator import Location
 from ..organizer.model import EntryRef, LiveRef, StoreRef
 from ..store import listing
+from ..store.versionstore import folder_identity
+from . import opjournal as jr
 from .context import OpContext
 from .errors import SourceUnreadable
 from .execute import execute
 from .model import OpOutcome, PairSource, PlacePlan, Warning
 from .planner import _plan, _refusal, durable, warning
 from .slots import read_account
+from .source import _live_folder as live_folder
 from .source import load_source
 from .targets import resolve_account, resolve_target
 
@@ -47,12 +51,45 @@ def candidates(ctx: OpContext, account: LiveRef,
     """The entries of ``kinds`` (default: the safety snapshots) taken from ``account``'s
     folder, newest first (P4: never another folder's, never another platform's)."""
     store = ctx.versions
+    skip = _not_undo_targets(ctx)
+    here = folder_identity(live_folder(ctx, account))
     out = []
     for e in listing.list_vault_entries(ctx.vault, store, live_roots=[]):
-        if e.kind in kinds and e.platform == account.platform and \
-                e.source == account.account_key:
-            out.append(Candidate(e.id, e.kind, e.label, e.created))
+        if e.kind not in kinds or e.platform != account.platform or e.id in skip or (e.op_id and e.op_id in skip):
+            continue
+        theirs = _folder_of(store, e.id)
+        if theirs is not None and theirs != here:
+            continue                              # another folder of the same name
+        if theirs is None and e.source != account.account_key:
+            continue                              # taken before folders were identified
+        out.append(Candidate(e.id, e.kind, e.label, e.created))
     return list(reversed(out))
+
+
+def _folder_of(store, entry_id: str) -> str | None:
+    try:
+        return store.entry(entry_id).source.get("folder") if store is not None else None
+    except (KeyError, ValueError, OSError):
+        return None
+
+
+def _not_undo_targets(ctx: OpContext) -> set[str]:
+    """Snapshots the whole-folder Undo must not pick: those of a move that never wrote
+    (abandoned, rolled back, never started), those of an Undo (picking them would undo
+    the Undo), and every one an Undo already put back (so Undo steps further back)."""
+    skip: set[str] = set()
+    try:
+        ops = jr.read_ops(ctx)
+    except Exception:  # noqa: BLE001 - no verdict: nothing is excluded
+        return skip
+    for rec in ops.values():
+        note = str(rec.events[0].get("note", "")) if rec.events else ""
+        undo = rec.kind == "panic_restore" and note.startswith("undoes:")
+        if rec.status in ("abandoned", "rolled_back", "preparing") or undo:
+            skip.add(rec.op_id)          # its snapshots carry the op id
+        if undo and rec.status == "done":
+            skip.add(note.split(":", 1)[1])      # already stepped back over
+    return skip
 
 
 def plan_panic_restore(ctx: OpContext, account: LiveRef, snapshot_id: str | None = None, *,
@@ -101,7 +138,8 @@ def plan_panic_restore(ctx: OpContext, account: LiveRef, snapshot_id: str | None
     if restore_accountdata:
         warnings.append(warning("ACCOUNTDATA_ROLLBACK"))
     outcome = f"Restore the whole folder from '{entry.label or entry.id}'"
-    return _plan(ctx, "panic_restore", parts, warnings, outcome, source=None)
+    plan = _plan(ctx, "panic_restore", parts, warnings, outcome, source=None)
+    return dataclasses.replace(plan, restores=snapshot_id)
 
 
 def panic_restore(ctx: OpContext, account: LiveRef, snapshot_id: str | None = None, *,

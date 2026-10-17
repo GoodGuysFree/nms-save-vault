@@ -58,7 +58,8 @@ def test_capture_steam_exact_tree(tmp_path):
     assert (entry.kind, entry.platform, entry.account_key) == ("full", "steam", STEAM_ACCOUNT)
     assert (entry.op_id, entry.reason, entry.app_version) == ("op-20261016T111500Z-ab12",
                                                               "pre-place", "test")
-    assert entry.source == {"type": "live", "platform": "steam", "account_key": STEAM_ACCOUNT}
+    assert entry.source == {"type": "live", "platform": "steam", "account_key": STEAM_ACCOUNT,
+                            "folder": vstore.versionstore.folder_identity(live)}
     assert entry.scope == {"slots": "all", "account_files": True, "cache": "included"}
     assert entry.account == {"data": "accountdata.hg", "meta": "mf_accountdata.hg",
                              "autocloud": "steam_autocloud.vdf"}

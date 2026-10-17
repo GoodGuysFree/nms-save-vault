@@ -76,7 +76,11 @@ def test_undo_never_empties_a_slot(tmp_path):
     assert savedir.scan(live).slots[5].occupied                  # the snapshot lacks it: left alone
 
 
-def test_the_undo_is_itself_undoable(tmp_path):
+def test_an_undo_is_undone_by_its_own_op_and_the_next_undo_steps_back(tmp_path):
+    from nms_save_vault.core.liveops import execute
+    from nms_save_vault.core.liveops.classic import open_context
+    from nms_save_vault.core.liveops.undo import plan_undo as undo_op
+
     live = _steam_live(tmp_path, "st_1")
     vault = _store_vault(tmp_path)
     ops.repopulate_slot(vault, live, 2, live, 1, allow_game_running=True)
@@ -84,7 +88,11 @@ def test_the_undo_is_itself_undoable(tmp_path):
 
     first = ops.undo_last(vault, live, allow_game_running=True)
     assert first.op_id and savedir.scan(live).slots[1].a.save_name != changed
-    ops.undo_last(vault, live, allow_game_running=True)           # the newest snapshot is now the fresh one
+    with pytest.raises(ops.OperationError, match="nothing to undo"):    # steps back, never forward
+        ops.undo_last(vault, live, allow_game_running=True)
+    ctx, _ref = open_context(vault, live)                                # the Undo's own undo
+    plan = undo_op(ctx, first.op_id)
+    assert execute(ctx, plan, plan.confirmations, ).status == "done"
     assert savedir.scan(live).slots[1].a.save_name == changed
 
 

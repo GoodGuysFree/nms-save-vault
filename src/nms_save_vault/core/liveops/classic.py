@@ -8,10 +8,13 @@ replace, journal, validation and exact rollback. A refusal or a failure raises t
 """
 from __future__ import annotations
 
+import dataclasses
 import hashlib
+from datetime import datetime, timezone
 from collections.abc import Iterable
 from pathlib import Path
 
+from .. import msstore
 from .. import operations as ops
 from .. import platform as hostmod
 from .. import safety, savedir
@@ -39,6 +42,7 @@ def open_context(vault: Vault, live_dir: Path, *, host: hostmod.Host | None = No
 
     host = host or hostmod.Host.current()
     live_dir = Path(live_dir)
+    refuse_disabled(live_dir)
     sources = list(recorder._configured_sources())
     here = _same_folder(live_dir)
     refs_of = {_key(s.path): s for s in sources}
@@ -107,6 +111,8 @@ def restore_full(vault: Vault, entry, live_dir: Path, mirror: bool = True,
             "puts the slot back where it came from.")
     if entry.path:
         ops._guard_same_platform(Path(entry.path), live_dir)
+    refuse_disabled(live_dir)
+    notes = repair_damaged_index(vault, entry, live_dir, allow_game_running)
     ctx, ref = open_context(vault, live_dir)
     found = listing.get_vault_entry(ctx.vault, ctx.versions, entry.id, live_roots=[])
     if found is not None and found.platform != ref.platform:
@@ -116,7 +122,12 @@ def restore_full(vault: Vault, entry, live_dir: Path, mirror: bool = True,
         if why.code == "FOREIGN_ACCOUNT":
             raise ops.ForeignAccountError(why.text)
     op = "undo" if undo_of else "restore_full"
+    if undo_of:                       # the whole-folder Undo: later Undos step past it
+        plan = dataclasses.replace(plan, via_undo=True)
     result = _run(ctx, plan, op, allow_game_running, f"restored {entry.id}")
+    result.warnings += notes
+    if ref.platform == "xbox" and not restore_accountdata:
+        _give_missing_xbox_account_data(ctx, entry.id, live_dir)
     if restore_accountdata:
         panic._restore_accountdata(ctx, plan, ref, entry.id)
     elif ref.platform == "steam":
@@ -128,6 +139,88 @@ def restore_full(vault: Vault, entry, live_dir: Path, mirror: bool = True,
                  for n, data in theirs.items()):
             result.warnings.append(ops.ACCOUNT_DATA_KEPT)
     return result
+
+
+def refuse_disabled(live_dir: Path) -> None:
+    """A folder the owner disabled (or marked read-only, or keeps as a backup source) is never
+    written, whatever path it is reached by."""
+    from .. import state as appstate
+
+    try:
+        state = appstate.load()
+    except Exception:  # noqa: BLE001 - an unreadable config gives no verdict
+        return
+    here = _key(live_dir)
+    for s in (state.sources if state is not None else ()):
+        if _key(s.path) == here and (not s.enabled or not s.writable or s.role != "live"):
+            raise ops.OperationError("That save folder is switched off (or read-only) in the "
+                                     "app's settings, so nothing is written to it.")
+
+
+def repair_damaged_index(vault: Vault, entry, live_dir: Path, allow_game_running: bool) -> list[str]:
+    """A restore is how a damaged Xbox folder is repaired: when the live ``containers.index``
+    does not read, its damaged bytes are kept in the vault and an index of the records that
+    still read (with the identity of the account) is written, and the restore then fills in
+    the rest from the backup. Returns the notes for the result."""
+    from ..store import classic as store_classic
+
+    index = Path(live_dir) / "containers.index"
+    if not index.is_file():
+        return []
+    raw = index.read_bytes()
+    try:
+        msstore.split_index(raw)
+        return []
+    except ValueError as exc:
+        why = str(exc)
+    running = safety.is_game_running()
+    if running is True or (running is None and not allow_game_running):
+        raise ops.GameRunningError("No Man's Sky appears to be running. Close the game first.")
+    with store_classic.entry_folder(vault, entry) as folder:
+        theirs = msstore.split_index((Path(folder) / "containers.index").read_bytes())[0]
+    header, records = msstore.salvage_index(raw)
+    if header is None:
+        if entry.source != Path(live_dir).name:
+            raise ops.OperationError(
+                f"The live save index is damaged ({why}), and '{entry.id}' was not taken of this "
+                "account's folder, so it cannot be confirmed to be the same account. "
+                "Nothing was changed.")
+        header = theirs
+    elif msstore.index_header_account(header) != msstore.index_header_account(theirs):
+        raise ops.ForeignAccountError(
+            f"'{entry.id}' was taken from another Xbox account. Restoring it would write that "
+            "account's save index into this one, so it is refused. Nothing was changed.")
+    kept = Path(vault.root) / "damaged-index"
+    kept.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    safety.atomic_write_bytes(kept / f"{Path(live_dir).name}-{stamp}.index", raw)
+    safety.atomic_write_bytes(index, msstore.join_index(header, records, b""))
+    return [f"The live save index was damaged ({why}); the {len(records)} records that still "
+            "read were kept, the rest came from the backup, and the damaged file is in the "
+            "vault (damaged-index)."]
+
+
+def _give_missing_xbox_account_data(ctx: OpContext, entry_id: str, live_dir: Path) -> None:
+    """A live Xbox account with no AccountData record gets the backup's (it has none of its
+    own to keep)."""
+    from ..store import listing
+
+    try:
+        _info, live = msstore.parse_containers_index(live_dir)
+        if any(c.identifier == "AccountData" and c.data_file is not None and c.data_file.is_file()
+               for c in live):
+            return
+        entry = listing.get_vault_entry(ctx.vault, ctx.versions, entry_id, live_roots=[])
+        with listing.open_entry_folder(ctx.vault, ctx.versions, entry, slots=[]) as folder:
+            _i, theirs = msstore.parse_containers_index(Path(folder))
+            acct = next((c for c in theirs if c.identifier == "AccountData" and c.data_file
+                         and c.data_file.is_file() and c.meta_file and c.meta_file.is_file()), None)
+            if acct is not None:
+                msstore.write_save(live_dir, "AccountData", acct.data_file.read_bytes(),
+                                   acct.meta_file.read_bytes(), ctx.clock(),
+                                   create_if_missing=True)
+    except (OSError, ValueError) as exc:
+        ops.log.warning("the backup's account data was not copied: %s", exc)
 
 
 def undo_plan(vault: Vault, live_dir: Path) -> ops.UndoPlan:

@@ -941,13 +941,58 @@ def test_the_steps_are_shown_after_offering_to_keep_a_copy(app, live_target, mon
     monkeypatch.setattr(gui, "_showinfo", lambda title, msg: shown.append(msg))
     monkeypatch.setattr(classic, "keep_copy",
                         lambda vault, directory, slot: kept.update(slot=slot, directory=str(directory)))
-    calls = _capture_run(app, monkeypatch)
+    _capture_run(app, monkeypatch)
 
     app.on_clear({"type": "slot", "dir": str(live_target), "slot": 4, "live": True})
 
     assert "no copy in the vault" in asked[0]
-    assert kept == {"slot": 4, "directory": str(live_target)} and "slot 4" in calls["success"]
+    assert kept == {"slot": 4, "directory": str(live_target)}
     assert "1. Close No Man's Sky." in shown[-1] and "never empties a slot" in shown[-1]
+
+
+def test_a_failed_copy_stops_before_the_steps(app, live_target, monkeypatch):
+    """F9: the steps for emptying a slot are not shown when the save could not be kept."""
+    from nms_save_vault import gui
+    from nms_save_vault.core import operations as ops
+    from nms_save_vault.core.liveops import classic
+
+    monkeypatch.setattr(classic, "empty_guide", lambda vault, directory, slot: _guide())
+    monkeypatch.setattr(gui, "_askyesno", lambda *a, **k: True)
+    shown, errors = [], []
+    monkeypatch.setattr(gui, "_showinfo", lambda title, msg: shown.append(msg))
+    monkeypatch.setattr(gui, "_showerror", lambda title, msg: errors.append(msg))
+
+    def refuse(vault, directory, slot):
+        raise ops.OperationError("the vault is full")
+
+    monkeypatch.setattr(classic, "keep_copy", refuse)
+    _capture_run(app, monkeypatch)
+
+    app.on_clear({"type": "slot", "dir": str(live_target), "slot": 4, "live": True})
+
+    assert errors and "the vault is full" in errors[0] and shown == []
+
+
+def test_the_account_data_box_is_not_offered_for_an_xbox_restore(app, live_target, monkeypatch):
+    from nms_save_vault import gui
+    from nms_save_vault.core import savedir
+
+    monkeypatch.setattr(savedir, "platform_of", lambda path: "xbox")
+    asked = {}
+
+    def confirm(master, title, message, check=None):
+        asked.update(check=check, message=message)
+        return False, False
+
+    monkeypatch.setattr(gui, "_confirm", confirm)
+    entry = type("E", (), {"id": "full-1", "kind": "full", "occupied_slots": []})()
+    monkeypatch.setattr(gui, "_extract_slot_number", lambda e: None)
+    monkeypatch.setattr(app, "_selected", lambda: {"type": "entry", "entry": entry})
+    monkeypatch.setattr(app, "_require_live", lambda: True)
+
+    app.on_restore()
+
+    assert asked["check"] is None and "nothing is removed" in asked["message"]
 
 
 def test_declining_the_copy_still_shows_the_steps_and_keeps_nothing(app, live_target, monkeypatch):
