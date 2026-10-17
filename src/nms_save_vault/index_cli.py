@@ -87,6 +87,14 @@ def _wait(service: IndexService, vids: list[str], timeout: float = WAIT_S) -> No
         time.sleep(0.05)
 
 
+def _wait_deep(service: IndexService, vid: str, timeout: float = WAIT_S) -> None:
+    end = time.monotonic() + timeout
+    while time.monotonic() < end and service.deep(vid) is None:
+        if any(e.vid == vid and e.kind == "failed" for e in service.events_since(0)):
+            return
+        time.sleep(0.05)
+
+
 def cmd_status(args) -> int:
     service, scan, vault_id, _vault_ = _setup(args)
     try:
@@ -162,7 +170,11 @@ def cmd_show(args) -> int:
     try:
         vid = _resolve(scan, args.ref)
         service.request([vid], Priority.INTERACTIVE)
+        if args.card:
+            service.request_deep(vid)
         _wait(service, [vid])
+        if args.card:
+            _wait_deep(service, vid)
         view = service.view(vid)
         if view is None:
             _out(f"No facts for {vid[:12]}: {service.status(vid)}.")
@@ -260,3 +272,13 @@ def _print_card(card: derive.FactsCard) -> None:
             _out(f"  {label}: {value}")
     for e in card.errors:
         _out(f"  error in {e['extractor']}: {e['error']}")
+    for name, ctx in (card.deep or {}).get("contexts", {}).items():
+        _out(f"[{name}, decoded on demand]")
+        for b in ctx["bases"]:
+            top = sorted(b["parts_by_id"].items(), key=lambda kv: -kv[1])[:5]
+            _out(f"  base '{b['name']}': " + ", ".join(f"{part} x{n}" for part, n in top))
+        for container, slots in ctx["inventories"].items():
+            if slots:
+                _out(f"  {container}: {len(slots)} slots filled")
+        if ctx["loose_objects"]:
+            _out(f"  loose placeables: {sum(ctx['loose_objects'].values())}")

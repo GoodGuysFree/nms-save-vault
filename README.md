@@ -442,10 +442,13 @@ The vault lives outside `st_<id>`, so it is never scanned by the game or synced 
 ## Status
 
 Working. Core format/crypto and all operations are verified against the real save files and
-in a temp sandbox (876 tests). Xbox / Game Pass saves are supported for reading **and**
+in a temp sandbox (1170 tests). Xbox / Game Pass saves are supported for reading **and**
 same-platform writing — verified against a real install (reads) and synthetic `wgs` fixtures
 (writes). A full file-copy safety backup of the live folder was made before development
-(`C:\Devel\NMS-SaveBackup-SAFETY-2026-06-24`).
+(`C:\Devel\NMS-SaveBackup-SAFETY-2026-06-24`). In progress for the save-file organizer: a
+read-only content index of every save version (story and Atlas progress, bases and legacy
+parts, ships, companions, expeditions, and what changed against the recorded parent), kept in
+a per-machine cache and available as `nmsvault index status | build | show | changes`.
 
 ## Version history
 
@@ -502,6 +505,19 @@ derived from, the excellent open-source work of **Christian Engelhardt (zencq)**
 The save format itself (byte offsets, magic numbers, the XXTEA key derivation, the
 slot model) is factual information; XXTEA/TEA is public domain. The reused **expression**
 (the C# routines above) is what makes this a derivative work, hence the GPL-3.0 license.
+
+The content index computes the obfuscated save keys itself instead of shipping a mapping
+file:
+
+- **MBINCompiler** — `core/hashname.py` ports its `HashName` (algorithm and constants from
+  `SaveFileMapping/Program.cs`, credited there to AndASM; MBINCompiler is LGPL-3.0). Its
+  published `mapping.json` was used only to check the port (`tests/data/hashname_pins.json`).
+  <https://github.com/monkeyman192/MBINCompiler>
+- **SpookyHash V2** by Bob Jenkins, public domain, which `HashName` runs on.
+  <https://burtleburtle.net/bob/hash/spooky.html>
+- The small name tables in `core/index/lookups/` (galaxies, expeditions, journey ranks,
+  mission stages, legacy part ids) come from Hello Games' game data, plus the community's
+  list of galaxy names beyond the first few.
 
 The rest of the code — `lz4_block` (a from-spec implementation of the public LZ4 block
 format by Yann Collet), `savedir`, `catalog`, `operations`, `safety`, `slotmap`,

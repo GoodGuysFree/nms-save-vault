@@ -191,6 +191,16 @@ class _Held:
 
 
 Opener = Callable[[str], "tuple[bytes, int | None]"]
+DEEP_PREFIX = "deep:"
+
+
+def job_key(vid: str, kind: str = "facts") -> str:
+    """The dispatcher's queue key: the vid for facts, ``deep:<vid>`` for a deep decode."""
+    return vid if kind == "facts" else DEEP_PREFIX + vid
+
+
+def split_key(key: str) -> tuple[str, str]:
+    return ("deep", key[len(DEEP_PREFIX):]) if key.startswith(DEEP_PREFIX) else ("facts", key)
 
 
 class Dispatcher:
@@ -229,13 +239,14 @@ class Dispatcher:
 
     # --- queueing (any thread) -----------------------------------------------------------
 
-    def submit(self, vids: Iterable[str], priority: Priority) -> int:
+    def submit(self, vids: Iterable[str], priority: Priority, kind: str = "facts") -> int:
         """Queue ``vids`` at ``priority``; a vid already queued moves up to a better tier.
-        Returns how many were newly queued (not counting moves or running ones)."""
+        Returns how many were newly queued (not counting moves or running ones). A ``deep``
+        job is queued under its own key (:func:`job_key`), so it never merges with facts."""
         added = 0
         with self._lock:
             running = {r.vid for r in self._running.values()} | ({self._held.vid} if self._held else set())
-            for vid in vids:
+            for vid in (job_key(v, kind) for v in vids):
                 if vid in running:
                     continue
                 current = self._pending.get(vid)
@@ -251,7 +262,7 @@ class Dispatcher:
     def _push(self, vid: str, tier: Priority) -> None:
         seq = next(self._seq)
         if tier in NEWEST_FIRST:
-            key = -(self.when(vid) or 0)
+            key = -(self.when(split_key(vid)[1]) or 0)
         elif tier in LARGEST_FIRST:
             key = -(self._json_estimate(vid) or 0)
         else:
@@ -352,8 +363,8 @@ class Dispatcher:
                 self._lock.notify_all()
         return failed
 
-    def _json_estimate(self, vid: str, data_len: int | None = None) -> int | None:
-        hint = self.size_hint(vid)
+    def _json_estimate(self, key: str, data_len: int | None = None) -> int | None:
+        hint = self.size_hint(split_key(key)[1])
         if hint:
             return hint
         return data_len * JSON_PER_DATA_BYTE if data_len else None
@@ -475,18 +486,19 @@ class Dispatcher:
         self.executor.submit(held.job, self._done(token), self._failed(token))
         return True
 
-    def _open(self, vid: str, tier: Priority) -> _Held | None:
+    def _open(self, key: str, tier: Priority) -> _Held | None:
+        kind, vid = split_key(key)
         try:
             data, hint = self.opener(vid)
         except Exception as exc:  # noqa: BLE001 - VersionUnavailable and friends: a failure row
             self.stats.failed += 1
-            self.on_failure(vid, "unavailable", extract.describe(exc))
+            self.on_failure(key, "unavailable", extract.describe(exc))
             return None
-        json_bytes = self._json_estimate(vid, len(data)) or 0
+        json_bytes = self._json_estimate(key, len(data)) or 0
         est = json_bytes * HEAP_PER_JSON_BYTE
-        alone = vid in self._alone or est > self.policy.memory_budget // 2
-        self._alone.discard(vid)
-        return _Held(vid, tier, IndexJob(vid, "facts", data, hint), est, json_bytes, alone)
+        alone = key in self._alone or est > self.policy.memory_budget // 2
+        self._alone.discard(key)
+        return _Held(key, tier, IndexJob(vid, kind, data, hint), est, json_bytes, alone)
 
     def _fits(self, held: _Held) -> bool:
         running = list(self._running.values())

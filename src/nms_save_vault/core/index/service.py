@@ -13,7 +13,7 @@ import queue
 import sqlite3
 import threading
 import time
-from collections import deque
+from collections import OrderedDict, deque
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
@@ -23,11 +23,12 @@ from .. import lz4_block, msstore
 from . import changes as changes_mod
 from . import derive
 from .cache import IndexCache
-from .pool import Dispatcher, ExecutionPolicy, Executor, Priority, make_executor
+from .pool import Dispatcher, ExecutionPolicy, Executor, Priority, make_executor, split_key
 from .schema import EXTRACTOR_VERSION
 from .worker import IndexResult
 
 EVENT_RING = 2000
+DEEP_LRU = 5                      # deep detail of the last few opened cards, in memory only
 MAX_STRIKES = 3                   # transient failures before a version stops being retried
 
 Status = Literal["not-indexed", "queued", "running", "ok", "partial", "corrupt", "unsupported", "error",
@@ -82,6 +83,7 @@ class IndexService:
         self._writer: threading.Thread | None = None
         self._known: dict[str, tuple[str, int]] = {}
         self._strikes: dict[str, int] = {}
+        self._deep: OrderedDict[str, dict] = OrderedDict()
         if policy.mode == "off":
             return
         self.cache = IndexCache(cache_path, vault_id=vault_id, app_version=app_version, forbidden=forbidden,
@@ -155,8 +157,28 @@ class IndexService:
         return out
 
     def card(self, vid: str) -> derive.FactsCard | None:
+        """The version card; its ``deep`` section is filled once :meth:`request_deep` is done."""
         facts = self.facts(vid)
-        return None if facts is None else derive.card(vid, facts)
+        return None if facts is None else derive.card(vid, facts, deep=self.deep(vid))
+
+    # --- deep detail on demand (a version card) ----------------------------------------------
+
+    def request_deep(self, vid: str) -> None:
+        """A card opened: its facts if missing, and its deep detail, on the reserved worker.
+        ``deep-ready`` is announced through :meth:`events_since`."""
+        if self.dispatcher is None:
+            return
+        if self.status(vid) == "not-indexed":
+            self.request([vid], Priority.INTERACTIVE)
+        if self.deep(vid) is None:
+            self.dispatcher.submit([vid], Priority.INTERACTIVE, kind="deep")
+
+    def deep(self, vid: str) -> dict | None:
+        with self._lock:
+            found = self._deep.get(vid)
+            if found is not None:
+                self._deep.move_to_end(vid)
+            return found
 
     def status(self, vid: str) -> Status:
         if self.dispatcher is None:
@@ -293,6 +315,9 @@ class IndexService:
         kind = op[0]
         if kind == "result":
             result: IndexResult = op[1]
+            if result.kind == "deep":
+                self._deep_ready(result)
+                return
             self.cache.write_result(result)
             if result.status == "mismatch":
                 self._strike(result.vid)
@@ -303,7 +328,11 @@ class IndexService:
             self._strikes.pop(result.vid, None)
             self._event("indexed", result.vid, result.status)
         elif kind == "failure":
-            _, vid, failure, error = op
+            _, key, failure, error = op
+            job_kind, vid = split_key(key)
+            if job_kind == "deep":
+                self._event("failed", vid, f"deep {failure}")
+                return
             self.cache.record_failure(vid, failure, error)
             self._strike(vid)
             self._event("failed", vid, failure)
@@ -320,6 +349,17 @@ class IndexService:
             op[1].set()
         elif kind == "sync":
             op[1].set()
+
+    def _deep_ready(self, result: IndexResult) -> None:
+        if result.status != "ok" or result.deep is None:
+            self._event("failed", result.vid, f"deep {result.status}")
+            return
+        with self._lock:
+            self._deep[result.vid] = result.deep
+            self._deep.move_to_end(result.vid)
+            while len(self._deep) > DEEP_LRU:
+                self._deep.popitem(last=False)
+        self._event("deep-ready", result.vid, "ok")
 
     def _strike(self, vid: str) -> None:
         self._strikes[vid] = self._strikes.get(vid, 0) + 1

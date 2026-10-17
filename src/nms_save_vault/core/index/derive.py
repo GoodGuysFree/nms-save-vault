@@ -85,6 +85,7 @@ class FactsCard:
     expedition: Mapping[str, object] | None
     contexts: Mapping[str, Mapping[str, object]]
     errors: tuple[Mapping[str, str], ...]
+    deep: Mapping[str, object] | None = None      # on-demand detail (deep.DeepFacts), when decoded
     lookups: str = lookups.LOOKUP_VERSION
 
     def to_dict(self) -> dict[str, Any]:
@@ -276,7 +277,7 @@ def fleet_text(v: FactsView) -> str:
 # --- the card ---------------------------------------------------------------------------------
 
 
-def card(vid: str, facts: Mapping) -> FactsCard:
+def card(vid: str, facts: Mapping, deep: Mapping | None = None) -> FactsCard:
     save = facts.get("save") or {}
     contexts = {name: _context_card(ctx) for name, ctx in (facts.get("contexts") or {}).items()}
     season = save.get("season") or {}
@@ -291,6 +292,7 @@ def card(vid: str, facts: Mapping) -> FactsCard:
               "layout": save.get("layout"), "discoveries": save.get("discoveries") or {}},
         expedition=expedition, contexts=contexts,
         errors=tuple(facts.get("errors") or ()),
+        deep=deep,
     )
 
 

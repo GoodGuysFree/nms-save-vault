@@ -15,9 +15,10 @@ from typing import Literal
 
 from .. import savejson
 from . import extract
+from .deep import deep_facts
 from .schema import EXTRACTOR_VERSION
 
-JobKind = Literal["facts"]
+JobKind = Literal["facts", "deep"]          # deep: on-demand detail for a version card
 ResultStatus = Literal["ok", "partial", "corrupt", "unsupported", "error", "mismatch"]
 
 
@@ -38,6 +39,7 @@ class IndexResult:
     status: ResultStatus
     data_bytes: int
     facts: dict | None = None           # VersionFacts
+    deep: dict | None = None            # deep.DeepFacts, for a "deep" job
     timings_ms: dict[str, int] = field(default_factory=dict)
     error: str | None = None            # ours, never save text or a path
 
@@ -63,6 +65,10 @@ def run_job(job: IndexJob) -> IndexResult:
         return result("error", error=extract.describe(exc))
     try:
         t = time.perf_counter()
+        if job.kind == "deep":
+            found = deep_facts(job.vid, decoded)
+            timings["extract"] = _ms(t)
+            return result("ok", deep=found)
         facts = extract.run_extractors(decoded)
         timings["extract"] = _ms(t)
         return result(facts["status"], facts=facts)

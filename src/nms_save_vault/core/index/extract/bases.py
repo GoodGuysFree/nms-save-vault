@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections import Counter
+from dataclasses import dataclass, field
 
 from ...hashname import key
 from ..lookups._overrides import OWN_BASE_TYPES
@@ -56,32 +57,53 @@ def unique_id(wanted: str, index: int, used: set[str]) -> str:
     return bid
 
 
-@context_extractor("bases", ("bases", "exocraft_bays"))
-def bases(ctx: CtxInput, out: dict) -> None:
-    psd = ctx.psd
+@dataclass
+class BaseWalk:
+    """One pass over ``PersistentPlayerBases``: the own bases with their identity, and what was
+    only counted. Shared by the facts extractor and the on-demand deep decode."""
+    own: list[tuple[str, dict, str, Counter]] = field(default_factory=list)   # (id, base, type, ObjectIDs)
+    external: int = 0
+    orphans: int = 0
+    unknown: Counter = field(default_factory=Counter)
+
+
+def walk_bases(ctx: CtxInput) -> BaseWalk:
+    walk = BaseWalk()
     corvettes = corvette_slots(ctx)
     used: set[str] = set()
-    own: list[dict] = []
-    external = orphans = 0
-    unknown: Counter = Counter()
-    platforms: set[str] = set()
-    for index, base in enumerate(items(psd, "PersistentPlayerBases")):
+    for index, base in enumerate(items(ctx.psd, "PersistentPlayerBases")):
         base_type = get(base, "BaseType", "PersistentBaseTypes")
         if not isinstance(base_type, str) or base_type in IGNORED_TYPES:
             continue
         if base_type not in OWN_BASE_TYPES:
             if base_type.startswith("External"):
-                external += 1
+                walk.external += 1
             else:
-                unknown[text(base_type, 64)] += 1
+                walk.unknown[text(base_type, 64)] += 1
             continue
         if base_type == "PlayerShipBase" and integer(get(base, "UserData")) not in corvettes:
-            orphans += 1
+            walk.orphans += 1
             continue
         ids = Counter(gid(o.get(_OBJECT_ID)) for o in items(base, "Objects") if isinstance(o, dict))
         address = u64(get(base, "GalacticAddress"))
+        walk.own.append((unique_id(_base_id(base_type, base, address, index), index, used), base, base_type, ids))
+    return walk
+
+
+def loose_objects(ctx: CtxInput) -> Counter:
+    """Placeables outside any base (``BaseBuildingObjects``: garages, beacons, save points)."""
+    return Counter(gid(o.get(_OBJECT_ID)) for o in items(ctx.psd, "BaseBuildingObjects") if isinstance(o, dict))
+
+
+@context_extractor("bases", ("bases", "exocraft_bays"))
+def bases(ctx: CtxInput, out: dict) -> None:
+    walk = walk_bases(ctx)
+    own: list[dict] = []
+    platforms: set[str] = set()
+    for bid, base, base_type, ids in walk.own:
+        address = u64(get(base, "GalacticAddress"))
         own.append({
-            "id": unique_id(_base_id(base_type, base, address, index), index, used),
+            "id": bid,
             "name": text(get(base, "Name")),
             "type": base_type,
             "galaxy": galaxy_of(address),
@@ -96,10 +118,9 @@ def bases(ctx: CtxInput, out: dict) -> None:
         code = owner_platform(base)
         if code:
             platforms.add(code)
-    out["bases"] = {"own": own, "external_cached": external, "orphan_corvette_layouts": orphans,
-                    "unknown_types": dict(sorted(unknown.items())), "ptk": sorted(platforms)}
-    loose = (gid(o.get(_OBJECT_ID)) for o in items(psd, "BaseBuildingObjects") if isinstance(o, dict))
-    out["exocraft_bays"] = sorted({i for i in loose if i.startswith("GARAGE") or i == "SUMMON_GARAGE"})
+    out["bases"] = {"own": own, "external_cached": walk.external, "orphan_corvette_layouts": walk.orphans,
+                    "unknown_types": dict(sorted(walk.unknown.items())), "ptk": sorted(platforms)}
+    out["exocraft_bays"] = sorted({i for i in loose_objects(ctx) if i.startswith("GARAGE") or i == "SUMMON_GARAGE"})
 
 
 @context_extractor("settlements", ("settlements",))
