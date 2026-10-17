@@ -150,13 +150,13 @@ def cmd_build(args) -> int:
             service.rebuild()
         scan = org.scan
         live = vaultlink.live_vids(scan)
-        tips = [] if args.live_only else [v for v in _tips(org) if v in scan.versions]
         wanted = list(dict.fromkeys(live + ([] if args.live_only else list(scan.versions))))
         started = time.monotonic()
-        queued = service.request(live, Priority.LIVE)
-        if not args.live_only:
-            queued += service.request(tips, Priority.TIP)
-            queued += service.request([v for v in scan.versions if v not in set(live) | set(tips)], Priority.BACKFILL)
+        queued = sum(1 for v in wanted if service.status(v) in ("not-indexed", "stale", "unreadable"))
+        if args.live_only:
+            service.request(live, Priority.LIVE)
+        else:
+            org.request_facts()             # D4's tiers: live, then representatives and tips
         p = service.policy
         _out(f"Indexing {queued} of {len(wanted)} versions ({p.mode}, {p.workers} worker"
              f"{'s' if p.workers != 1 else ''}); {len(wanted) - queued} already indexed.")
@@ -207,14 +207,6 @@ def _follow(service: IndexService, timeout: float, *, stuck_s: float = STUCK_S) 
     if p.state == "error":
         return f"Stopped: {p.message}. Facts indexed so far are kept."
     return None
-
-
-def _tips(org: Organizer) -> list[str]:
-    """Each save file's representative and its branch tips, from the read model."""
-    model = org.model
-    out = [line.representative for line in model.lines()]
-    out += [r.head for line in model.lines() for r in model.versions(line.pid) if "tip" in r.flags]
-    return list(dict.fromkeys(out))
 
 
 def _resolve(org: Organizer, ref: str) -> str:

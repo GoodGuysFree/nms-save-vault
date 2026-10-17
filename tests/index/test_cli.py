@@ -16,7 +16,8 @@ from nms_save_vault.core.index import vaultlink
 from .savebuilder import context_save, payload
 
 
-def steam_pair(folder: Path, slot: int, readable: dict, *, name: str, play: int, ts: int) -> str:
+def steam_pair(folder: Path, slot: int, readable: dict, *, name: str, play: int, ts: int,
+               ident: int | None = None) -> str:
     """One Steam save (data + encrypted meta) built from a readable save tree; returns its vid."""
     folder.mkdir(parents=True, exist_ok=True)
     fno = slotmap.slot_file_numbers(slot)[0]
@@ -33,7 +34,7 @@ def steam_pair(folder: Path, slot: int, readable: dict, *, name: str, play: int,
     struct.pack_into("<Q", plain, formats.OFF_TOTAL_PLAY_TIME, play)
     plain[formats.OFF_SAVE_NAME: formats.OFF_SAVE_NAME + len(name)] = name.encode("utf-8")
     struct.pack_into("<I", plain, formats.OFF_DIFFICULTY, 2)
-    struct.pack_into("<Q", plain, formats.OFF_SLOT_IDENTIFIER, 0x5EED0000 + slot)
+    struct.pack_into("<Q", plain, formats.OFF_SLOT_IDENTIFIER, ident if ident is not None else 0x5EED0000 + slot)
     struct.pack_into("<I", plain, formats.OFF_TIMESTAMP, ts)
     struct.pack_into("<I", plain, formats.OFF_META_FORMAT_TAIL, formats.META_FORMAT_4)
     (folder / slotmap.meta_filename(fno)).write_bytes(meta.encrypt(bytes(plain), slotmap.storage_ordinal(fno)))

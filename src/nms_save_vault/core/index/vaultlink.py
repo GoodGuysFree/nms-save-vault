@@ -104,6 +104,7 @@ def open_service(vault_root: Path, sources: Sequence[Source], *, workers: str | 
         size_hint=lambda vid: (m.size_decompressed or None) if (m := meta(vid)) else None,
         when=lambda vid: m.meta_ts if (m := meta(vid)) else None,
         forbidden=forbidden_roots(vault_root, sources, host), app_version=_app_version(), game_running=game_running)
+    organizer.facts = service           # the read model shows facts and asks for them from now on
     return service, organizer
 
 

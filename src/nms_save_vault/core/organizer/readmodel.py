@@ -20,7 +20,7 @@ from collections import Counter, defaultdict
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Literal
+from typing import Any, Literal, Protocol, runtime_checkable
 
 from .. import aliases, formats
 from ..state import Source
@@ -57,6 +57,21 @@ SLOT_OPS = ("place", "place_into_empty", "restore_older", "swap", "repopulate", 
 RECENT_EVENT_SECONDS = 30 * 86400
 EXPEDITION_MODE = 6
 _TIER_RANK = {"owner": 3, "recorded": 2, "observed": 1}
+
+
+# --- the content index, as the read model sees it (D1 2.10, D4 2.6) -----------
+
+
+@runtime_checkable
+class FactsProvider(Protocol):
+    """The part of D4's ``IndexService`` the organizer uses. Every call is non-blocking: a
+    cache read or a queue operation. ``view`` is a D4 ``FactsView`` (opaque here but for
+    ``numbers``); None means "not indexed yet", and the read model shows meta-level columns."""
+
+    def view(self, vid: Vid) -> Any | None: ...
+    def changes(self, child: Vid, parent: Vid, *, edge_kind: str | None = None) -> Any | None: ...
+    def is_milestone(self, child: Vid, parent: Vid) -> bool | None: ...
+    def request(self, vids: Iterable[Vid], priority: Any) -> int: ...
 
 
 # --- the objects --------------------------------------------------------------
@@ -233,8 +248,11 @@ class ReadModel:
 
     @classmethod
     def build(cls, scan: ScanResult, journal: JournalState, lineage: LineageState,
-              notes: NotesState, sources: Sequence[Source], *, now: int) -> ReadModel:
-        return _Builder(scan, journal, lineage, notes, sources, now).build()
+              notes: NotesState, sources: Sequence[Source], *, now: int,
+              facts: FactsProvider | None = None) -> ReadModel:
+        """``facts`` (D4's index) adds each line's and version's facts and the milestone
+        rule of the key versions; it is only read, never waited for."""
+        return _Builder(scan, journal, lineage, notes, sources, now, facts).build()
 
     def lines(self) -> tuple[Line, ...]:
         return tuple(self._lines.values())
@@ -274,7 +292,9 @@ class ReadModel:
 
 class _Builder:
     def __init__(self, scan: ScanResult, journal: JournalState, lineage: LineageState,
-                 notes: NotesState, sources: Sequence[Source], now: int) -> None:
+                 notes: NotesState, sources: Sequence[Source], now: int,
+                 facts: FactsProvider | None = None) -> None:
+        self.facts = facts
         self.scan = scan
         self.journal = journal
         self.lineage = lineage
@@ -399,7 +419,19 @@ class _Builder:
             if e.child not in best or rank > best[e.child][0]:
                 best[e.child] = (rank, e)
         self.edge_of = {child: e for child, (_, e) in best.items()}
-        return {child: e.parent for child, (_, e) in best.items()}
+        self.parent_of = {child: e.parent for child, (_, e) in best.items()}
+        return dict(self.parent_of)
+
+    def _view(self, vid: Vid) -> Any | None:
+        return self.facts.view(vid) if self.facts is not None else None
+
+    def _milestone(self, vid: Vid) -> bool:
+        """D4's key-version rule: the step from the drawn parent reached a milestone. A
+        version not indexed yet (None) is not a milestone."""
+        parent = self.parent_of.get(vid)
+        if self.facts is None or parent is None:
+            return False
+        return self.facts.is_milestone(vid, parent) is True
 
     @staticmethod
     def _display_parent(vid: Vid, parent: Mapping[Vid, Vid], candidates: set[Vid]) -> Vid | None:
@@ -484,10 +516,11 @@ class _Builder:
             children=n_children, in_tree=in_tree, key=False,
             label=note.label if note else "", comment=note.comment if note else "",
             locked=bool(note and note.locked), note_rev=self.journal.note_rev.get(p.head),
+            facts=self._view(p.head),
         )
 
     def _mark_keys(self, rows: list[VersionRow]) -> list[VersionRow]:
-        """D1 2.10.4 rule 5 (milestones arrive with the content index)."""
+        """D1 2.10.4 rule 5, with the content index's milestones."""
         out = []
         dated = [r for r in rows if not r.in_tree]
         oldest_first = list(reversed(rows))
@@ -508,7 +541,7 @@ class _Builder:
             special = bool(r.flags & {"live", "noted", "locked"}) or r.head in new_name
             if r.in_tree:
                 key = special or bool(r.flags & {"tip", "fork", "root", "placed", "evicted"}) \
-                    or r.head in platform_change
+                    or r.head in platform_change or self._milestone(r.head)
             else:
                 key = special or r.head in ends
             out.append(dataclasses.replace(r, key=key))
@@ -618,7 +651,7 @@ class _Builder:
             gone_count=sum(1 for r in rows if "gone" in r.flags),
             branch_count=branch_count, note_preview=preview, has_note=bool(text.strip()),
             pinned=bool(note and note.pinned), locked_count=locked_count,
-            flags=frozenset(flags), representative=rep,
+            flags=frozenset(flags), representative=rep, facts=self._view(rep),
         )
 
     def _badge_order(self, target: LiveTarget) -> tuple:
@@ -936,11 +969,21 @@ SORT_KEYS = ("name", "play_time", "last_played", "versions", "live", "platform",
 
 def sort_lines(lines: Iterable[Line], key: str = "last_played",
                descending: bool | None = None) -> tuple[Line, ...]:
-    """Sort keys of D1 2.10.1; ``facts:<name>`` arrives with the content index (all missing
-    until then, so the order is by name)."""
+    """Sort keys of D1 2.10.1. ``facts:<name>`` sorts by the representative's
+    ``view.numbers[name]`` (largest first unless ``descending=False``); a line without facts
+    or without that number sorts last either way, by name."""
     lines = list(lines)
+    by_name = sorted(lines, key=lambda line: (line.name.casefold(), line.pid))
     if key.startswith("facts:"):
-        return tuple(sorted(lines, key=lambda line: line.name.casefold()))
+        name = key.split(":", 1)[1]
+
+        def number(line: Line) -> float | None:
+            value = (getattr(line.facts, "numbers", None) or {}).get(name)
+            return value if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+        known = [line for line in by_name if number(line) is not None]
+        missing = [line for line in by_name if number(line) is None]
+        return tuple(sorted(known, key=number, reverse=descending is not False)) + tuple(missing)
     if key not in SORT_KEYS:
         raise ValueError(f"unknown sort key {key!r}; one of {', '.join(SORT_KEYS)}")
     if descending is None:
@@ -957,7 +1000,6 @@ def sort_lines(lines: Iterable[Line], key: str = "last_played",
         "risk": lambda line: ("at-risk" in line.flags, "live" in line.flags),
         "note": lambda line: (not line.has_note, line.note_preview.casefold()),
     }
-    by_name = sorted(lines, key=lambda line: (line.name.casefold(), line.pid))
     return tuple(sorted(by_name, key=getters[key], reverse=descending))   # stable: ties by name
 
 
