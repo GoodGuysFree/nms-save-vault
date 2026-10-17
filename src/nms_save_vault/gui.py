@@ -236,7 +236,7 @@ def _clear_question(plan, directory) -> str:
     ]
     if plan.backed_up:
         lines.append(
-            f"Newest copy in the vault: {plan.entry_id}"
+            f"Best copy in the vault: {plan.entry_id}"
             f"   ({ops.format_duration(plan.backup_play_time)} play time)"
         )
     if plan.warning:
@@ -2083,7 +2083,7 @@ BUTTONS
   backup, to copy just that one slot aside into the vault. You can free the slot now and
   bring it back later.
 - Clear slot: Empties a live slot by deleting both of its saves. Before it does, it
-  shows the slot's play time next to the play time of the newest copy of that slot in
+  shows the slot's play time next to the play time of the best copy of that save in
   the vault, and if the live save is further on - or if the vault has no copy at all -
   it says so and asks again, because that progress is what you would lose. The live
   state is auto-snapshotted first, so Undo brings the slot back.

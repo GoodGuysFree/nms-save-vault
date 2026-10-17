@@ -12,13 +12,14 @@ from __future__ import annotations
 import logging
 import os
 import shutil
+import struct
 import warnings as pywarnings
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
 
-from . import formats, lz4_block, meta, msstore, safety, savedir
+from . import formats, lz4_block, meta, msstore, playtime, safety, savedir
 from .catalog import (
     KIND_EXTRACT,
     KIND_FULL,
@@ -26,7 +27,6 @@ from .catalog import (
     KIND_INPLACE,
     KIND_SNAPSHOT,
     CatalogEntry,
-    SlotSummary,
     Vault,
     looks_like_vault_dir,
 )
@@ -591,22 +591,32 @@ def repopulate_slot(
         new_meta = meta_bytes if used_ord == dst_ord else meta.re_key(meta_bytes, used_ord, dst_ord)
         _validate_pair(new_meta, dst_ord, data_bytes)
         dst_data, dst_meta = _member_paths(live_dir, dst_f)
-        planned.append((dst_data, data_bytes, dst_meta, new_meta, src_data.stat().st_mtime))
+        planned.append((member, dst_data, data_bytes, dst_meta, new_meta, src_data.stat().st_mtime))
 
     if not planned:
         raise OperationError(f"source slot {source_slot} has no saves in {source_dir}")
+    src_sv = savedir.scan_slot(source_dir, source_slot)
+    dest_sv = savedir.scan_slot(live_dir, dest_slot)
+    written = [p[0] for p in planned]
+    _refuse_mixed_slot(source_slot, dest_slot, written, dest_sv, src_sv, savedir.platform_of(live_dir))
+    expected = _expected_newest(src_sv, written)
+    planned.sort(key=lambda p: "AB"[p[0]] == expected)         # the newer member last
 
     snap = snapshot_live(vault, live_dir, reason=f"pre-repopulate slot {dest_slot}")
     # See restore_full: under Steam Cloud the source mtime would make the cloud copy look
     # newer than what we just wrote, and Steam would put its copy back.
     keep_mtime = not _steam_cloud_on(live_dir)
+    now = _now()
     changed: list[str] = []
-    for dst_data, data_bytes, dst_meta, new_meta, mtime in planned:
+    for member, dst_data, data_bytes, dst_meta, new_meta, mtime in planned:
         safety.atomic_write_bytes(dst_data, data_bytes)
         safety.atomic_write_bytes(dst_meta, new_meta)
-        if keep_mtime:
-            safety.set_file_mtime(dst_data, mtime)
-            safety.set_file_mtime(dst_meta, mtime)
+        if not keep_mtime:
+            # Under Cloud: the write time, the member that must load a second ahead -- the
+            # file times then order the pair whatever order the writes landed in.
+            mtime = now if "AB"[member] == expected else now - 1
+        safety.set_file_mtime(dst_data, mtime)
+        safety.set_file_mtime(dst_meta, mtime)
         changed += [dst_data.name, dst_meta.name]
 
     # Logged before the read-back check, so a failed check still leaves undo its snapshot.
@@ -620,7 +630,58 @@ def repopulate_slot(
         _validate_slot(live_dir, dest_slot, warnings)
     except ValidationError as exc:
         raise _written_but_invalid(f"{exc}.", result) from exc
+    _require_newest(savedir.scan_slot(live_dir, dest_slot), expected, result)
     return result
+
+
+def _refuse_mixed_slot(
+    source_slot: int, dest_slot: int, written: list[int], dest_sv: savedir.SlotView,
+    src_sv: savedir.SlotView, platform: str,
+) -> None:
+    """A one-member source must not go into a slot whose other member is a different -- or
+    unidentifiable -- playthrough: that save would stay beside the copy, and the game could
+    load it instead (P6). The same playthrough may stay; the copied member is then checked
+    to be the one that loads."""
+    if len(written) != 1:
+        return
+    leftover = dest_sv.members[1 - written[0]]
+    if not leftover.exists:
+        return
+    try:
+        stay_key, stay_known = playtime.identity(leftover, platform)
+        new_key, new_known = playtime.identity(src_sv.members[written[0]], platform)
+    except _READ_ERRORS:
+        stay_known = new_known = False
+    if stay_known and new_known and stay_key == new_key:
+        return
+    labels = formats.SAVE_TYPE_LABELS
+    have, other = labels[written[0]], labels[1 - written[0]]
+    raise OperationError(
+        f"Source slot {source_slot} holds only its {have}, but live slot {dest_slot} also holds "
+        f"a {other} of a different (or unidentifiable) playthrough that this copy would leave "
+        "behind -- the game could then load that save instead of the copied one. Clear live "
+        f"slot {dest_slot} first (it is snapshotted, so undo can bring it back), then copy "
+        "again. Nothing was changed."
+    )
+
+
+def _expected_newest(src_sv: savedir.SlotView, written: list[int]) -> str:
+    """The member label that must load after the copy: the source's newest of those written."""
+    newest = src_sv.newest
+    if newest is not None and "AB".index(newest.label) in written:
+        return newest.label
+    return "AB"[written[-1]]
+
+
+def _require_newest(after: savedir.SlotView, expected: str, result: OpResult) -> None:
+    """After a copy, the game must load the member the source would have loaded."""
+    newest = after.newest
+    if newest is None or newest.label != expected:
+        raise _written_but_invalid(
+            f"After the copy the game would load slot {after.slot}"
+            f"{newest.label if newest else '?'} instead of the copied slot {after.slot}{expected}.",
+            result,
+        )
 
 
 def promote_member(vault: Vault, live_dir: Path, slot: int, member: int, allow_game_running: bool = False) -> OpResult:
@@ -872,9 +933,12 @@ def _repopulate_slot_xbox(vault: Vault, source_dir: Path, source_slot: int, live
     # the destination slot holds, and one second apart in the source's order, so the pair
     # keeps the order it had whichever clock orders it (SlotView.order_time).
     dest_sv = savedir.scan_any(live_dir).slots[dest_slot]
+    written = [m for m in (0, 1) if any(p[0] is src_sv.members[m] for p in planned)]
+    _refuse_mixed_slot(source_slot, dest_slot, written, dest_sv, src_sv, "xbox")
+    expected = _expected_newest(src_sv, written)
     floor = max((m.xbox.last_write for m in dest_sv.members if m.xbox is not None), default=0.0)
     newest = max(_now(), floor + len(planned))
-    planned.sort(key=lambda p: p[0] is src_sv.newest)       # the source's newer member last
+    planned.sort(key=lambda p: p[0].label == expected)      # the newer member last
     times = [newest - (len(planned) - 1 - i) for i in range(len(planned))]
 
     snap = snapshot_live(vault, live_dir, reason=f"pre-repopulate slot {dest_slot}")
@@ -886,7 +950,8 @@ def _repopulate_slot_xbox(vault: Vault, source_dir: Path, source_slot: int, live
     # Logged before the read-back check, so a failed check still leaves undo its snapshot.
     _log_op(vault, _oplog("repopulate_slot", snapshot_id=snap.id, detail=f"xbox {Path(source_dir).name} slot {source_slot} -> slot {dest_slot}", changed=changed, target=live_dir), warnings)
     result = OpResult(True, "repopulate_slot", f"slot {source_slot} -> {dest_slot}", snapshot_id=snap.id, changed=changed, warnings=warnings)
-    _validate_xbox_slot(live_dir, dest_slot, result)
+    after = _validate_xbox_slot(live_dir, dest_slot, result)
+    _require_newest(after.slots[dest_slot], expected, result)
     return result
 
 
@@ -1010,7 +1075,12 @@ def _restore_full_xbox(
 
 @dataclass
 class ClearPlan:
-    """What clearing one live slot would destroy, measured against the vault."""
+    """What clearing one live slot would destroy, measured against the vault.
+
+    Until versions have a lineage, only a byte-identical copy proves the save the game loads
+    is safe: a copy of the same playthrough with more (or less) play time may be an earlier
+    point or another branch. Such a copy is shown as information, never as proof.
+    """
 
     slot: int
     occupied: bool
@@ -1023,17 +1093,20 @@ class ClearPlan:
     backup_name: str = ""
     backup_play_time: int = 0
     steam_cloud: bool = False
+    identical: bool = False          # the vault holds the very save the game loads (same bytes)
+    unverifiable: bool = False       # no playthrough id and no identical copy: cannot tell
+    notes: list[str] = field(default_factory=list)   # vault files that could not be checked
 
     @property
     def backed_up(self) -> bool:
-        return self.entry_id is not None
+        """The vault holds this very save (byte-identical)."""
+        return self.identical
 
     @property
     def progress_at_risk(self) -> int:
-        """Play-time seconds the live save has that the newest vault copy does not."""
-        if not self.backed_up:
-            return self.live_play_time
-        return max(0, self.live_play_time - self.backup_play_time)
+        """Play-time seconds that could be lost: none with an identical copy, else all of it
+        (a copy that is not identical may be another branch)."""
+        return 0 if self.backed_up else self.live_play_time
 
     @property
     def warning(self) -> str:
@@ -1044,15 +1117,29 @@ class ClearPlan:
         """
         if not self.occupied:
             return ""
-        if not self.backed_up:
-            return f"No copy of slot {self.slot} was found in the vault."
-        if self.progress_at_risk > 0:
+        if self.backed_up:
+            return ""
+        if self.unverifiable:
             return (
-                f"The live save has {format_duration(self.progress_at_risk)} more play time "
-                f"than the newest copy in the vault ('{self.entry_id}'), so that progress "
-                "would be lost."
+                f"The save in slot {self.slot} ('{self.live_name}') is too old to carry a "
+                "playthrough id, and no identical copy is in the vault, so a copy of it "
+                "cannot be verified."
             )
-        return ""
+        if self.entry_id is None:
+            return f"No copy of the save in slot {self.slot} ('{self.live_name}') was found in the vault."
+        diff = self.live_play_time - self.backup_play_time
+        if diff > 0:
+            relation = f"{format_duration(diff)} less play time"
+        elif diff < 0:
+            relation = f"{format_duration(-diff)} more play time"
+        else:
+            relation = "the same play time"
+        return (
+            f"The vault holds no identical copy of the save in slot {self.slot} "
+            f"('{self.live_name}'). Its closest copy of this playthrough ('{self.entry_id}') has "
+            f"{relation}: it may be an earlier point or a different branch, so it does not "
+            "prove this save is safe."
+        )
 
     @property
     def cloud_warning(self) -> str:
@@ -1079,36 +1166,92 @@ def format_duration(seconds: int) -> str:
     return f"{h}h{m:02d}m" if h else f"{m}m"
 
 
-def _slot_play_time(summary: SlotSummary) -> int:
-    return max((m.play_time for m in summary.members if m.present), default=0)
+@dataclass
+class _VaultCopy:
+    entry: CatalogEntry
+    member: savedir.MemberView
+    identical: bool
 
 
-def _latest_vault_copy(
-    vault: Vault, live_dir: Path, slot: int
-) -> tuple[CatalogEntry, SlotSummary] | None:
-    """The most recently created catalog entry holding ``slot``, with that slot's summary.
+# What reading a save can raise: I/O, and the decoders' ValueError / IndexError /
+# struct.error on damaged bytes. Anything else is a bug and is let through.
+_READ_ERRORS = (OSError, ValueError, IndexError, struct.error)
 
-    The live folder itself is skipped even when it is catalogued: an in-place import of
-    the live folder would otherwise always answer "backed up" by pointing at the very save
-    about to be deleted. Entries whose folder has since gone away are skipped too.
+
+def _best_vault_copy(
+    vault: Vault, live_dir: Path, sv: savedir.SlotView, notes: list[str], other_live_dirs: list[Path]
+) -> tuple[_VaultCopy | None, bool]:
+    """The vault's best copy of the save the game loads from live slot ``sv`` (its newest
+    member), and whether that save carries a playthrough id.
+
+    Best: a copy of these very bytes, else the copy of the same playthrough whose play time
+    is closest (then the newest entry) -- shown only as information. Matched by the game's
+    own playthrough id, wherever it sits in the vault -- never by slot number, which in
+    another folder may hold a different save. A save too old to carry an id matches only a
+    byte-identical copy. Live folders never count (the live folder itself would answer
+    "backed up" by pointing at the save about to be deleted; another live folder is no
+    backup either), nor do entries whose folder has gone. A file that cannot be read is
+    noted in ``notes`` and skipped.
     """
-    live_resolved = Path(live_dir).resolve()
-    candidates: list[tuple[str, CatalogEntry, SlotSummary]] = []
+    target = sv.newest
+    platform = savedir.platform_of(live_dir)
+    cache = playtime.IdCache(vault.root / playtime.CACHE_NAME)
+    key, identified = playtime.identity(target, platform, cache)
+    live_play = target.info.total_play_time if target.info else 0
+    try:
+        target_hash = safety.sha256_file(target.data_path)
+    except OSError as exc:
+        _note(notes, f"the live file {Path(target.data_path).name}", exc)
+        target_hash = None
+
+    def same_bytes(m: savedir.MemberView) -> bool:
+        return (
+            target_hash is not None and m.data_size == target.data_size
+            and safety.sha256_file(m.data_path) == target_hash
+        )
+
+    lives = [Path(live_dir), *other_live_dirs]
+    copies: list[_VaultCopy] = []
     for entry in vault.entries:
         folder = Path(entry.path)
-        if not folder.is_dir() or folder.resolve() == live_resolved:
+        try:
+            if not folder.is_dir() or any(_same_folder(folder, d) for d in lives):
+                continue
+            view = savedir.scan_any(folder)
+            entry_platform = savedir.platform_of(folder)
+        except _READ_ERRORS as exc:
+            _note(notes, entry.id, exc)
             continue
-        summary = next((s for s in entry.slots if s.slot == slot and s.occupied), None)
-        if summary is not None:
-            candidates.append((entry.created, entry, summary))
-    if not candidates:
-        return None
-    _created, entry, summary = max(candidates, key=lambda c: c[0])
-    return entry, summary
+        for other in view.occupied_slots:
+            for m in other.present_members:
+                try:
+                    if m.info is None:
+                        continue
+                    same = same_bytes(m)
+                    if same or (identified and playtime.identity(m, entry_platform, cache)[0] == key):
+                        copies.append(_VaultCopy(entry, m, same))
+                except _READ_ERRORS as exc:
+                    _note(notes, f"{entry.id} slot {other.slot}{m.label}", exc)
+    cache.flush()
+    if not copies:
+        return None, identified
+    best = max(copies, key=lambda c: (
+        c.identical, -abs(c.member.info.total_play_time - live_play), c.entry.created,
+    ))
+    return best, identified
 
 
-def plan_clear_slot(vault: Vault, live_dir: Path, slot: int) -> ClearPlan:
-    """Describe, without changing anything, what clearing ``slot`` would cost."""
+def _note(notes: list[str], what: str, exc: Exception) -> None:
+    log.warning("clear plan: could not check %s: %s", what, exc)
+    notes.append(f"{what} could not be checked ({exc}).")
+
+
+def plan_clear_slot(
+    vault: Vault, live_dir: Path, slot: int, other_live_dirs: Iterable[Path] = ()
+) -> ClearPlan:
+    """Describe what clearing ``slot`` would cost. Changes nothing but playtime's
+    playthrough-id cache in the vault. ``other_live_dirs``: the caller's other live folders,
+    which are never counted as copies even when catalogued."""
     _check_slot(slot)
     live_dir = Path(live_dir)
     view = savedir.scan_any(live_dir)
@@ -1121,19 +1264,18 @@ def plan_clear_slot(vault: Vault, live_dir: Path, slot: int) -> ClearPlan:
         occupied=True,
         steam_cloud=view.steam_cloud,
         live_name=sv.display_name,
-        live_play_time=max(
-            (m.info.total_play_time for m in sv.present_members if m.info is not None), default=0
-        ),
+        live_play_time=sv.newest.info.total_play_time if sv.newest.info else 0,   # what loads
     )
-    found = _latest_vault_copy(vault, live_dir, slot)
+    found, identified = _best_vault_copy(vault, live_dir, sv, plan.notes, [Path(d) for d in other_live_dirs])
+    plan.unverifiable = found is None and not identified
     if found is not None:
-        entry, summary = found
-        plan.entry_id = entry.id
-        plan.entry_label = entry.label
-        plan.entry_kind = entry.kind
-        plan.entry_created = entry.created
-        plan.backup_name = summary.name
-        plan.backup_play_time = _slot_play_time(summary)
+        plan.entry_id = found.entry.id
+        plan.entry_label = found.entry.label
+        plan.entry_kind = found.entry.kind
+        plan.entry_created = found.entry.created
+        plan.backup_name = found.member.save_name
+        plan.backup_play_time = found.member.info.total_play_time
+        plan.identical = found.identical
     return plan
 
 

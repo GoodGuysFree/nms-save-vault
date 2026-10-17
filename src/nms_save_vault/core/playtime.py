@@ -120,7 +120,7 @@ def _id_from_data(data_path: Path, expected_size: int) -> int | None:
         return None
 
 
-class _IdCache:
+class IdCache:
     """Remembers a file's playthrough id across runs, keyed by identity-on-disk.
 
     Decoding a blob is the only expensive part of the whole report, and a save file that
@@ -164,7 +164,7 @@ class _IdCache:
             pass  # a cache that cannot be written only costs time next run
 
 
-def _identity(member, platform: str, cache: _IdCache | None) -> tuple[str, bool]:
+def identity(member, platform: str, cache: IdCache | None = None) -> tuple[str, bool]:
     """(key, identified) for one save: the game's id where there is one, else a fallback.
 
     The meta hands the id over for free. A meta without one (0) falls back to decoding the
@@ -188,7 +188,7 @@ def _identity(member, platform: str, cache: _IdCache | None) -> tuple[str, bool]
 
 def collect(vault: Vault, live_dirs, use_cache: bool = True) -> PlaytimeReport:
     """Fold every save in ``live_dirs`` and in the vault onto one row per playthrough."""
-    cache = _IdCache(vault.root / CACHE_NAME) if use_cache else None
+    cache = IdCache(vault.root / CACHE_NAME) if use_cache else None
     folders: list[tuple[str, Path]] = [("live", Path(d)) for d in live_dirs]
     folders += [(e.id, Path(e.path)) for e in vault.entries]
 
@@ -208,7 +208,7 @@ def collect(vault: Vault, live_dirs, use_cache: bool = True) -> PlaytimeReport:
                 if m.info is None:
                     continue
                 saves += 1
-                key, identified = _identity(m, platform, cache)
+                key, identified = identity(m, platform, cache)
                 p = found.get(key)
                 if p is None:
                     p = found[key] = Playthrough(

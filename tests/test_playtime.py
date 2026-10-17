@@ -54,7 +54,7 @@ def test_the_id_cache_decodes_a_file_once(tmp_path, monkeypatch):
         return real(path, expected)
 
     monkeypatch.setattr(playtime, "_id_from_data", counting)
-    cache = playtime._IdCache(tmp_path / "ids.json")
+    cache = playtime.IdCache(tmp_path / "ids.json")
     data = live / slotmap.data_filename(slotmap.slot_file_numbers(1)[0])
     st = data.stat()
     for _ in range(3):
@@ -62,7 +62,7 @@ def test_the_id_cache_decodes_a_file_once(tmp_path, monkeypatch):
     assert len(calls) == 1
 
     cache.flush()
-    assert playtime._IdCache(tmp_path / "ids.json").get_or_read(data, st.st_size, st.st_mtime, 0) == 0xABCDEF
+    assert playtime.IdCache(tmp_path / "ids.json").get_or_read(data, st.st_size, st.st_mtime, 0) == 0xABCDEF
     assert len(calls) == 1          # a second run does not decode it again either
 
 

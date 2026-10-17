@@ -1,8 +1,9 @@
 """Clearing a live slot, and the play-time check that decides whether to warn first.
 
 The point of the warning is that it is the only thing standing between the user and a
-deleted save, so the tests pin what it is measured against: the newest copy of THAT slot
-in the vault, the live folder itself never counting as its own backup.
+deleted save, so the tests pin what it is measured against: the vault's best copy of THAT
+playthrough (by the game's own id, wherever it sits -- never by slot number), the live
+folder itself never counting as its own backup.
 """
 from __future__ import annotations
 
@@ -14,6 +15,8 @@ import pytest
 from nms_save_vault.core import operations as ops
 from nms_save_vault.core import formats, savedir, slotmap
 from nms_save_vault.core.catalog import Vault
+
+from .conftest import steam_save
 
 
 def _vault(tmp_path) -> Vault:
@@ -32,7 +35,7 @@ def test_plan_warns_when_the_vault_has_no_copy(make_wgs_account, tmp_path):
     assert plan.occupied and not plan.backed_up
     assert plan.live_play_time == 3600
     assert plan.progress_at_risk == 3600
-    assert "No copy of slot 1" in plan.warning
+    assert "No copy of the save in slot 1 ('Only copy')" in plan.warning
 
 
 def test_plan_is_quiet_when_the_vault_matches(make_wgs_account, tmp_path):
@@ -46,15 +49,15 @@ def test_plan_is_quiet_when_the_vault_matches(make_wgs_account, tmp_path):
 
 
 def test_plan_warns_when_play_time_advanced_past_the_backup(make_wgs_account, tmp_path):
-    backup = make_wgs_account(tmp_path / "bk", [("Slot1Auto", '{"a":1}', "Old", "", 3600, 1000)])
+    backup = make_wgs_account(tmp_path / "bk", [("Slot1Auto", '{"z":0}', "Old", "", 3600, 1000)])
     live = make_wgs_account(tmp_path / "live", [("Slot1Auto", '{"a":1}', "Now", "", 12600, 2000)])
     vault = _vault(tmp_path)
     ops.import_backup(vault, backup, label="yesterday")
 
     plan = ops.plan_clear_slot(vault, live, 1)
-    assert plan.backed_up and plan.backup_play_time == 3600
-    assert plan.progress_at_risk == 9000            # 2h30 further on than the backup
-    assert "2h30m more play time" in plan.warning
+    assert not plan.backed_up and plan.backup_play_time == 3600
+    assert plan.progress_at_risk == 12600            # not identical: all of it is at stake
+    assert "2h30m less play time" in plan.warning
 
 
 def test_the_live_folder_is_never_its_own_backup(make_wgs_account, tmp_path):
@@ -65,6 +68,59 @@ def test_the_live_folder_is_never_its_own_backup(make_wgs_account, tmp_path):
     ops.import_backup(vault, live, label="live, in place")
 
     plan = ops.plan_clear_slot(vault, live, 1)
+    assert not plan.backed_up and plan.warning
+
+
+def test_a_different_save_in_the_same_slot_number_is_not_a_backup(make_wgs_account, tmp_path):
+    """The vault's slot 3 holds another playthrough with far more play time. By slot number
+    the live save looked backed up (a false "safe"); by playthrough it is not."""
+    backup = make_wgs_account(tmp_path / "bk", [("Slot3Auto", '{"a":1}', "Save Y", "", 9000, 1000, 0xBBBB)])
+    live = make_wgs_account(tmp_path / "live", [("Slot3Auto", '{"b":2}', "Save X", "", 1000, 2000, 0xAAAA)])
+    vault = _vault(tmp_path)
+    ops.import_backup(vault, backup, label="other run")
+
+    plan = ops.plan_clear_slot(vault, live, 3)
+
+    assert not plan.backed_up and plan.progress_at_risk == 1000
+    assert "No copy of the save in slot 3 ('Save X')" in plan.warning
+
+
+def test_the_same_playthrough_in_another_slot_is_found(make_wgs_account, tmp_path):
+    backup = make_wgs_account(tmp_path / "bk", [
+        ("Slot7Auto", '{"a":1}', "Main", "", 4000, 1000, 0xCAFE),
+        ("Slot1Auto", '{"z":0}', "Other", "", 99999, 1000, 0xBEEF),
+    ])
+    live = make_wgs_account(tmp_path / "live", [("Slot1Auto", '{"b":2}', "Main", "", 5000, 2000, 0xCAFE)])
+    vault = _vault(tmp_path)
+    entry = ops.import_backup(vault, backup, label="moved")
+
+    plan = ops.plan_clear_slot(vault, live, 1)
+
+    assert plan.entry_id == entry.id and plan.backup_play_time == 4000   # shown, as information
+    assert not plan.identical and not plan.backed_up and "different branch" in plan.warning
+
+
+def test_an_identical_copy_is_noted(make_wgs_account, tmp_path):
+    live = make_wgs_account(tmp_path / "live", [("Slot2Auto", '{"b":2}', "Main", "", 5000, 2000)])
+    vault = _vault(tmp_path)
+    ops.import_backup(vault, make_wgs_account(tmp_path / "older", [("Slot2Auto", '{"a":1}', "Main", "", 6000, 1000)]))
+    exact = ops.create_full_backup(vault, live, include_cache=False)
+
+    plan = ops.plan_clear_slot(vault, live, 2)
+
+    assert plan.identical and plan.entry_id == exact.id and plan.warning == ""
+
+
+def test_a_steam_slot_is_matched_by_playthrough_too(tmp_path):
+    other = tmp_path / "other"
+    steam_save(other, 4, 0, "Save Y", 9000, 0xBBBB, 1000)
+    live = tmp_path / "live"
+    steam_save(live, 4, 0, "Save X", 1000, 0xAAAA, 2000)
+    vault = _vault(tmp_path)
+    ops.import_backup(vault, other, copy_into_vault=True)
+
+    plan = ops.plan_clear_slot(vault, live, 4)
+
     assert not plan.backed_up and plan.warning
 
 
@@ -221,3 +277,110 @@ def test_xbox_plan_carries_no_steam_cloud_warning(make_wgs_account, tmp_path):
     live = make_wgs_account(tmp_path, [("Slot1Auto", '{"a":1}', "Save", "", 100, 1000)])
     plan = ops.plan_clear_slot(_vault(tmp_path), live, 1)
     assert not plan.steam_cloud and plan.cloud_warning == ""
+
+
+# --- review: no fallback matching, unreadable vault files, the member the game loads ----------
+
+
+def test_a_save_without_an_id_needs_an_identical_copy(make_wgs_account, tmp_path):
+    """Too old to carry a playthrough id: a same-named save in the same slot proves
+    nothing; only a byte-identical copy does."""
+    live = make_wgs_account(tmp_path / "live", [("Slot1Auto", '{"a":1}', "Voyagers", "", 3000, 2000, 0)])
+    lookalike = make_wgs_account(tmp_path / "other", [("Slot1Auto", '{"z":9}', "Voyagers", "", 3000, 1000, 0)])
+    vault = _vault(tmp_path)
+    ops.import_backup(vault, lookalike, label="same name, other save")
+
+    plan = ops.plan_clear_slot(vault, live, 1)
+    assert plan.unverifiable and not plan.backed_up and "cannot be verified" in plan.warning
+
+    ops.create_full_backup(vault, live, include_cache=False)
+    plan = ops.plan_clear_slot(vault, live, 1)
+    assert plan.backed_up and plan.identical and not plan.unverifiable and plan.warning == ""
+
+
+def test_an_unreadable_vault_entry_is_noted_and_skipped(make_wgs_account, tmp_path, monkeypatch):
+    live = make_wgs_account(tmp_path / "live", [("Slot1Auto", '{"a":1}', "Main", "", 3000, 2000)])
+    vault = _vault(tmp_path)
+    bad = ops.import_backup(vault, make_wgs_account(tmp_path / "bad", [("Slot1Auto", '{"q":1}', "Main", "", 1, 1)]))
+    good = ops.create_full_backup(vault, live, include_cache=False)
+    real_scan = savedir.scan_any
+
+    def scan_fails_for_bad(path):
+        if Path(path) == Path(bad.path):
+            raise OSError("drive unplugged")
+        return real_scan(path)
+
+    monkeypatch.setattr(ops.savedir, "scan_any", scan_fails_for_bad)
+    plan = ops.plan_clear_slot(vault, live, 1)
+
+    assert plan.backed_up and plan.entry_id == good.id
+    assert any(bad.id in n and "drive unplugged" in n for n in plan.notes)
+
+
+def test_the_copy_is_judged_by_the_member_the_game_loads(make_wgs_account, tmp_path):
+    """An exact copy of the OLDER member is not a copy of the save the game loads; a near
+    copy of the loaded member with more play time is the better one, and not 'identical'."""
+    saves = [
+        ("Slot1Auto", '{"a":1}', "Run", "", 100, 1000),       # A: older
+        ("Slot1Manual", '{"b":2}', "Run", "", 200, 2000),     # B: newer, the one that loads
+    ]
+    live = make_wgs_account(tmp_path / "live", saves)
+    vault = _vault(tmp_path)
+    exact_older = ops.import_backup(vault, make_wgs_account(tmp_path / "a", saves[:1]))
+    near_newer = ops.import_backup(vault, make_wgs_account(tmp_path / "b", [
+        ("Slot1Manual", '{"c":3}', "Run", "", 190, 1900),
+    ]))
+
+    plan = ops.plan_clear_slot(vault, live, 1)
+
+    assert savedir.scan_any(live).slots[1].newest.label == "B"
+    assert plan.entry_id == near_newer.id and plan.entry_id != exact_older.id
+    assert not plan.identical and plan.live_play_time == 200 and plan.backup_play_time == 190
+
+
+def test_the_cli_says_when_the_vault_holds_this_very_save(make_wgs_account, tmp_path, capsys):
+    from nms_save_vault import cli
+
+    live = make_wgs_account(tmp_path / "live", [("Slot1Auto", '{"a":1}', "Main", "", 3000, 2000)])
+    vault = _vault(tmp_path)
+    ops.create_full_backup(vault, live, include_cache=False)
+
+    assert cli.main(["--live", str(live), "--vault", str(vault.root), "clear", "1", "--yes", "--force"]) == 0
+    out = capsys.readouterr().out
+    assert "Best copy in the vault" in out and "an identical copy" in out
+
+
+# --- re-review: branches, the loaded member, live folders, same-run leftovers ----------------
+
+
+def test_more_play_time_in_the_vault_is_no_proof_of_safety(make_wgs_account, tmp_path):
+    """12h in the vault, 10h live: the live save may be a branch (an older point played on
+    differently). Only an identical copy proves it is safe; the 12h copy is information."""
+    vault = _vault(tmp_path)
+    ops.import_backup(vault, make_wgs_account(tmp_path / "bk", [("Slot1Auto", '{"a":1}', "Run", "", 12 * 3600, 1000)]))
+    live = make_wgs_account(tmp_path / "live", [("Slot1Auto", '{"b":2}', "Run", "", 10 * 3600, 2000)])
+
+    plan = ops.plan_clear_slot(vault, live, 1)
+
+    assert not plan.backed_up and plan.backup_play_time == 12 * 3600
+    assert "2h00m more play time" in plan.warning and "different branch" in plan.warning
+
+
+def test_the_plan_compares_the_loaded_members_own_play_time(make_wgs_account, tmp_path):
+    live = make_wgs_account(tmp_path / "live", [
+        ("Slot1Auto", '{"a":1}', "Run", "", 20000, 1000),     # older, but more play time
+        ("Slot1Manual", '{"b":2}', "Run", "", 9000, 2000),    # newer: this one loads
+    ])
+    plan = ops.plan_clear_slot(_vault(tmp_path), live, 1)
+    assert plan.live_play_time == 9000
+
+
+def test_another_live_folder_is_never_counted_as_a_copy(make_wgs_account, tmp_path):
+    saves = [("Slot1Auto", '{"a":1}', "Run", "", 3000, 1000)]
+    live = make_wgs_account(tmp_path / "one", saves)
+    twin = make_wgs_account(tmp_path / "two", saves)          # identical bytes, but live too
+    vault = _vault(tmp_path)
+    ops.import_backup(vault, twin, label="the other live folder, in place")
+
+    assert ops.plan_clear_slot(vault, live, 1).identical
+    assert not ops.plan_clear_slot(vault, live, 1, other_live_dirs=[twin]).identical

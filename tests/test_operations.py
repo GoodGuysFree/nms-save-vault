@@ -740,3 +740,53 @@ def test_restore_under_cloud_stamps_the_write_time(sandbox):
 
     fno = slotmap.slot_file_numbers(victim)[0]
     assert (live / slotmap.data_filename(fno)).stat().st_mtime >= started - 1
+
+
+# --- P6: no mixed slots, and the copied pair keeps its order --------------------------------
+
+
+def _steam_slot(folder: Path, slot: int, members: tuple[int, ...], name: str, ident: int, base: int) -> None:
+    for m in members:
+        steam_save(folder, slot, m, name, 100 + m, ident, base + m)
+
+
+def test_a_one_member_steam_source_never_leaves_an_old_member_behind(tmp_path):
+    live = tmp_path / "live"
+    _steam_slot(live, 1, (0,), "Source", 0x1, 1000)
+    _steam_slot(live, 3, (0, 1), "Old", 0x3, 500)
+    vault = Vault(tmp_path / "vault")
+    before = {p.name: p.read_bytes() for p in live.iterdir()}
+
+    with pytest.raises(ops.OperationError, match="would leave behind"):
+        ops.repopulate_slot(vault, live, 1, live, 3, allow_game_running=True)
+
+    assert {p.name: p.read_bytes() for p in live.iterdir()} == before and vault.entries == []
+
+
+def test_a_two_member_steam_source_replaces_both_and_keeps_its_order(tmp_path):
+    """Under Steam Cloud the file times are the write times: the source's newer member is
+    written last, so both clocks still load it."""
+    live = tmp_path / "live"
+    for m, ts in ((0, 2000), (1, 1000)):                    # here A is the newer
+        steam_save(live, 1, m, "Source", 100 + m, 0x1, ts)
+    _steam_slot(live, 3, (0, 1), "Old", 0x3, 500)
+    (live / formats.STEAM_AUTOCLOUD).write_text("cloud", "utf-8")
+    vault = Vault(tmp_path / "vault")
+
+    ops.repopulate_slot(vault, live, 1, live, 3, allow_game_running=True)
+
+    dest = savedir.scan(live).slots[3]
+    assert dest.a.save_name == dest.b.save_name == "Source"
+    assert dest.newest.label == "A" and dest.a.data_mtime - dest.b.data_mtime >= 1   # no tie
+
+
+def test_a_one_member_steam_source_may_join_its_own_playthrough(tmp_path):
+    live = tmp_path / "live"
+    steam_save(live, 1, 0, "Run", 300, 0xCAFE, 3000)
+    steam_save(live, 3, 0, "Run", 100, 0xCAFE, 1000)
+    steam_save(live, 3, 1, "Run", 200, 0xCAFE, 2000)
+
+    ops.repopulate_slot(Vault(tmp_path / "vault"), live, 1, live, 3, allow_game_running=True)
+
+    slot = savedir.scan(live).slots[3]
+    assert slot.newest.label == "A" and slot.a.info.total_play_time == 300

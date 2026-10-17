@@ -267,18 +267,24 @@ def cmd_playtime(args) -> int:
 def cmd_clear(args) -> int:
     live = _resolve_live(args)
     vault = _resolve_vault(args)
-    plan = ops.plan_clear_slot(vault, live, args.slot)
+    st = appstate.load()
+    others = [Path(s.path) for s in st.live_sources] if st is not None else []
+    plan = ops.plan_clear_slot(vault, live, args.slot, other_live_dirs=others)
     if not plan.occupied:
         print(f"slot {args.slot} is already empty; nothing to do")
         return 0
 
     print(f"Clearing live slot {plan.slot} of {Path(live).name} would delete:")
     print(f"  {plan.live_name}   ({ops.format_duration(plan.live_play_time)} play time)")
-    if plan.backed_up:
+    if plan.entry_id is not None:
         print(
-            f"Newest copy in the vault: {plan.entry_id} [{plan.entry_kind}] "
+            f"Best copy in the vault: {plan.entry_id} [{plan.entry_kind}] "
             f"made {plan.entry_created}, {ops.format_duration(plan.backup_play_time)} play time"
         )
+        if plan.identical:
+            print("  (an identical copy: the vault holds this very save)")
+    for note in plan.notes:
+        print(f"  note: {note}")
     if plan.warning:
         print(f"\nWARNING: {plan.warning}")
     if plan.cloud_warning:

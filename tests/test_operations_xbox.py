@@ -422,3 +422,58 @@ def test_extract_empty_xbox_slot_raises(make_wgs_account, tmp_path):
     vault = _vault(tmp_path)
     with pytest.raises(ops.OperationError):
         ops.extract_slot(vault, live, 7, label="")
+
+
+# --- P6: no mixed slots, and the copied pair keeps its order --------------------------------
+
+
+def test_a_one_member_xbox_source_never_leaves_an_old_member_behind(make_wgs_account, tmp_path):
+    live = make_wgs_account(tmp_path, [
+        ("Slot1Auto", '{"a":1}', "Source", "", 100, 1000),
+        ("Slot3Auto", '{"x":1}', "Old", "", 50, 500),
+        ("Slot3Manual", '{"y":1}', "Old", "", 60, 600),
+    ])
+    vault = _vault(tmp_path)
+    index_before = (live / "containers.index").read_bytes()
+
+    with pytest.raises(ops.OperationError, match="would leave behind"):
+        ops.repopulate_slot(vault, live, 1, live, 3, allow_game_running=True)
+
+    assert (live / "containers.index").read_bytes() == index_before and vault.entries == []
+    ops.repopulate_slot(vault, live, 1, live, 2, allow_game_running=True)   # an empty slot: fine
+    assert savedir.scan_any(live).slots[2].a.save_name == "Source"
+
+
+def test_an_xbox_copy_that_would_load_the_wrong_member_is_reported(make_wgs_account, tmp_path, monkeypatch):
+    """The source's B is its newest; if after the write the game would load A instead, the
+    result check says so (and the op is logged, so undo works)."""
+    live = make_wgs_account(tmp_path, [
+        ("Slot1Auto", '{"a":1}', "Run", "", 100, 1000, 7, 1000),
+        ("Slot1Manual", '{"b":2}', "Run", "", 144, 2000, 7, 2000),
+    ])
+    vault = _vault(tmp_path)
+    real_write = msstore.write_save
+
+    def older_meta_for_b(folder, identifier, data, meta, when, **kwargs):
+        if identifier.endswith("Manual"):
+            meta = xbox_meta("Run", play=144, pid=7, ts=10)    # B now looks saved first
+        return real_write(folder, identifier, data, meta, when, **kwargs)
+
+    monkeypatch.setattr(msstore, "write_save", older_meta_for_b)
+    with pytest.raises(ops.WrittenButInvalidError, match="would load slot 3A instead of the copied slot 3B") as failed:
+        ops.repopulate_slot(vault, live, 1, live, 3, allow_game_running=True)
+    assert vault.read_oplog()[-1]["snapshot_id"] == failed.value.result.snapshot_id
+
+
+def test_a_one_member_xbox_source_may_join_its_own_playthrough(make_wgs_account, tmp_path):
+    """The member left in place is the same run (same playthrough id): allowed, and the
+    copied member is the one that loads."""
+    live = make_wgs_account(tmp_path, [
+        ("Slot1Auto", '{"a":1}', "Run", "", 300, 3000, 0xCAFE, 3000),
+        ("Slot3Auto", '{"x":1}', "Run", "", 100, 1000, 0xCAFE, 1000),
+        ("Slot3Manual", '{"y":1}', "Run", "", 200, 2000, 0xCAFE, 2000),
+    ])
+    ops.repopulate_slot(_vault(tmp_path), live, 1, live, 3, allow_game_running=True)
+
+    slot = savedir.scan_any(live).slots[3]
+    assert slot.newest.label == "A" and slot.a.info.total_play_time == 300
