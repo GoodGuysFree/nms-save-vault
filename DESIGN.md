@@ -78,6 +78,7 @@ src/nms_save_vault/
       store.py    <vault>/organizer/: header, documents, journal, store lock, read-only mode
       cache.py    per-machine scan cache (hashes, entry captures, data ids); never in the vault
       scanner.py  captures of every live slot and vault entry; version and pair registry
+      journal.py  live journal: observe (obs records), replay -> edges, events, op outcomes
   theme.py        light/dark/system palettes + ttk restyling (front-end)
   updates.py      opt-in GitHub release check + in-place self-update (the only network access)
   cli.py          argparse front end
