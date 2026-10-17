@@ -114,10 +114,39 @@ def test_rebuild_live_only_and_off(world, capsys):
 
 
 def test_bad_references_are_errors(world):
-    with pytest.raises(SystemExit, match="6 hex"):
+    with pytest.raises(SystemExit, match="is not a version"):
         run(world, "show", "abc")
-    with pytest.raises(SystemExit, match="no version matches"):
+    with pytest.raises(SystemExit, match="no version id starts with"):
         run(world, "show", "ffffffffff")
+
+
+def test_versions_are_named_like_everywhere_else(world, capsys):
+    assert run(world, "show", "S1") == 0                             # the live slot's loaded save
+    assert f"Version {world['new'][:12]}" in capsys.readouterr().out
+    assert run(world, "show", world["old"][:6]) == 0                 # 6 hex digits still work
+    assert f"Version {world['old'][:12]}" in capsys.readouterr().out
+
+
+def test_changes_default_to_the_parent_the_journal_recorded(world, capsys):
+    from nms_save_vault.core.organizer import Organizer
+
+    import shutil
+
+    live = world["live"]
+    sources = [vaultlink.Source(id="live", platform="steam", account="", path=str(live))]
+    Organizer(world["vault"], sources, machine_cache=False).refresh(record=True)
+    backup = world["vault"] / "full-2"                              # the parent's bytes stay in the vault
+    shutil.copytree(live, backup)
+    doc = json.loads((world["vault"] / "catalog.json").read_text(encoding="utf-8"))
+    doc["entries"].append(dict(doc["entries"][0], id="full-2", path=str(backup), created="2026-09-02T00:00:00"))
+    (world["vault"] / "catalog.json").write_text(json.dumps(doc), encoding="utf-8")
+    child = steam_pair(live, 1, save(9, 0b1111, "Synth Main", 12000), name="Synth Main", play=12000,
+                       ts=1_790_200_000)
+    Organizer(world["vault"], sources, machine_cache=False).refresh(record=True)   # the game saved again
+    assert run(world, "changes", child[:10]) == 0
+    out = capsys.readouterr().out
+    assert f"{world['new'][:8]} -> {child[:8]} (recorded parent, play)" in out
+    assert "glyphs 3 -> 4 of 16" in out
 
 
 def test_resolve_needs_a_unique_prefix():

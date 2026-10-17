@@ -340,10 +340,12 @@ def test_the_index_cli_leaves_the_vault_untouched(world, capsys):  # noqa: F811
     assert after == before
 
 
-def test_a_read_only_vault_refuses_writes(tmp_path):
-    from nms_save_vault.core.index.vaultlink import ReadOnlyVault
+def test_the_organizer_the_index_opens_is_read_only(tmp_path):
+    from nms_save_vault.core.index.vaultlink import read_only_organizer
 
-    v = ReadOnlyVault(tmp_path / "vault").load()
+    org = read_only_organizer(tmp_path / "vault", [])
+    assert org.read_only and org.vault.read_only and org.store.read_only
     with pytest.raises(PermissionError):
-        v.save()
+        org.vault.save()
+    org.refresh(record=True)                                   # asking to record records nothing
     assert not (tmp_path / "vault").exists()

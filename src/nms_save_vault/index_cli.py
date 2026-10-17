@@ -5,8 +5,10 @@
     nmsvault index show <vid-prefix> [--json] [--card]
     nmsvault index changes <child> [<parent>]   parent defaults to the recorded one
 
-Read-only towards the vault and the save folders: the only file written is the per-machine
-index cache (and the scanner's own cache). Output goes through the account-alias filter.
+Read-only towards the vault and the save folders: the organizer is opened read-only, so the
+only files written are the per-machine index cache and scan cache. Versions are named as
+everywhere else (a live slot like S9, 8+ hex digits, ``<save>@YYYY-MM-DD``) or by 6+ hex
+digits of their id. Output goes through the account-alias filter.
 """
 from __future__ import annotations
 
@@ -16,10 +18,13 @@ import json
 import sys
 import time
 
+from pathlib import Path
+
 from .core import aliases, safety
-from .core.catalog import Vault
 from .core.index import IndexService, Priority, derive
 from .core.index import vaultlink
+from .core.organizer import Organizer
+from .core.organizer.readmodel import RefError, resolve_version
 
 WAIT_S = 300.0
 STUCK_S = 15.0           # nothing can start this long: say why and stop
@@ -40,7 +45,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     s.add_argument("--timeout", type=float, default=3600.0, help="give up after this many seconds")
     s.set_defaults(func=cmd_build)
     s = sub.add_parser("show", help="the facts of one version")
-    s.add_argument("ref", help="the version id, or its first 6+ characters")
+    s.add_argument("ref", help="a version: S9, 8+ hex digits, <save>@YYYY-MM-DD, or 6+ hex digits")
     s.add_argument("--json", action="store_true", help="machine-readable output")
     s.add_argument("--card", action="store_true", help="the full version card")
     s.set_defaults(func=cmd_show)
@@ -51,12 +56,11 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     s.set_defaults(func=cmd_changes)
 
 
-def _setup(args, workers: str | int = "auto"):
+def _setup(args, workers: str | int = "auto") -> tuple[IndexService, Organizer]:
     from .core import savedir
-    vault = _vault(args)
     sources = vaultlink.default_sources() if not args.live else [
         vaultlink.Source(id="live", platform=savedir.platform_of(args.live) or "steam", account="", path=args.live)]
-    return vaultlink.open_service(vault, sources, workers=_workers(workers), game_running=_game_running) + (vault,)
+    return vaultlink.open_service(_vault_root(args), sources, workers=_workers(workers), game_running=_game_running)
 
 
 def _game_running() -> bool:
@@ -75,17 +79,13 @@ def _game_running() -> bool:
 _warned_unknown = False
 
 
-def _vault(args) -> Vault:
-    from pathlib import Path
-
+def _vault_root(args) -> Path:
     from .core import locations
     from .core import state as appstate
     if args.vault:
-        root = Path(args.vault)
-    else:
-        st = appstate.load()
-        root = Path(st.vault) if (st and st.vault) else locations.default_vault_dir()
-    return vaultlink.ReadOnlyVault(root).load()       # read only: not even temp-file clean-up
+        return Path(args.vault)
+    st = appstate.load()
+    return Path(st.vault) if (st and st.vault) else locations.default_vault_dir()
 
 
 def _workers(value: str | int) -> str | int:
@@ -114,7 +114,7 @@ def _wait_deep(service: IndexService, vid: str, timeout: float = WAIT_S) -> None
 
 
 def cmd_status(args) -> int:
-    service, scan, vault_id, _vault_ = _setup(args)
+    service, org = _setup(args)
     try:
         cache = service.cache
         _out(f"Content index: {cache.path if cache and cache.path else '-'}"
@@ -124,7 +124,7 @@ def cmd_status(args) -> int:
         p = service.policy
         _out(f"Execution: {p.mode}, {p.workers} worker{'s' if p.workers != 1 else ''}"
              + (" (one kept for on-demand jobs)" if p.reserve_interactive else ""))
-        known = set(scan.versions)
+        known = set(org.scan.versions)
         counts: dict[str, int] = {}
         for vid in known:
             st = service.status(vid)
@@ -141,19 +141,22 @@ def cmd_status(args) -> int:
 
 
 def cmd_build(args) -> int:
-    service, scan, _vid, _vault_ = _setup(args, args.workers)
+    service, org = _setup(args, args.workers)
     try:
         if service.dispatcher is None:
             _out("Content index off (--workers 0).")
             return 0
         if args.rebuild:
             service.rebuild()
+        scan = org.scan
         live = vaultlink.live_vids(scan)
+        tips = [] if args.live_only else [v for v in _tips(org) if v in scan.versions]
         wanted = list(dict.fromkeys(live + ([] if args.live_only else list(scan.versions))))
         started = time.monotonic()
         queued = service.request(live, Priority.LIVE)
         if not args.live_only:
-            queued += service.request([v for v in scan.versions if v not in set(live)], Priority.BACKFILL)
+            queued += service.request(tips, Priority.TIP)
+            queued += service.request([v for v in scan.versions if v not in set(live) | set(tips)], Priority.BACKFILL)
         p = service.policy
         _out(f"Indexing {queued} of {len(wanted)} versions ({p.mode}, {p.workers} worker"
              f"{'s' if p.workers != 1 else ''}); {len(wanted) - queued} already indexed.")
@@ -206,17 +209,31 @@ def _follow(service: IndexService, timeout: float, *, stuck_s: float = STUCK_S) 
     return None
 
 
-def _resolve(scan, ref: str) -> str:
+def _tips(org: Organizer) -> list[str]:
+    """Each save file's representative and its branch tips, from the read model."""
+    model = org.model
+    out = [line.representative for line in model.lines()]
+    out += [r.head for line in model.lines() for r in model.versions(line.pid) if "tip" in r.flags]
+    return list(dict.fromkeys(out))
+
+
+def _resolve(org: Organizer, ref: str) -> str:
+    """A version by the read model's references; else 6+ hex digits of any scanned version."""
     try:
-        return vaultlink.resolve(ref, scan.versions)
-    except LookupError as exc:
-        sys.exit(f"error: {exc}")
+        row = resolve_version(org.model, ref)
+        prefix = ref.strip().lower()
+        return next((v for v in row.pair if v and v.startswith(prefix)), row.head)
+    except RefError as model_error:
+        try:
+            return vaultlink.resolve(ref, org.scan.versions)
+        except LookupError:
+            sys.exit(f"error: {model_error}")
 
 
 def cmd_show(args) -> int:
-    service, scan, _vid, _vault_ = _setup(args)
+    service, org = _setup(args)
     try:
-        vid = _resolve(scan, args.ref)
+        vid = _resolve(org, args.ref)
         service.request([vid], Priority.INTERACTIVE)
         if args.card:
             service.request_deep(vid)
@@ -240,15 +257,15 @@ def cmd_show(args) -> int:
 
 
 def cmd_changes(args) -> int:
-    service, scan, _vid, vault = _setup(args)
+    service, org = _setup(args)
     try:
-        child = _resolve(scan, args.child)
+        child = _resolve(org, args.child)
         edge_kind = None
         if args.parent:
-            parent = _resolve(scan, args.parent)
+            parent = _resolve(org, args.parent)
             heading = f"{child[:8]} compared with {parent[:8]} (your choice, not a recorded parent)"
         else:
-            found = vaultlink.drawn_parents(vault.root, scan).get(child)
+            found = vaultlink.drawn_parents(org).get(child)
             if found is None:
                 _out(f"{child[:8]}: no recorded parent")
                 return 0
