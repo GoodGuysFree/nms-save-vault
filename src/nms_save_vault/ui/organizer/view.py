@@ -217,11 +217,7 @@ class OrganizerView(ttk.Frame):
         """Rows update in place as facts arrive; the facts sort re-sorts at most every 3 s."""
         kinds = {e.kind for e in events}
         if kinds & {"indexed", "failed", "stale", "warmed", "changes", "finished", "cleared"}:
-            self.table.refresh()
-            if self.table.sort_key.startswith("facts:") and not self.scanning \
-                    and time.monotonic() - self._facts_refresh_at > 3.0:
-                self._facts_refresh_at = time.monotonic()
-                self.rescan(record=False)
+            self.table.refresh()           # values and the facts sort, in memory: no rescan
         shown = self.detail.facts_head
         if shown is not None and any(e.vid == shown and e.kind in ("indexed", "deep-ready", "changes")
                                      for e in events):
@@ -242,7 +238,8 @@ class OrganizerView(ttk.Frame):
             changes = service.changes(head, parent[0], edge_kind=parent[1]) if parent else None
             return head, card, service.view(head), changes
 
-        self.worker.submit(job, on_done=self._card_ready, on_error=self._worker_error("Facts"))
+        self.worker.submit(job, on_done=self._card_ready, on_error=self._worker_error("Facts"),
+                           low=True)
 
     def _parent_of(self, head: str):
         for line in self.model.lines():
@@ -277,7 +274,7 @@ class OrganizerView(ttk.Frame):
         service = self.facts
         if service is not None:
             self.worker.submit(lambda: service.request_deep(head),
-                               on_error=self._worker_error("Deeper detail"))
+                               on_error=self._worker_error("Deeper detail"), low=True)
 
     # --- scanning ---------------------------------------------------------------------------
 
@@ -294,7 +291,7 @@ class OrganizerView(ttk.Frame):
         set_label(self.summary, "Scanning live folders and the vault..."
                   if self.model is None else self.summary.cget("text"))
         self.worker.submit(self._scan_job, record, on_done=self._scanned,
-                           on_error=self._scan_failed)
+                           on_error=self._scan_failed, low=True)
 
     def _scan_job(self, record: bool):
         """In the worker: the organizer is opened there too (it reads the catalog)."""

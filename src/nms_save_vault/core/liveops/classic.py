@@ -70,7 +70,7 @@ def open_context(vault: Vault, live_dir: Path, *, host: hostmod.Host | None = No
 def repopulate(vault: Vault, source_dir: Path, source_slot: int, live_dir: Path,
                dest_slot: int, allow_game_running: bool = False) -> ops.OpResult:
     """Put the pair in ``source_dir`` slot ``source_slot`` into live slot ``dest_slot``."""
-    source_dir, live_dir = Path(source_dir), Path(live_dir)
+    source_dir, live_dir = require_folder(source_dir), Path(live_dir)
     ops._check_slot(source_slot)
     ops._check_slot(dest_slot)
     ops._guard_same_platform(source_dir, live_dir)
@@ -79,6 +79,33 @@ def repopulate(vault: Vault, source_dir: Path, source_slot: int, live_dir: Path,
     plan = plan_place(ctx, source, ref.target(dest_slot))
     return _run(ctx, plan, "repopulate_slot", allow_game_running,
                 f"slot {source_slot} -> {dest_slot}")
+
+
+def repopulate_entry(vault: Vault, entry_id: str, source_slot: int, live_dir: Path,
+                     dest_slot: int, allow_game_running: bool = False) -> ops.OpResult:
+    """Put slot ``source_slot`` of a vault entry into a live slot. An entry held by the
+    version store has no folder: its slot is read through the store (a verified temporary copy,
+    removed afterwards), never from a path built out of nothing."""
+    from ..store import classic as store_classic
+
+    entry = store_classic.find_entry(vault, entry_id)
+    if entry is None:
+        raise ops.OperationError(f"The backup '{entry_id}' is not in the vault.")
+    with store_classic.entry_folder(vault, entry, slots=[source_slot]) as folder:
+        return repopulate(vault, folder, source_slot, live_dir, dest_slot, allow_game_running)
+
+
+def extract_from_entry(vault: Vault, entry_id: str, slot: int, *, warnings: list[str],
+                       live_dirs=()):
+    """Extract one slot of a vault entry into the vault (through the store when the entry has
+    no folder of its own)."""
+    from ..store import classic as store_classic
+
+    entry = store_classic.find_entry(vault, entry_id)
+    if entry is None:
+        raise ops.OperationError(f"The backup '{entry_id}' is not in the vault.")
+    with store_classic.entry_folder(vault, entry, slots=[slot]) as folder:
+        return ops.extract_slot(vault, folder, slot, warnings=warnings, live_dirs=live_dirs)
 
 
 def promote(vault: Vault, live_dir: Path, slot: int, member: int,
@@ -320,8 +347,21 @@ def keep_copy(vault: Vault, live_dir: Path, slot: int) -> ops.OpResult:
     return _run(ctx, plan, "keep", True, f"slot {slot}")
 
 
+def require_folder(folder: str | Path) -> Path:
+    """A source folder is an absolute path to a real folder. An empty path (a vault entry with
+    no folder of its own) or a relative one would be read from the current directory, and a
+    save from there would be written into a live slot: refused."""
+    text = str(folder or "")
+    path = Path(text) if text.strip() else None
+    if path is None or not path.is_absolute():
+        raise ops.OperationError("That source has no folder of its own to read from; a "
+                                 "relative or empty path is never used. Nothing was changed.")
+    return path
+
+
 def folder_pair(folder: Path, slot: int) -> PairSource:
     """The pair a save folder holds in ``slot``, read directly from the folder."""
+    folder = require_folder(folder)
     try:
         view = savedir.scan_any(folder).slots[slot]
     except (OSError, KeyError) as exc:

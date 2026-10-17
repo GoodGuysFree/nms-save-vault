@@ -440,6 +440,9 @@ def extract_slot(
     """Copy one slot into the vault. ``warnings`` as in :func:`create_full_backup`.
     ``live_dirs``: the caller's live folders, so a problem copying from one of them is
     explained as the game or the Xbox app writing, not as a missing drive."""
+    if not str(source_dir).strip() or not Path(source_dir).is_absolute():
+        raise OperationError("That source has no folder of its own to read from; a relative or "
+                             "empty path is never used. Nothing was changed.")
     source_dir = Path(source_dir)
     _check_slot(slot)
     collected: list[str] = []

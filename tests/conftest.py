@@ -364,6 +364,106 @@ def steam_save(folder: Path, slot: int, member: int, name: str, play: int, ident
 
 # --- the single Tk root for the whole session ------------------------------------------
 
+class Dialogs:
+    """Every message box, question and file dialog a test shows - recorded, never displayed.
+
+    A test that expects one claims it with :meth:`take` (and may assert on the messages); any
+    that nobody claimed fails the test at its teardown. A real modal dialog waits for a human
+    and has been seen on the owner's screen, so nothing can reach Tk's own."""
+
+    def __init__(self) -> None:
+        self.shown: list[tuple[str, str, str]] = []     # (kind, title, message)
+        self._claimed = 0
+        self.expecting = False
+
+    def expect(self) -> "Dialogs":
+        """This test drives dialogs: they are recorded (and answered with the safe default)
+        instead of raising; :meth:`take` claims them."""
+        self.expecting = True
+        return self
+
+    def record(self, kind: str, title: str = "", message: str = "") -> None:
+        self.shown.append((kind, str(title), str(message)))
+
+    def take(self) -> list[tuple[str, str, str]]:
+        """The messages shown so far, claimed (they are expected)."""
+        self._claimed = len(self.shown)
+        return list(self.shown)
+
+    @property
+    def unclaimed(self) -> list[tuple[str, str, str]]:
+        return self.shown[self._claimed:]
+
+
+_DIALOG_DEFAULTS = {
+    "showinfo": "ok", "showwarning": "ok", "showerror": "ok",
+    "askyesno": False, "askokcancel": False, "askyesnocancel": None, "askretrycancel": False,
+    "askquestion": "no", "askstring": None, "askinteger": None, "askfloat": None,
+    "askdirectory": "", "askopenfilename": "", "asksaveasfilename": "", "askopenfilenames": (),
+}
+
+
+@pytest.fixture(autouse=True)
+def dialogs(monkeypatch):
+    """Replace every tkinter message box / dialog, and the app's own wrappers, with a recorder."""
+    import tkinter as tk
+    from tkinter import filedialog, messagebox, simpledialog
+
+    from nms_save_vault import gui      # first: its wrappers bind the REAL functions at import
+
+    rec = Dialogs()
+
+    def stub(kind):
+        default = _DIALOG_DEFAULTS[kind]
+
+        def shown(*args, **kw):
+            title = kw.get("title", args[0] if args else "")
+            message = kw.get("message", kw.get("prompt", args[1] if len(args) > 1 else ""))
+            rec.record(kind, title, message)
+            if not rec.expecting:
+                raise AssertionError(f"unexpected dialog {kind}: {title!r} {str(message)[:80]!r} - "
+                                     "a test must never show a dialog nobody can close "
+                                     "(call dialogs.expect() and dialogs.take() if intended)")
+            return default
+        return shown
+
+    for module in (messagebox, simpledialog, filedialog):
+        for kind in _DIALOG_DEFAULTS:
+            if hasattr(module, kind):
+                monkeypatch.setattr(module, kind, stub(kind))
+    for name, kind in (("_showinfo", "showinfo"), ("_showwarning", "showwarning"),
+                       ("_showerror", "showerror"), ("_askyesno", "askyesno"),
+                       ("_askyesnocancel", "askyesnocancel")):
+        monkeypatch.setattr(gui, name, stub(kind))
+
+    def confirm(master, title, message, check=None):
+        rec.record("confirm", title, message)
+        if not rec.expecting:
+            raise AssertionError(f"unexpected confirm dialog: {title!r}")
+        return False, False
+    monkeypatch.setattr(gui, "_confirm", confirm)
+
+    def never_wait(self, window=None):
+        """Fail fast: nothing in a test can close a window a nested wait is waiting for."""
+        target = window if window is not None and not isinstance(window, str) else self
+        try:
+            alive = target.winfo_exists()
+        except tk.TclError:
+            alive = False
+        if not alive:
+            return
+        raise AssertionError("a test waited on a window nobody can close "
+                             f"({target.winfo_class()}); drive or stub the dialog")
+    monkeypatch.setattr(tk.Misc, "wait_window", never_wait)
+    monkeypatch.setattr(tk.Misc, "wait_visibility", never_wait)
+    monkeypatch.setattr(tk.Misc, "wait_variable", never_wait)
+    yield rec
+    left = rec.unclaimed
+    if left:
+        pytest.fail("a test showed a dialog nobody claimed (use the `dialogs` fixture's take()): "
+                    + "; ".join(f"{k}: {t!r} {m[:80]!r}" for k, t, m in left[:5]))
+
+
 _GUI_APP: list = []
 
 

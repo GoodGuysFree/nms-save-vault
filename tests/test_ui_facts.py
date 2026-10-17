@@ -339,3 +339,17 @@ def test_the_index_is_never_read_for_a_card_on_the_tk_thread(view, index, gui_ap
         gui_app.update()
     _wait(gui_app, lambda: not gui_app.worker.busy)
     assert not [c for c in index.calls if c[0] in ("card", "request_deep", "queue_refresh") and c[1]]
+
+
+def test_a_facts_event_re_sorts_in_memory_without_a_rescan(view, index, world, gui_app, monkeypatch):
+    view.table.sort_by("glyphs")
+    first = lambda: [view.table._pid_of[i] for i in view.table.tree.get_children("")  # noqa: E731
+                     if i in view.table._pid_of]
+    assert first()[:2] == [PIDS["main"], PIDS["other"]]
+    scans = []
+    monkeypatch.setattr(view, "rescan", lambda *a, **k: scans.append(1))
+    other = world.model.line(PIDS["other"])
+    index.views[other.representative] = make_view(other.representative, glyphs=99)
+    index.push("indexed", other.representative)
+    view.index_strip.poll()
+    assert first()[:2] == [PIDS["other"], PIDS["main"]] and scans == []

@@ -14,7 +14,8 @@ import queue
 import threading
 import weakref
 from collections.abc import Callable
-from concurrent.futures import Future, ThreadPoolExecutor
+import itertools
+from concurrent.futures import Future
 from typing import Any
 
 log = logging.getLogger(__name__)
@@ -31,7 +32,12 @@ class UiWorker:
     def __init__(self, root, *, drain_ms: int = DRAIN_MS) -> None:
         self.root = root
         self.drain_ms = drain_ms
-        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="nmsvault-ui")
+        # One thread, one job at a time; a priority queue so that a plan or a write the owner
+        # is waiting on never sits behind a scan or an index read (``low=True``).
+        self._jobs: queue.PriorityQueue = queue.PriorityQueue()
+        self._seq = itertools.count()
+        self._thread = threading.Thread(target=self._loop, name="nmsvault-ui-1", daemon=True)
+        self._thread.start()
         self._done: queue.Queue = queue.Queue()
         self._pending = 0
         self._after: str | None = None
@@ -42,16 +48,31 @@ class UiWorker:
         """A job is queued or running, or its result is not delivered yet."""
         return self._pending > 0
 
+    def _loop(self) -> None:
+        while True:
+            _prio, _n, item = self._jobs.get()
+            if item is None:
+                return
+            future, fn, args, kwargs = item
+            if not future.set_running_or_notify_cancel():
+                continue
+            try:
+                future.set_result(fn(*args, **kwargs))
+            except BaseException as exc:  # noqa: BLE001 - delivered through the future
+                future.set_exception(exc)
+
     def submit(self, fn: Callable[..., Any], *args,
                on_done: Callable[[Any], None] | None = None,
-               on_error: Callable[[BaseException], None] | None = None, **kwargs) -> Future:
+               on_error: Callable[[BaseException], None] | None = None,
+               low: bool = False, **kwargs) -> Future:
         """Run ``fn(*args, **kwargs)`` in the worker; ``on_done(result)`` or
         ``on_error(exception)`` is then called on the Tk thread. Without ``on_error`` a
         failure is logged."""
         assert on_tk_thread(), "UiWorker.submit is called from the Tk thread"
         if self._closed:
             raise RuntimeError("the UI worker is shut down")
-        future = self._executor.submit(fn, *args, **kwargs)
+        future = Future()
+        self._jobs.put((1 if low else 0, next(self._seq), (future, fn, args, kwargs)))
         self._pending += 1
         future.add_done_callback(lambda f: self._done.put((f, on_done, on_error)))
         self._schedule()
@@ -96,7 +117,14 @@ class UiWorker:
             except Exception:  # noqa: BLE001 - the root may be gone already
                 pass
             self._after = None
-        self._executor.shutdown(wait=False, cancel_futures=True)
+        while True:                                    # queued jobs are dropped
+            try:
+                _prio, _n, item = self._jobs.get_nowait()
+            except queue.Empty:
+                break
+            if item is not None:
+                item[0].cancel()
+        self._jobs.put((2, next(self._seq), None))     # the running job finishes, then it stops
 
 
 def weak(method: Callable[..., Any], *lead) -> Callable[..., None]:

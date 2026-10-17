@@ -12,6 +12,7 @@ status is a word (D6 4.3: one adapter to change when Tk 9 brings per-cell tags).
 """
 from __future__ import annotations
 
+import dataclasses
 import tkinter as tk
 from collections import Counter
 from collections.abc import Callable, Collection, Iterable, MutableMapping
@@ -241,7 +242,7 @@ def chip_counts(lines: Iterable[Line]) -> dict[str, int]:
 
 def visible_lines(lines: Iterable[Line], chips: Collection[str], text: str,
                   sort_key: str = "last_played", descending: bool | None = None,
-                  model: ReadModel | None = None) -> tuple[Line, ...]:
+                  model: ReadModel | None = None, facts=None) -> tuple[Line, ...]:
     """The lines the table shows: chips of one group OR'ed, groups AND'ed, then Find
     (name, former names, the note; with ``model`` the whole note and every version's label
     and comment too), then sorted (D1 ``sort_lines``)."""
@@ -260,6 +261,10 @@ def visible_lines(lines: Iterable[Line], chips: Collection[str], text: str,
             found |= {line.pid for line in shown if _mentions(model, line.pid,
                                                               needle.casefold())}
         shown = tuple(line for line in shown if line.pid in found)
+    if facts is not None and sort_key.startswith("facts:"):
+        # What the index has read since the model was built, in memory: no rescan to re-sort.
+        shown = tuple(dataclasses.replace(line, facts=facts.view(line.representative))
+                      for line in shown)
     return sort_lines(shown, sort_key, descending)
 
 
@@ -489,7 +494,7 @@ class OrganizerTable(ttk.Frame):
     def refresh(self) -> None:
         """Apply the chips, Find and the sort to the current lines."""
         self.shown = visible_lines(self.lines, self.chips, self.find_var.get(),
-                                   self.sort_key, self.descending, self.model)
+                                   self.sort_key, self.descending, self.model, self.facts)
         # A line hidden by the chips or Find is closed: the others are muted only while
         # the open line can be seen.
         self.open_pids &= {line.pid for line in self.shown}

@@ -8,6 +8,7 @@ features plus promote and undo. Every write goes through the safety-wrapped core
 """
 from __future__ import annotations
 
+import logging
 import sys
 import threading
 import time
@@ -65,6 +66,8 @@ def _fmt_created(iso: str) -> str:
     except (TypeError, ValueError):
         return iso or ""
 
+
+log = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class Column:
@@ -808,7 +811,7 @@ class App(tk.Tk):
             try:
                 service.close()           # joins the index's writer and dispatcher
             except Exception:  # noqa: BLE001 - closing must never keep the window open
-                pass
+                log.exception("the content index did not close cleanly")
         super().destroy()
 
     def _windows(self) -> list[tk.Misc]:
@@ -1187,6 +1190,8 @@ class App(tk.Tk):
         try:
             return store_classic.list_entries(self.vault)
         except Exception:  # noqa: BLE001 - the pane must still show the catalog
+            log.exception("the Backups pane could not read the vault listing (vault %s); "
+                          "showing the catalog entries only", self.vault.root.name)
             return list(self.vault.entries)
 
     def _populate_backups(self) -> None:
@@ -1810,17 +1815,22 @@ class App(tk.Tk):
         if not self._require_live():
             return None
         vault, live_dir = self.vault, Path(self.live_dir)
-        snapshot = (entry.id, f"{entry.label or entry.id}  ({entry.kind}, {entry.created})")             if entry is not None else None
+        snapshot = None if entry is None else (entry.id, aliases.scrub(
+            f"{entry.label or entry.id}  ({entry.kind}, {entry.created})"))
 
         def done(outcome) -> None:
-            self.status.set(f"Restored {live_dir.name}.")
+            self.status.set(aliases.scrub(f"Restored {live_dir.name}."))
+            notes = [w.text for w in outcome.warnings]
+            if notes:
+                _showinfo("Restored", "\n\n".join(notes))
             self.last_change.set("Last change: whole folder restored")
             self.refresh()
             self.organizer_view.rescan()
         self.panic_dialog = PanicDialog(
             self, worker=self.worker, themed=self.themed,
             open_context=lambda: classic.open_context(vault, live_dir),
-            folder_name=aliases.redact(live_dir.name), snapshot=snapshot, on_done=done)
+            vault=vault, live_dir=live_dir, folder_name=aliases.redact(live_dir.name),
+            snapshot=snapshot, on_done=done)
         return self.panic_dialog
 
     def on_extract(self, target: dict | None = None) -> None:
@@ -1835,10 +1845,16 @@ class App(tk.Tk):
             return
         warns: list[str] = []
         live_dirs = self._live_paths()
+        vault, entry, slot = self.vault, sel.get("entry"), sel["slot"]
+        if not str(sel.get("dir") or "").strip() and entry is not None:
+            extract = lambda _force: classic.extract_from_entry(  # noqa: E731
+                vault, entry.id, slot, warnings=warns, live_dirs=live_dirs)
+        else:
+            folder = Path(sel["dir"])
+            extract = lambda _force: ops.extract_slot(  # noqa: E731
+                vault, folder, slot, label="", warnings=warns, live_dirs=live_dirs)
         self._run(
-            lambda _force: ops.extract_slot(
-                self.vault, Path(sel["dir"]), sel["slot"], label="", warnings=warns, live_dirs=live_dirs
-            ),
+            extract,
             success=f"Extracted slot {sel['slot']}.",
             message=f"Extracting slot {sel['slot']} - please wait...",
             warnings=warns,
@@ -1855,7 +1871,12 @@ class App(tk.Tk):
                 "saves inside it - in the LIVE SAVES pane.",
             )
             return
-        directory, slot = Path(sel["dir"]), sel["slot"]
+        self._empty_steps(Path(sel["dir"]), sel["slot"])
+
+    def _empty_steps(self, directory: Path, slot: int) -> None:
+        """The steps to empty a live slot by hand (never an op), after a kept copy of what it
+        holds when that is not in the vault yet (F9: no copy, no steps). The guide is built in
+        the worker."""
         holder = self._run_worker(
             lambda _force: classic.empty_guide(self.vault, directory, slot), False,
             "Looking at the slot - please wait...",
@@ -1920,11 +1941,19 @@ class App(tk.Tk):
             ):
                 return
 
-        src_folder, dest_folder, slot = Path(source.folder), Path(dest_dir), dest_slot
+        dest_folder, slot, vault = Path(dest_dir), dest_slot, self.vault
+        if not str(source.folder).strip():
+            # A backup held by the version store has no folder of its own: its slot is read
+            # through the store, never from a path built out of nothing (the current directory).
+            entry_id, source_slot = source.where, source.slot
+            run = lambda force: classic.repopulate_entry(  # noqa: E731
+                vault, entry_id, source_slot, dest_folder, slot, allow_game_running=force)
+        else:
+            src_folder = Path(source.folder)
+            run = lambda force: ops.repopulate_slot(  # noqa: E731
+                vault, src_folder, source.slot, dest_folder, slot, allow_game_running=force)
         self._run(
-            lambda force: ops.repopulate_slot(
-                self.vault, src_folder, source.slot, dest_folder, slot, allow_game_running=force
-            ),
+            run,
             success=f"Copied into live slot {slot}.",
             message=f"Writing live slot {slot} - please wait...",
         )
@@ -2067,7 +2096,9 @@ class App(tk.Tk):
 
     def on_undo_slot(self, directory, slot: int) -> None:
         """Undo the last move into one live slot: the live operations' own ``plan_undo`` of
-        the last finished op that touched it, confirmed in the plan dialog."""
+        the newest finished op that changed THAT slot as a slot operation, confirmed in the
+        plan dialog. When the newest change was a whole-folder restore, that is said and the
+        whole-folder Undo offered explicitly - other slots are never rolled back silently."""
         vault, directory = self.vault, Path(directory)
 
         def job():
@@ -2075,16 +2106,24 @@ class App(tk.Tk):
             history = liveops.op_history(ctx, ref.target(slot))
             last = next((s for s in history if s.status == "done"
                          and s.kind not in ("keep", "undo")), None)
-            return None if last is None else liveops.plan_undo(ctx, last.op_id)
+            plan = None if last is None or last.kind == "panic_restore"                 else liveops.plan_undo(ctx, last.op_id)
+            return last, plan
 
-        def planned(plan) -> None:
-            if plan is None:
+        def planned(result) -> None:
+            last, plan = result
+            if last is None:
                 _showinfo("Nothing to undo", f"No move into live slot {slot} can be undone.")
                 return
+            if last.kind == "panic_restore":
+                if _askyesno("Undo the whole folder?",
+                             f"The newest change to live slot {slot} was a whole-folder restore "
+                             "(it changed every slot the backup held). Undoing it rolls back "
+                             "all of those slots, not just this one.\n\n"
+                             "Undo the whole-folder restore?"):
+                    self.on_undo(directory)
+                return
             if any(w.code == "UNDO_WOULD_EMPTY" for w in plan.blocked) and plan.targets:
-                self.steps_window = StepsWindow(
-                    self, themed=self.themed,
-                    guide=classic.empty_guide(vault, directory, slot))
+                self._empty_steps(directory, slot)       # F9: a copy first, then the steps
                 return
             self.plan_dialog = PlanDialog(
                 self, worker=self.worker, themed=self.themed,

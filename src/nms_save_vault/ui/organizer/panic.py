@@ -9,8 +9,11 @@ import tkinter as tk
 from collections.abc import Callable
 from tkinter import ttk
 
-from ...core.liveops import OpContext, OpOutcome, PlacePlan
-from ...core.liveops import panic
+from ...core import aliases
+from ...core import operations as ops
+from ...core.liveops import OpContext, OpOutcome, PlacePlan, Warning
+from ...core.liveops import classic, panic
+from ...core.store import classic as store_classic
 from ...core.organizer.model import LiveRef
 from ..dpi import px, pxs
 from ..redact import set_label, shown
@@ -38,29 +41,45 @@ def _plan_job(open_context, snapshot_id: str, accountdata: bool):
     return job
 
 
-def _post_job(open_context, snapshot_id: str, accountdata: bool):
-    """After a done restore: the account data goes back too when the owner asked."""
-    if not accountdata:
-        return None
-
-    def post(ctx: OpContext, plan: PlacePlan, outcome: OpOutcome) -> None:
-        _ctx, ref = open_context()
-        panic._restore_accountdata(ctx, plan, ref, snapshot_id)
-    return post
+def _restore_job(vault, live_dir, snapshot_id: str, accountdata: bool):
+    """The whole-folder restore exactly as before U19 (``classic.restore_full``): a damaged
+    Xbox index is repaired from the backup first, a Steam folder with no account data gets the
+    backup's, a missing Xbox AccountData record is filled in, and a kept account is said so."""
+    def job() -> OpOutcome:
+        try:
+            entry = store_classic.find_entry(vault, snapshot_id)
+            if entry is None:
+                raise ops.OperationError(f"The backup '{snapshot_id}' is not in the vault.")
+            result = classic.restore_full(vault, entry, live_dir, True, False,
+                                          restore_accountdata=accountdata)
+        except (ops.OperationError, OSError) as exc:
+            return OpOutcome(None, "refused", str(exc), (), None, "n/a", str(exc))
+        notes = tuple(Warning("RESTORE_NOTE", "info", str(aliases.scrub(w)), {})
+                      for w in result.warnings)
+        return OpOutcome(result.op_id, "done", result.detail or "Restored.", notes, None, "n/a",
+                         None)
+    return job
 
 
 class PanicDialog(PlanDialog):
     def __init__(self, master, *, worker: UiWorker, themed: ThemeRegistry,
                  open_context: Callable[[], tuple[OpContext, LiveRef]], folder_name: str,
-                 snapshot: tuple[str, str] | None = None,
+                 vault=None, live_dir=None, snapshot: tuple[str, str] | None = None,
                  on_done: Callable[[OpOutcome], None] | None = None,
                  on_recover: Callable[[], None] | None = None) -> None:
         self.open_context = open_context
+        self.vault, self.live_dir = vault, live_dir
+        self.repair = False
         super().__init__(master, worker=worker, themed=themed,
                          make_context=lambda: open_context()[0], plan=None,
                          title=f"Restore the whole folder {folder_name}", on_done=on_done,
                          on_recover=on_recover)
         self.snapshot_id: str | None = snapshot[0] if snapshot else None
+        self.repair_var = tk.BooleanVar(value=False)
+        self.repair_check = ttk.Checkbutton(
+            self.summary.master, variable=self.repair_var, command=self._update,
+            text="The folder's save index is damaged. Repair it from this backup first (the "
+                 "damaged file is kept in the vault), then restore.")
         self.choices: dict[str, str] = {}
         self.platform = ""
         top = ttk.Frame(self.summary.master)
@@ -86,6 +105,7 @@ class PanicDialog(PlanDialog):
         if gen != self._gen or not self.winfo_exists():
             return
         found, self.platform = result
+        found = [(sid, str(aliases.scrub(label))) for sid, label in found]
         self.choices = {label: sid for sid, label in found}
         self.combo.configure(values=list(self.choices), state="readonly" if found else "disabled")
         if not found:
@@ -107,6 +127,9 @@ class PanicDialog(PlanDialog):
         self._gen += 1
         gen = self._gen
         self.plan = None
+        self.repair = False
+        self.repair_var.set(False)
+        self.repair_check.pack_forget()
         self.error.configure(text="")
         self._render()
         job = _plan_job(self.open_context, self.snapshot_id, self.account_var.get())
@@ -122,7 +145,45 @@ class PanicDialog(PlanDialog):
         if gen != self._gen or not self.winfo_exists():
             return
         self.busy = False
+        if "BAD_INDEX" in str(error) or getattr(error, "code", "") == "BAD_INDEX":
+            self.repair = True            # a restore is how a damaged Xbox folder is repaired
+            self.repair_check.pack(side=tk.TOP, anchor="w", before=self.summary)
+            set_label(self.summary, "The folder's save index does not read, so the slots "
+                      "cannot be compared yet. Restoring repairs the index from this backup "
+                      "first; nothing in the vault is changed.")
+            self._update()
+            return
         self.error.configure(text=shown(self, f"This could not be planned: {error}"))
 
-    def _post(self):
-        return _post_job(self.open_context, self.snapshot_id or "", self.account_var.get())
+    def _update(self) -> None:
+        if self.repair and self.plan is None:
+            ok = self.repair_var.get() and not self.busy and self.snapshot_id is not None
+            self.apply_button.state(["!disabled"] if ok else ["disabled"])
+            set_label(self.apply_button, "Repair the index and restore the whole folder")
+            return
+        super()._update()
+
+    def apply(self) -> None:
+        if self.repair and self.plan is None and not self.busy \
+                and not self.apply_button.instate(["disabled"]):
+            self.plan = _RepairPlan()
+            try:
+                super().apply()
+            finally:
+                self.plan = None
+            return
+        super().apply()
+
+    def _make_job(self, confirmed, note):
+        return _restore_job(self.vault, self.live_dir, self.snapshot_id or "",
+                            self.account_var.get())
+
+
+class _RepairPlan:
+    """Stands in for the plan while the folder's index is being repaired (no plan can be made
+    of a folder that does not read); ``restore_full`` plans after the repair."""
+    blocked: tuple = ()
+    confirmations: frozenset = frozenset()
+    warnings: tuple = ()
+    targets: tuple = ()
+    outcome = "Repair the index and restore the whole folder"

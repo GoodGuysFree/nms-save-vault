@@ -251,23 +251,20 @@ class PlanDialog(_Dialog):
         self.bar.configure(value=0, maximum=1)
         set_label(self.status, "Working...")
         self.after(100, self._poll)
-        plan, make_context, box, post = self.plan, self.make_context, self._box, self._post()
-
-        def job():
-            ctx = make_context()
-            outcome = execute(ctx, plan, confirmed, lambda p: setattr(box, "progress", p),
-                              note=note)
-            if post is not None and outcome.status == "done":
-                post(ctx, plan, outcome)
-            return outcome
+        job = self._make_job(confirmed, note)
         self.worker.submit(
             job,
             on_done=finisher(weakref.ref(self), gen, self.on_done, self.on_recover),
             on_error=weak(self._failed, gen))
 
-    def _post(self):
-        """A job to run after a successful execute (a closure over plain data), or None."""
-        return None
+    def _make_job(self, confirmed, note):
+        """The worker's job for Apply: a closure over plain data only, never the widget."""
+        plan, make_context, box = self.plan, self.make_context, self._box
+
+        def job():
+            return execute(make_context(), plan, confirmed,
+                           lambda p: setattr(box, "progress", p), note=note)
+        return job
 
     def _poll(self) -> None:
         if not self.winfo_exists() or not self.busy:
