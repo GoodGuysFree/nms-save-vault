@@ -19,6 +19,7 @@ from typing import Literal
 
 from .. import lz4_block, msstore, savedir
 from ..formats import ACCOUNT_DATA_NAME, ACCOUNT_META_NAME, CACHE_DIR, MAX_SAVE_SLOTS, STEAM_AUTOCLOUD
+from ..meta import MetaInfo
 from ..organizer.model import Platform, pid_from_id
 from ..slotmap import data_filename, meta_filename, parse_data_filename, slot_file_numbers
 from .errors import SourceChanged, StoreError
@@ -303,12 +304,19 @@ def describe_members(folder: Path, platform: Platform, records: Mapping[str, Fil
     return members, notes, absent
 
 
+def steam_valid(info: MetaInfo | None, st: lz4_block.ContainerStats | None) -> bool:
+    """A Steam member's ``valid``, the one rule capture, preserve and fsck all apply: the meta
+    decrypted with the right header and its SizeDecompressed equals the data's chunk total (as
+    the classic ``_validate_pair``)."""
+    return bool(info is not None and info.valid and st is not None and st.chunk_count
+                and st.total_decompressed == info.size_decompressed)
+
+
 def _record(slot: int, mv: savedir.MemberView, fd: FileEntry, fm: FileEntry, platform: Platform,
             st: lz4_block.ContainerStats | None) -> MemberRecord:
     info = mv.info
     if platform == "steam":
-        valid = bool(info is not None and info.valid and st is not None and st.chunk_count
-                     and st.total_decompressed == info.size_decompressed)
+        valid = steam_valid(info, st)
         ordinal, file_time_ns, identifier = mv.ordinal_used, fd.mtime_ns, None
     else:
         valid, ordinal = mv.valid, None

@@ -27,6 +27,7 @@ from typing import Any, Literal
 from ... import __version__
 from .. import catalog, discover, safety, savedir
 from ..organizer.model import Platform
+from ..state import AppState
 from . import capture
 from .capture import CaptureScope
 from .damage import DamageRecord, read_damage, write_damage
@@ -68,6 +69,7 @@ FANOUT = 2
 INLINE_MAX = 8192
 TMP_MAX_AGE = 3600          # own temp files older than this are leftovers, never work in progress
 SPACE_MARGIN = 64 * 1024 * 1024
+FRESH_SECONDS = 2.0         # a folder time younger than this may hide a same-tick change
 
 OBJECTS, ENTRIES, QUARANTINE, TMP, STATE = "objects", "entries", "quarantine", "tmp", "state"
 UPGRADE_JSON = "upgrade.json"
@@ -100,6 +102,14 @@ def iso_utc(when: datetime) -> str:
 
 def _aware(when: datetime) -> datetime:
     return when if when.tzinfo is not None else when.astimezone()   # naive = local time
+
+
+def _parse_local(text: str) -> datetime:
+    """A catalog v1 time (local, naive, ISO seconds)."""
+    try:
+        return datetime.fromisoformat(text)
+    except ValueError as exc:
+        raise ValueError(f"not a time: {text!r}") from exc
 
 
 @dataclass(frozen=True)
@@ -178,7 +188,7 @@ class VersionStore:
     def __init__(self, vault_root: Path, fmt: StoreFormat, *,
                  lock: Callable[[], AbstractContextManager], app_version: str,
                  clock: Callable[[], datetime], live_roots: Sequence[Path] | None,
-                 faults: FaultHook | None) -> None:
+                 faults: FaultHook | None, app_state: AppState | None = None) -> None:
         self.vault_root = vault_root
         self.root = store_root(vault_root)
         self.format = fmt
@@ -188,6 +198,7 @@ class VersionStore:
         self.clock = clock
         # None: discover the live folders on this machine whenever they are needed.
         self._live_roots = None if live_roots is None else tuple(Path(p) for p in live_roots)
+        self._app_state = app_state
         self.read_only_reason: ReadOnlyReason | None = None
         self.warnings: list[str] = []
         self._lock = lock
@@ -198,6 +209,7 @@ class VersionStore:
         self._vids: dict[str, list[tuple[str, int, str]]] = {}   # vid -> (entry, slot, member)
         self._corrupt: dict[str, str] = {}          # manifest file name -> why it is unreadable
         self._index_guard = threading.Lock()
+        self._entries_seen: int | None = None       # entries/ mtime_ns at the last listing
 
     @property
     def read_only(self) -> bool:
@@ -299,8 +311,10 @@ class VersionStore:
 
     def live_folders(self) -> discover.LiveFolders:
         """The live save folders (with their xgs twins) nothing may be written into: the ones
-        given at open, else the ones discovered on this machine."""
-        roots = self._live_roots if self._live_roots is not None else discover.all_live_paths(None)
+        given at open, else the configured live sources (``app_state``) plus the ones
+        discovered on this machine."""
+        roots = (self._live_roots if self._live_roots is not None
+                 else discover.all_live_paths(self._app_state))
         return discover.live_folders(roots)
 
     @property
@@ -308,14 +322,25 @@ class VersionStore:
         self._refresh()
         return dict(self._corrupt)
 
-    def _refresh(self) -> None:
-        """Parse manifests not seen yet. They never change once written, so a name already
-        indexed (or found corrupt) is not read again."""
+    def _refresh(self, *, force: bool = False) -> None:
+        """Parse manifests not seen yet, when ``entries/`` changed since the last look (its
+        modification time, D3 2.7) or ``force``. Manifests never change once written, so a
+        name already indexed (or found corrupt) is not read again."""
+        try:
+            st = os.stat(self.root / ENTRIES)
+        except OSError as exc:
+            raise StoreUnavailable(f"The vault is not reachable ({exc.strerror or exc}).") from exc
+        if not force and st.st_mtime_ns == self._entries_seen:
+            return
         try:
             names = os.listdir(self.root / ENTRIES)
         except OSError as exc:
             raise StoreUnavailable(f"The vault is not reachable ({exc.strerror or exc}).") from exc
         with self._index_guard:
+            # A folder time this fresh may not have moved for a manifest added within the same
+            # clock tick (FAT keeps 2 s): look again next time.
+            fresh = time.time() - st.st_mtime < FRESH_SECONDS
+            self._entries_seen = None if fresh else st.st_mtime_ns
             for name in names:
                 if not name.endswith(".json") or name[:-5] in self._index or name in self._corrupt:
                     continue
@@ -420,6 +445,8 @@ class VersionStore:
             raise ValueError(f"not an entry kind: {kind!r}")
         if entry_id is not None and not is_entry_id(entry_id):
             raise ValueError(f"not an entry id: {entry_id!r}")
+        if created_local is not None:
+            _parse_local(created_local)
         self._require_writable()
         if not folder.is_dir():
             raise StoreError("The folder to keep is not reachable.")
@@ -476,12 +503,14 @@ class VersionStore:
         across the catalog and the store) and write the manifest."""
         now = _aware(self.clock())
         local = now.astimezone().replace(tzinfo=None)
-        fields = dict(fields, created_utc=iso_utc(now),
+        # A kept time (fold, copy-in: the legacy entry's) is when the entry was made, in UTC too.
+        made = _aware(_parse_local(created_local)) if created_local else now
+        fields = dict(fields, created_utc=iso_utc(made),
                       created_local=created_local or local.isoformat(timespec="seconds"))
         try:
             with self._lock():
                 self._require_store_mode()
-                self._refresh()
+                self._refresh(force=True)           # ids are settled against every manifest
                 if entry_id is not None:
                     existing = self._index.get(entry_id)
                     if existing is not None and _same_files(existing.files, fields["files"]):
@@ -560,18 +589,21 @@ class VersionStore:
     def open(cls, vault_root: str | Path, *, lock: Callable[[], AbstractContextManager],
              app_version: str, clock: Callable[[], datetime] = utc_now,
              live_roots: Sequence[Path] | None = None,
-             faults: FaultHook | None = None) -> "VersionStore":
+             faults: FaultHook | None = None,
+             app_state: AppState | None = None) -> "VersionStore":
         """Open the store of a vault in store mode. Raises StoreUnavailable (vault gone, FORMAT
         unreadable), StoreNotUpgraded (legacy or upgrading vault), StoreTooNew (needs a newer
         app to read). Opens read-only when only writing needs a newer app, the medium cannot be
         written, or the file system cannot lock. ``live_roots``: the live save folders nothing
-        is ever written into; None discovers them on this machine."""
+        is ever written into; None means the live sources of ``app_state`` plus the ones
+        discovered on this machine."""
         vault_root = Path(vault_root)
         if not vault_root.is_dir():
             raise StoreUnavailable("The vault is not reachable.")
         _require_store_mode(vault_root)
         store = cls(vault_root, read_format(store_root(vault_root)), lock=lock,
-                    app_version=app_version, clock=clock, live_roots=live_roots, faults=faults)
+                    app_version=app_version, clock=clock, live_roots=live_roots, faults=faults,
+                    app_state=app_state)
         if store.format.write_compat > STORE_VERSION:
             store._set_read_only("too-new", "This vault was upgraded by a newer NMS Save Vault; "
                                  "it opens read-only. Update the app to write to it.")
@@ -703,7 +735,9 @@ def vault_lock(vault_root: str | Path) -> Callable[[], AbstractContextManager]:
 
 
 def open_store(vault_root: str | Path, *, live_roots: Sequence[Path] | None = None,
+               app_state: AppState | None = None,
                clock: Callable[[], datetime] = utc_now) -> VersionStore:
-    """Open a vault's store with the app's defaults: D1's vault lock and this app's version."""
+    """Open a vault's store with the app's defaults: D1's vault lock and this app's version.
+    ``app_state``: the app's configuration (its live sources are never written into)."""
     return VersionStore.open(vault_root, lock=vault_lock(vault_root), app_version=__version__,
-                             clock=clock, live_roots=live_roots)
+                             clock=clock, live_roots=live_roots, app_state=app_state)

@@ -22,6 +22,7 @@ from .. import catalog, discover, savedir, slotmap
 from ..catalog import CatalogEntry, MemberSummary, SlotSummary
 from ..formats import MAX_SAVE_SLOTS
 from ..organizer.model import EntryRef, Platform, StoreRef
+from ..state import AppState
 from .damage import DamageRecord, read_damage
 from .errors import StoreUnavailable
 from .manifest import MemberRecord, StoreEntry
@@ -54,12 +55,14 @@ class VaultEntry:
 
 
 def list_vault_entries(vault: catalog.Vault, store: "VersionStore | None", *,
-                       live_roots: Sequence[Path] | None = None) -> list[VaultEntry]:
+                       live_roots: Sequence[Path] | None = None,
+                       app_state: AppState | None = None) -> list[VaultEntry]:
     """Every entry of the vault, catalog and store, sorted by ``(created_utc, id)``.
-    ``live_roots``: the live save folders (None discovers them on this machine)."""
+    ``live_roots``: the live save folders; None means the store's, else the live sources of
+    ``app_state`` plus the ones discovered on this machine."""
     out = [store_vault_entry(e) for e in store.entries()] if store is not None else []
     stored = {e.id for e in out}
-    live = _live(live_roots)
+    live = _live(live_roots, store, app_state)
     for entry in vault.entries:
         if entry.id not in stored and not _in_live(vault, entry, live):
             out.append(catalog_vault_entry(vault, entry))
@@ -67,12 +70,13 @@ def list_vault_entries(vault: catalog.Vault, store: "VersionStore | None", *,
 
 
 def get_vault_entry(vault: catalog.Vault, store: "VersionStore | None", entry_id: str, *,
-                    live_roots: Sequence[Path] | None = None) -> VaultEntry | None:
+                    live_roots: Sequence[Path] | None = None,
+                    app_state: AppState | None = None) -> VaultEntry | None:
     """One entry by id, by the listing's rules (a store entry wins over a catalog one)."""
     if store is not None and store.has_entry(entry_id):
         return store_vault_entry(store.entry(entry_id))
     entry = vault.get(entry_id)
-    if entry is None or _in_live(vault, entry, _live(live_roots)):
+    if entry is None or _in_live(vault, entry, _live(live_roots, store, app_state)):
         return None
     return catalog_vault_entry(vault, entry)
 
@@ -200,9 +204,13 @@ def _moved(entry: StoreEntry, r: MemberRecord) -> bool:
 # --- helpers ----------------------------------------------------------------------------------
 
 
-def _live(live_roots: Sequence[Path] | None) -> discover.LiveFolders:
-    return discover.live_folders(live_roots if live_roots is not None
-                                 else discover.all_live_paths(None))
+def _live(live_roots: Sequence[Path] | None, store: "VersionStore | None",
+          app_state: AppState | None) -> discover.LiveFolders:
+    if live_roots is not None:
+        return discover.live_folders(live_roots)
+    if store is not None:
+        return store.live_folders()
+    return discover.live_folders(discover.all_live_paths(app_state))
 
 
 def _in_live(vault: catalog.Vault, entry: CatalogEntry, live: discover.LiveFolders) -> bool:
@@ -254,7 +262,8 @@ class StoreStatus:
 
 
 def store_status(vault_root: Path, store: "VersionStore | None", *,
-                 live_roots: Sequence[Path] | None = None) -> StoreStatus:
+                 live_roots: Sequence[Path] | None = None,
+                 app_state: AppState | None = None) -> StoreStatus:
     """What the vault status shows: mode, the copy-aside, fold progress (from
     ``store/state/migration.json``, written by the upgrade and the fold), hand-made folders not
     copied in, the space freeing would give, damage, and the store's size."""
@@ -265,7 +274,7 @@ def store_status(vault_root: Path, store: "VersionStore | None", *,
     statuses = {k: v for k, v in states.items() if isinstance(v, dict)}
     stored = {e.id: e for e in store.entries()} if store is not None else {}
     vault = catalog.Vault(vault_root)
-    live = _live(live_roots)
+    live = _live(live_roots, store, app_state)
     inplace = tuple(sorted(
         e.id for e in vault.entries
         if e.kind == catalog.KIND_INPLACE and e.id not in stored and not _in_live(vault, e, live)))

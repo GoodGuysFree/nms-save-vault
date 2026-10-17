@@ -229,8 +229,13 @@ class StoreEntry:
             "account_key": self.account_key, "source": dict(self.source),
             "scope": dict(self.scope), "origin": None if self.origin is None else dict(self.origin),
             "files": [f.to_json() for f in self.files], "slots": slots,
-            "account": dict(self.account), "xbox": None if self.xbox is None else dict(self.xbox),
-            "notes": list(self.notes), "absent": dict(self.absent)})
+            "account": dict(self.account), "xbox": None if self.xbox is None else dict(self.xbox)})
+        # Optional keys, written only when they say something: a manifest made before they
+        # existed reads back (and re-serializes) exactly.
+        if self.notes:
+            body["notes"] = list(self.notes)
+        if self.absent:
+            body["absent"] = dict(self.absent)
         return body
 
     def to_bytes(self) -> bytes:
@@ -343,6 +348,8 @@ def _check(entry: StoreEntry) -> None:
 
 
 def _notes(d: Mapping[str, Any]) -> tuple[str, ...]:
+    if "notes" not in d:
+        return ()
     notes = _get(d, "notes", list, "manifest")
     if not all(isinstance(n, str) for n in notes):
         raise EntryCorrupt("manifest: a note is not text")
@@ -350,6 +357,8 @@ def _notes(d: Mapping[str, Any]) -> tuple[str, ...]:
 
 
 def _absent(d: Mapping[str, Any]) -> dict[str, str]:
+    if "absent" not in d:
+        return {}
     absent = _get(d, "absent", dict, "manifest")
     if not all(_ABSENT_KEY.fullmatch(k) and isinstance(v, str) for k, v in absent.items()):
         raise EntryCorrupt("manifest: a bad 'absent' record")

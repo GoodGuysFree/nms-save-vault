@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from .core import discover, locations
+from .core import locations
 from .core import state as appstate
 from .core import store as vstore
 
@@ -29,7 +29,7 @@ def cmd_store_fsck(args) -> int:
         root = Path(args.vault)
     else:
         root = Path(state.vault) if (state and state.vault) else locations.default_vault_dir()
-    store = vstore.open_store(root, live_roots=[Path(p) for p in discover.all_live_paths(state)])
+    store = vstore.open_store(root, app_state=state)
     for warning in store.warnings:
         print(f"warning: {warning}")
     report = store.fsck(deep=args.deep, repair=args.repair,

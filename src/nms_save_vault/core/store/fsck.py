@@ -27,9 +27,10 @@ from typing import TYPE_CHECKING
 
 from .. import catalog, lz4_block, msstore
 from .. import meta as metacrypt
+from . import capture
 from .errors import ObjectCorrupt, ObjectMissing, StoreError
 from .listing import read_migration
-from .manifest import StoreEntry
+from .manifest import FileEntry, StoreEntry
 from .objects import sha256
 from .versionstore import STATE, TMP, read_format
 
@@ -103,11 +104,16 @@ def fsck(store: "VersionStore", *, deep: bool = False, repair: bool = False,
                 bad[digest] = ("missing", "the stored copy is missing")
             except ObjectCorrupt as exc:
                 bad[digest] = ("corrupt", exc.detail)
+            except (StoreError, OSError) as exc:
+                bad[digest] = ("corrupt", f"the stored copy cannot be read ({exc})")
 
     repaired: set[str] = set()
+    failed: dict[str, str] = {}
     if repair and bad:
-        repaired = _repair(store, {d: refs[d][0][2] for d in bad}, bad, fallbacks)
+        repaired, failed = _repair(store, {d: refs[d][0][2] for d in bad}, bad, fallbacks)
     for digest, (kind, detail) in sorted(bad.items()):
+        if digest in failed:
+            detail = f"{detail}; the repair failed: {failed[digest]}"
         for entry, path, _size in refs[digest]:
             fixed = digest in repaired
             problems.append(FsckProblem(kind, entry.id, path, digest,
@@ -115,6 +121,7 @@ def fsck(store: "VersionStore", *, deep: bool = False, repair: bool = False,
             if not fixed:
                 store.record_damage(entry.id, entry.file(path), kind, detail)
     if deep:
+        # The objects were re-hashed just above: the member check reads them without hashing.
         problems += _check_members(store, entries, set(bad) - repaired)
     problems += _check_migration(store)
 
@@ -140,10 +147,10 @@ def _check_members(store: "VersionStore", entries: Iterable[StoreEntry],
             key = (data_fe.sha256, meta_fe.sha256, m.ordinal)
             try:
                 if key not in checked:
-                    checked[key] = _steam_valid(store.file_bytes(meta_fe), m.ordinal,
-                                                store.file_bytes(data_fe))
+                    checked[key] = _steam_valid(_raw(store, meta_fe), m.ordinal,
+                                                _raw(store, data_fe))
                 valid = checked[key]
-            except (ObjectMissing, ObjectCorrupt, ValueError) as exc:
+            except (OSError, ValueError) as exc:
                 valid = None
                 detail = str(exc)
             else:
@@ -154,20 +161,23 @@ def _check_members(store: "VersionStore", entries: Iterable[StoreEntry],
     return problems
 
 
+def _raw(store: "VersionStore", fe: FileEntry) -> bytes:
+    """A file's bytes already verified by this run: inline, or its object read as it is."""
+    return fe.inline if fe.inline is not None else store.objects.path_for(fe.sha256).read_bytes()
+
+
 def _steam_valid(raw_meta: bytes, ordinal: int, data: bytes) -> bool:
-    plain = metacrypt.decrypt(raw_meta, ordinal)
-    info = metacrypt.parse(plain, ordinal)
+    info = metacrypt.parse(metacrypt.decrypt(raw_meta, ordinal), ordinal)
     if not info.valid:
         raise ValueError("the meta does not decrypt with its recorded ordinal")
-    st = lz4_block.stats(data)
-    return bool(st.chunk_count and st.total_decompressed == info.size_decompressed)
+    return capture.steam_valid(info, lz4_block.stats(data))
 
 
 def _check_index(store: "VersionStore", entry: StoreEntry) -> list[FsckProblem]:
     path = entry.xbox["index"]
     try:
-        _header, records, _trailer = msstore.split_index(store.file_bytes(entry.file(path)))
-    except (ObjectMissing, ObjectCorrupt, ValueError) as exc:
+        _header, records, _trailer = msstore.split_index(_raw(store, entry.file(path)))
+    except (OSError, ValueError) as exc:
         return [FsckProblem("index", entry.id, path, entry.file(path).sha256,
                             f"the Xbox save index does not parse ({exc})")]
     named = {identifier for identifier, _rec in records}
@@ -200,8 +210,9 @@ def _check_migration(store: "VersionStore") -> list[FsckProblem]:
 
 
 def _repair(store: "VersionStore", sizes: dict[str, int], bad: dict[str, tuple[str, str]],
-            fallbacks: Sequence[Path]) -> set[str]:
-    """Re-store every digest of ``sizes`` found among the candidate folders; the set fixed."""
+            fallbacks: Sequence[Path]) -> tuple[set[str], dict[str, str]]:
+    """Re-store every digest of ``sizes`` found among the candidate folders. Returns the
+    digests fixed and, for each whose re-store failed, why (the others are left as they are)."""
     wanted_sizes = set(sizes.values())
     by_size: dict[int, list[Path]] = defaultdict(list)
     own = store.root.resolve()
@@ -218,7 +229,8 @@ def _repair(store: "VersionStore", sizes: dict[str, int], bad: dict[str, tuple[s
                     continue
                 if size in wanted_sizes:
                     by_size[size].append(p)
-    fixed = set()
+    fixed: set[str] = set()
+    failed: dict[str, str] = {}
     for digest, size in sizes.items():
         for candidate in by_size.get(size, ()):
             try:
@@ -227,13 +239,18 @@ def _repair(store: "VersionStore", sizes: dict[str, int], bad: dict[str, tuple[s
                 continue
             if sha256(data) != digest:
                 continue
-            if bad[digest][0] == "corrupt" and store.objects.has(digest):
-                store.objects.quarantine(digest, "fsck found it corrupt")
-            store.objects.put(data, digest)
+            try:
+                if bad[digest][0] == "corrupt" and store.objects.has(digest):
+                    store.objects.quarantine(digest, "fsck found it corrupt")
+                store.objects.put(data, digest)
+            except (OSError, StoreError) as exc:     # one failure never stops the check
+                failed[digest] = str(exc)
+                log.warning("fsck could not re-store %s: %s", digest[:12], exc)
+                break
             fixed.add(digest)
             log.info("fsck re-stored %s from a copy outside the store", digest[:12])
             break
-    return fixed
+    return fixed, failed
 
 
 def candidate_folders(store: "VersionStore", fallbacks: Sequence[Path]) -> list[Path]:

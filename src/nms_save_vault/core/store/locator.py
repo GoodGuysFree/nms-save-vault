@@ -20,7 +20,14 @@ from ..organizer.model import LiveTarget, StoreRef, Vid
 from . import capture
 from .capture import CaptureScope
 from .d1 import Location, LiveMember, OpenedVersion, PreserveFailed, VersionLocator, VersionUnavailable
-from .errors import EntryCorrupt, ObjectCorrupt, ObjectMissing, PreserveMismatch, StoreError
+from .errors import (
+    EntryCorrupt,
+    ObjectCorrupt,
+    ObjectMissing,
+    PreserveMismatch,
+    StoreError,
+    StoreUnavailable,
+)
 from .manifest import MemberRecord, StoreEntry
 from .objects import sha256
 
@@ -37,7 +44,15 @@ class StoreLocator(VersionLocator):
         self.live_dir = live_dir
 
     def locate(self, vid: Vid) -> list[Location]:
-        """Every entry, slot and member holding ``vid``, newest entry first."""
+        """Every entry, slot and member holding ``vid``, newest entry first. A vault that
+        cannot be reached (a removed drive) holds none: the other readers still answer."""
+        try:
+            return self._locate(vid)
+        except _UNREACHABLE as exc:
+            log.warning("the version store cannot be read: %s", exc)
+            return []
+
+    def _locate(self, vid: Vid) -> list[Location]:
         out = []
         for entry_id, slot, member in self.store.vid_refs(vid):
             entry = self.store.entry(entry_id)
@@ -48,8 +63,12 @@ class StoreLocator(VersionLocator):
     def open(self, vid: Vid, prefer: Location | None = None) -> OpenedVersion:
         """The version's bytes and its meta from ``prefer`` (when it is a store location),
         else from the newest entry holding it; every byte verified. A location of another
-        kind in ``prefer`` is left to its own reader."""
-        candidates = self.locate(vid)
+        kind in ``prefer`` is left to its own reader. Every failure, an unreachable vault
+        included, is VersionUnavailable, so D1's VaultLocator tries its next reader."""
+        try:
+            candidates = self._locate(vid)
+        except _UNREACHABLE as exc:
+            raise VersionUnavailable(f"version {vid[:8]}: the vault cannot be read ({exc})") from exc
         if prefer is not None and prefer.kind == "store" and isinstance(prefer.ref, StoreRef):
             candidates = [prefer] + [c for c in candidates if c != prefer]
         problems = []
@@ -58,6 +77,8 @@ class StoreLocator(VersionLocator):
                 return self._read(vid, loc)
             except VersionUnavailable as exc:
                 problems.append(f"{loc.ref.key} slot {loc.slot}{loc.member}: {exc}")
+            except _UNREACHABLE as exc:
+                problems.append(f"{loc.ref.key}: the vault cannot be read ({exc})")
         raise VersionUnavailable(f"version {vid[:8]} is not readable from the store"
                                  + (": " + "; ".join(problems) if problems else ""))
 
@@ -69,7 +90,7 @@ class StoreLocator(VersionLocator):
         m = entry.member(loc.slot, loc.member)
         if m is None or m.vid != vid:
             raise VersionUnavailable(f"entry {entry.id} has no such member")
-        if entry.platform == "steam" and m.ordinal is None:
+        if not openable(entry.platform, m):
             raise VersionUnavailable("its meta was unreadable when it was kept")
         current = None
         try:
@@ -89,12 +110,15 @@ class StoreLocator(VersionLocator):
 
     def is_durable(self, vid: Vid) -> bool:
         """True when an entry holds ``vid`` and its bytes are there with the right size (inline,
-        or an object of that size)."""
-        for entry_id, slot, member in self.store.vid_refs(vid):
-            m = self.store.entry(entry_id).member(slot, member)    # type: ignore[arg-type]
-            fe = self.store.entry(entry_id).file(m.data)
-            if fe.inline is not None or self.store.objects.size_of(fe.sha256) == fe.size:
-                return True
+        or an object of that size). False while the vault cannot be reached."""
+        try:
+            for entry_id, slot, member in self.store.vid_refs(vid):
+                m = self.store.entry(entry_id).member(slot, member)    # type: ignore[arg-type]
+                fe = self.store.entry(entry_id).file(m.data)
+                if fe.inline is not None or self.store.objects.size_of(fe.sha256) == fe.size:
+                    return True
+        except _UNREACHABLE as exc:
+            log.warning("the version store cannot be read: %s", exc)
         return False
 
     # --- preserve (D3 2.8) ----------------------------------------------------------------
@@ -105,15 +129,22 @@ class StoreLocator(VersionLocator):
         ``preserve`` entry per slot, holding both members of the slot (a one-member copy
         restored later would leave a mixed slot), written every time, then every file of it
         re-read and checked. One location per member, in order. Raises PreserveFailed
-        (PreserveMismatch when a slot no longer holds the expected version)."""
-        kept: dict[tuple[LiveTarget, str], Location] = {}
-        for target, group in _by_target(members).items():
-            entry = self._preserve_slot(target, group, op_id=op_id, reason=reason)
-            for lm in group:
-                kept[(target, lm.member)] = Location(
-                    lm.expected_vid, "store", StoreRef(entry.id), target.slot, lm.member,
-                    target.platform, durable=True)
-        return [kept[(lm.target, lm.member)] for lm in members]
+        (PreserveMismatch when a slot no longer holds the expected version). Any failure is
+        a PreserveFailed, its cause chained: the live write must not run."""
+        try:
+            groups = _by_target(members)
+            kept: dict[tuple[LiveTarget, str], Location] = {}
+            for target, group in groups.items():
+                entry = self._preserve_slot(target, group, op_id=op_id, reason=reason)
+                for lm in group:
+                    kept[(target, lm.member)] = Location(
+                        lm.expected_vid, "store", StoreRef(entry.id), target.slot, lm.member,
+                        target.platform, durable=True)
+            return [kept[(lm.target, lm.member)] for lm in members]
+        except PreserveFailed:
+            raise
+        except Exception as exc:    # an OSError from a put, an unreachable vault, a bug: refuse
+            raise PreserveFailed(f"The save could not be kept in the vault ({exc}).") from exc
 
     def _preserve_slot(self, target: LiveTarget, group: Sequence[LiveMember], *, op_id: str,
                        reason: str) -> StoreEntry:
@@ -126,20 +157,21 @@ class StoreLocator(VersionLocator):
                     raise PreserveMismatch(
                         f"Slot {target.slot} changed since the operation was planned. "
                         "Nothing was written; try again.")
+                if not openable(target.platform, found[member]):
+                    raise PreserveFailed(
+                        f"The save in slot {target.slot}{member} has a meta that cannot be read, "
+                        "so a kept copy could never be placed back. Nothing was written.")
             name = found[group[0].member].name or "<unnamed>"
             return f"kept: slot {target.slot} ({name})"
 
-        try:
-            entry = self.store.add_from_live(
-                self.live_dir(target), platform=target.platform, account_key=target.account_key,
-                kind="preserve", label=f"kept: slot {target.slot}",
-                scope=CaptureScope(slots=(target.slot,)), op_id=op_id, reason=reason,
-                finish=check)
-        except PreserveFailed:
-            raise
-        except StoreError as exc:
-            raise PreserveFailed(str(exc)) from exc
+        entry = self.store.add_from_live(
+            self.live_dir(target), platform=target.platform, account_key=target.account_key,
+            kind="preserve", label=f"kept: slot {target.slot}",
+            scope=CaptureScope(slots=(target.slot,)), op_id=op_id, reason=reason, finish=check)
         self._verify_kept(entry)
+        for lm in group:        # what preserve promises: open() returns each of them
+            self._read(lm.expected_vid, Location(lm.expected_vid, "store", StoreRef(entry.id),
+                                                 target.slot, lm.member, target.platform, True))
         return entry
 
     def _verify_kept(self, entry: StoreEntry) -> None:
@@ -157,8 +189,10 @@ class StoreLocator(VersionLocator):
                 data = self.store.file_bytes(entry.file(m.data))
                 plain = _plain_meta("steam", self.store.file_bytes(current), m.ordinal,
                                     current.sha256)
+                valid = capture.steam_valid(metacrypt.parse(plain, m.ordinal),
+                                            lz4_block.stats(data))
                 if (m.meta_plain_sha256 is not None and sha256(plain) != m.meta_plain_sha256) \
-                        or _steam_valid(plain, m.ordinal, data) != m.valid:
+                        or valid != m.valid:
                     raise ObjectCorrupt(current.sha256, "the kept copy does not check out")
         except (ObjectMissing, ObjectCorrupt) as exc:
             self.store.record_damage(entry.id, current,
@@ -197,21 +231,28 @@ class StoreLocator(VersionLocator):
 PRESERVE_MARGIN = 64 * 1024
 
 
+_UNREACHABLE = (StoreUnavailable, OSError)
+
+
+def openable(platform: str, m: MemberRecord) -> bool:
+    """Whether :meth:`StoreLocator.open` can ever return this member: a Steam meta that no
+    ordinal decrypted cannot be read back (nor placed)."""
+    return platform != "steam" or m.ordinal is not None
+
+
 def _by_target(members: Sequence[LiveMember]) -> dict[LiveTarget, list[LiveMember]]:
+    """The members per slot, each member once. The same member asked for with two different
+    versions is a caller error, refused."""
     groups: dict[LiveTarget, list[LiveMember]] = {}
     for lm in members:
         group = groups.setdefault(lm.target, [])
-        if all(other.member != lm.member for other in group):
+        same = next((other for other in group if other.member == lm.member), None)
+        if same is None:
             group.append(lm)
+        elif same.expected_vid != lm.expected_vid:
+            raise PreserveFailed(f"Slot {lm.target.slot}{lm.member} was asked for with two "
+                                 "different versions.")
     return groups
-
-
-def _steam_valid(plain: bytes, ordinal: int, data: bytes) -> bool:
-    """A Steam member's ``valid`` recomputed from stored bytes (the capture's rule: header ok
-    and SizeDecompressed equal to the chunk total)."""
-    info = metacrypt.parse(plain, ordinal)
-    st = lz4_block.stats(data)
-    return bool(info.valid and st.chunk_count and st.total_decompressed == info.size_decompressed)
 
 
 def _plain_meta(platform: str, raw: bytes, ordinal: int | None, digest: str) -> bytes:
