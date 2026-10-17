@@ -22,7 +22,7 @@ from ..organizer.locator import LiveMember, Location
 from ..organizer.model import LiveRef, LiveTarget
 from ..store import CaptureScope, vault_mode
 from ..store import capture as store_capture
-from . import opjournal, pairmeta, steamcloud
+from . import crosssave, opjournal, pairmeta, steamcloud
 from .context import OpContext
 from .errors import SourceUnreadable, TargetError
 from .model import (
@@ -92,6 +92,8 @@ TEXTS = {
     "GAME_RUNNING": ("block", "No Man's Sky is running. Close it first."),
     "GAME_STATE_UNKNOWN": ("confirm", "Could not check whether No Man's Sky is running. "
                            "Make sure it is closed."),
+    "CROSS_SAVE_ON": ("warn", "Hello Games cross-save is on: the game may ask which copy to "
+                      "keep."),
     "STEAM_CLOUD_OTHER_DEVICE": ("info", "If Steam asks at the next launch, choose the copy on "
                                  "this PC."),
     "XBOX_SYNC_BUSY": ("block", "Xbox is still syncing. Try again in a minute."),
@@ -170,7 +172,7 @@ def eviction_picker(ctx: OpContext, source: PairSource,
                   for c in candidates]
     cloud = CloudInfo(steam_cloud=None if shown.platform == "xbox" else
                       (acct is not None and acct.cloud_mode == "steam-cloud"),
-                      cross_save_on=None,
+                      cross_save_on=None if now is None else _cross_save(now),
                       xbox_sync_busy=_sync_busy(ctx, now))
     others = tuple(_account_choice(ctx, src, ref) for ref in live_accounts(ctx) if ref != shown)
     folders = [] if acct is None else [(acct.folder, shown.platform, s) for s in range(1, 16)]
@@ -319,6 +321,11 @@ def _slot_warnings(ctx: OpContext, src: LoadedSource, now: AccountNow, slot: Slo
     return out
 
 
+def _cross_save(now: AccountNow) -> bool | None:
+    """The account's CrossSaves flag (D5 2.3.3); None when unknown."""
+    return crosssave.cross_save_on(now.account.folder, now.account.account.platform)
+
+
 def _steam_pending(ctx: OpContext, now: AccountNow, slot: SlotNow) -> bool:
     """Steam Cloud account whose remotecache.vdf says this slot's files are not uploaded
     (D5 2.12.2); False when the manifest is not found."""
@@ -360,6 +367,8 @@ def _plan_warnings(ctx: OpContext, src: LoadedSource, account: LiveRef,
             out.append(warning("LIVE_ELSEWHERE", where=_where(ctx, elsewhere[0]),
                                cross_platform=str(line.cross_platform)))
     if now is not None:
+        if _cross_save(now) is True:
+            out.append(warning("CROSS_SAVE_ON"))
         if now.account.cloud_mode == "steam-cloud":
             out.append(warning("STEAM_CLOUD_OTHER_DEVICE"))
         if _sync_busy(ctx, now):
