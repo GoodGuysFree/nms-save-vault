@@ -286,7 +286,12 @@ def join_index(header: bytes, records: list[tuple[str, bytes]], trailer: bytes =
 
 def parse_containers_index(folder: Path) -> tuple[XboxIndexInfo, list[_Container]]:
     folder = Path(folder)
-    header, records, trailer = split_index((folder / "containers.index").read_bytes())
+    return _parse_index((folder / "containers.index").read_bytes(), folder)
+
+
+def _parse_index(raw: bytes, folder: Path) -> tuple[XboxIndexInfo, list[_Container]]:
+    """Parse index bytes; record directories (and blob files) resolve under ``folder``."""
+    header, records, trailer = split_index(raw)
     proc, off = _read_lp_string(header, 0)       # process identifier
     # [last write 8][sync state 4] then account identifier
     index_filetime = struct.unpack_from("<q", header, off)[0]
@@ -628,14 +633,17 @@ def build_containers_index(info: XboxIndexInfo, records: list[_Container]) -> by
     Records the caller did not change go back byte for byte (P-X1: rewriting them from
     floats moved other saves' FILETIMEs and perturbed their sync). The record ``count`` is
     taken from ``records``, so adding or removing a save stays consistent."""
+    return join_index(
+        _build_header(info), [(c.identifier, _build_container_record(c)) for c in records], info.trailer
+    )
+
+
+def _build_header(info: XboxIndexInfo) -> bytes:
     header = _build_lp_string(info.process_id)
     header += struct.pack("<q", info.filetime)
     header += struct.pack("<i", info.sync_state)
     header += _build_lp_string(info.account_id)
-    header += struct.pack("<q", CONTAINERSINDEX_FOOTER)
-    return join_index(
-        header, [(c.identifier, _build_container_record(c)) for c in records], info.trailer
-    )
+    return header + struct.pack("<q", CONTAINERSINDEX_FOOTER)
 
 
 # --- writer (wgs save mutation; Phase 2b) ----------------------------------------------
@@ -808,6 +816,51 @@ def delete_save(folder: str | Path, identifier: str, when: float) -> bool:
     if twin is not None:
         _xgs_delete(twin, identifier)
     return True
+
+
+def restored_index(
+    backup_index: bytes, when: float, floors: dict[str, int], index_floor: int = 0,
+    keep: tuple[str, bytes] | None = None, keep_position: int = 0,
+) -> bytes:
+    """The containers.index a wholesale restore writes, composed in memory so it can be
+    written once, after every folder it names is in place.
+
+    The backup's records, each made a fresh local write: its FILETIME becomes ``when`` (now)
+    -- never earlier than one tick after the time it had before the restore (``floors``, by
+    identifier) -- and Synced becomes Modified, so the Xbox app cannot take its cloud copy for
+    the newer one and put it back. A slot's two records keep the order they had, a second
+    apart. ``keep`` -- (identifier, raw record) from the live index -- stands in for the
+    backup's record of that identifier byte for byte (at ``keep_position`` if the backup has
+    none). The index time never moves back from ``index_floor``.
+    """
+    info, containers = _parse_index(backup_index, Path("."))
+    kept_id = keep[0] if keep else None
+    now = _unix_to_filetime(when)
+    groups: dict[object, list[_Container]] = {}
+    for c in containers:
+        if c.identifier == kept_id:
+            continue
+        pair = _slot_member(c.identifier)
+        groups.setdefault(pair[0] if pair else c.identifier, []).append(c)
+    for members in groups.values():
+        base = max([now] + [floors.get(c.identifier, -1) + 1 for c in members])
+        order = sorted({c.filetime for c in members})
+        for c in members:
+            # A second apart (equal times stay equal): last_write is a float, and a float of
+            # seconds this size cannot tell two records 100 ns apart.
+            c.filetime = base + order.index(c.filetime) * 10_000_000
+            if c.sync_state == BLOB_SYNC_SYNCED:
+                c.sync_state = BLOB_SYNC_MODIFIED
+    info.sync_state = INDEX_SYNC_MODIFIED
+    info.filetime = max(info.filetime, index_floor, now)
+    records = [(c.identifier, _build_container_record(c)) for c in containers]
+    if keep is not None:
+        at = next((i for i, (ident, _rec) in enumerate(records) if ident == kept_id), None)
+        if at is None:
+            records.insert(min(keep_position, len(records)), keep)
+        else:
+            records[at] = keep
+    return join_index(_build_header(info), records, info.trailer)
 
 
 def mark_modified(folder: str | Path) -> None:

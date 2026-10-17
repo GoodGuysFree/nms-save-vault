@@ -142,7 +142,8 @@ def test_a_promote_that_does_not_take_is_still_undoable(make_wgs_account, tmp_pa
     assert failed.value.result.snapshot_id == record["snapshot_id"]
     assert not failed.value.result.ok and "undo restores it" in str(failed.value)
     ops.undo_last(vault, live, allow_game_running=True)
-    assert savedir.scan_any(live).slots[2].a.data_mtime == 1000
+    slot = savedir.scan_any(live).slots[2]            # back as before: B is the newer again
+    assert slot.newest.label == "B" and slot.a.data_mtime < slot.b.data_mtime
 
 
 def test_promote_xbox_refuses_an_unreadable_save_before_touching_anything(make_wgs_account, tmp_path, monkeypatch):

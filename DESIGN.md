@@ -94,6 +94,10 @@ src/nms_save_vault/
 6. Steam Cloud: operate with game closed; vault lives outside `st_…`. Live writes are
    stamped with the write time under Cloud, so Steam never judges its copy the newer one;
    deletions cannot be propagated at all and the clear plan says how to do it by hand.
+7. A restore (and so undo) keeps the live account's own identity: `steam_autocloud.vdf` is
+   never copied, an Xbox backup of another account is refused, and the account data
+   (unlocks, settings) stays unless the user asks to roll it back (or there is none live).
+   A restored Xbox record is a fresh local write: its index time is now, never older.
 
 ## Verification strategy
 * **Read-only** unit tests against the real backups (decode every meta → header + ordinal

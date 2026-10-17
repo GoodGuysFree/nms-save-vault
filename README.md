@@ -373,7 +373,8 @@ nmsvault extract 9 --label "main"        # lift slot 9 aside
 nmsvault clear 9 [--yes]                 # empty live slot 9; warns if that loses progress
 nmsvault repopulate --from <id|folder> --src-slot 9 --to-slot 3   # re-keys the meta
 nmsvault promote --slot 9 --member B     # force B (the restore-point) to be newest
-nmsvault restore <entry-id>              # mirror the live folder to a backup
+nmsvault restore <entry-id>              # mirror the live folder to a backup (keeps its account data;
+                                         #   --with-accountdata rolls that back too)
 nmsvault undo                            # undo the last change to this live folder (repeat to go back further)
 nmsvault verify [live|<id>|<folder>]
 nmsvault accounts [--set <id>=NAME] [--clear <id>]   # hide the real account ids
@@ -441,7 +442,7 @@ The vault lives outside `st_<id>`, so it is never scanned by the game or synced 
 ## Status
 
 Working. Core format/crypto and all operations are verified against the real save files and
-in a temp sandbox (508 tests). Xbox / Game Pass saves are supported for reading **and**
+in a temp sandbox (531 tests). Xbox / Game Pass saves are supported for reading **and**
 same-platform writing — verified against a real install (reads) and synthetic `wgs` fixtures
 (writes). A full file-copy safety backup of the live folder was made before development
 (`C:\Devel\NMS-SaveBackup-SAFETY-2026-06-24`).

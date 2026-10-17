@@ -208,9 +208,14 @@ def cmd_restore(args) -> int:
     if entry.kind == catalog.KIND_EXTRACT:
         # A single-slot extract goes back into its own slot; mirroring the live folder
         # onto it would delete every other save.
-        res = ops.restore_entry(vault, entry, live, allow_game_running=args.force)
+        res = ops.restore_entry(
+            vault, entry, live, allow_game_running=args.force, restore_accountdata=args.with_accountdata
+        )
     else:
-        res = ops.restore_full(vault, entry, live, mirror=not args.no_mirror, allow_game_running=args.force)
+        res = ops.restore_full(
+            vault, entry, live, mirror=not args.no_mirror, allow_game_running=args.force,
+            restore_accountdata=args.with_accountdata,
+        )
     _report(res)
     return 0
 
@@ -219,7 +224,11 @@ def cmd_extract(args) -> int:
     vault = _resolve_vault(args)
     source = _resolve_source(vault, args.source) if args.source else _resolve_live(args)
     warns: list[str] = []
-    entry = ops.extract_slot(vault, source, args.slot, label=args.label or "", warnings=warns)
+    st = appstate.load()
+    live_dirs = [Path(s.path) for s in st.live_sources] if st is not None else []
+    if not args.source:
+        live_dirs.append(source)                     # the live folder itself
+    entry = ops.extract_slot(vault, source, args.slot, label=args.label or "", warnings=warns, live_dirs=live_dirs)
     print(f"extracted slot {args.slot} -> '{entry.id}' at {entry.path}")
     _print_warnings(warns)
     return 0
@@ -363,7 +372,7 @@ def cmd_undo(args) -> int:
     others = [Path(s.path) for s in st.live_sources] if st is not None else []
     res = ops.undo_last(
         vault, live, allow_game_running=args.force, acknowledge_damage=args.accept_damaged_log,
-        other_live_dirs=others,
+        other_live_dirs=others, restore_accountdata=args.with_accountdata,
     )
     _report(res)
     return 0
@@ -516,6 +525,10 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("entry_id")
     s.add_argument("--no-mirror", action="store_true", help="add/overwrite only; keep extra live slots")
     s.add_argument("--force", action="store_true", help="proceed even if the game seems to be running")
+    s.add_argument(
+        "--with-accountdata", action="store_true",
+        help="also roll the account data (unlocks, settings) back to the backup's",
+    )
     s.set_defaults(func=cmd_restore)
 
     s = sub.add_parser("extract", help="extract a single slot aside")
@@ -558,6 +571,10 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument(
         "--accept-damaged-log", action="store_true",
         help="undo even though a newer line of the undo log is damaged (it may record a change this skips)",
+    )
+    s.add_argument(
+        "--with-accountdata", action="store_true",
+        help="also roll the account data (unlocks, settings) back to the snapshot's",
     )
     s.set_defaults(func=cmd_undo)
 

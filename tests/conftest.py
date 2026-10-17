@@ -117,7 +117,8 @@ def make_wgs_account():
     the unix time written into the containers.index FILETIME; ``meta_ts`` is the save time
     in the meta (default ``int(when)``), which is what decides 'newest'; ``pid`` defaults to
     :func:`wgs_playthrough_id`. ``meta_len`` 296 or 280 builds Worlds I or Waypoint metas
-    instead of 360-byte ones (280 holds no id or time). Returns the account dir.
+    instead of 360-byte ones (280 holds no id or time). ``account_id`` is the account the
+    index header names. Returns the account dir.
     """
     def _gb(seed: int) -> bytes:
         return bytes((seed + i) % 256 for i in range(16))
@@ -133,12 +134,12 @@ def make_wgs_account():
         return raw + b"\x00" * (total - len(raw))
 
     def build(parent, saves, name="0000000000000001_29070100B936489ABCE8B9AF3980429C",
-              meta_len: int = 360) -> Path:
+              meta_len: int = 360, account_id: str = "acct") -> Path:
         acct = Path(parent) / "wgs" / name
         acct.mkdir(parents=True)
         index = struct.pack("<i", msstore.CONTAINERSINDEX_HEADER)
         index += struct.pack("<q", len(saves))
-        index += _lp("proc") + struct.pack("<q", 0) + struct.pack("<i", 2) + _lp("acct")
+        index += _lp("proc") + struct.pack("<q", 0) + struct.pack("<i", 2) + _lp(account_id)
         index += struct.pack("<q", msstore.CONTAINERSINDEX_FOOTER)
         for i, (ident, payload, nm, summ, play, when, *extra) in enumerate(saves):
             pid = extra[0] if extra else wgs_playthrough_id(ident)

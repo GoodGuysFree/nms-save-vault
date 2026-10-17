@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import shutil
 import subprocess
 import tempfile
 from pathlib import Path
@@ -43,6 +44,18 @@ def sha256_file(path: str | Path, chunk: int = 1 << 20) -> str:
     with open(path, "rb") as f:
         for block in iter(lambda: f.read(chunk), b""):
             h.update(block)
+    return h.hexdigest()
+
+
+def copy_and_hash(src: str | Path, dst: str | Path, chunk: int = 1 << 20) -> str:
+    """Copy ``src`` to ``dst`` (contents, then times, like ``shutil.copy2``) reading the
+    source once, and return the sha256 of the bytes read."""
+    h = hashlib.sha256()
+    with open(src, "rb") as fi, open(dst, "wb") as fo:
+        for block in iter(lambda: fi.read(chunk), b""):
+            h.update(block)
+            fo.write(block)
+    shutil.copystat(src, dst)
     return h.hexdigest()
 
 

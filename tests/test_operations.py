@@ -296,6 +296,25 @@ def test_a_steam_promote_that_would_change_nothing_writes_nothing(tmp_path):
     assert len(vault.read_oplog()) == 1
 
 
+def test_already_newest_is_judged_on_the_same_order_as_newest(tmp_path):
+    """No meta times, so the data files' times order the pair. A's meta file is the latest
+    file of all, but its data file is older than B's: B is the newest, so promoting A must
+    do something rather than report it already newest."""
+    live = tmp_path / "live"
+    steam_save(live, 1, 0, "Run", 3600, 0x1234, 0)
+    steam_save(live, 1, 1, "Run", 3700, 0x1234, 0)
+    a_data, b_data = (slotmap.slot_file_numbers(1)[m] for m in (0, 1))
+    for name, when in ((slotmap.data_filename(a_data), 1000), (slotmap.meta_filename(a_data), 3000),
+                       (slotmap.data_filename(b_data), 2000), (slotmap.meta_filename(b_data), 2000)):
+        os.utime(live / name, (when, when))
+    assert savedir.scan(live).slots[1].newest.label == "B"
+
+    result = ops.promote_member(Vault(tmp_path / "vault"), live, 1, 0, allow_game_running=True)
+
+    assert result.snapshot_id is not None
+    assert savedir.scan(live).slots[1].newest.label == "A"
+
+
 def test_steam_promote_without_any_meta_time_orders_by_file_time_only(tmp_path):
     """Neither member carries a save time: the meta is left alone (a time of 1 would read
     as 1970) and the target's file time moves past the sibling's."""
@@ -377,16 +396,16 @@ def test_failed_snapshot_leaves_no_orphan_folder_or_entry(tmp_path, monkeypatch)
     vault = Vault(tmp_path / "vault")
     kept = ops.snapshot_live(vault, live, reason="good")
 
-    real_copy2 = shutil.copy2
+    real_copy = ops.safety.copy_and_hash
     copies = []
 
-    def copy2_then_fail(src, dst, *args, **kwargs):
+    def copy_then_fail(src, dst, *args, **kwargs):
         if copies:
             raise OSError("disk full")
         copies.append(src)
-        return real_copy2(src, dst, *args, **kwargs)
+        return real_copy(src, dst, *args, **kwargs)
 
-    monkeypatch.setattr(ops.shutil, "copy2", copy2_then_fail)
+    monkeypatch.setattr(ops.safety, "copy_and_hash", copy_then_fail)
     with pytest.raises(OSError, match="disk full"):
         ops.snapshot_live(vault, live, reason="dies part-way")
     monkeypatch.undo()
@@ -488,7 +507,7 @@ def test_a_failed_cleanup_is_logged_and_the_original_error_raised(tmp_path, monk
     def rmtree_fails(path, *args, **kwargs):
         raise PermissionError("folder is locked")
 
-    monkeypatch.setattr(ops.shutil, "copy2", copy_fails)
+    monkeypatch.setattr(ops.safety, "copy_and_hash", copy_fails)
     monkeypatch.setattr(ops.shutil, "rmtree", rmtree_fails)
     with caplog.at_level(logging.WARNING, logger=ops.__name__):
         with pytest.raises(OSError, match="disk full"):
@@ -530,21 +549,16 @@ def test_a_failed_vault_copy_leaves_nothing_behind(tmp_path, monkeypatch, make):
     live = tmp_path / "live"
     steam_save(live, 1, 0, "Run", 3600, 0x1234, 1_700_000_000)
     vault = Vault(tmp_path / "vault")
-    real_copy2, real_copytree = shutil.copy2, shutil.copytree
+    real_copy = ops.safety.copy_and_hash
     wrote = []
 
-    def copy2_then_fail(src, dst, *args, **kwargs):
+    def copy_then_fail(src, dst, *args, **kwargs):
         if wrote:
             raise OSError("disk full")
         wrote.append(dst)
-        return real_copy2(src, dst, *args, **kwargs)
+        return real_copy(src, dst, *args, **kwargs)
 
-    def copytree_then_fail(src, dst, *args, **kwargs):
-        wrote.append(real_copytree(src, dst, *args, **kwargs))
-        raise OSError("disk full")
-
-    monkeypatch.setattr(ops.shutil, "copy2", copy2_then_fail)
-    monkeypatch.setattr(ops.shutil, "copytree", copytree_then_fail)
+    monkeypatch.setattr(ops.safety, "copy_and_hash", copy_then_fail)
     with pytest.raises(OSError, match="disk full"):
         make(vault, live)
     monkeypatch.undo()
@@ -554,43 +568,32 @@ def test_a_failed_vault_copy_leaves_nothing_behind(tmp_path, monkeypatch, make):
     assert vault.entries == [] and Vault(vault.root).load().entries == []
 
 
-@pytest.mark.parametrize(
-    ("make", "message"),
-    [
-        (lambda vault, live: ops.snapshot_live(vault, live, reason="x"), "changed while it was being copied"),
-        (_MANAGED_COPIES["full backup"], "changed while it was being copied"),
-        (_MANAGED_COPIES["extract"], "does not match the original"),
-        (_MANAGED_COPIES["copied import"], "does not match the original"),
-    ],
-    ids=["snapshot", "full backup", "extract", "copied import"],
-)
-def test_a_corrupted_vault_copy_is_caught_and_removed(tmp_path, monkeypatch, make, message):
-    """Every copy is checked by sha256 against its source; a copy that came out different
-    is removed and nothing is catalogued. Copying a live folder, the likely cause is the game
-    or the Xbox app writing to it meanwhile, and the message says so."""
+_EVERY_COPY = [lambda vault, live: ops.snapshot_live(vault, live, reason="x"), *_MANAGED_COPIES.values()]
+_EVERY_COPY_IDS = ["snapshot", *_MANAGED_COPIES]
+
+
+def _flip_last_byte(path: Path) -> None:
+    data = bytearray(path.read_bytes())
+    data[-1] ^= 0xFF
+    path.write_bytes(bytes(data))
+
+
+@pytest.mark.parametrize("make", _EVERY_COPY, ids=_EVERY_COPY_IDS)
+def test_a_corrupted_vault_copy_is_caught_and_removed(tmp_path, monkeypatch, make):
+    """Every copy is checked against the sha256 of what was read from its source; a copy
+    that came out different is removed and nothing is catalogued."""
     live = tmp_path / "live"
     steam_save(live, 1, 0, "Run", 3600, 0x1234, 1_700_000_000)
     vault = Vault(tmp_path / "vault")
-    real_copy2, real_copytree = shutil.copy2, shutil.copytree
+    real_copy = ops.safety.copy_and_hash
 
-    def corrupt(path: Path) -> None:
-        data = bytearray(path.read_bytes())
-        data[-1] ^= 0xFF
-        path.write_bytes(bytes(data))
+    def copy_corrupting(src, dst, *args, **kwargs):
+        digest = real_copy(src, dst, *args, **kwargs)
+        _flip_last_byte(Path(dst))
+        return digest
 
-    def copy2_corrupting(src, dst, *args, **kwargs):
-        result = real_copy2(src, dst, *args, **kwargs)
-        corrupt(Path(result))
-        return result
-
-    def copytree_corrupting(src, dst, *args, **kwargs):
-        result = real_copytree(src, dst, *args, **kwargs)
-        corrupt(next(p for p in sorted(Path(result).rglob("*.hg")) if p.is_file()))
-        return result
-
-    monkeypatch.setattr(ops.shutil, "copy2", copy2_corrupting)
-    monkeypatch.setattr(ops.shutil, "copytree", copytree_corrupting)
-    with pytest.raises(ops.OperationError, match=message):
+    monkeypatch.setattr(ops.safety, "copy_and_hash", copy_corrupting)
+    with pytest.raises(ops.ValidationError, match="does not match the original"):
         make(vault, live)
     monkeypatch.undo()
 
@@ -634,11 +637,36 @@ def test_a_save_file_vanishing_during_the_copy_is_reported_plainly(tmp_path, mon
         Path(src).unlink()
         raise FileNotFoundError(2, "No such file or directory", str(src))
 
-    monkeypatch.setattr(ops.shutil, "copy2", game_deletes_it)
+    monkeypatch.setattr(ops.safety, "copy_and_hash", game_deletes_it)
     with pytest.raises(ops.OperationError, match="disappeared while it was being copied"):
         ops.snapshot_live(vault, live, reason="x")
     monkeypatch.undo()
     assert list(vault.snapshots_dir.iterdir()) == [] and vault.entries == []
+
+
+@pytest.mark.parametrize(("make", "advice"), [
+    (lambda vault, live: ops.snapshot_live(vault, live, reason="x"), "Close the game"),
+    (_MANAGED_COPIES["copied import"], "source folder is still there"),
+], ids=["live folder", "other folder"])
+def test_a_source_that_changes_while_it_is_read_is_caught(tmp_path, monkeypatch, make, advice):
+    """The copy itself is consistent with what was read, but the source moved meanwhile:
+    caught without reading the source twice, with advice that fits where it came from."""
+    live = tmp_path / "live"
+    steam_save(live, 1, 0, "Run", 3600, 0x1234, 1_700_000_000)
+    vault = Vault(tmp_path / "vault")
+    real_copy = ops.safety.copy_and_hash
+
+    def copy_then_source_changes(src, dst, *args, **kwargs):
+        digest = real_copy(src, dst, *args, **kwargs)
+        with open(src, "ab") as f:                 # the game writes the save meanwhile
+            f.write(b"x")
+        return digest
+
+    monkeypatch.setattr(ops.safety, "copy_and_hash", copy_then_source_changes)
+    with pytest.raises(ops.SourceChangedError, match=f"changed while it was being copied.*{advice}"):
+        make(vault, live)
+    monkeypatch.undo()
+    assert vault.entries == []
 
 
 def test_a_catalog_removal_that_cannot_be_saved_is_not_half_done(tmp_path):
