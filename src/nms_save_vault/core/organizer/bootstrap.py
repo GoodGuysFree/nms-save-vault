@@ -292,7 +292,7 @@ class _Plan:
         written = record.get("target")
         if written:
             for ref, folder in self.result.live.items():
-                if _same_path(folder.source.path, written):
+                if safety.same_path(folder.source.path, written):
                     return ref
             raise _Unresolved("the folder it wrote is not a live folder here")
         candidates = [r for r in self.refs if r.platform == platform]
@@ -366,13 +366,6 @@ def _followed_by_its_undo(records: list, index: int) -> bool:
     after = records[index + 1][1]
     return (after.get("op") == "undo" and not after.get("entry_id")
             and after.get("snapshot_id") == records[index][1].get("entry_id"))
-
-
-def _same_path(a: str, b: str) -> bool:
-    try:
-        return Path(a).resolve() == Path(b).resolve()
-    except OSError:
-        return False
 
 
 def _utc(local: object) -> int | None:

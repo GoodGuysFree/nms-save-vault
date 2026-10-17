@@ -607,7 +607,7 @@ def extract_slot(
     source_dir = Path(source_dir)
     _check_slot(slot)
     collected: list[str] = []
-    live = any(_same_folder(source_dir, Path(d)) for d in live_dirs)
+    live = any(safety.same_path(source_dir, d) for d in live_dirs)
     if _is_xbox(source_dir):
         entry = _extract_slot_xbox(vault, source_dir, slot, label, collected, live)
     else:
@@ -1303,7 +1303,7 @@ def _best_vault_copy(
     for entry in vault.entries:
         folder = Path(entry.path)
         try:
-            if not folder.is_dir() or any(_same_folder(folder, d) for d in lives):
+            if not folder.is_dir() or any(safety.same_path(folder, d) for d in lives):
                 continue
             view = savedir.scan_any(folder)
             entry_platform = savedir.platform_of(folder)
@@ -1775,7 +1775,7 @@ def _changed_folder(
     known live folder of that platform shares cannot place it."""
     target = record.get("target")
     if target:
-        return _same_folder(Path(target), live_dir)
+        return safety.same_path(target, live_dir)
     snap = entries.get(record.get("snapshot_id"))
     if snap is None or not snap.source:
         return None
@@ -1788,13 +1788,9 @@ def _changed_folder(
     if not could_be(live_dir):
         return False
     this = msstore.with_xgs_twins([live_dir])          # its xgs mirror is the same save
-    if any(could_be(d) and not any(_same_folder(d, t) for t in this) for d in others):
+    if any(could_be(d) and not any(safety.same_path(d, t) for t in this) for d in others):
         return None
     return True
-
-
-def _same_folder(a: Path, b: Path) -> bool:
-    return os.path.normcase(str(a.resolve())) == os.path.normcase(str(b.resolve()))
 
 
 # --- validation helpers ------------------------------------------------------

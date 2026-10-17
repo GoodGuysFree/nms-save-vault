@@ -20,16 +20,18 @@ from . import bootstrap as _bootstrap
 from .bootstrap import BootstrapReport
 from .cache import FILENAME, ScanCache, cache_dir
 from .folders import FolderLocator
-from .journal import SKIP_BUSY, Journal, ObserveResult
+from .journal import SKIP_BUSY, SKIP_LOCK_FAILED, Journal, ObserveResult
 from .lineage import read_lineage
 from .locator import VaultLocator
 from .model import EntryRef, LiveTarget
 from .notes import Notes, read_notes
 from .readmodel import ReadModel
-from .scanner import ScanResult, live_refs, scan
+from .scanner import ScanResult, live_refs, scan, with_live
 from .store import OrganizerStore, liveop_lock_path
 
 log = logging.getLogger(__name__)
+
+LOCKED = "locked"
 
 
 class Organizer:
@@ -77,23 +79,30 @@ class Organizer:
                 cancel=None) -> ReadModel:
         """Scan, journal the live slots when ``record`` (listings do not), build the model.
 
-        Recording holds the live-op lock over the scan and the journal write, so no live
-        write is under way between the look and the record. The lock is only tried: when a
-        write holds it, the slots are not journaled this time (reason "busy")."""
+        The vault's entries are scanned first, without any lock. Recording then tries the
+        live-op lock and, holding it, looks at the live folders again and journals what
+        that second look found, so no live write is under way between the look and the
+        record (as the bootstrap does). When a write holds the lock the slots are not
+        journaled this time ("operation in progress"); when the lock cannot be taken at all
+        they are not either ("live-op lock failed")."""
+        running = self.game_running()
+        self.scan = scan(self.vault, self.sources, self.cache, game_running=running,
+                         deep=deep, now=self.clock, progress=progress, cancel=cancel)
+        self.observed = None
         recording = record and not self.store.read_only
         with ExitStack() as stack:
-            locked = recording and self._try_live_lock(stack)
-            self.scan = scan(self.vault, self.sources, self.cache,
-                             game_running=self.game_running(), deep=deep, now=self.clock,
-                             progress=progress, cancel=cancel)
-            journal = Journal(self.store, self.scan.versions)
-            self.observed = None
-            if locked:
+            lock = self._try_live_lock(stack) if recording else None
+            if lock == LOCKED:
+                fresh = scan(None, self.sources, self.cache, game_running=running,
+                             now=self.clock)
+                self.scan = with_live(self.scan, fresh)
+                journal = Journal(self.store, self.scan.versions)
                 self.observed = journal.observe(self.scan, src="scan", skip=self.busy_targets())
-            elif recording:
+            elif lock is not None:
                 self.observed = ObserveResult(0, (), tuple(
-                    (ref.target(c.slot), SKIP_BUSY)
+                    (ref.target(c.slot), lock)
                     for ref, folder in self.scan.live.items() for c in folder.captures))
+        journal = Journal(self.store, self.scan.versions)
         self.model = ReadModel.build(self.scan, journal.replay(), read_lineage(self.store),
                                      read_notes(self.store), self.sources, now=int(self.clock()))
         self.locator = VaultLocator([FolderLocator(self.scan, self._folders())], None)
@@ -107,18 +116,19 @@ class Organizer:
                                     dry_run=dry_run or self.read_only, clock=self.clock,
                                     progress=progress, cancel=cancel)
 
-    def _try_live_lock(self, stack: ExitStack) -> bool:
+    def _try_live_lock(self, stack: ExitStack) -> str:
+        """LOCKED, or why not: SKIP_BUSY (a live write holds it), SKIP_LOCK_FAILED."""
         try:
             stack.enter_context(safety.exclusive_lock(liveop_lock_path(self.vault_root),
                                                       timeout=0))
         except (safety.LockTimeout, RuntimeError):
             log.info("a live write is under way; the live slots are journaled next time")
-            return False
+            return SKIP_BUSY
         except OSError as exc:
             log.warning("the live slots are not journaled: the live-op lock failed: %s",
                         exc.strerror or exc)
-            return False
-        return True
+            return SKIP_LOCK_FAILED
+        return LOCKED
 
     @property
     def problems(self) -> list[str]:

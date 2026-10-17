@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import dataclasses
 import logging
-import os
 import threading
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
@@ -164,8 +163,8 @@ class _ClassicWrite:
         self.pre: ScanResult | None = None
 
     def _prepare(self) -> None:
-        if hasattr(self, "store"):
-            return
+        if hasattr(self, "cache"):      # the last thing set: a look that failed half-way
+            return                      # is prepared again
         self.store = OrganizerStore(self.vault_root, create=False, clock=self.clock)
         self.ref = LiveRef(self.platform, self.live_dir.name, self._instance())
         # The per-machine cache, read only: fixed legacy pids and known hashes are honoured,
@@ -178,9 +177,8 @@ class _ClassicWrite:
         folders): the location's hash only when another configured live folder of this
         platform has the same name (two Proton prefixes)."""
         sources = list(_configured_sources())
-        here = _resolved(self.live_dir)
         for source, ref in zip(sources, live_refs(sources)):
-            if ref.platform == self.platform and _resolved(Path(source.path)) == here:
+            if ref.platform == self.platform and safety.same_path(source.path, self.live_dir):
                 return ref.instance
         return ""
 
@@ -280,13 +278,6 @@ def _configured_sources() -> Sequence[Source]:
         log.warning("organizer: the live folder list was not read: %s", exc)
         return []
     return state.live_sources if state is not None else []
-
-
-def _resolved(path: Path) -> str:
-    try:
-        return os.path.normcase(str(path.resolve()))
-    except OSError:
-        return os.path.normcase(str(path))
 
 
 def _renamed(result: ScanResult, ref: LiveRef) -> ScanResult:

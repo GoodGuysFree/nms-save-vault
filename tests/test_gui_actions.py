@@ -1008,3 +1008,24 @@ def test_about_names_the_version(app, monkeypatch):
     monkeypatch.setattr(gui, "_showinfo", lambda title, msg, **k: shown.update(title=title, msg=msg))
     _invoke(_menus(app)["Help"], "About NMS Save Vault")
     assert __version__ in shown["msg"]
+
+
+def test_window_keys_do_nothing_while_a_dialog_holds_the_grab(app, monkeypatch):
+    """F5 under an open dialog refreshed the panes behind it; zoom rebuilt them."""
+    calls = []
+    run = app._shortcut(lambda: calls.append("ran"))
+    monkeypatch.setattr(app, "grab_current", lambda: app.live_tree)     # a dialog's grab
+    assert run() == "break" and calls == []
+    monkeypatch.setattr(app, "grab_current", lambda: None)
+    assert run() == "break" and calls == ["ran"]
+
+
+def test_every_window_wide_key_goes_through_the_grab_check():
+    import re
+    from pathlib import Path
+
+    from nms_save_vault import gui
+
+    source = Path(gui.__file__).read_text(encoding="utf-8")
+    bindings = re.findall(r"self\.bind_all\([^\n]*", source)
+    assert bindings and all("_shortcut(" in b for b in bindings), bindings

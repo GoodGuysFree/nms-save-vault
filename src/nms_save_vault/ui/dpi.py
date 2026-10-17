@@ -70,6 +70,12 @@ def px(n: float) -> int:
     return scaled(n, _pixels_per_inch, _zoom)
 
 
+def screen_px(n: float) -> int:
+    """``n`` logical pixels for this screen, without the font zoom: window sizes, which
+    the zoom must not push off the screen."""
+    return scaled(n, _pixels_per_inch, 1.0)
+
+
 def pxs(*values: float) -> tuple[int, ...]:
     """:func:`px` of each value: ``padding=pxs(14, 0, 14, 12)``."""
     return tuple(px(v) for v in values)
@@ -92,11 +98,33 @@ def work_area(root) -> tuple[int, int]:
     return int(root.winfo_screenwidth()), int(root.winfo_screenheight())
 
 
-def first_start_size(area: tuple[int, int], minimum: tuple[int, int]) -> tuple[int, int]:
-    """80 % of the work area, at least ``minimum``, never more than the area (D6 3.15)."""
+def window_chrome(root) -> tuple[int, int]:
+    """What the window adds around the size given to ``geometry()``: the borders, the
+    title bar and the menu bar. Windows asks the system; elsewhere a fair estimate."""
+    if sys.platform == "win32":
+        import ctypes
+
+        metric = ctypes.windll.user32.GetSystemMetrics
+        try:
+            frame_x = metric(32) + metric(92)        # SM_CXSIZEFRAME + SM_CXPADDEDBORDER
+            frame_y = metric(33) + metric(92)        # SM_CYSIZEFRAME + SM_CXPADDEDBORDER
+            caption, menu = metric(4), metric(15)    # SM_CYCAPTION, SM_CYMENU
+        except (AttributeError, OSError):
+            pass
+        else:
+            if caption > 0:
+                return 2 * frame_x, caption + menu + 2 * frame_y
+    return screen_px(16), screen_px(80)
+
+
+def first_start_size(area: tuple[int, int], minimum: tuple[int, int],
+                     chrome: tuple[int, int] = (0, 0)) -> tuple[int, int]:
+    """80 % of the work area, at least ``minimum``, and never so big that the window with
+    its ``chrome`` leaves the work area (D6 3.15)."""
     out = []
-    for have, least in zip(area, minimum):
-        out.append(max(1, min(have, max(least, int(have * 0.8)))))
+    for have, least, frame in zip(area, minimum, chrome):
+        room = max(1, have - frame)
+        out.append(max(1, min(room, max(least, int(have * 0.8)))))
     return out[0], out[1]
 
 

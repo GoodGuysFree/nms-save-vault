@@ -469,7 +469,11 @@ class App(tk.Tk):
         # Every pixel constant goes through px(): this screen's DPI times the font zoom, so
         # the zoom is known before the first widget is built.
         dpi.configure(self, zoom=theme.clamp_font_scale(self.state.font_scale))
-        width, height = dpi.first_start_size(dpi.work_area(self), (px(1000), px(640)))
+        # The minimum is logical pixels at this DPI, not zoomed: a large font must not push
+        # the first window off a small screen.
+        width, height = dpi.first_start_size(
+            dpi.work_area(self), (dpi.screen_px(1000), dpi.screen_px(640)),
+            dpi.window_chrome(self))
         self.geometry(f"{width}x{height}")
         vault_root =Path(vault) if vault else (self.state.vault or locations.default_vault_dir())
         self.vault = Vault(vault_root)
@@ -634,9 +638,18 @@ class App(tk.Tk):
         about.add_command(label="Help", command=self.on_help, accelerator="F1", underline=0)
         about.add_command(label="About NMS Save Vault", command=self.on_about, underline=0)
         self.configure(menu=bar)
-        self.bind_all("<F1>", lambda _e: self.on_help())
-        self.bind_all("<F5>", lambda _e: self.refresh())
-        self.bind_all("<Control-Key-0>", lambda _e: self._zoom_reset())
+        self.bind_all("<F1>", self._shortcut(self.on_help))
+        self.bind_all("<F5>", self._shortcut(self.refresh))
+        self.bind_all("<Control-Key-0>", self._shortcut(self._zoom_reset))
+
+    def _shortcut(self, action):
+        """A window-wide key. Ignored while a dialog or the "Please wait" window holds the
+        grab: F5 must not refresh the panes under an open dialog, nor zoom rebuild them."""
+        def run(_event=None):
+            if self.grab_current() is None:
+                action()
+            return "break"
+        return run
 
     def _build_widgets(self) -> None:
         self.theme_var = tk.StringVar(value=theme.CHOICE_LABELS.get(self.state.theme, "System"))
@@ -734,9 +747,9 @@ class App(tk.Tk):
         # Both spellings of each key: Ctrl+= and Ctrl+- are what those keys report
         # unshifted, Ctrl++ and Ctrl+_ what they report with Shift held, plus the keypad.
         for seq in ("<Control-plus>", "<Control-equal>", "<Control-KP_Add>"):
-            self.bind_all(seq, lambda _e: self._zoom(1))
+            self.bind_all(seq, self._shortcut(lambda: self._zoom(1)))
         for seq in ("<Control-minus>", "<Control-underscore>", "<Control-KP_Subtract>"):
-            self.bind_all(seq, lambda _e: self._zoom(-1))
+            self.bind_all(seq, self._shortcut(lambda: self._zoom(-1)))
 
     # --- theme ---------------------------------------------------------------
 

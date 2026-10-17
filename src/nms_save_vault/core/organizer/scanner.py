@@ -106,6 +106,23 @@ class ScanCancelled(Exception):
     pass
 
 
+def with_live(result: ScanResult, fresh: ScanResult) -> ScanResult:
+    """``result`` (a full scan) with its live folders as ``fresh`` (a live-only scan made
+    after it) saw them: the entries are kept, the registry is rebuilt from both, and the
+    game state and the live folders' problems are the fresh ones."""
+    ordered = [(c, (c.observed_at, -1)) for e in result.entries.values() for c in e.captures]
+    ordered += [(c, (c.observed_at, 0)) for f in fresh.live.values() for c in f.captures]
+    versions, pairs = _registry(ordered, result.entries)
+    problems = tuple(p for p in result.problems
+                     if p.where is not None and not isinstance(p.where, LiveRef))
+    return ScanResult(
+        at=fresh.at, live=fresh.live, entries=result.entries,
+        captures=tuple(c for c, _ in ordered), versions=versions, pairs=pairs,
+        problems=problems + fresh.problems, game_running=fresh.game_running,
+        timings={**result.timings, "live": fresh.timings.get("live", 0.0)},
+    )
+
+
 def scan(vault: Vault | None, sources: Sequence[Source], cache: ScanCache, *,
          game_running: bool | None, deep: bool = False,
          now: Callable[[], float] = time.time,
@@ -255,7 +272,9 @@ class _Run:
         lines = []
 
         def add(rel: str, entry: os.DirEntry) -> None:
-            st = entry.stat()          # from the directory listing on Windows: no extra call
+            # The file itself, not the directory listing's copy: on Windows a listing can
+            # lag a write still being flushed, and then a changed entry looks unchanged.
+            st = os.stat(entry.path)
             lines.append(f"{rel}|{st.st_size}|{st.st_mtime_ns}")
             self.seen_paths.add(entry.path)
 

@@ -458,3 +458,26 @@ def test_a_write_into_a_folder_not_looked_at_before_is_still_recorded(tmp_path, 
     (op,) = _ops(vault)
     assert op["target"]["slot"] == 9 and op["evicted"] is None
     assert op["pair"] == [_vid(_data(live, 9)), None] and op["preserved"] == {}
+
+
+# --- chunk D review -----------------------------------------------------------
+
+
+def test_a_look_that_failed_half_way_is_prepared_again(tmp_path, monkeypatch):
+    """The first look opened the store but not the cache: the record after the write must
+    prepare again, not run on half a setup."""
+    vault, live = _setup(tmp_path)
+    backup = operations.create_full_backup(vault, live, warnings=[])
+    real_load = rec_mod.ScanCache.load
+    calls = []
+
+    def load_fails_once(*args, **kwargs):
+        calls.append(1)
+        if len(calls) == 1:
+            raise OSError("the cache folder is not there yet")
+        return real_load(*args, **kwargs)
+
+    monkeypatch.setattr(rec_mod.ScanCache, "load", load_fails_once)
+    operations.repopulate_slot(vault, Path(backup.path), 3, live, 9)
+    (op,) = _ops(vault)
+    assert op["target"]["slot"] == 9 and len(calls) == 2

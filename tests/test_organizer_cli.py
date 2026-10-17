@@ -344,3 +344,64 @@ def test_a_location_that_cannot_be_read_hands_over_to_the_next(world, monkeypatc
     two = VaultLocator([FolderLocator(org.scan, {}), org.locator], None)
     monkeypatch.setattr(folders.metacrypt, "decrypt", real_decrypt)
     assert two.open(head).location == entry_loc
+
+
+# --- chunk D review -----------------------------------------------------------
+
+
+def test_refresh_scans_the_vault_unlocked_and_the_live_folders_under_the_lock(world,
+                                                                              monkeypatch):
+    """A live write waits for the lock: holding it over the whole vault scan would make it
+    wait for seconds. Only the second look at the live folders and the record hold it."""
+    import contextlib
+
+    from nms_save_vault.core import organizer as org_mod
+
+    vault, live, state = world
+    held = []
+    real_lock, real_scan = safety.exclusive_lock, org_mod.scan
+    calls = []
+
+    @contextlib.contextmanager
+    def watched(path, **kw):
+        with real_lock(path, **kw) as handle:
+            held.append(True)
+            try:
+                yield handle
+            finally:
+                held.pop()
+
+    def scan_then_play(vault_arg, *args, **kw):
+        calls.append((vault_arg is not None, bool(held)))
+        result = real_scan(vault_arg, *args, **kw)
+        if len(calls) == 1:                         # the game saves after the vault scan
+            steam_save(live, 9, 0, "Main Save", 7400, MAIN, T0 + 90, extra="later")
+        return result
+
+    monkeypatch.setattr(safety, "exclusive_lock", watched)
+    monkeypatch.setattr(org_mod, "scan", scan_then_play)
+    org = Organizer(vault.root, state.live_sources)
+    model = org.refresh(record=True)
+    assert calls == [(True, False), (False, True)]
+    later = hashlib.sha256((live / slotmap.data_filename(
+        slotmap.slot_file_numbers(9)[0])).read_bytes()).hexdigest()
+    last9 = [r for r in org.store.journal_records() if r["target"]["slot"] == 9][-1]
+    assert last9["pair"][0] == later                # what the second look saw is recorded
+    assert model.versions(PID)[0].head == later     # and the model shows it
+
+
+def test_a_lock_that_fails_is_not_reported_as_busy(world, monkeypatch):
+    from nms_save_vault.core.organizer.journal import SKIP_LOCK_FAILED
+
+    vault, live, state = world
+    steam_save(live, 9, 0, "Main Save", 7300, MAIN, T0 + 60, extra="played")
+    before = (vault.root / "organizer" / "journal.jsonl").read_bytes()
+
+    def broken(path, **kw):
+        raise PermissionError(13, "read-only vault")
+
+    monkeypatch.setattr(safety, "exclusive_lock", broken)
+    org = Organizer(vault.root, state.live_sources)
+    org.refresh(record=True)
+    assert {reason for _, reason in org.observed.skipped} == {SKIP_LOCK_FAILED}
+    assert (vault.root / "organizer" / "journal.jsonl").read_bytes() == before
