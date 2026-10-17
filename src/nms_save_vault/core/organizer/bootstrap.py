@@ -103,13 +103,15 @@ class _Item:
 
 
 def bootstrap(vault: Vault, store: OrganizerStore, sources: Sequence[Source],
-              cache: ScanCache, *, game_running: bool | None, dry_run: bool = False,
-              clock: Callable[[], float] = time.time,
+              cache: ScanCache, *, game_running: Callable[[], bool | None],
+              dry_run: bool = False, clock: Callable[[], float] = time.time,
               progress: Callable[[int, int], None] | None = None,
               cancel: threading.Event | None = None) -> BootstrapReport:
+    """``game_running`` is asked twice: for the deep scan, and again just before the live
+    slots are journaled at the end (the game may have started meanwhile)."""
     started = time.perf_counter()
     begun = int(clock())
-    result = scan(vault, sources, cache, game_running=game_running, deep=True, now=clock,
+    result = scan(vault, sources, cache, game_running=game_running(), deep=True, now=clock,
                   progress=progress, cancel=cancel)
     existing, problems = decode_all(store.journal_records())
     lineage = store.document(LINEAGE)
@@ -148,13 +150,15 @@ def bootstrap(vault: Vault, store: OrganizerStore, sources: Sequence[Source],
 
 
 def _observe_now(vault: Vault, store: OrganizerStore, sources: Sequence[Source],
-                 cache: ScanCache, deep: ScanResult, game_running: bool | None,
+                 cache: ScanCache, deep: ScanResult,
+                 game_running: Callable[[], bool | None],
                  clock: Callable[[], float]) -> tuple[Journal, int]:
     """Journal the live slots as they are now, not as the deep scan found them seconds or
-    minutes ago: a quick second look under the live-op lock, so no write is under way."""
+    minutes ago: a quick second look under the live-op lock, so no write is under way, and
+    a fresh game check (a running game's slots are never journaled)."""
     try:
         with safety.exclusive_lock(liveop_lock_path(vault.root), timeout=LIVEOP_TIMEOUT):
-            fresh = scan(None, sources, cache, game_running=game_running, now=clock)
+            fresh = scan(None, sources, cache, game_running=game_running(), now=clock)
             journal = Journal(store, {**deep.versions, **fresh.versions})
             return journal, journal.observe(fresh, src="scan", skip=frozenset()).written
     except safety.LockTimeout:
@@ -206,8 +210,9 @@ class _Plan:
         if len(named) == 1:
             return named[0]
         if not named and len(same_platform) == 1:
-            self.skipped.append((entry.id, f"taken of {scanned.source!r}; mapped to the only "
-                                           f"{platform} live folder"))
+            # Never the folder's own name: it carries the account id.
+            self.skipped.append((entry.id, f"taken of another {platform} folder; mapped to "
+                                           f"the only {platform} live folder"))
             return same_platform[0]
         self.skipped.append((entry.id, "entry-unmapped: no single live folder it was taken of"))
         return None
@@ -299,7 +304,8 @@ class _Plan:
         matches = [e for e in self.catalog.values() if e.id in self.result.entries and (
             (e.managed and e.id == name) or (not e.managed and Path(e.path).name == name))]
         if len(matches) != 1:
-            raise _Unresolved(f"{len(matches)} vault entries match the source {name!r}")
+            # Not the name: a live folder's name carries the account id.
+            raise _Unresolved(f"{len(matches)} vault entries match the folder it copied from")
         return matches[0]
 
     # --- records ----------------------------------------------------------------------

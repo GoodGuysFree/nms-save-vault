@@ -889,8 +889,11 @@ def resolve_version(model: ReadModel, ref: str) -> VersionRow:
         slot = _board_slot(model, ref)
         if slot.head is None:
             raise RefError(f"live slot {slot.label} holds no save")
-        return next(r for line in model.lines() for r in model.versions(line.pid)
-                    if r.head == slot.head)
+        row = next((r for line in model.lines() for r in model.versions(line.pid)
+                    if r.head == slot.head), None)
+        if row is None:
+            raise RefError(f"live slot {slot.label} holds a save no version row lists")
+        return row
     if _HEX.fullmatch(ref) and len(ref) >= 8:
         prefix = ref.lower()
         found = [r for line in model.lines() for r in model.versions(line.pid)

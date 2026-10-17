@@ -13,6 +13,15 @@ import pytest
 from nms_save_vault.core import catalog, formats, meta, msstore, slotmap
 
 
+@pytest.fixture(autouse=True)
+def _no_configured_live_folders(monkeypatch):
+    """The classic-operation hook names a live folder by the app's configured live folders
+    (state.json); a test never reads this machine's configuration. Tests that need some set
+    ``recorder._configured_sources`` themselves."""
+    from nms_save_vault.core.organizer import recorder
+    monkeypatch.setattr(recorder, "_configured_sources", lambda: [], raising=False)
+
+
 def find_live_save_dir() -> Path | None:
     appdata = os.environ.get("APPDATA")
     if not appdata:
