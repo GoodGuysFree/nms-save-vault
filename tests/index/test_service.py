@@ -103,6 +103,7 @@ def test_the_service_is_d1s_facts_provider(make):
     cs = svc.changes(child, parent, edge_kind="play")
     assert isinstance(cs, ChangeSet) and cs.header == "+1.5 h played"
     assert [c.text for c in cs.items] == ["glyphs 1 -> 3 of 16", "units +1"]
+    wait_for(lambda: svc.is_milestone(child, parent) is not None)       # worked out off this thread
     assert svc.is_milestone(child, parent) is False
     assert isinstance(svc.request([child], Priority.LIVE), int)
 

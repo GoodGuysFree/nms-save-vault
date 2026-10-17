@@ -56,7 +56,7 @@ class IndexProgress:
 @dataclass(frozen=True)
 class IndexEvent:
     seq: int
-    kind: Literal["indexed", "failed", "stale", "cleared", "deep-ready", "finished"]
+    kind: Literal["indexed", "failed", "stale", "cleared", "deep-ready", "finished", "milestone", "warmed"]
     vid: str | None
     status: str | None
 
@@ -67,6 +67,10 @@ def _default_game_running() -> bool | None:
 
 
 class IndexService:
+    #: The request tiers, reachable through the service so that the organizer (D1's
+    #: ``FactsProvider`` user) never imports the index.
+    Priority = Priority
+
     def __init__(self, *, cache_path: Path | None, vault_id: str, locator, policy: ExecutionPolicy,
                  size_hint: Callable[[str], int | None] | None = None,
                  when: Callable[[str], float | None] | None = None,
@@ -89,6 +93,12 @@ class IndexService:
         self._known: dict[str, tuple[str, int]] = {}
         self._strikes: dict[str, int] = {}
         self._deep: OrderedDict[str, dict] = OrderedDict()
+        # What a UI thread may read without touching sqlite: the derived view of every
+        # indexed version and the milestone answers computed so far (both filled on the
+        # writer thread).
+        self._views: dict[str, derive.FactsView] = {}
+        self._milestones: dict[tuple[str, str], bool] = {}
+        self._milestone_asked: set[tuple[str, str]] = set()
         if policy.mode == "off":
             return
         self.cache = IndexCache(cache_path, vault_id=vault_id, app_version=app_version, forbidden=forbidden,
@@ -102,6 +112,7 @@ class IndexService:
         self._writer = threading.Thread(target=self._write_loop, name="index-write", daemon=True)
         self._writer.start()
         self._writes.put(("gc",))
+        self._writes.put(("warm",))
         self.dispatcher.start()
         refresh = self.cache.stale_vids() + self.cache.retry_vids()
         if refresh:
@@ -110,8 +121,10 @@ class IndexService:
     # --- D1's FactsProvider ----------------------------------------------------------------
 
     def view(self, vid: str) -> derive.FactsView | None:
-        facts = self.facts(vid)
-        return None if facts is None else derive.view(vid, facts)
+        """The version's facts view from memory: never a database read, never a wait. None
+        until the version is indexed (or, just after start, until the cache is loaded)."""
+        with self._lock:
+            return self._views.get(vid)
 
     def changes(self, child: str, parent: str, *, edge_kind: str | None = None) -> changes_mod.ChangeSet | None:
         c, p = self.facts(child), self.facts(parent)
@@ -121,10 +134,18 @@ class IndexService:
         return changes_mod.changes(c, p, edge_kind=edge_kind, child_vid=child, parent_vid=parent)
 
     def is_milestone(self, child: str, parent: str) -> bool | None:
-        c, p = self.facts(child), self.facts(parent)
-        if c is None or p is None:
-            return None
-        return changes_mod.is_milestone(changes_mod.changes(c, p, child_vid=child, parent_vid=parent))
+        """Whether the step from ``parent`` reached a milestone, from what is computed so
+        far. An unknown answer is None and is worked out on the writer thread (never on the
+        caller's); a ``milestone`` event says when it is ready."""
+        key = (child, parent)
+        with self._lock:
+            if key in self._milestones:
+                return self._milestones[key]
+            if child not in self._views or parent not in self._views or key in self._milestone_asked:
+                return None
+            self._milestone_asked.add(key)
+        self._writes.put(("milestone", child, parent))
+        return None
 
     def request(self, vids: Iterable[str], priority: Priority) -> int:
         """Queue versions that need (re)indexing; returns how many were newly queued."""
@@ -372,6 +393,7 @@ class IndexService:
                 return
             stored = (result.facts or {}).get("extractor", EXTRACTOR_VERSION)
             self._known[result.vid] = (result.status, stored)
+            self._remember_view(result.vid)
             self._strikes.pop(result.vid, None)
             self._event("indexed", result.vid, result.status)
         elif kind == "failure":
@@ -388,14 +410,48 @@ class IndexService:
         elif kind == "gc":
             if self.cache.gc():
                 self._known = self.cache.indexed()
+                with self._lock:
+                    self._views = {v: view for v, view in self._views.items() if v in self._known}
+        elif kind == "warm":
+            for vid in list(self._known):
+                self._remember_view(vid, forget_milestones=False)
+            self._event("warmed")
+        elif kind == "milestone":
+            _, child, parent = op
+            c, p = self.cache.facts(child), self.cache.facts(parent)
+            with self._lock:
+                self._milestone_asked.discard((child, parent))
+            if c is None or p is None:
+                return
+            found = changes_mod.is_milestone(changes_mod.changes(c, p, child_vid=child, parent_vid=parent))
+            with self._lock:
+                self._milestones[(child, parent)] = found
+            self._event("milestone", child, "yes" if found else "no")
         elif kind == "clear":
             self.cache.clear()
             self._known.clear()
+            with self._lock:
+                self._views.clear()
+                self._milestones.clear()
+                self._milestone_asked.clear()
             self._strikes.clear()
             self._event("cleared")
             op[1].set()
         elif kind == "sync":
             op[1].set()
+
+    def _remember_view(self, vid: str, *, forget_milestones: bool = True) -> None:
+        """Derive the version's view once, here on the writer thread, for :meth:`view`."""
+        facts = self.cache.facts(vid)
+        view = derive.view(vid, facts) if facts is not None else None
+        with self._lock:
+            if view is None:
+                self._views.pop(vid, None)
+            else:
+                self._views[vid] = view
+            if forget_milestones:
+                for key in [k for k in self._milestones if vid in k]:
+                    del self._milestones[key]
 
     def _deep_ready(self, result: IndexResult) -> None:
         if result.status != "ok" or result.deep is None:

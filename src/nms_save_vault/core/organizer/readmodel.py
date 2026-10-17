@@ -15,6 +15,7 @@ appears in ``to_dict()``: live slots travel as opaque tokens (``<platform>:<sour
 from __future__ import annotations
 
 import dataclasses
+import math
 import re
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Mapping, Sequence
@@ -65,8 +66,13 @@ _TIER_RANK = {"owner": 3, "recorded": 2, "observed": 1}
 @runtime_checkable
 class FactsProvider(Protocol):
     """The part of D4's ``IndexService`` the organizer uses. Every call is non-blocking: a
-    cache read or a queue operation. ``view`` is a D4 ``FactsView`` (opaque here but for
-    ``numbers``); None means "not indexed yet", and the read model shows meta-level columns."""
+    memory read or a queue operation, safe on the UI thread. ``view`` is a D4 ``FactsView``
+    (opaque here but for ``numbers``); None means "not indexed (or loaded) yet", and the read
+    model shows meta-level columns. ``is_milestone`` answers from what is already computed:
+    None means "not known yet", counted as no milestone. ``Priority`` holds the request tiers
+    (``LIVE``, ``TIP``, ``NEW``, ``BACKFILL``), so the organizer never imports the index."""
+
+    Priority: Any
 
     def view(self, vid: Vid) -> Any | None: ...
     def changes(self, child: Vid, parent: Vid, *, edge_kind: str | None = None) -> Any | None: ...
@@ -419,19 +425,17 @@ class _Builder:
             if e.child not in best or rank > best[e.child][0]:
                 best[e.child] = (rank, e)
         self.edge_of = {child: e for child, (_, e) in best.items()}
-        self.parent_of = {child: e.parent for child, (_, e) in best.items()}
-        return dict(self.parent_of)
+        return {child: e.parent for child, (_, e) in best.items()}
 
     def _view(self, vid: Vid) -> Any | None:
         return self.facts.view(vid) if self.facts is not None else None
 
-    def _milestone(self, vid: Vid) -> bool:
-        """D4's key-version rule: the step from the drawn parent reached a milestone. A
-        version not indexed yet (None) is not a milestone."""
-        parent = self.parent_of.get(vid)
-        if self.facts is None or parent is None:
+    def _milestone(self, row: VersionRow) -> bool:
+        """D4's key-version rule, on the step from the drawn parent (the row's ``parent``).
+        Not known yet (None) is not a milestone."""
+        if self.facts is None or row.parent is None:
             return False
-        return self.facts.is_milestone(vid, parent) is True
+        return self.facts.is_milestone(row.head, row.parent) is True
 
     @staticmethod
     def _display_parent(vid: Vid, parent: Mapping[Vid, Vid], candidates: set[Vid]) -> Vid | None:
@@ -541,7 +545,7 @@ class _Builder:
             special = bool(r.flags & {"live", "noted", "locked"}) or r.head in new_name
             if r.in_tree:
                 key = special or bool(r.flags & {"tip", "fork", "root", "placed", "evicted"}) \
-                    or r.head in platform_change or self._milestone(r.head)
+                    or r.head in platform_change or self._milestone(r)
             else:
                 key = special or r.head in ends
             out.append(dataclasses.replace(r, key=key))
@@ -979,7 +983,9 @@ def sort_lines(lines: Iterable[Line], key: str = "last_played",
 
         def number(line: Line) -> float | None:
             value = (getattr(line.facts, "numbers", None) or {}).get(name)
-            return value if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+            if not isinstance(value, (int, float)) or isinstance(value, bool) or math.isnan(value):
+                return None                 # missing, not a number, or NaN: sorts last
+            return value
 
         known = [line for line in by_name if number(line) is not None]
         missing = [line for line in by_name if number(line) is None]

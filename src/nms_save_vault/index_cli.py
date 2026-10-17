@@ -24,6 +24,7 @@ from .core import aliases, safety
 from .core.index import IndexService, Priority, derive
 from .core.index import vaultlink
 from .core.organizer import Organizer
+from .core.organizer.facts import facts_targets
 from .core.organizer.readmodel import RefError, resolve_version
 
 WAIT_S = 300.0
@@ -148,15 +149,13 @@ def cmd_build(args) -> int:
             return 0
         if args.rebuild:
             service.rebuild()
-        scan = org.scan
-        live = vaultlink.live_vids(scan)
-        wanted = list(dict.fromkeys(live + ([] if args.live_only else list(scan.versions))))
+        live, _tips = facts_targets(org.scan, org.model)
+        wanted = live if args.live_only else list(org.scan.versions)
         started = time.monotonic()
-        queued = sum(1 for v in wanted if service.status(v) in ("not-indexed", "stale", "unreadable"))
         if args.live_only:
-            service.request(live, Priority.LIVE)
+            queued = service.request(live, Priority.LIVE)
         else:
-            org.request_facts()             # D4's tiers: live, then representatives and tips
+            queued = org.request_facts()    # D4's tiers: live, representatives and tips, new, the rest
         p = service.policy
         _out(f"Indexing {queued} of {len(wanted)} versions ({p.mode}, {p.workers} worker"
              f"{'s' if p.workers != 1 else ''}); {len(wanted) - queued} already indexed.")
