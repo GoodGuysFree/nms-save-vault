@@ -1,4 +1,5 @@
 """The content-addressed version store under ``<vault>/store/`` (design D3)."""
+from .capture import CaptureScope
 from .errors import (
     Cancelled,
     EntryCorrupt,

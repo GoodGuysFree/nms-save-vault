@@ -1,8 +1,10 @@
-"""The version store's root: ``<vault>/store/`` with its FORMAT file, the vault mode, opening
-with the compatibility checks, and the sweep of stale temp files (D3 2.2, 2.5, 2.12).
+"""The version store: ``<vault>/store/`` with its FORMAT file, the vault mode, opening with the
+compatibility checks, the sweep of stale temp files, adding entries and reading them back
+(D3 2.2, 2.5, 2.6, 2.12).
 
 The store holds no absolute path and no machine name: everything under ``store/`` is named by a
-hash or an entry id (D11).
+hash or an entry id (D11). Objects are written before and outside the vault lock; only the
+manifest commit runs under it, for milliseconds.
 """
 from __future__ import annotations
 
@@ -12,19 +14,33 @@ import os
 import re
 import secrets
 import shutil
+import threading
 import time
 import uuid
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from ... import __version__
-from .. import safety
-from .errors import StoreNotUpgraded, StoreTooNew, StoreUnavailable
-from .manifest import FileEntry
+from .. import catalog, safety, savedir
+from ..organizer.model import Platform
+from . import capture
+from .capture import CaptureScope
+from .errors import (
+    Cancelled,
+    EntryCorrupt,
+    InsufficientSpace,
+    ObjectMissing,
+    StoreBusy,
+    StoreError,
+    StoreNotUpgraded,
+    StoreTooNew,
+    StoreUnavailable,
+)
+from .manifest import ENTRY_KINDS, EntryKind, FileEntry, StoreEntry, is_entry_id
 from .objects import ObjectStore, sha256
 
 log = logging.getLogger(__name__)
@@ -40,6 +56,7 @@ HASH_NAME = "sha256"
 FANOUT = 2
 INLINE_MAX = 8192
 TMP_MAX_AGE = 3600          # own temp files older than this are leftovers, never work in progress
+SPACE_MARGIN = 64 * 1024 * 1024
 
 OBJECTS, ENTRIES, QUARANTINE, TMP, STATE = "objects", "entries", "quarantine", "tmp", "state"
 UPGRADE_JSON = "upgrade.json"
@@ -161,6 +178,9 @@ class VersionStore:
         self._faults = faults
         self.objects = ObjectStore(self.root / OBJECTS, self.root / TMP, self.root / QUARANTINE,
                                    faults=faults)
+        self._index: dict[str, StoreEntry] = {}
+        self._corrupt: dict[str, str] = {}          # manifest file name -> why it is unreadable
+        self._index_guard = threading.Lock()
 
     @property
     def read_only(self) -> bool:
@@ -180,6 +200,218 @@ class VersionStore:
         if fe.inline is not None:
             return fe.inline
         return self.objects.get(fe.sha256, fe.size)
+
+    # --- reading (no lock: manifests are immutable and appear atomically) ---------------------
+
+    def entries(self) -> list[StoreEntry]:
+        """Every readable entry, oldest first. Unreadable manifests are skipped (and logged);
+        :attr:`corrupt_manifests` names them."""
+        self._refresh()
+        return sorted(self._index.values(), key=lambda e: (e.created_utc, e.id))
+
+    def entry(self, entry_id: str) -> StoreEntry:
+        """The entry; KeyError when there is none, EntryCorrupt when its manifest is bad."""
+        self._refresh()
+        if entry_id in self._index:
+            return self._index[entry_id]
+        if f"{entry_id}.json" in self._corrupt:
+            raise EntryCorrupt(f"entry {entry_id}: {self._corrupt[f'{entry_id}.json']}")
+        raise KeyError(f"the store has no entry {entry_id!r}")
+
+    def has_entry(self, entry_id: str) -> bool:
+        self._refresh()
+        return entry_id in self._index
+
+    def read_file(self, entry_id: str, path: str) -> bytes:
+        """One file of an entry, verified."""
+        return self.file_bytes(self.entry(entry_id).file(path))
+
+    @property
+    def corrupt_manifests(self) -> dict[str, str]:
+        self._refresh()
+        return dict(self._corrupt)
+
+    def _refresh(self) -> None:
+        """Parse manifests not seen yet. They never change once written, so a name already
+        indexed (or found corrupt) is not read again."""
+        try:
+            names = os.listdir(self.root / ENTRIES)
+        except OSError as exc:
+            raise StoreUnavailable(f"The vault is not reachable ({exc.strerror or exc}).") from exc
+        with self._index_guard:
+            for name in names:
+                if not name.endswith(".json") or name[:-5] in self._index or name in self._corrupt:
+                    continue
+                try:
+                    raw = (self.root / ENTRIES / name).read_bytes()
+                except OSError as exc:
+                    log.warning("could not read the store manifest %s: %s", name, exc)
+                    continue
+                try:
+                    entry = StoreEntry.from_bytes(raw)
+                    if entry.id != name[:-5]:
+                        raise EntryCorrupt(f"names entry {entry.id}")
+                except EntryCorrupt as exc:
+                    log.warning("the store manifest %s is damaged: %s", name, exc)
+                    self._corrupt[name] = str(exc)
+                    continue
+                self._index[entry.id] = entry
+
+    # --- writing ------------------------------------------------------------------------------
+
+    def add_from_folder(self, folder: str | Path, *, kind: EntryKind, label: str,
+                        source: Mapping[str, Any], scope: CaptureScope = CaptureScope(),
+                        entry_id: str | None = None, origin: Mapping[str, Any] | None = None,
+                        created_local: str | None = None, op_id: str | None = None,
+                        reason: str = "", cancel: Callable[[], bool] | None = None,
+                        progress: Callable[[int, int], None] | None = None) -> StoreEntry:
+        """Keep a folder (a legacy entry's, an import, a materialized entry) as a store entry.
+        ``entry_id`` keeps a given id (fold, copy-in): an entry with that id and the same files
+        is returned as is; different files get ``<id>-L``."""
+        folder = Path(folder)
+        return self._add(folder, platform=savedir.platform_of(folder), account_key=None,
+                         live=False, kind=kind, label=label, source=source, scope=scope,
+                         entry_id=entry_id, origin=origin, created_local=created_local,
+                         op_id=op_id, reason=reason, cancel=cancel, progress=progress)
+
+    def add_from_live(self, target_dir: str | Path, *, platform: Platform, account_key: str,
+                      kind: EntryKind, label: str, scope: CaptureScope,
+                      op_id: str | None = None, reason: str = "") -> StoreEntry:
+        """Keep (part of) a live save folder; it is only read."""
+        target_dir = Path(target_dir)
+        if target_dir.is_dir() and savedir.platform_of(target_dir) != platform:
+            raise StoreError(f"That folder is not a {platform} save folder.")
+        source = {"type": "live", "platform": platform, "account_key": account_key}
+        return self._add(target_dir, platform=platform, account_key=account_key, live=True,
+                         kind=kind, label=label, source=source, scope=scope, entry_id=None,
+                         origin=None, created_local=None, op_id=op_id, reason=reason,
+                         cancel=None, progress=None)
+
+    def _add(self, folder: Path, *, platform: Platform, account_key: str | None, live: bool,
+             kind: EntryKind, label: str, source: Mapping[str, Any], scope: CaptureScope,
+             entry_id: str | None, origin: Mapping[str, Any] | None, created_local: str | None,
+             op_id: str | None, reason: str, cancel: Callable[[], bool] | None,
+             progress: Callable[[int, int], None] | None) -> StoreEntry:
+        if kind not in ENTRY_KINDS:
+            raise ValueError(f"not an entry kind: {kind!r}")
+        if entry_id is not None and not is_entry_id(entry_id):
+            raise ValueError(f"not an entry id: {entry_id!r}")
+        self._require_writable()
+        if not folder.is_dir():
+            raise StoreError("The folder to keep is not reachable.")
+        plan = capture.plan(folder, platform, kind=kind, scope=scope, live=live)
+        self._require_space(plan.object_bytes(self.inline_max))
+        records: dict[str, FileEntry] = {}
+        stats = {}
+        total = len(plan.files) + len(plan.made)
+        for done, (rel, path) in enumerate(plan.files, start=1):
+            data, st = capture.read_stable(path, rel)
+            records[rel] = self.store_file(rel, data, st.st_mtime_ns)
+            if capture.wants_stats(platform, rel):
+                stats[rel] = capture.stats_of(data)
+            del data
+            if progress is not None:
+                progress(done, total)
+            if cancel is not None and cancel():
+                raise Cancelled("Cancelled. Nothing was kept.")
+        for rel, (data, mtime_ns) in plan.made.items():
+            records[rel] = self.store_file(rel, data, mtime_ns)
+        plan.require_sources_unchanged()
+        members = capture.describe_members(folder, platform, records, stats, plan.slots)
+        fields = dict(kind=kind, label=label, reason=reason, op_id=op_id,
+                      app_version=self.app_version, platform=platform, account_key=account_key,
+                      source=dict(source), scope=plan.scope,
+                      origin=None if origin is None else dict(origin),
+                      files=list(records.values()), members=members,
+                      account=capture.account_paths(platform, records), xbox=plan.xbox)
+        return self._commit(fields, entry_id=entry_id, created_local=created_local)
+
+    def _require_space(self, needed: int) -> None:
+        try:
+            free = shutil.disk_usage(self.root).free
+        except OSError as exc:
+            raise StoreUnavailable(f"The vault is not reachable ({exc.strerror or exc}).") from exc
+        if free < needed + SPACE_MARGIN:
+            raise InsufficientSpace(needed + SPACE_MARGIN)
+
+    def _commit(self, fields: dict[str, Any], *, entry_id: str | None,
+                created_local: str | None) -> StoreEntry:
+        """The commit point: under the vault lock, re-check the mode, settle the id (unique
+        across the catalog and the store) and write the manifest."""
+        now = _aware(self.clock())
+        local = now.astimezone().replace(tzinfo=None)
+        fields = dict(fields, created_utc=iso_utc(now),
+                      created_local=created_local or local.isoformat(timespec="seconds"))
+        try:
+            with self._lock():
+                self._require_store_mode()
+                self._refresh()
+                if entry_id is not None:
+                    existing = self._index.get(entry_id)
+                    if existing is not None and _same_files(existing.files, fields["files"]):
+                        return existing
+                    if existing is not None or self._manifest_path(entry_id).exists():
+                        entry_id = self._free_id(f"{entry_id}-L", first_suffix="")
+                else:
+                    stamp = f"{fields['kind']}-{fields['platform']}-{local:%Y%m%d-%H%M%S}"
+                    entry_id = self._free_id(stamp, catalog_ids=self._catalog_ids())
+                entry = StoreEntry.new(id=entry_id, **fields)
+                self._write_manifest(entry)
+        except safety.LockTimeout as exc:
+            raise StoreBusy() from exc
+        self._check_present(entry)
+        return entry
+
+    def _free_id(self, base: str, *, catalog_ids: frozenset[str] = frozenset(),
+                 first_suffix: str = "-") -> str:
+        """``base``, else ``base-2``, ``base-3``... (``base2``... with ``first_suffix=""``)."""
+        def taken(candidate: str) -> bool:
+            return (candidate in catalog_ids or candidate in self._index
+                    or self._manifest_path(candidate).exists())
+
+        if not taken(base):
+            return base
+        n = 2
+        while taken(f"{base}{first_suffix}{n}"):
+            n += 1
+        return f"{base}{first_suffix}{n}"
+
+    def _catalog_ids(self) -> frozenset[str]:
+        try:
+            return frozenset(e.id for e in catalog.Vault(self.vault_root).load().entries)
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            raise StoreError(f"The vault catalog cannot be read ({exc}).") from exc
+
+    def _manifest_path(self, entry_id: str) -> Path:
+        return self.root / ENTRIES / f"{entry_id}.json"
+
+    def _write_manifest(self, entry: StoreEntry) -> None:
+        raw = entry.to_bytes()
+        dest = self._manifest_path(entry.id)
+        tmp = self.root / TMP / f"entry-{entry.id}.{os.getpid()}.{secrets.token_hex(4)}.part"
+        try:
+            with open(tmp, "wb") as f:
+                f.write(raw)
+                f.flush()
+                os.fsync(f.fileno())
+            self._fault("entry.before_replace")
+            os.replace(tmp, dest)                       # COMMIT POINT
+            safety.fsync_dir(dest.parent)
+        finally:
+            try:
+                tmp.unlink()
+            except FileNotFoundError:
+                pass
+        with self._index_guard:
+            self._index[entry.id] = entry
+        self._fault("entry.after_replace")
+
+    def _check_present(self, entry: StoreEntry) -> None:
+        """Every object the new entry references is on disk with its size (a medium that lost a
+        rename shows here, not at the next read)."""
+        for fe in entry.files:
+            if fe.inline is None and self.objects.size_of(fe.sha256) != fe.size:
+                raise ObjectMissing(fe.sha256, f"{fe.path} of the new entry {entry.id}")
 
     @classmethod
     def open(cls, vault_root: str | Path, *, lock: Callable[[], AbstractContextManager],
@@ -267,6 +499,11 @@ class VersionStore:
     def _fault(self, point: str) -> None:
         if self._faults is not None:
             self._faults(point)
+
+
+def _same_files(a: Sequence[FileEntry], b: Sequence[FileEntry]) -> bool:
+    key = lambda f: (f.path, f.size, f.sha256)   # noqa: E731
+    return sorted(map(key, a)) == sorted(map(key, b))
 
 
 def _require_store_mode(vault_root: Path) -> None:
