@@ -275,7 +275,8 @@ class Journal:
                     described.update(members)
                     revs = {m.pid: notes[m.pid]["rev"] for m in members.values()
                             if isinstance(notes.get(m.pid), dict)
-                            and type(notes[m.pid].get("rev")) is int}
+                            and type(notes[m.pid].get("rev")) is int
+                            and notes[m.pid]["rev"] > 0}       # 0: a pin, no note yet
                     written.append(tx.append(obs_fields(src, target, capture.pair, members, revs)))
                     last[target] = capture.pair
         except StoreReadOnly:

@@ -48,6 +48,7 @@ from .model import (
     Vid,
     is_identified,
 )
+from .lineage import ensure_skeleton
 from .scanner import EntryScan, ScanProblem, ScanResult, scan
 from .store import APP, LINEAGE, OrganizerStore
 
@@ -128,6 +129,7 @@ def bootstrap(vault: Vault, store: OrganizerStore, sources: Sequence[Source],
         written = len(fields) + observed.written
         with store.transaction() as tx:
             doc = tx.doc(LINEAGE)
+            ensure_skeleton(doc)
             block = dict(doc.get("bootstrap") or {})
             block.setdefault("done_at", int(clock()))
             block.update(app=APP, algo=ALGO, report=_counts(plan, result, written))
