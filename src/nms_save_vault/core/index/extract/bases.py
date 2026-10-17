@@ -13,7 +13,8 @@ import json
 from collections import Counter
 
 from ...hashname import key
-from ..lookups.parts import LEGACY_FREIGHTER, LEGACY_STRUCTURES, OWN_BASE_TYPES
+from ..lookups._overrides import OWN_BASE_TYPES
+from ..lookups.parts import LEGACY_FREIGHTER, LEGACY_STRUCTURES
 from ..nodes import galaxy_of, get, gid, hex64, integer, items, seed, text, u64
 from ..privacy import owner_platform
 from . import CtxInput, context_extractor

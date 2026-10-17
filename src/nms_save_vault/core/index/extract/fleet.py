@@ -1,13 +1,9 @@
 """Ships (owned and archived), the freighter, frigates and multi-tools."""
 from __future__ import annotations
 
+from ..lookups import model_stem
 from ..nodes import get, integer, items, label, seed, text
 from . import MODEL_PATH_LIMIT, CtxInput, context_extractor
-
-
-def model_stem(path: str) -> str:
-    """``MODELS/COMMON/SPACECRAFT/BIGGS/BIGGS.SCENE.MBIN`` -> ``BIGGS``."""
-    return path.replace("\\", "/").rsplit("/", 1)[-1].split(".", 1)[0]
 
 
 @context_extractor("ships", ("ships", "archived_ships"))
