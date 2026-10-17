@@ -270,3 +270,148 @@ def test_compare_with_live_opens_from_the_history_and_says_when_nothing_is_live(
     view.histories.compare = None
     assert view.histories.open_compare(PIDS["old"], view.model.versions(PIDS["old"])[0].head) is None
     assert "compare" in view.alerts
+
+
+# --- the correction dialogs (U27) ---------------------------------------------------------
+
+
+def _dialog(host, gui_app, w, cor, head, pid=PID):
+    from nms_save_vault.ui.organizer.correct import CorrectDialog
+
+    state = {"model": w.refresh(), "done": 0}
+
+    def done():
+        state["model"] = w.refresh()
+        state["done"] += 1
+        win.set_model(state["model"])
+
+    win = CorrectDialog(host, model=state["model"], corrections=cor, worker=gui_app.worker,
+                        themed=gui_app.themed, pid=pid, head=head, on_done=done)
+    win.ask = lambda *a, **k: True
+    win.state = state
+    return win
+
+
+def test_candidates_leave_out_the_version_and_what_came_after_it(forked):
+    from nms_save_vault.ui.organizer import correct as K
+
+    w, (a, b, c, d, e), _ = forked
+    model = w.refresh()
+    assert {h for _, h in K.candidate_parents(model, PID, b)} == {a, c, e}   # not b, not d
+    assert set(K.branch_of(model, PID, b)) == {b, d}
+
+
+def test_comes_from_is_drawn_then_undone_through_remove_correction(host, gui_app, forked):
+    w, (a, b, c, d, e), cor = forked
+    win = _dialog(host, gui_app, w, cor, e)
+    try:
+        win.parent_box.set(next(lbl for lbl, h in win._parents.items() if h == b))
+        win.apply_parent()
+        _wait(gui_app, lambda: win.state["done"] == 1)
+        row = next(r for r in win.state["model"].versions(PID) if r.head == e)
+        assert row.parent == b and row.in_tree
+        mine = f"#{_number(win, e)} comes from #{_number(win, b)}"
+        assert _texts(win).count(mine) == 1 and len(_texts(win)) == 4      # and the three before
+        _select(win, mine)
+        win.undo()
+        _wait(gui_app, lambda: win.state["done"] == 2)
+        assert next(r for r in win.state["model"].versions(PID) if r.head == e).parent is None
+        assert len(_texts(win)) == 3
+        win.parent_box.set("(nothing - it has no known parent)")
+        win.apply_parent()
+        _wait(gui_app, lambda: win.state["done"] == 3)
+        assert any("has no known parent" in t for t in _texts(win))
+    finally:
+        win.destroy()
+
+
+def _texts(win):
+    return [win.existing.item(i, "text") for i in win.existing.get_children()]
+
+
+def _select(win, containing):
+    win.existing.selection_set(next(i for i in win.existing.get_children()
+                                    if containing in win.existing.item(i, "text")))
+
+
+def _number(win, head):
+    from nms_save_vault.ui.organizer.words import version_numbers
+
+    return version_numbers(win.model, PID)[head]
+
+
+def test_a_refused_correction_says_why_and_changes_nothing(host, gui_app, forked):
+    w, (a, b, c, d, e), cor = forked
+    win = _dialog(host, gui_app, w, cor, a)
+    try:
+        assert all(h not in (b, c, d) for h in win._parents.values())     # they come after a
+        win.parent_box.set("(nothing - it has no known parent)")
+        win.corrections = type("X", (), {"set_parent": staticmethod(
+            lambda *a, **k: (_ for _ in ()).throw(ValueError("that version comes after this one")
+                                                  )), "state": cor.state})()
+        win.apply_parent()
+        _wait(gui_app, lambda: win.status.cget("text").startswith("Not done"))
+        assert "comes after" in win.status.cget("text") and win.state["done"] == 0
+    finally:
+        win.destroy()
+
+
+def test_split_makes_a_save_file_of_its_own_and_unsplit_takes_it_back(host, gui_app, forked):
+    w, (a, b, c, d, e), cor = forked
+    win = _dialog(host, gui_app, w, cor, c)
+    try:
+        assert "become a save file of their own" in win.split_info.cget("text")
+        win.split_name.set("the other try")
+        win.apply_split()
+        _wait(gui_app, lambda: win.state["done"] == 1)
+        lines = {l.name for l in win.state["model"].lines()}
+        assert "the other try" in lines
+        assert any("were split off as the other try" in t for t in _texts(win))
+        _select(win, "were split off")
+        win.undo()
+        _wait(gui_app, lambda: win.state["done"] == 2)
+        assert "the other try" not in {l.name for l in win.state["model"].lines()}
+    finally:
+        win.destroy()
+
+
+def test_combine_joins_two_save_files_and_undo_separates_them(host, gui_app, forked):
+    w, (a, b, c, d, e), cor = forked
+    steam_save(w.steam, 15, 0, "Side Save", 50, OTHER, T0 + 50, extra="side")
+    model = w.refresh()
+    side = next(l for l in model.lines() if l.name == "Side Save")
+    head = model.versions(side.pid)[0].head
+    win = _dialog(host, gui_app, w, cor, head, pid=side.pid)
+    try:
+        win.combine_box.set("Main Save")
+        win.apply_combine()
+        _wait(gui_app, lambda: win.state["done"] == 1)
+        assert {l.name for l in win.state["model"].lines()} == {"Main Save"}
+        assert win.winfo_exists() is not None
+    finally:
+        win.destroy()
+    win = _dialog(host, gui_app, w, cor, head, pid=PID)
+    try:
+        assert any("was combined into this one" in t for t in _texts(win))
+        _select(win, "was combined into this one")
+        win.undo()
+        _wait(gui_app, lambda: win.state["done"] == 1)
+        assert {l.name for l in win.state["model"].lines()} == {"Main Save", "Side Save"}
+    finally:
+        win.destroy()
+
+
+def test_the_dialog_opens_from_the_history_window_and_a_read_only_store_says_so(view, gui_app):
+    from .organizer_world import PIDS
+
+    pid = PIDS["main"]
+    view.table.select(pid)
+    view.open_history()
+    win = view.histories.history
+    win.correct()
+    dlg = view.histories.correct
+    assert dlg is not None and dlg.pid == pid and dlg.head == win.head
+    dlg.destroy()
+    view.histories.correct = None
+    view.organizer.store.read_only = True
+    assert view.histories.open_correct(pid, win.head) is None and "correct" in view.alerts

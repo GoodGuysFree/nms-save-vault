@@ -8,7 +8,9 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from ...core.organizer.readmodel import ReadModel
+from ...core.organizer.lineage import Corrections
 from .compare import CompareWindow
+from .correct import CorrectDialog
 from .history import HistoryWindow
 
 if TYPE_CHECKING:
@@ -20,6 +22,7 @@ class HistoryHooks:
         self.view = view
         self.history: HistoryWindow | None = None
         self.compare: CompareWindow | None = None
+        self.correct: CorrectDialog | None = None
 
     @staticmethod
     def _alive(window) -> bool:
@@ -31,6 +34,8 @@ class HistoryHooks:
                 self.history.destroy()
             else:
                 self.history.set_model(model)
+        if self._alive(self.correct):
+            self.correct.set_model(model)
         if self._alive(self.compare):
             if model.line(self.compare.pid) is None:
                 self.compare.destroy()
@@ -51,7 +56,7 @@ class HistoryHooks:
             return self.history
         self.history = HistoryWindow(
             view.winfo_toplevel(), model=view.model, themed=view.themed, pid=pid, head=head,
-            on_move=view.open_move_for, on_compare=self.open_compare, on_label=view.open_notes_for, on_lock=self.lock)
+            on_move=view.open_move_for, on_compare=self.open_compare, on_label=view.open_notes_for, on_lock=self.lock, on_correct=self.open_correct)
         return self.history
 
     def lock(self, pid: str, head: str, locked: bool) -> None:
@@ -92,3 +97,24 @@ class HistoryHooks:
         self.compare = CompareWindow(view.winfo_toplevel(), model=model, themed=view.themed,
                                      pid=pid, a=a, b=b)
         return self.compare
+
+    # --- Correct --------------------------------------------------------------------------
+
+    def open_correct(self, pid: str, head: str) -> CorrectDialog | None:
+        """Comes from / Split here / Combine for one version, with undo for each."""
+        view = self.view
+        if view.model is None or view.organizer is None or view.scanning:
+            return None
+        if view.organizer.store.read_only:
+            view.alert("correct", "The organizer store is read-only: corrections cannot be "
+                                  "saved.")
+            return None
+        if self._alive(self.correct):
+            self.correct.show(pid, head)
+            self.correct.lift()
+            return self.correct
+        corrections = Corrections(view.organizer.store, view.organizer.clock)
+        self.correct = CorrectDialog(
+            view.winfo_toplevel(), model=view.model, corrections=corrections,
+            worker=view.worker, themed=view.themed, pid=pid, head=head, on_done=view.reload)
+        return self.correct
