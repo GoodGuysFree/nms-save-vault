@@ -70,7 +70,7 @@ class Host:
 
     @classmethod
     def current(cls) -> "Host":
-        return cls(current_system(), Path.home(), os.environ)
+        return cls(current_system(), Path.home(), dict(os.environ))   # a snapshot, not the live map
 
 
 def current_system(platform_name: str | None = None) -> str:

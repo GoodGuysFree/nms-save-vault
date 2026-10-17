@@ -364,6 +364,24 @@ def steam_save(folder: Path, slot: int, member: int, name: str, play: int, ident
 
 # --- the single Tk root for the whole session ------------------------------------------
 
+_GUI_APP: list = []
+
+
+@pytest.fixture(autouse=True)
+def _drain_ui_worker():
+    """A job a test left in the UI worker must finish before the test's environment redirect
+    is undone: it would otherwise run against the real user folders (the machine id, the
+    caches) while the next test is set up or after the last one."""
+    yield
+    import time
+
+    for app in list(_GUI_APP):
+        end = time.monotonic() + 10
+        while app.worker.busy and time.monotonic() < end:
+            app.update()
+            time.sleep(0.005)
+
+
 @pytest.fixture(scope="session")
 def gui_app(tmp_path_factory):
     """A real App over a synthetic vault, with no live sources and no window shown.
@@ -404,7 +422,9 @@ def gui_app(tmp_path_factory):
         mp.undo()
     application.withdraw()
     application.update()
+    _GUI_APP.append(application)
     yield application
+    _GUI_APP.clear()
     application.destroy()
 
 

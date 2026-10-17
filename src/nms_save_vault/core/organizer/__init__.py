@@ -66,7 +66,7 @@ class Organizer:
         self.clock = clock
         self.vault = Vault(self.vault_root, read_only=read_only)
         self.store = OrganizerStore(self.vault_root, create=False, read_only=read_only, clock=clock)
-        self._host = host
+        self._host = host = host or Host.current()   # once: never re-read from a later env
         self._rekey = False
         on_disk = not (machine_cache is False or (machine_cache is None and read_only))
         machine_dir = cache_dir(self.vault_root, self.store.vault_id, host)

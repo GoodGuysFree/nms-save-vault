@@ -323,3 +323,22 @@ def test_no_tk_variable_is_collected_on_the_worker_thread(view, gui_app, monkeyp
     gc.collect()
     gui_app.update()
     assert seen and all(seen)
+
+
+# --- the machine id is resolved once per host, never from a later environment -------------------------
+
+
+def test_the_machine_id_path_is_fixed_when_the_organizer_is_made(tmp_path, monkeypatch):
+    from nms_save_vault.core.liveops.opjournal import machine_id
+    from nms_save_vault.core.organizer import Organizer
+
+    first, second = tmp_path / "first", tmp_path / "second"
+    monkeypatch.setenv("LOCALAPPDATA", str(first))
+    monkeypatch.setenv("XDG_DATA_HOME", str(first))
+    monkeypatch.setenv("HOME", str(first))
+    org = Organizer(tmp_path / "vault", [], read_only=True)
+    monkeypatch.setenv("LOCALAPPDATA", str(second))           # a worker job running after the
+    monkeypatch.setenv("XDG_DATA_HOME", str(second))          # test's environment moved on
+    monkeypatch.setenv("HOME", str(second))
+    machine_id(org.host)
+    assert any(first.rglob("machine-id*")) and not any(second.rglob("machine-id*"))
