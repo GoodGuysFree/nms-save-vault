@@ -15,7 +15,7 @@ from nms_save_vault.core import catalog, operations, safety
 from nms_save_vault.core import state as appstate
 from nms_save_vault.core import store as vstore
 from nms_save_vault.core.catalog import Vault
-from nms_save_vault.core.organizer.model import StoreRef
+from nms_save_vault.core.organizer.model import EntryRef, StoreRef
 from nms_save_vault.core.store import migrate, versionstore
 
 from .store_helpers import steam_live
@@ -109,27 +109,30 @@ def test_fold_idempotent_resumable(upgraded, monkeypatch):
     assert vstore.run_fold(store, live_roots=[live]).verified == 4      # again: nothing new
 
 
-def test_a_folder_that_changes_while_it_is_folded_fails_and_is_kept_both_ways(upgraded,
-                                                                              monkeypatch):
+def test_a_folder_that_fails_verification_stays_an_entry_of_its_own(upgraded, monkeypatch):
     vault, live, store, ids = upgraded
     target = vault.backups_dir / ids["full"] / "notes.txt"
-    real_add = store.add_from_folder
+    real_check = migrate.check_folder
 
-    def folder_changes_after_the_read(folder, **kw):
-        kept = real_add(folder, **kw)
-        if kw.get("entry_id") == ids["full"] and target.read_bytes() == b"not a save file":
+    def folder_changes_after_the_read(store_, records, folder):
+        if folder.name == ids["full"] and target.read_bytes() == b"not a save file":
             target.write_bytes(b"edited by hand")
-        return kept
+        return real_check(store_, records, folder)
 
-    monkeypatch.setattr(store, "add_from_folder", folder_changes_after_the_read)
+    monkeypatch.setattr(migrate, "check_folder", folder_changes_after_the_read)
     report = vstore.run_fold(store, live_roots=[live])
     assert [k for k, _why in report.failed] == [ids["full"]]
     assert "notes.txt" in report.failed[0][1] and report.fsck_ok is True
+    assert not store.has_entry(ids["full"])                          # nothing committed
+    listed = {e.id: e for e in vstore.list_vault_entries(vault, store, live_roots=[live])}
+    assert listed[ids["full"]].ref == EntryRef(ids["full"])           # the folder is shown
+    assert listed[ids["full"]].origin == "catalog"
+    status = vstore.store_status(vault.root, store, live_roots=[live])
+    assert [k for k, _why in status.fold_failed] == [ids["full"]]
     assert target.read_bytes() == b"edited by hand"                   # the folder is kept
-    report = vstore.run_fold(store, live_roots=[live])                 # read again: both kept
-    statuses = json.loads((vault.root / "store/state/migration.json").read_text("ascii"))
-    assert statuses["fold"]["entries"][ids["full"]]["store_id"] == f"{ids['full']}-L"
-    assert report.verified == 4 and store.has_entry(ids["full"])
+    report = vstore.run_fold(store, live_roots=[live])                 # read again, as it is now
+    assert report.verified == 4 and report.failed == ()
+    assert store.entry(ids["full"]).file("notes.txt").inline == b"edited by hand"
 
 
 def test_a_fold_short_of_space_waits_and_resumes(upgraded, monkeypatch):

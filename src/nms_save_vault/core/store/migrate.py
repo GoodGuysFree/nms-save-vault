@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 import logging
 import threading
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -20,9 +20,9 @@ from .. import catalog, discover, safety
 from ..catalog import CatalogEntry, Vault
 from . import capture
 from .capture import CaptureScope
-from .errors import InsufficientSpace, StoreError
+from .errors import FoldVerifyError, InsufficientSpace, StoreError
 from .listing import entry_folder, read_migration
-from .manifest import ENTRY_KINDS
+from .manifest import ENTRY_KINDS, FileEntry
 from .objects import sha256
 from .versionstore import STATE, VersionStore, iso_utc, store_root
 
@@ -108,38 +108,40 @@ def run_fold(store: VersionStore, *, live_roots: Sequence[Path] | None = None,
 
 
 def _fold_one(store: VersionStore, entry: CatalogEntry, folder: Path) -> dict:
+    """Fold one entry: checked against its folder BEFORE the commit, so a folder that does
+    not match is never hidden behind a store entry (it stays an entry of its own, D3 4.2)."""
     subdir = folder.parent.name
-    kept = store.add_from_folder(
-        folder, kind=entry.kind, label=entry.label, entry_id=entry.id,  # type: ignore[arg-type]
-        created_local=entry.created, source={"type": "folder", "name": entry.source or folder.name},
-        scope=CaptureScope(cache="include"),
-        origin={"legacy_entry": entry.id, "legacy_subdir": subdir,
-                "folded_utc": iso_utc(store.clock())})
-    record: dict = {"status": "folded"}
+    try:
+        kept = store.add_from_folder(
+            folder, kind=entry.kind, label=entry.label, entry_id=entry.id,  # type: ignore[arg-type]
+            created_local=entry.created,
+            source={"type": "folder", "name": entry.source or folder.name},
+            scope=CaptureScope(cache="include"),
+            origin={"legacy_entry": entry.id, "legacy_subdir": subdir,
+                    "folded_utc": iso_utc(store.clock())},
+            verify=lambda records: check_folder(store, records, folder))
+    except FoldVerifyError as exc:
+        return {"status": "failed", "reason": str(exc)}
+    record: dict = {"status": "verified"}
     if kept.id != entry.id:
         record["store_id"] = kept.id
         record["note"] = f"its folder changed after an earlier fold; kept as {kept.id}"
-    problem = verify_folded(store, kept.id, folder)
-    if problem:
-        return {**record, "status": "failed", "reason": problem}
-    return {**record, "status": "verified"}
+    return record
 
 
-def verify_folded(store: VersionStore, entry_id: str, folder: Path) -> str | None:
-    """Why a folded entry does not match its folder, or None: every file of the folder is in
-    the entry with the same size and sha256, none is missing, and every stored copy re-hashes."""
-    entry = store.entry(entry_id)
-    files = {f.path: f for f in entry.files}
+def check_folder(store: VersionStore, records: Mapping[str, FileEntry], folder: Path) -> None:
+    """What was read is the folder, before anything is committed: every file of the folder
+    (walked again) was read with the same size and sha256, none is missing, and every stored
+    copy re-hashes. Raises FoldVerifyError."""
     on_disk = set(capture.walk(folder))
-    if on_disk != set(files):
-        extra, missing = sorted(on_disk - set(files)), sorted(set(files) - on_disk)
-        return f"the folder and the store differ ({(extra + missing)[0]})"
-    for rel, fe in files.items():
+    if on_disk != set(records):
+        differ = sorted(on_disk ^ set(records))[0]
+        raise FoldVerifyError(f"the folder and the store differ ({differ})")
+    for rel, fe in records.items():
         data = (folder / rel).read_bytes()
         if len(data) != fe.size or sha256(data) != fe.sha256:
-            return f"the folder and the store differ ({rel})"
+            raise FoldVerifyError(f"the folder and the store differ ({rel})")
         store.file_bytes(fe)                      # the stored copy re-hashes
-    return None
 
 
 def _skip_reason(vault: Vault, entry: CatalogEntry, live) -> tuple[str, Path]:
@@ -240,14 +242,12 @@ def copy_in(store: VersionStore, entry_ids: Sequence[str], *,
         try:
             if not folder.is_dir():
                 raise StoreError("its folder is missing")
-            kept = store.add_from_folder(
+            store.add_from_folder(
                 folder, kind="imported", label=entry.label, entry_id=entry.id,
                 created_local=entry.created, source={"type": "folder", "name": folder.name},
                 scope=CaptureScope(cache="include"),
-                origin={"inplace_entry": entry.id, "copied_utc": iso_utc(store.clock())})
-            problem = verify_folded(store, kept.id, folder)
-            if problem:
-                raise StoreError(problem)
+                origin={"inplace_entry": entry.id, "copied_utc": iso_utc(store.clock())},
+                verify=lambda records, folder=folder: check_folder(store, records, folder))
         except (StoreError, OSError) as exc:
             failed.append((entry_id, str(exc)))
             records[entry_id] = {"status": "failed", "reason": str(exc)}

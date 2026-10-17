@@ -59,6 +59,11 @@ class ObjectCorrupt(StoreError, VersionUnavailable):
         self.detail = detail
 
 
+class FoldVerifyError(StoreError):
+    """A folder read into the store does not match what was read (D3 4.2): nothing was
+    committed, so the folder stays an entry of its own."""
+
+
 class UpgradeError(StoreError):
     """The vault upgrade did not run or stopped (D3 4.1); ``code`` says why: space,
     path-too-long, bad-destination, in-progress, already-upgraded, vault-changing,

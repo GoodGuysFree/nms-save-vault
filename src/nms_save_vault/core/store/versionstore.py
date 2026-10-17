@@ -409,15 +409,19 @@ class VersionStore:
                         entry_id: str | None = None, origin: Mapping[str, Any] | None = None,
                         created_local: str | None = None, op_id: str | None = None,
                         reason: str = "", cancel: Callable[[], bool] | None = None,
-                        progress: Callable[[int, int], None] | None = None) -> StoreEntry:
+                        progress: Callable[[int, int], None] | None = None,
+                        verify: Callable[[Mapping[str, FileEntry]], None] | None = None
+                        ) -> StoreEntry:
         """Keep a folder (a legacy entry's, an import, a materialized entry) as a store entry.
         ``entry_id`` keeps a given id (fold, copy-in): an entry with that id and the same files
-        is returned as is; different files get ``<id>-L``."""
+        is returned as is; different files get ``<id>-L``. ``verify`` sees the files read,
+        before anything is committed, and may refuse (raise): then no entry is made."""
         folder = Path(folder)
         return self._add(folder, platform=savedir.platform_of(folder), account_key=None,
                          live=False, kind=kind, label=label, source=source, scope=scope,
                          entry_id=entry_id, origin=origin, created_local=created_local,
-                         op_id=op_id, reason=reason, cancel=cancel, progress=progress)
+                         op_id=op_id, reason=reason, cancel=cancel, progress=progress,
+                         verify=verify)
 
     def add_from_live(self, target_dir: str | Path, *, platform: Platform, account_key: str,
                       kind: EntryKind, label: str, scope: CaptureScope,
@@ -440,7 +444,8 @@ class VersionStore:
              entry_id: str | None, origin: Mapping[str, Any] | None, created_local: str | None,
              op_id: str | None, reason: str, cancel: Callable[[], bool] | None,
              progress: Callable[[int, int], None] | None,
-             finish: Callable[[list[MemberRecord]], str | None] | None = None) -> StoreEntry:
+             finish: Callable[[list[MemberRecord]], str | None] | None = None,
+             verify: Callable[[Mapping[str, FileEntry]], None] | None = None) -> StoreEntry:
         if kind not in ENTRY_KINDS:
             raise ValueError(f"not an entry kind: {kind!r}")
         if entry_id is not None and not is_entry_id(entry_id):
@@ -478,6 +483,8 @@ class VersionStore:
         plan.require_consistent(records)
         if finish is not None:
             label = finish(members) or label
+        if verify is not None:
+            verify(records)
         for note in notes:
             log.warning("keeping a copy of %s: %s", folder.name, note)
         fields = dict(kind=kind, label=label, reason=reason, op_id=op_id,
