@@ -24,13 +24,14 @@ from ...core.liveops import (
     SlotCandidate, Warning, eviction_picker, execute, plan_place)
 from ...core.organizer.locator import Location
 from ...core.organizer.model import LiveRef, StoreRef
-from ...core.organizer.readmodel import ReadModel
+from ...core.organizer.readmodel import BoardSlot, ReadModel
 from ..dpi import px, pxs
 from ..fmt import local_time, play_time
 from ..redact import rtext, rtitle, set_label, shown
 from ..themeaware import ThemeRegistry
 from ..worker import UiWorker
 from .detail import Segment
+from .pick import VersionPicker
 from .words import find_row, line_name
 
 SEVERITY_ORDER = {"block": 0, "confirm": 1, "warn": 2, "info": 3}
@@ -113,15 +114,21 @@ def outcome_paragraph(plan: PlacePlan) -> str:
 
 class MoveDialog(tk.Toplevel):
     def __init__(self, master, *, worker: UiWorker, themed: ThemeRegistry,
-                 make_context: Callable[[], OpContext], source: PairSource, name: str,
+                 make_context: Callable[[], OpContext], source: PairSource | None, name: str,
                  card: list[Segment] | None = None, labels: dict | None = None,
-                 prefer_slot: int | None = None, on_done: Callable[[OpOutcome], None] | None = None
+                 model: ReadModel | None = None, fixed: BoardSlot | None = None,
+                 prefer_slot: int | None = None, account: LiveRef | None = None, on_done: Callable[[OpOutcome], None] | None = None
                  ) -> None:
         super().__init__(master)
         self.worker, self.make_context, self.source, self.name = worker, make_context, source, name
         self.card = card or []
         self.labels = labels or {}
         self.prefer_slot = prefer_slot
+        self.model = model
+        self.fixed_slot = fixed        # Replace with...: the slot is fixed, the version is picked
+        self.fixed = fixed.target if fixed is not None else None
+        self._refresh_only = False
+        self.start_account = account
         self.on_done = on_done
         self.picker: EvictionPicker | None = None
         self.accounts: list[LiveRef] = []
@@ -137,7 +144,7 @@ class MoveDialog(tk.Toplevel):
         self._pal = None
         self._build()
         themed.register(self)
-        rtitle(self, "Move to live")
+        rtitle(self, "Replace with" if fixed else "Move to live")
         self.transient(master)
         self.minsize(px(860), px(640))
         try:
@@ -146,7 +153,10 @@ class MoveDialog(tk.Toplevel):
             pass
         self.bind("<Escape>", lambda _e: self.cancel())
         self.protocol("WM_DELETE_WINDOW", self.cancel)
-        self._load(None)
+        if fixed is not None:
+            self._start_replace(fixed)
+        else:
+            self._load(self.start_account)
 
     # --- building (top to bottom; the footer first so it always stays visible) -----------
 
@@ -189,9 +199,13 @@ class MoveDialog(tk.Toplevel):
 
         head = ttk.Frame(self, padding=(pad, pad, pad, 0))
         head.pack(side=tk.TOP, fill=tk.X)
-        ttk.Label(head, text="Move to live", style="Title.TLabel").pack(side=tk.TOP, anchor="w")
-        ttk.Label(head, text="Pick the live slot. Whatever is in it goes to the vault first, "
-                  "so nothing is lost.", style="Muted.TLabel").pack(side=tk.TOP, anchor="w")
+        replacing = self.fixed_slot is not None
+        ttk.Label(head, text=f"Replace what is in {self.fixed_slot.label}" if replacing
+                  else "Move to live", style="Title.TLabel").pack(side=tk.TOP, anchor="w")
+        purpose = ("Pick any version from the vault. The save in the slot now goes to the vault "
+                   "first." if replacing else "Pick the live slot. Whatever is in it goes to the "
+                   "vault first, so nothing is lost.")
+        ttk.Label(head, text=purpose, style="Muted.TLabel").pack(side=tk.TOP, anchor="w")
 
         body = ttk.Frame(self, padding=(pad, px(6), pad, 0))
         body.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
@@ -222,7 +236,16 @@ class MoveDialog(tk.Toplevel):
 
         cols = ("slot", "now", "play", "last", "vault", "note")
         tree_frame = ttk.Frame(left)
-        tree_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True, pady=pxs(4, 0))
+        self.picker_widget: VersionPicker | None = None
+        if self.fixed_slot is not None and self.model is not None:
+            slot = self.fixed_slot
+            self.picker_widget = VersionPicker(
+                left, model=self.model, slot_pid=slot.pid, slot_head=slot.head,
+                platform=slot.target.platform, slot_name=slot.name or slot.label,
+                on_pick=self._version_picked)
+            self.picker_widget.pack(side=tk.TOP, fill=tk.BOTH, expand=True, pady=pxs(4, 0))
+        else:
+            tree_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True, pady=pxs(4, 0))
         self.tree = ttk.Treeview(tree_frame, columns=cols, show="tree headings",
                                  selectmode="browse", height=9)
         self.tree.heading("#0", text="")
@@ -273,13 +296,45 @@ class MoveDialog(tk.Toplevel):
         self.tree.tag_configure("muted", foreground=p["muted"])
         self.tree.tag_configure("risk", foreground=p["warn"])
         self._colour_warnings()
+        if self.picker_widget is not None:
+            self.picker_widget.apply_palette(p)
 
     # --- loading the picker and the plan (worker) ---------------------------------------------
 
+    def _start_replace(self, slot: BoardSlot) -> None:
+        """03b: the slot is fixed; the left side shows what is in it, and nothing is planned
+        until a version is picked."""
+        set_label(self.in_title, "PUTTING IN")
+        set_label(self.in_name, "pick a version below")
+        set_label(self.in_detail, "")
+        set_label(self.out_title, f"{slot.label.upper()} NOW" + (
+            "" if slot.state == "empty" else " - GOES TO THE VAULT"))
+        set_label(self.out_name, slot.name or ("empty" if slot.state == "empty" else "(unnamed)"))
+        where = ("already in the vault - stays there, ready to come back"
+                 if slot.vault_copy == "durable" else "not in the vault yet - copied there first")
+        set_label(self.out_detail, "" if slot.state == "empty" else
+                  f"{play_time(slot.play_time)} - played {local_time(slot.saved_at)}\n{where}")
+        self._set_idle("Pick the version to put in.")
+
+    def _version_picked(self, pid: str, head: str) -> None:
+        if self.model is None or self.fixed is None or self.busy:
+            return
+        try:
+            source, name, card = source_for(self.model, pid, head)
+        except KeyError:
+            return
+        self.source, self.name, self.card = source, name, card
+        self.slot = None
+        self.prefer_slot = self.fixed.slot
+        self._load(self.fixed.ref)
+
     def _load(self, account: LiveRef | None) -> None:
+        if self.source is None:
+            return
         self._gen += 1
         gen = self._gen
-        self.plan = None
+        if not self._refresh_only:
+            self.plan = None
         self._set_busy("Reading the live slots...")
         self.worker.submit(self._picker_job, account, on_done=lambda r: self._picked(gen, r),
                            on_error=lambda e: self._failed(gen, e))
@@ -296,11 +351,30 @@ class MoveDialog(tk.Toplevel):
         self._show_accounts(picker)
         self._show_slots(picker)
         self._show_strip(picker)
+        if self._refresh_only:                 # after a stale result: keep the shown plan
+            self._refresh_only = False
+            cand = next((c for c in picker.candidates if c.target.slot == self.slot), None)
+            if cand is not None:
+                self._mark_rows(self.slot)
+                self._show_out(cand)
+            self._set_idle("")
+            return
+        if self.fixed is not None and not self._usable(self.fixed.slot):
+            blocked = next((c.blocked for c in picker.candidates
+                            if c.target.slot == self.fixed.slot), "")
+            self.slot = None
+            self._set_idle("")
+            self._render_plan(None)
+            self.error.configure(text=shown(self, "This version cannot go into that slot"
+                                            + (f" ({blocked})." if blocked else ".")))
+            return
         keep = self.slot if self.slot in {c.target.slot for c in picker.candidates
                                           if not c.blocked} else None
         wanted = keep or (self.prefer_slot if self._usable(self.prefer_slot) else None) \
             or picker.suggested_slot
         self.prefer_slot = None
+        if self.fixed is not None:
+            wanted = self.fixed.slot
         if wanted is None:
             self.slot = None
             self._show_out(None)
@@ -367,6 +441,9 @@ class MoveDialog(tk.Toplevel):
     def _show_accounts(self, picker: EvictionPicker) -> None:
         for w in self.account_bar.winfo_children():
             w.destroy()
+        if self.fixed is not None:
+            set_label(self.account_note, f"{self.fixed_slot.label} (fixed)")
+            return
         self.accounts = [picker.account] + [c.account for c in picker.other_accounts]
         self.account_var = tk.IntVar(value=0)
         notes = []
@@ -595,9 +672,13 @@ class MoveDialog(tk.Toplevel):
             self.destroy()
             return
         if outcome.status == "stale":
-            self._load(self.account)           # picker and plan again from what is live now
-            self.error.configure(text=shown(self, "The slot changed since you opened this. "
-                                            "Please check again."))
+            text = "The slot changed since you opened this. Please check again."
+            if outcome.replan is not None:     # the fresh plan, shown as it is
+                self.plan = outcome.replan
+                self._render_plan(outcome.replan)
+                self._refresh_only = True
+            self.error.configure(text=shown(self, text))
+            self._load(self.account)
             return
         why = outcome.error or " ".join(w.text for w in outcome.warnings) or outcome.outcome
         self.error.configure(text=shown(self, f"{outcome.outcome}: {why}" if outcome.error else why))

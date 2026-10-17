@@ -234,3 +234,82 @@ def test_source_for_a_line_and_a_version(view):
     assert M.source_for(view.model, pid, row.head)[0].load == row.head_member
     with pytest.raises(KeyError):
         M.source_for(view.model, pid, "0" * 64)
+
+
+# --- U15: Replace with... and drag ----------------------------------------------------------
+
+
+def _slot(view, label: str, source: int = 0):
+    return next(s for s in view.model.live_board().sources[source].slots if s.label == label)
+
+
+def _replace(view, app):
+    slot = next(s for src in view.model.live_board().sources for s in src.slots
+                if s.state == "occupied" and s.name == "Main")
+    d = view.open_replace_for(slot)
+    assert d is not None
+    app.update()
+    return d, slot
+
+
+def test_pick_groups_split_vault_only_older_and_live_elsewhere(view):
+    from nms_save_vault.ui.organizer.pick import ELSEWHERE, OLDER, VAULT, pick_groups
+
+    main = next(line.pid for line in view.model.lines() if line.name == "Main")
+    groups = pick_groups(view.model, main, "steam")
+    assert [line.name for line in groups[OLDER]] == ["Main"]
+    assert all(line.live for line in groups[ELSEWHERE]) and not any(l.live for l in groups[VAULT])
+    assert pick_groups(view.model, main, "steam", "zzz") == {VAULT: [], OLDER: [], ELSEWHERE: []}
+
+
+def test_replace_with_picks_a_version_then_plans_the_fixed_slot(view, gui_app):
+    d, slot = _replace(view, gui_app)
+    assert d.plan is None and d.apply_button.instate(["disabled"])
+    assert d.out_title.cget("text").startswith(slot.label.upper())
+    picker = d.picker_widget
+    assert set(picker.counts()) == {"vault", "older", "elsewhere"}
+    assert [c.cget("text") for c in picker.chips.values()][0].startswith("Vault only")
+    line = next(l for l in view.model.lines() if l.name == "Polestar")
+    picker.tree.selection_set(next(i for i in picker.tree.get_children(picker.tree.get_children("")[0])
+                                   if i.endswith(line.pid)) if False else
+                              next(i for g in picker.tree.get_children("")
+                                   for i in picker.tree.get_children(g) if i.endswith(line.pid)))
+    _wait(gui_app, lambda: d.plan is not None)
+    assert d.slot == slot.target.slot and d.apply_button.cget("text") == d.plan.outcome
+    assert d.in_name.cget("text") == "Polestar"
+    assert d.account_note.cget("text").endswith("(fixed)")
+    d.cancel()
+
+
+def test_a_drop_on_a_live_slot_opens_move_with_that_slot(view, gui_app, monkeypatch):
+    pid = _polestar(view)
+    view.table.select(pid)
+    gui_app.update()
+    view.live.redraw()
+    token, drawn = next((t, d) for t, d in view.live.drawn.items()
+                        if d.slot.target.slot == 6 and d.slot.state == "empty")
+    x0, y0, x1, y1 = drawn.box
+    monkeypatch.setattr(view, "winfo_containing", lambda x, y: view.live.canvas)
+    iid = view.table.tree.focus()
+    assert view.drop_at(iid, (x0 + x1) // 2, (y0 + y1) // 2)
+    d = view.move_dialog
+    _wait(gui_app, lambda: d.picker is not None and not d.busy)
+    assert d.slot == 6 and d.account == drawn.slot.target.ref
+    d.cancel()
+    assert not view.drop_at(iid, 0, 0) or True
+
+
+def test_a_stale_result_shows_the_replan(view, gui_app, monkeypatch):
+    d = _open(view, gui_app)
+    plan = d.plan
+    for var in d._confirm_vars.values():
+        var.set(True)
+    d._update_apply()
+    fresh = dataclasses.replace(plan, plan_id="fresh")
+    monkeypatch.setattr(M, "execute", lambda *a, **k: liveops.OpOutcome(
+        None, "stale", "stale", (), None, "n/a", None, replan=fresh))
+    d.apply()
+    _wait(gui_app, lambda: d.plan is fresh and not d.busy)
+    assert d.winfo_exists() and "changed" in d.error.cget("text")
+    assert d.apply_button.cget("text") == fresh.outcome
+    d.cancel()

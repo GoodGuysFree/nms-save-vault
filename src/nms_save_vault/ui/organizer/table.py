@@ -718,6 +718,12 @@ class OrganizerTable(ttk.Frame):
         finally:
             menu.grab_release()
 
+    def ref_of(self, iid: str) -> tuple[str | None, str | None]:
+        """(pid, head) of a row: head None for a save file's own row."""
+        if iid in self._version_of:
+            return self._version_of[iid]
+        return (self._pid_of[iid], None) if iid in self._pid_of else (None, None)
+
     def selection_ref(self) -> tuple[str | None, str | None]:
         """(pid, head) of the focused row: head None for a line."""
         iid = self.tree.focus()

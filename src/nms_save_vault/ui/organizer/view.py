@@ -141,12 +141,16 @@ class OrganizerView(ttk.Frame):
         # The live lists keep their full height (15 slots and the legend); the detail pane
         # takes what is left.
         self.live = LiveArea(right, themed=self.themed, prefs=self.prefs,
-                             save_prefs=self.save_prefs, on_slot=self._slot_clicked)
+                             save_prefs=self.save_prefs, on_slot=self._slot_clicked,
+                             on_activate=self._slot_activated)
         self.live.pack(side=tk.TOP, fill=tk.X)
         self.detail = DetailPane(right, themed=self.themed, on_link=self._link,
                                  on_notes=self.open_notes_for, on_pin=self._pin,
                                  on_move=self.open_move_for)
         self.detail.pack(side=tk.TOP, fill=tk.BOTH, expand=True, pady=pxs(8, 0))
+        self._drag = None
+        self._dragging = False
+        self._bind_drag()
 
     # --- scanning ---------------------------------------------------------------------------
 
@@ -294,8 +298,8 @@ class OrganizerView(ttk.Frame):
         if pid is not None:
             self.open_move_for(pid, head)
 
-    def open_move_for(self, pid: str, head: str | None = None, *,
-                      slot: int | None = None) -> MoveDialog | None:
+    def open_move_for(self, pid: str, head: str | None = None, *, slot: int | None = None,
+                      account=None) -> MoveDialog | None:
         """The Move to live dialog for a line (its newest version) or one version; the plan
         and the write run in the worker, and a finished move rescans and says so."""
         organizer = self.organizer
@@ -312,8 +316,67 @@ class OrganizerView(ttk.Frame):
         self.move_dialog = MoveDialog(
             self.winfo_toplevel(), worker=self.worker, themed=self.themed,
             make_context=lambda: self.make_context(organizer), source=source, name=name,
-            card=card, labels=labels, prefer_slot=slot, on_done=self._moved)
+            card=card, labels=labels, prefer_slot=slot, account=account, on_done=self._moved)
         return self.move_dialog
+
+    def open_replace_for(self, slot: BoardSlot) -> MoveDialog | None:
+        """Replace with...: the live slot is fixed, the version is picked in the dialog."""
+        if self.model is None or self.organizer is None or self.scanning:
+            return None
+        if self.move_dialog is not None and self.move_dialog.winfo_exists():
+            self.move_dialog.lift()
+            return self.move_dialog
+        organizer = self.organizer
+        labels = {s.ref: s.label for s in self.model.live_board().sources}
+        self.move_dialog = MoveDialog(
+            self.winfo_toplevel(), worker=self.worker, themed=self.themed,
+            make_context=lambda: self.make_context(organizer), source=None, name="",
+            labels=labels, model=self.model, fixed=slot, on_done=self._moved)
+        return self.move_dialog
+
+    def _slot_activated(self, token: str, slot: BoardSlot) -> None:
+        self.open_replace_for(slot)
+
+    # --- dragging a version onto a live slot ------------------------------------------------
+
+    def _bind_drag(self) -> None:
+        tree = self.table.tree
+        tree.bind("<ButtonPress-1>", self._drag_start, add="+")
+        tree.bind("<B1-Motion>", self._drag_motion, add="+")
+        tree.bind("<ButtonRelease-1>", self._drag_drop, add="+")
+
+    def _drag_start(self, event) -> None:
+        iid = self.table.tree.identify_row(event.y)
+        self._drag = (event.x, event.y, iid) if iid else None
+        self._dragging = False
+
+    def _drag_motion(self, event) -> None:
+        d = self._drag
+        if d is not None and not self._dragging and abs(event.x - d[0]) + abs(event.y - d[1]) > 8:
+            self._dragging = True
+            self.table.tree.configure(cursor="hand2")
+
+    def _drag_drop(self, event) -> None:
+        d, self._drag = self._drag, None
+        if not self._dragging or d is None:
+            return
+        self._dragging = False
+        self.table.tree.configure(cursor="")
+        self.drop_at(d[2], event.x_root, event.y_root)
+
+    def drop_at(self, iid: str, x_root: int, y_root: int) -> bool:
+        """A table row was dropped at a screen point: on a live slot it opens Move to live
+        with that slot pre-picked."""
+        canvas = self.live.canvas
+        if self.winfo_containing(x_root, y_root) is not canvas:
+            return False
+        token = self.live.token_at(x_root - canvas.winfo_rootx(), y_root - canvas.winfo_rooty())
+        pid, head = self.table.ref_of(iid)
+        drawn = self.live.drawn.get(token) if token else None
+        if drawn is None or pid is None:
+            return False
+        self.open_move_for(pid, head, slot=drawn.slot.target.slot, account=drawn.slot.target.ref)
+        return True
 
     def _moved(self, outcome) -> None:
         undo = f"  Undo: {outcome.undo.label}" if outcome.undo else ""
