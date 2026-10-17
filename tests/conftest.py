@@ -368,6 +368,13 @@ _GUI_APP: list = []
 
 
 @pytest.fixture(autouse=True)
+def _no_content_index_in_the_app(monkeypatch):
+    """The App starts the content index (threads, worker processes) unless told not to; a test
+    that wants one builds its own service and closes it."""
+    monkeypatch.setenv("NMSVAULT_INDEX", "off")
+
+
+@pytest.fixture(autouse=True)
 def _drain_ui_worker():
     """A job a test left in the UI worker must finish before the test's environment redirect
     is undone: it would otherwise run against the real user folders (the machine id, the

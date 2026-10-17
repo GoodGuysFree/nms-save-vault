@@ -274,9 +274,12 @@ class DetailPane(ttk.Frame):
                  on_link: Callable[[str, str], None] | None = None,
                  on_notes: Callable[[str, str | None], None] | None = None,
                  on_pin: Callable[[str, bool], None] | None = None,
-                 on_move: Callable[[str, str | None], None] | None = None) -> None:
+                 on_move: Callable[[str, str | None], None] | None = None,
+                 on_deep: Callable[[str], None] | None = None) -> None:
         super().__init__(master)
         self.on_move = on_move
+        self.on_deep = on_deep
+        self.facts_head: str | None = None
         self.on_link = on_link
         self.on_notes = on_notes
         self.on_pin = on_pin
@@ -297,6 +300,11 @@ class DetailPane(ttk.Frame):
         self.pages.pack(fill=tk.BOTH, expand=True)
         self.summary_text = self._page("Summary")
         self.where_text = self._page("Where")
+        facts = ttk.Frame(self.pages)
+        self.pages.add(facts, text="Facts")
+        self.deep_button = ttk.Button(facts, text="Read deeper detail", command=self._deep)
+        self.deep_button.pack(side=tk.BOTTOM, anchor="e", pady=pxs(4, 2))
+        self.facts_text = self._text(facts)
         notes = ttk.Frame(self.pages)
         self.pages.add(notes, text="Notes")
         self.edit_button = ttk.Button(notes, text="Edit...", command=self._notes)
@@ -323,7 +331,7 @@ class DetailPane(ttk.Frame):
     # --- theme ---------------------------------------------------------------------------
 
     def apply_palette(self, p) -> None:
-        for text in (self.summary_text, self.where_text, self.notes_text):
+        for text in (self.summary_text, self.where_text, self.notes_text, self.facts_text):
             text.configure(background=p["card"], foreground=p["fg"],
                            selectbackground=p["sel_bg"], selectforeground=p["sel_fg"],
                            insertbackground=p["fg"])
@@ -345,11 +353,13 @@ class DetailPane(ttk.Frame):
         set_label(self.title, "")
         set_label(self.summary, message)
         self._buttons(line=False)
-        for text in (self.summary_text, self.where_text, self.notes_text):
+        for text in (self.summary_text, self.where_text, self.notes_text, self.facts_text):
             self._write(text, [])
 
     def show_line(self, model: ReadModel, pid: str) -> None:
         self.pid, self.head = pid, None
+        self._write(self.facts_text, [])
+        self.deep_button.state(["disabled"])
         title, summary = line_title(model, pid)
         set_label(self.title, title)
         set_label(self.summary, summary)
@@ -362,6 +372,8 @@ class DetailPane(ttk.Frame):
 
     def show_version(self, model: ReadModel, pid: str, head: str) -> None:
         self.pid, self.head = pid, head
+        self._write(self.facts_text, [])
+        self.deep_button.state(["disabled"])
         title, summary = version_title(model, pid, head)
         set_label(self.title, title)
         set_label(self.summary, summary)
@@ -372,6 +384,8 @@ class DetailPane(ttk.Frame):
 
     def show_slot(self, model: ReadModel, source: LiveSource, slot: BoardSlot) -> None:
         self.pid, self.head = None, None
+        self._write(self.facts_text, [])
+        self.deep_button.state(["disabled"])
         title, summary = slot_title(source, slot)
         set_label(self.title, title)
         set_label(self.summary, summary)
@@ -417,6 +431,19 @@ class DetailPane(ttk.Frame):
         if self.on_link is not None and pid is not None:
             self.on_link(pid, head)
 
+    def show_facts(self, segments: list[Segment], *, deep: bool = False,
+                   head: str | None = None) -> None:
+        """The Facts page (D4 card and "what changed") of ``head`` (the selected version, or
+        the save file's newest); ``deep``: the deep section is loaded."""
+        self.facts_head = head
+        self._write(self.facts_text, segments)
+        self.deep_button.state(["disabled"] if deep or head is None else ["!disabled"])
+        set_label(self.deep_button, "Deeper detail read" if deep else "Read deeper detail")
+
+    def _deep(self) -> None:
+        if self.on_deep is not None and self.facts_head is not None:
+            self.on_deep(self.facts_head)
+
     def _notes(self) -> None:
         if self.on_notes is not None and self.pid is not None:
             self.on_notes(self.pid, self.head)
@@ -432,5 +459,5 @@ class DetailPane(ttk.Frame):
     def text_of(self, page: str) -> str:
         """A page's text (tests and the redaction scan)."""
         widget = {"summary": self.summary_text, "where": self.where_text,
-                  "notes": self.notes_text}[page]
+                  "notes": self.notes_text, "facts": self.facts_text}[page]
         return widget.get("1.0", "end")

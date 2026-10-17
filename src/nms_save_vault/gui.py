@@ -674,7 +674,16 @@ class App(tk.Tk):
 
     def _make_organizer(self) -> Organizer:
         """The organizer over this vault and the configured live folders (worker thread)."""
-        return Organizer(self.vault.root, self.state.live_sources)
+        organizer = Organizer(self.vault.root, self.state.live_sources)
+        from .core.index import vaultlink
+
+        if vaultlink.index_enabled(self.state.ui.get("index")):
+            try:
+                vaultlink.attach_service(organizer, self.state.live_sources)
+            except Exception:  # noqa: BLE001 - no facts is a smaller window, not a failed one
+                import logging
+                logging.getLogger(__name__).exception("the content index could not start")
+        return organizer
 
     def _build_classic_view(self, parent: ttk.Frame) -> None:
         self.toolbar = FlowBar(parent)
@@ -789,8 +798,17 @@ class App(tk.Tk):
             return                       # an unsaved note: the owner chose to keep editing
         worker = self.__dict__.get("worker")   # absent if __init__ failed early (no getattr:
         # Tk forwards unknown attributes to its interpreter, which is not there yet either)
+        if view is not None:
+            view.index_strip.stop()
         if worker is not None:
             worker.shutdown()
+        organizer = getattr(view, "organizer", None) if view is not None else None
+        service = getattr(organizer, "facts", None)
+        if service is not None and hasattr(service, "close"):
+            try:
+                service.close()           # joins the index's writer and dispatcher
+            except Exception:  # noqa: BLE001 - closing must never keep the window open
+                pass
         super().destroy()
 
     def _windows(self) -> list[tk.Misc]:

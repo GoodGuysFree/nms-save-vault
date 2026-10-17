@@ -33,6 +33,7 @@ from .detail import DetailPane
 from .live import LiveArea
 from .move import MoveDialog, source_for
 from .notes import NotesWindow, toggle_pin
+from . import factsui
 from .ops import DoneBar, OpsLogWindow, PlanDialog, RecoveryDialog, StepsWindow
 from .table import OrganizerTable
 
@@ -124,6 +125,8 @@ class OrganizerView(ttk.Frame):
         self.log_window: OpsLogWindow | None = None
         self.recovery_dialog: RecoveryDialog | None = None
         self._recovery_checked = False
+        self._facts_refresh_at = 0.0
+        self.banner: ttk.Frame | None = None
         self.organizer: Organizer | None = None
         self.model: ReadModel | None = None
         self.notes_window: NotesWindow | None = None
@@ -154,6 +157,11 @@ class OrganizerView(ttk.Frame):
         self.alert_area = ttk.Frame(self)
         self.alert_area.pack(side=tk.TOP, fill=tk.X, padx=px(6))
 
+        top_slot = ttk.Frame(self)                 # the index strip and the first-run banner
+        top_slot.pack(side=tk.TOP, fill=tk.X)
+        self.top_slot = top_slot
+        self.index_strip = factsui.IndexStrip(top_slot, provider=lambda: self.facts,
+                                              on_events=self._index_events)
         done_slot = ttk.Frame(self)
         done_slot.pack(side=tk.BOTTOM, fill=tk.X)
         self.done = DoneBar(done_slot, on_undo=self.undo_op, on_history=self.open_log)
@@ -174,11 +182,102 @@ class OrganizerView(ttk.Frame):
         self.live.pack(side=tk.TOP, fill=tk.X)
         self.detail = DetailPane(right, themed=self.themed, on_link=self._link,
                                  on_notes=self.open_notes_for, on_pin=self._pin,
-                                 on_move=self.open_move_for)
+                                 on_move=self.open_move_for, on_deep=self.read_deep)
         self.detail.pack(side=tk.TOP, fill=tk.BOTH, expand=True, pady=pxs(8, 0))
         self._drag = None
         self._dragging = False
         self._bind_drag()
+
+    # --- the content index (D4) -------------------------------------------------------------------
+
+    @property
+    def facts(self):
+        """D4's IndexService when it runs, else None (memory reads only on the Tk thread)."""
+        organizer = self.organizer
+        service = organizer.facts if organizer is not None else None
+        return service if service is not None and getattr(service, "active", False) else None
+
+    def _attach_facts(self) -> None:
+        service = self.facts
+        self.table.facts = service
+        if service is None:
+            return
+        self.index_strip.start()
+        if self.banner is None and not self.prefs.get("index_banner_done"):
+            def dismiss() -> None:
+                self.prefs["index_banner_done"] = True
+                self.save_prefs()
+                if self.banner is not None:
+                    self.banner.destroy()
+                    self.banner = None
+            self.banner = factsui.first_run_banner(self.top_slot, dismiss)
+            self.banner.pack(side=tk.TOP, fill=tk.X, padx=px(6), pady=pxs(2, 0))
+
+    def _index_events(self, events: list) -> None:
+        """Rows update in place as facts arrive; the facts sort re-sorts at most every 3 s."""
+        kinds = {e.kind for e in events}
+        if kinds & {"indexed", "failed", "stale", "warmed", "changes", "finished", "cleared"}:
+            self.table.refresh()
+            if self.table.sort_key.startswith("facts:") and not self.scanning \
+                    and time.monotonic() - self._facts_refresh_at > 3.0:
+                self._facts_refresh_at = time.monotonic()
+                self.rescan(record=False)
+        shown = self.detail.facts_head
+        if shown is not None and any(e.vid == shown and e.kind in ("indexed", "deep-ready", "changes")
+                                     for e in events):
+            self.request_card(shown)
+
+    def request_card(self, head: str) -> None:
+        """The Facts page of ``head``: the card is read from the cache in the worker, never on
+        the Tk thread; the version is moved to the front of the queue."""
+        service = self.facts
+        if service is None or self.model is None:
+            return
+        parent = self._parent_of(head)
+        priority = service.Priority.INTERACTIVE
+
+        def job():
+            service.request([head], priority)
+            card = service.card(head)
+            changes = service.changes(head, parent[0], edge_kind=parent[1]) if parent else None
+            return head, card, service.view(head), changes
+
+        self.worker.submit(job, on_done=self._card_ready, on_error=self._worker_error("Facts"))
+
+    def _parent_of(self, head: str):
+        for line in self.model.lines():
+            for row in self.model.versions(line.pid):
+                if row.head == head:
+                    return (row.parent, row.parent_kind) if row.parent is not None else None
+        return None
+
+    def _card_ready(self, result) -> None:
+        head, card, view, changes = result
+        pid, shown = self.table.selection_ref()
+        line = self.model.line(pid) if pid is not None and self.model is not None else None
+        wanted = shown or (line.representative if line is not None else None)
+        if head != wanted:
+            return
+        self.detail.show_facts(self._facts_segments(head, card, view, changes),
+                               deep=bool(getattr(card, "deep", None)), head=head)
+
+    def _facts_segments(self, head, card, view, changes) -> list:
+        parent = self._parent_of(head)
+        segs = factsui.segments(factsui.view_lines(view))
+        if parent is not None:
+            segs.append(("\nWhat changed since the version it comes from\n", ("h",)))
+            segs += [(line + "\n", ()) for line in factsui.change_lines(changes)]
+        deep = factsui.card_lines(card)
+        if deep:
+            segs.append(("\nDeeper detail\n", ("h",)))
+            segs += factsui.segments(deep)
+        return segs
+
+    def read_deep(self, head: str) -> None:
+        service = self.facts
+        if service is not None:
+            self.worker.submit(lambda: service.request_deep(head),
+                               on_error=self._worker_error("Deeper detail"))
 
     # --- scanning ---------------------------------------------------------------------------
 
@@ -220,6 +319,11 @@ class OrganizerView(ttk.Frame):
         except Exception:  # noqa: BLE001
             log.exception("the live operations' look-over failed")
         try:
+            if organizer.facts is not None and getattr(organizer.facts, "active", False):
+                organizer.facts.queue_refresh()      # only after a scan can bytes be opened
+        except Exception:  # noqa: BLE001
+            log.exception("the content index could not queue its refresh")
+        try:
             if organizer.version_store is not None:
                 from ...core.store import store_status
                 out["store"] = store_status(organizer.vault_root, organizer.version_store,
@@ -232,6 +336,7 @@ class OrganizerView(ttk.Frame):
         organizer, model, extras = result
         self._scan_over()
         self.clear_alert("scan-failed")
+        self._attach_facts()                 # before the table fills: its facts cells read it
         self.set_model(model)
         alerts = scan_alerts(organizer)
         for key in [k for k in self.alerts if k.startswith(("live:", "store:"))]:
@@ -328,6 +433,10 @@ class OrganizerView(ttk.Frame):
         else:
             self.detail.show_version(self.model, pid, head)
         self.live.highlight(pid)
+        line = self.model.line(pid)
+        target = head or (line.representative if line is not None else None)
+        if target is not None:
+            self.request_card(target)
 
     def _slot_clicked(self, token: str, slot: BoardSlot) -> None:
         if self.model is None:
@@ -371,6 +480,7 @@ class OrganizerView(ttk.Frame):
             source, name, card = source_for(self.model, pid, head)
         except KeyError:
             return None
+        card = self._facts_card(pid, head, card)
         labels = {s.ref: s.label for s in self.model.live_board().sources}
         self.move_dialog = MoveDialog(
             self.winfo_toplevel(), worker=self.worker, themed=self.themed,
@@ -438,6 +548,26 @@ class OrganizerView(ttk.Frame):
             return False
         self.open_move_for(pid, head, slot=drawn.slot.target.slot, account=drawn.slot.target.ref)
         return True
+
+    def _facts_card(self, pid: str, head: str | None, card: list) -> list:
+        """The facts of the version in "What you are putting in": what the index has read so
+        far (memory only; "..." while not read), then what changed against its drawn parent."""
+        service = self.facts
+        if service is None:
+            return card
+        line = self.model.line(pid)
+        target = head or (line.representative if line is not None else None)
+        if target is None:
+            return card
+        parent = self._parent_of(target)
+        out = factsui.segments(factsui.view_lines(service.view(target))) + [("\n", ())]
+        out.append(("What changed in this version\n", ("h",)))
+        if parent is None:
+            out.append(("nothing shown - no recorded parent\n", ("k",)))
+        else:
+            found = service.changes(target, parent[0], edge_kind=parent[1])
+            out += [(t + "\n", ()) for t in factsui.change_lines(found)]
+        return out + card
 
     def _moved(self, outcome) -> None:
         self.done.show(outcome)

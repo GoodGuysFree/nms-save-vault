@@ -33,6 +33,7 @@ from ..fmt import local_time, play_time
 from ..redact import RedactingTreeview
 from ..themeaware import ThemeRegistry
 from ..tooltip import Tooltip
+from . import factsui
 from .words import line_name, version_numbers
 
 STYLE = "Organizer.Treeview"
@@ -58,6 +59,10 @@ COLUMNS = (
     Column("last", "Last played", 112, "w", "last_played"),
     Column("mode", "Mode", 72, "w", "difficulty"),
     Column("state", "State", 126, "w", "risk"),
+    Column("glyphs", "Glyphs", 48, "e", "facts:glyphs"),
+    Column("parts", "Parts", 56, "e", "facts:base_parts"),
+    Column("legacy", "Legacy", 68, "e", "facts:legacy_placed"),
+    Column("ships", "Ships", 42, "e", "facts:ships"),
     Column("platforms", "Platforms", 90, "w", "platform", default=False),
     Column("branches", "Branches", 64, "e", None, default=False),
     Column("note", "Note", 280, "w", "note"),
@@ -118,8 +123,9 @@ def _mode(mode: str, difficulty: str) -> str:
     return mode.replace("Expedition", "Exped.") if mode else difficulty
 
 
-def line_values(line: Line) -> dict[str, str]:
+def line_values(line: Line, view=None, active: bool = False) -> dict[str, str]:
     return {
+        **factsui.facts_values(view, active=active),
         "live": " ".join(b.label for b in line.live) or "vault",
         "versions": str(line.version_count),
         "play": play_time(line.play_time),
@@ -132,7 +138,8 @@ def line_values(line: Line) -> dict[str, str]:
     }
 
 
-def version_values(row: VersionRow, live_labels: dict) -> dict[str, str]:
+def version_values(row: VersionRow, live_labels: dict, view=None, active: bool = False,
+                   auto_note: str = "") -> dict[str, str]:
     """A version row's cells (D6 2.3); its own words in State."""
     words = []
     if row.durable_copies == 0 and "gone" not in row.flags:
@@ -152,6 +159,7 @@ def version_values(row: VersionRow, live_labels: dict) -> dict[str, str]:
         words.append("locked")
     live = " ".join(live_labels.get(t, "") for t in row.live_in).strip()
     return {
+        **factsui.facts_values(view, active=active),
         "live": live or ("vault" if row.durable_copies else ""),
         "versions": "",
         "play": play_time(row.play_time),
@@ -160,7 +168,7 @@ def version_values(row: VersionRow, live_labels: dict) -> dict[str, str]:
         "state": "; ".join(words),
         "platforms": "Steam" if row.platform == "steam" else "Xbox",
         "branches": "",
-        "note": row.label or next(iter(row.comment.splitlines()), ""),
+        "note": row.label or next(iter(row.comment.splitlines()), "") or auto_note,
     }
 
 
@@ -185,8 +193,11 @@ def _dot(row: VersionRow, linked: bool) -> tuple[str, str]:
 
 
 def _version_spec(row: VersionRow, number: int, folded: int, live_labels: dict,
-                  linked: bool) -> RowSpec:
-    values = version_values(row, live_labels)
+                  linked: bool, provider=None) -> RowSpec:
+    active = bool(provider is not None and getattr(provider, "active", False))
+    view = provider.view(row.head) if active else None
+    auto = factsui.change_note(provider, row) if active and not row.label else ""
+    values = version_values(row, live_labels, view, active, auto)
     if folded:
         marker = f"+{folded} re-save{'s' if folded > 1 else ''} folded"
         values["state"] = f"{values['state']}; {marker}" if values["state"] else marker
@@ -194,7 +205,7 @@ def _version_spec(row: VersionRow, number: int, folded: int, live_labels: dict,
                    ("ver",), _dot(row, linked), row.head)
 
 
-def version_specs(model: ReadModel, pid: str, live_labels: dict) -> list[RowSpec]:
+def version_specs(model: ReadModel, pid: str, live_labels: dict, provider=None) -> list[RowSpec]:
     """The rows of an open line (D6 2.3): first the linked history - versions joined by a
     move the app recorded, by the live journal or by consecutive app backups - newest
     first; then, under a separator, every other version by date, nothing guessed. Re-saves
@@ -207,7 +218,7 @@ def version_specs(model: ReadModel, pid: str, live_labels: dict) -> list[RowSpec
     shown = [r for r in rows if not r.folded_into]
     linked = [r for r in shown if r.in_tree]
     dated = [r for r in shown if not r.in_tree]
-    out = [_version_spec(r, numbers[r.head], folded[r.head], live_labels, True)
+    out = [_version_spec(r, numbers[r.head], folded[r.head], live_labels, True, provider)
            for r in linked]
     if dated:
         count = f"{len(dated)} version{'s' if len(dated) != 1 else ''}"
@@ -215,7 +226,7 @@ def version_specs(model: ReadModel, pid: str, live_labels: dict) -> list[RowSpec
         note["note"] = "no recorded move or app backup links them; no links are guessed"
         out.append(RowSpec(("sep",), f"Not linked, by date - {count}",
                            tuple(note[c.key] for c in COLUMNS), ("sep",)))
-        out += [_version_spec(r, numbers[r.head], folded[r.head], live_labels, False)
+        out += [_version_spec(r, numbers[r.head], folded[r.head], live_labels, False, provider)
                 for r in dated]
     return out
 
@@ -313,6 +324,7 @@ class OrganizerTable(ttk.Frame):
         self.on_select = on_select
         self.on_move = on_move
         self.model: ReadModel | None = None
+        self.facts = None               # D4's IndexService (memory reads only), when it runs
         self.lines: tuple[Line, ...] = ()
         self.shown: tuple[Line, ...] = ()
         self.open_pids: set[str] = set()
@@ -485,7 +497,9 @@ class OrganizerTable(ttk.Frame):
         wanted = []
         for n, line in enumerate(self.shown):
             iid = self._iid_of.get(line.pid)
-            values = line_values(line)
+            active = bool(self.facts is not None and getattr(self.facts, "active", False))
+            values = line_values(line, self.facts.view(line.representative) if active else None,
+                                 active)
             row = (line_name(line), tuple(values[c.key] for c in COLUMNS))
             if iid is None:
                 iid = self._new_iid("L")
@@ -542,7 +556,7 @@ class OrganizerTable(ttk.Frame):
         labels = {b.target: b.label for line in self.lines for b in line.live}
         known = self._child_iids.setdefault(pid, {})
         wanted = []
-        for n, spec in enumerate(version_specs(self.model, pid, labels)):
+        for n, spec in enumerate(version_specs(self.model, pid, labels, self.facts)):
             viid = known.get(spec.key)
             if viid is None or not tree.exists(viid):
                 viid = self._new_iid("V")
@@ -649,7 +663,7 @@ class OrganizerTable(ttk.Frame):
             self.descending = not self.descending
         else:
             self.sort_key = key
-            self.descending = key in ("play_time", "last_played", "versions", "risk")
+            self.descending = key in ("play_time", "last_played", "versions", "risk")                 or key.startswith("facts:")
         self.prefs["table_sort"] = [self.sort_key, self.descending]
         self.save_prefs()
         self._show_sort_arrow()

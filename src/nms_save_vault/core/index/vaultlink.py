@@ -106,6 +106,39 @@ def open_service(vault_root: Path, sources: Sequence[Source], *, workers: str | 
     return service, organizer
 
 
+def attach_service(organizer: Organizer, sources: Sequence[Source], *, workers: str | int = "auto",
+                   host: platform.Host | None = None,
+                   game_running: Callable[[], bool | None] = safety.is_game_running) -> IndexService:
+    """For the app: an index service reading through ``organizer``'s own locator, attached as
+    its facts provider. Nothing is requested and nothing is read until the organizer has
+    scanned (``defer_refresh``): the caller queues the refresh after its first scan."""
+    host = host or organizer.host
+    vault_root = organizer.vault_root
+    policy: ExecutionPolicy = platform.index_execution_policy(
+        host, portable_kit=bool(host.env.get("NMSVAULT_PORTABLE_ROOT")), cpu_count=os.cpu_count(), setting=workers)
+
+    def meta(vid: Vid):
+        info = organizer.scan.versions.get(vid) if organizer.scan else None
+        return info.meta if info else None
+
+    service = IndexService(
+        cache_path=cache_file(org_cache.cache_dir(vault_root, organizer.store.vault_id, host)),
+        vault_id=organizer.store.vault_id or "nostore", locator=OrganizerLocator(organizer), policy=policy,
+        defer_refresh=True,
+        size_hint=lambda vid: (m.size_decompressed or None) if (m := meta(vid)) else None,
+        when=lambda vid: m.meta_ts if (m := meta(vid)) else None,
+        forbidden=forbidden_roots(vault_root, sources, host), app_version=_app_version(),
+        game_running=game_running)
+    organizer.facts = service
+    return service
+
+
+def index_enabled(setting: object = None) -> bool:
+    """The app runs the content index unless ``NMSVAULT_INDEX=off`` (tests, support) or the
+    ``ui.index`` preference says off."""
+    return os.environ.get("NMSVAULT_INDEX", "").lower() != "off" and setting != "off"
+
+
 def _app_version() -> str:
     from ... import __version__
     return __version__
