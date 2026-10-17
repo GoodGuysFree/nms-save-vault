@@ -172,7 +172,8 @@ class MemberRecord:
 
 _TOP_KEYS = ("format", "schema", "id", "kind", "label", "reason", "op_id", "created_utc",
              "created_local", "app_version", "platform", "account_key", "source", "scope",
-             "origin", "files", "slots", "account", "xbox", "notes")
+             "origin", "files", "slots", "account", "xbox", "notes", "absent")
+_ABSENT_KEY = re.compile(r"([1-9]|1[0-5])[AB]")
 
 
 @dataclass(frozen=True)
@@ -196,6 +197,9 @@ class StoreEntry:
     xbox: Mapping[str, Any] | None
     body_sha256: str
     notes: tuple[str, ...] = ()  # capture diagnostics, e.g. a save file kept without its partner
+    # The scanner's note for each member it saw without a save ("7B" -> "Xbox save: deleted",
+    # "4A" -> "incomplete: missing meta file"), so a listing shows the slot as a scan would.
+    absent: Mapping[str, str] = field(default_factory=dict)
     schema: int = ENTRY_SCHEMA   # a newer writer's schema number is kept as read
     extra: Mapping[str, Any] = field(default_factory=dict)
 
@@ -226,7 +230,7 @@ class StoreEntry:
             "scope": dict(self.scope), "origin": None if self.origin is None else dict(self.origin),
             "files": [f.to_json() for f in self.files], "slots": slots,
             "account": dict(self.account), "xbox": None if self.xbox is None else dict(self.xbox),
-            "notes": list(self.notes)})
+            "notes": list(self.notes), "absent": dict(self.absent)})
         return body
 
     def to_bytes(self) -> bytes:
@@ -280,7 +284,7 @@ class StoreEntry:
             origin=_opt(d, "origin", dict, what), files=files,
             members=tuple(sorted(members, key=lambda m: (m.slot, m.member))),
             account=_get(d, "account", dict, what), xbox=_opt(d, "xbox", dict, what),
-            body_sha256=claimed, notes=_notes(d), schema=schema,
+            body_sha256=claimed, notes=_notes(d), absent=_absent(d), schema=schema,
             extra={k: v for k, v in d.items() if k not in _TOP_KEYS})
         _check(entry)
         return entry
@@ -343,6 +347,13 @@ def _notes(d: Mapping[str, Any]) -> tuple[str, ...]:
     if not all(isinstance(n, str) for n in notes):
         raise EntryCorrupt("manifest: a note is not text")
     return tuple(notes)
+
+
+def _absent(d: Mapping[str, Any]) -> dict[str, str]:
+    absent = _get(d, "absent", dict, "manifest")
+    if not all(_ABSENT_KEY.fullmatch(k) and isinstance(v, str) for k, v in absent.items()):
+        raise EntryCorrupt("manifest: a bad 'absent' record")
+    return absent
 
 
 def _no_float(text: str) -> Any:

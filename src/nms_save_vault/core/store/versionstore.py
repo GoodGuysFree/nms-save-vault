@@ -438,7 +438,8 @@ class VersionStore:
                 progress(done, total)
             if cancel is not None and cancel():
                 raise Cancelled("Cancelled. Nothing was kept.")
-        members, notes = capture.describe_members(folder, platform, records, stats, plan.slots)
+        members, notes, absent = capture.describe_members(folder, platform, records, stats,
+                                                          plan.slots)
         plan.require_consistent(records)
         if finish is not None:
             label = finish(members) or label
@@ -449,7 +450,8 @@ class VersionStore:
                       source=dict(source), scope=plan.scope,
                       origin=None if origin is None else dict(origin),
                       files=list(records.values()), members=members,
-                      account=capture.account_paths(plan, records), xbox=plan.xbox, notes=notes)
+                      account=capture.account_paths(plan, records), xbox=plan.xbox, notes=notes,
+                      absent=absent)
         return self._commit(fields, entry_id=entry_id, created_local=created_local)
 
     def _require_space(self, needed: int) -> None:

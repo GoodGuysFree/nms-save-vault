@@ -269,17 +269,21 @@ def stats_of(data: bytes) -> lz4_block.ContainerStats:
 
 def describe_members(folder: Path, platform: Platform, records: Mapping[str, FileEntry],
                      stats: Mapping[str, lz4_block.ContainerStats],
-                     slots: tuple[int, ...] | None) -> tuple[list[MemberRecord], list[str]]:
-    """One record per slot member, from a scan of the folder made after it was read, and a
-    note per member file kept without its partner. A member the scan finds must be wholly in
-    the capture (else the folder changed meanwhile: SourceChanged); the caller then checks
-    that nothing read has changed (:meth:`CapturePlan.require_consistent`)."""
+                     slots: tuple[int, ...] | None
+                     ) -> tuple[list[MemberRecord], list[str], dict[str, str]]:
+    """One record per slot member, from a scan of the folder made after it was read; a note
+    per member file kept without its partner; and the scanner's note per member it saw
+    without a save (``"7B"`` -> note). A member the scan finds must be wholly in the capture
+    (else the folder changed meanwhile: SourceChanged); the caller then checks that nothing
+    read has changed (:meth:`CapturePlan.require_consistent`)."""
     view = savedir.scan_any(folder)
-    members, notes = [], []
+    members, notes, absent = [], [], {}
     for slot in slots or range(1, MAX_SAVE_SLOTS + 1):
         for mv in view.slots[slot].members:
             data_rel, meta_rel = _rel(folder, mv.data_path), _rel(folder, mv.meta_path)
             if not mv.exists:
+                if mv.note:
+                    absent[f"{slot}{mv.label}"] = mv.note
                 kept = [r for r in (data_rel, meta_rel) if r is not None and r in records]
                 if kept:
                     notes.append(f"slot {slot}{mv.label}: {', '.join(kept)} kept without its "
@@ -296,7 +300,7 @@ def describe_members(folder: Path, platform: Platform, records: Mapping[str, Fil
             if platform == "xbox" and mv.meta_sha256 and mv.meta_sha256 != fm.sha256:
                 raise SourceChanged(fm.path)
             members.append(_record(slot, mv, fd, fm, platform, stats.get(fd.path)))
-    return members, notes
+    return members, notes, absent
 
 
 def _record(slot: int, mv: savedir.MemberView, fd: FileEntry, fm: FileEntry, platform: Platform,

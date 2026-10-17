@@ -15,6 +15,15 @@ from .errors import (
     StoreUnavailable,
 )
 from .damage import DamageRecord
+from .listing import (
+    CopyAsideInfo,
+    StoreStatus,
+    VaultEntry,
+    get_vault_entry,
+    list_vault_entries,
+    open_entry_folder,
+    store_status,
+)
 from .locator import StoreLocator
 from .manifest import EntryKind, FileEntry, MemberRecord, StoreEntry
 from .materialize import MaterializeResult

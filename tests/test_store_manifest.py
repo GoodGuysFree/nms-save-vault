@@ -114,6 +114,8 @@ def test_unknown_keys_round_trip():
     lambda d: d.__setitem__("format", "something-else"),
     lambda d: d.__setitem__("schema", 0),
     lambda d: d.pop("label"),
+    lambda d: d.__setitem__("absent", {"16A": "slot out of range"}),
+    lambda d: d.__setitem__("notes", [1]),
 ])
 def test_the_loader_is_strict(edit):
     with pytest.raises(vstore.EntryCorrupt):
@@ -124,7 +126,8 @@ def test_floats_and_duplicate_keys_are_refused():
     raw = _entry().to_bytes()
     with pytest.raises(vstore.EntryCorrupt):
         StoreEntry.from_bytes(_reseal(raw, lambda d: d.__setitem__("future", 1.5)))
-    dup = raw.replace(b'{"account":', b'{"account":{},"account":', 1)
+    dup = raw.replace(b'"account":', b'"account":{},"account":', 1)
+    assert dup != raw
     with pytest.raises(vstore.EntryCorrupt):
         StoreEntry.from_bytes(dup)
 
