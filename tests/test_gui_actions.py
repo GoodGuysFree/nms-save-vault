@@ -232,18 +232,36 @@ def live_target(app, tmp_path, monkeypatch):
     )
     monkeypatch.setattr(app.state, "sources", [source])
     monkeypatch.setattr(app, "live_dir", folder)
+    # Only this folder is live: the machine's own save folders stay out of the test.
+    from nms_save_vault.core import discover
+
+    monkeypatch.setattr(discover, "discover_live_sources", lambda *a, **k: [])
     return folder
 
 
+def _sync_worker(app, monkeypatch):
+    """Run what would go to the worker thread inline: no wait window, no thread."""
+
+    def run(fn, force, message):
+        try:
+            return {"result": fn(force)}
+        except Exception as exc:  # noqa: BLE001 - handed back, as the real worker does
+            return {"error": exc}
+
+    monkeypatch.setattr(app, "_run_worker", run)
+
+
 def _capture_run(app, monkeypatch):
-    """Replace _run with something that records and executes the operation lambda."""
+    """Replace _run with something that records and executes the operation lambda (and
+    run any worker-thread step, such as the clear plan, inline)."""
     calls = {}
 
-    def fake_run(fn, *, success, message=""):
+    def fake_run(fn, *, success, message="", warnings=None):
         calls["result"] = fn(False)
         calls["success"] = success
 
     monkeypatch.setattr(app, "_run", fake_run)
+    _sync_worker(app, monkeypatch)
     return calls
 
 
@@ -273,6 +291,7 @@ def test_direct_copy_confirms_then_writes_the_named_slot(app, live_target, tmp_p
     assert str(live_target) == recorded["live"]
     assert "slot 7 of some-backup" in asked["msg"]
     assert "currently holds" in asked["msg"], "the user must see what is being replaced"
+    assert "only one save is refused" in asked["msg"], "the P6 rule, not 'both saves are copied'"
     assert "slot 7" in calls["success"]
 
 
@@ -296,7 +315,7 @@ def test_clearing_shows_the_play_time_gap_and_then_clears(app, live_target, monk
         entry_id="full-steam-20260101-000000", entry_kind="full",
         entry_created="2026-01-01T00:00:00", backup_name="Expedition", backup_play_time=3600,
     )
-    monkeypatch.setattr(ops, "plan_clear_slot", lambda vault, directory, slot: plan)
+    monkeypatch.setattr(ops, "plan_clear_slot", lambda vault, directory, slot, **kw: plan)
     asked = {}
     monkeypatch.setattr(gui, "_askyesno", lambda title, msg: asked.setdefault("msg", msg) or True)
     recorded = {}
@@ -309,7 +328,7 @@ def test_clearing_shows_the_play_time_gap_and_then_clears(app, live_target, monk
     app.on_clear({"type": "slot", "dir": str(live_target), "slot": 4, "live": True})
 
     assert recorded == {"directory": str(live_target), "slot": 4}
-    assert "2h30m more play time" in asked["msg"], "the user must see what clearing costs"
+    assert "2h30m less play time" in asked["msg"], "the user must see what clearing costs"
     assert "full-steam-20260101-000000" in asked["msg"]
     assert "Undo" in asked["msg"]
     assert "slot 4" in calls["success"]
@@ -393,3 +412,499 @@ def test_copy_refuses_when_there_is_nowhere_writable(app, monkeypatch):
     calls = _capture_run(app, monkeypatch)
     app.on_copy_slot(source=gui.SlotSource("B:/x", 3, "b"), dest_slot=3, ask=False)
     assert shown and calls == {}
+
+
+# --- step 11: undo names its target, asks over damage, offers the account data --------------
+
+
+def _undo_plan(**kw):
+    from nms_save_vault.core import operations as ops
+
+    return ops.UndoPlan(op="repopulate_slot", ts="2026-10-17T10:00:00", snapshot_id="snapshot-1",
+                        token="7:snapshot-1", **kw)
+
+
+def test_undo_names_the_folder_and_passes_every_choice(app, live_target, monkeypatch):
+    from nms_save_vault import gui
+    from nms_save_vault.core import operations as ops
+
+    monkeypatch.setattr(ops, "plan_undo", lambda vault, directory, **kw: _undo_plan())
+    asked = {}
+
+    def confirm(master, title, message, check=None):
+        asked.update(message=message, check=check)
+        return True, True
+
+    monkeypatch.setattr(gui, "_confirm", confirm)
+    recorded = {}
+    monkeypatch.setattr(
+        ops, "undo_last", lambda vault, directory, **kw: recorded.update(directory=Path(directory), **kw)
+    )
+    _capture_run(app, monkeypatch)
+
+    app.on_undo()
+
+    assert live_target.name in asked["message"] and "snapshot-1" in asked["message"]
+    assert asked["check"] == gui.ACCOUNT_DATA_CHOICE
+    assert recorded["directory"] == live_target
+    assert recorded["restore_accountdata"] is True and recorded["acknowledge_damage"] is False
+    assert any(Path(d).resolve() == live_target.resolve() for d in recorded["other_live_dirs"])
+    assert recorded["expected"] == "7:snapshot-1", "the undo is held to the change confirmed"
+
+
+@pytest.mark.parametrize("accept", [True, False], ids=["accepted", "declined"])
+def test_undo_over_a_damaged_history_asks_first(app, live_target, monkeypatch, accept):
+    from nms_save_vault import gui
+    from nms_save_vault.core import operations as ops
+
+    monkeypatch.setattr(
+        ops, "plan_undo", lambda *a, **k: _undo_plan(damaged_after=True, log_warning="1 damaged line")
+    )
+    questions = []
+    monkeypatch.setattr(gui, "_askyesno", lambda title, msg: questions.append(msg) or accept)
+    monkeypatch.setattr(gui, "_confirm", lambda *a, **k: (True, False))
+    recorded = {}
+    monkeypatch.setattr(ops, "undo_last", lambda vault, directory, **kw: recorded.update(kw))
+    calls = _capture_run(app, monkeypatch)
+
+    app.on_undo()
+
+    assert questions and "1 damaged line" in questions[0]
+    if accept:
+        assert recorded["acknowledge_damage"] is True
+    else:
+        assert calls == {} and recorded == {}
+
+
+def test_undo_from_a_folders_menu_acts_on_that_folder(app, live_target, tmp_path, monkeypatch):
+    """Like Promote (P3): the menu of a folder that is not the active one must not undo the
+    active one."""
+    from nms_save_vault import gui
+    from nms_save_vault.core import operations as ops
+
+    other = tmp_path / "other-live"
+    other.mkdir()
+    seen = []
+
+    def plan(vault, directory, **kw):
+        seen.append(Path(directory))
+        raise ops.OperationError("Nothing has been done yet, so there is nothing to undo.")
+
+    monkeypatch.setattr(ops, "plan_undo", plan)
+    shown = []
+    monkeypatch.setattr(gui, "_showerror", lambda *a, **k: shown.append(a))
+    monkeypatch.setattr(gui, "_confirm", lambda *a, **k: pytest.fail("nothing to undo: must not ask"))
+
+    meta = {"type": "live", "dir": str(other), "writable": True, "source_id": "other"}
+    assert _invoke_menu_entry(app, app._menu_for_live_folder, meta, "Undo the last change")
+    assert seen == [other] and shown
+
+
+# --- step 11: messages an operation without an OpResult has to hand back ---------------------
+
+
+@pytest.mark.parametrize("action", ["backup", "extract", "import"])
+def test_a_history_that_could_not_be_written_is_shown(app, live_target, monkeypatch, action):
+    from nms_save_vault import gui
+    from nms_save_vault.core import operations as ops
+
+    message = "Done, but missing from the history: the undo log could not be written (disk full)."
+
+    def op(*a, warnings=None, **k):
+        warnings.append(message)
+
+    name = {"backup": "create_full_backup", "extract": "extract_slot", "import": "import_backup"}[action]
+    monkeypatch.setattr(ops, name, op)
+    monkeypatch.setattr(gui.simpledialog, "askstring", lambda *a, **k: "label")
+    monkeypatch.setattr(gui, "_askyesno", lambda *a, **k: False)
+    shown = []
+    monkeypatch.setattr(gui, "_showinfo", lambda title, msg: shown.append(msg))
+    monkeypatch.setattr(app, "refresh", lambda: None)
+    _sync_worker(app, monkeypatch)
+
+    if action == "backup":
+        app._backup_dir(live_target)
+    elif action == "extract":
+        app.on_extract({"type": "slot", "dir": str(live_target), "slot": 1, "live": True})
+    else:
+        app._import_dir(live_target)
+
+    assert shown and message in shown[-1]
+
+
+# --- step 11: the account data is a choice, unticked by default -------------------------------
+
+
+@pytest.mark.parametrize("ticked", [False, True], ids=["kept", "restored"])
+def test_a_full_restore_offers_the_account_data_and_passes_the_choice(app, live_target, monkeypatch, ticked):
+    from nms_save_vault import gui
+    from nms_save_vault.core import operations as ops
+
+    entry = next(e for e in app.vault.entries if e.kind == "full")
+    offered = {}
+
+    def confirm(master, title, message, check=None):
+        offered["check"] = check
+        return True, ticked
+
+    monkeypatch.setattr(gui, "_confirm", confirm)
+    recorded = {}
+    monkeypatch.setattr(ops, "restore_entry", lambda vault, e, live, **kw: recorded.update(kw))
+    _capture_run(app, monkeypatch)
+
+    app.on_restore({"type": "entry", "entry": entry})
+
+    assert offered["check"] == gui.ACCOUNT_DATA_CHOICE
+    assert recorded["restore_accountdata"] is ticked
+
+
+def test_the_confirm_dialog_starts_unticked(app, monkeypatch):
+    from nms_save_vault import gui
+
+    monkeypatch.setattr(gui.ConfirmDialog, "grab_set", lambda self: None)
+    monkeypatch.setattr(gui.ConfirmDialog, "wait_window", lambda self, *a: None)
+    dialog = gui.ConfirmDialog(app, "Restore", "Replace the live saves?", check=gui.ACCOUNT_DATA_CHOICE)
+    try:
+        assert dialog._check.get() is False
+        dialog._yes()
+        assert dialog.answer is True and dialog.ticked is False
+    finally:
+        if dialog.winfo_exists():
+            dialog.destroy()
+
+
+# --- step 11: refusals and half-done writes are told apart ------------------------------------
+
+
+def test_a_partly_done_write_refreshes_and_says_so_with_its_warnings(app, monkeypatch):
+    from nms_save_vault import gui
+    from nms_save_vault.core import operations as ops
+
+    result = ops.OpResult(False, "restore_full", "restored x", snapshot_id="snapshot-1",
+                          warnings=["The live folder kept its own account data."])
+    error = ops.WrittenButInvalidError(
+        "The restore could not replace everything, so the folder is only partly restored. "
+        "The live folder was changed: undo restores it from snapshot snapshot-1.", result,
+    )
+    monkeypatch.setattr(app, "_run_worker", lambda fn, force, message: {"error": error})
+    refreshed, shown = [], []
+    monkeypatch.setattr(app, "refresh", lambda: refreshed.append(True))
+    monkeypatch.setattr(gui, "_showerror", lambda title, msg: shown.append((title, msg)))
+
+    app._run(lambda force: None, success="Restored.")
+
+    assert refreshed, "the live folder was changed: the view must show it"
+    title, msg = shown[0]
+    assert "Only partly done" in title and "only partly restored" in msg
+    assert "kept its own account data" in msg
+
+
+def test_another_accounts_backup_is_named_as_such(app, monkeypatch):
+    from nms_save_vault import gui
+    from nms_save_vault.core import operations as ops
+
+    error = ops.ForeignAccountError("'full-x' was taken from another Xbox account. Nothing was changed.")
+    monkeypatch.setattr(app, "_run_worker", lambda fn, force, message: {"error": error})
+    shown = []
+    monkeypatch.setattr(gui, "_showerror", lambda title, msg: shown.append((title, msg)))
+
+    app._run(lambda force: None, success="Restored.")
+
+    assert "Another account" in shown[0][0] and "another Xbox account" in shown[0][1]
+
+
+# --- step 11: P3, promote acts on the row's own folder ----------------------------------------
+
+
+def test_promote_acts_on_the_clicked_rows_folder_not_the_active_one(app, live_target, tmp_path, monkeypatch):
+    from nms_save_vault.core import operations as ops
+    from nms_save_vault.core import state as appstate
+
+    other = tmp_path / "second-live"
+    other.mkdir()
+    app.state.sources.append(
+        appstate.Source(id="steam-second", platform="steam", account="2", path=str(other), label="Second")
+    )
+    recorded = {}
+    monkeypatch.setattr(
+        ops, "promote_member",
+        lambda vault, directory, slot, member, **kw: recorded.update(directory=Path(directory), slot=slot, member=member),
+    )
+    _capture_run(app, monkeypatch)
+    meta = {"type": "member", "dir": str(other), "slot": 3, "live": True, "member": 1}
+
+    assert _invoke_menu_entry(app, app._menu_for_slot, meta, "Make the Restore-Point")
+    assert recorded == {"directory": other, "slot": 3, "member": 1}
+    assert app.live_dir == live_target
+
+
+# --- step 11: the clear plan off the Tk thread, with what it could not check ------------------
+
+
+def test_the_clear_plan_runs_off_the_tk_thread_and_shows_what_it_could_not_check(app, live_target, monkeypatch):
+    from nms_save_vault import gui
+    from nms_save_vault.core import operations as ops
+
+    plan = ops.ClearPlan(slot=4, occupied=True, live_name="Run", unverifiable=True,
+                         notes=["entry-1 could not be checked (drive unplugged)."])
+    planned = {}
+    monkeypatch.setattr(ops, "plan_clear_slot", lambda vault, directory, slot, **kw: planned.update(kw) or plan)
+    workers = []
+
+    def worker(fn, force, message):
+        workers.append(message)
+        return {"result": fn(force)}
+
+    monkeypatch.setattr(app, "_run_worker", worker)
+    asked = {}
+    monkeypatch.setattr(gui, "_askyesno", lambda title, msg: asked.setdefault("msg", msg) and False)
+
+    app.on_clear({"type": "slot", "dir": str(live_target), "slot": 4, "live": True})
+
+    assert workers, "the plan reads the whole vault: it must not run on the Tk thread"
+    assert any(Path(d).resolve() == live_target.resolve() for d in planned["other_live_dirs"])
+    assert "CANNOT VERIFY" in asked["msg"] and "drive unplugged" in asked["msg"]
+
+
+# --- step 11: P10, nothing out of reach at a larger font ---------------------------------------
+
+
+def test_the_toolbar_wraps_so_every_button_stays_reachable_when_zoomed(app):
+    from nms_save_vault import gui
+
+    before = app.state.font_scale
+    try:
+        app.state.font_scale = 1.2
+        app._apply_theme()
+        app.update_idletasks()
+        assert len(app.toolbar.buttons) == 14
+        assert "Undo" in [b.cget("text") for b in app.toolbar.buttons]
+        for width in (1000, 400):
+            app.toolbar.reflow(width)
+            rows: dict[str, list[int]] = {}
+            for button in app.toolbar.buttons:
+                row = str(button.pack_info()["in"])
+                rows.setdefault(row, []).append(button.winfo_reqwidth() + 2 * gui.FlowBar.PAD)
+            assert all(sum(row) <= width or len(row) == 1 for row in rows.values())
+        assert len(rows) > 1, "400 px cannot hold 14 buttons on one row"
+    finally:
+        app.state.font_scale = before
+        app._apply_theme()
+        app.toolbar.reflow(1000)
+
+
+def test_the_copy_dialog_packs_its_buttons_before_the_slot_list(app, live_target, monkeypatch):
+    """P10: packed last, Copy and Cancel were the first thing cut off when the window was
+    too short for the zoomed fonts."""
+    from tkinter import ttk
+
+    from nms_save_vault import gui
+
+    monkeypatch.setattr(gui.CopySlotDialog, "grab_set", lambda self: None)
+    monkeypatch.setattr(gui.CopySlotDialog, "wait_window", lambda self, *a: None)
+    dialog = gui.CopySlotDialog(app)
+    try:
+        slaves = dialog.pack_slaves()
+
+        def holds_copy(widget):
+            return any(isinstance(c, ttk.Button) and c.cget("text") == "Copy" for c in widget.winfo_children())
+
+        buttons = next(w for w in slaves if holds_copy(w))
+        slot_list = next(
+            w for w in slaves if isinstance(w, ttk.LabelFrame) and "Into this live slot" in str(w.cget("text"))
+        )
+        assert slaves.index(buttons) < slaves.index(slot_list)
+    finally:
+        dialog.destroy()
+
+
+# --- step 11: discover points out an entry that is a live folder ------------------------------
+
+
+def test_discover_notes_an_entry_that_is_a_live_folder_and_leaves_it(app, monkeypatch):
+    from nms_save_vault import gui
+    from nms_save_vault.core import discover
+
+    entry = next(e for e in app.vault.entries if e.kind == "inplace")
+    monkeypatch.setattr(discover, "all_live_paths", lambda state, *a, **k: [entry.path])
+    monkeypatch.setattr(discover, "discover_inplace_backups", lambda *a, **k: [])
+    shown = []
+    monkeypatch.setattr(gui, "_showinfo", lambda title, msg: shown.append(msg))
+    before = [e.id for e in app.vault.entries]
+
+    app.on_discover()
+
+    assert f"catalog entry '{entry.id}'" in shown[0]
+    assert "is or lies inside a live save folder" in shown[0]
+    assert [e.id for e in app.vault.entries] == before
+
+
+# --- step 11 review ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("flags", [{"writable": False}, {"enabled": False}], ids=["read-only", "switched off"])
+def test_promote_refuses_a_folder_that_takes_no_writes(app, live_target, tmp_path, monkeypatch, flags):
+    from nms_save_vault import gui
+    from nms_save_vault.core import operations as ops
+    from nms_save_vault.core import state as appstate
+
+    folder = tmp_path / "no-writes"
+    folder.mkdir()
+    app.state.sources.append(
+        appstate.Source(id="xbox-ro", platform="xbox", account="x", path=str(folder), label="X", **flags)
+    )
+    monkeypatch.setattr(ops, "promote_member", lambda *a, **k: pytest.fail("must not promote"))
+    shown = []
+    monkeypatch.setattr(gui, "_showinfo", lambda *a, **k: shown.append(a))
+    calls = _capture_run(app, monkeypatch)
+
+    app.on_promote({"type": "member", "dir": str(folder), "slot": 1, "live": True, "member": 0})
+
+    assert shown and calls == {}
+
+
+def test_undoing_a_restore_with_account_data_states_it_and_offers_no_checkbox(app, live_target, monkeypatch):
+    from nms_save_vault import gui
+    from nms_save_vault.core import operations as ops
+
+    monkeypatch.setattr(ops, "plan_undo", lambda *a, **k: _undo_plan(with_accountdata=True))
+    asked = {}
+
+    def confirm(master, title, message, check=None):
+        asked.update(message=message, check=check)
+        return False, False
+
+    monkeypatch.setattr(gui, "_confirm", confirm)
+    _capture_run(app, monkeypatch)
+
+    app.on_undo()
+
+    assert asked["check"] is None and "account data" in asked["message"]
+
+
+def test_discover_goes_on_past_a_folder_it_cannot_add_and_reports_everything(app, tmp_path, monkeypatch):
+    from nms_save_vault import gui
+    from nms_save_vault.core import discover
+    from nms_save_vault.core import operations as ops
+
+    bad, good = tmp_path / "bad-backup", tmp_path / "good-backup"
+    monkeypatch.setattr(discover, "all_live_paths", lambda state, *a, **k: [])
+    monkeypatch.setattr(discover, "discover_inplace_backups", lambda *a, **k: [bad, good])
+
+    def import_backup(vault, path, **kw):
+        if path == bad:
+            raise ops.OperationError("not an NMS save folder")
+        kw["warnings"].append("missing from the history")
+
+    monkeypatch.setattr(ops, "import_backup", import_backup)
+    refreshed, shown = [], []
+    monkeypatch.setattr(app, "refresh", lambda: refreshed.append(True))
+    monkeypatch.setattr(gui, "_showinfo", lambda title, msg: shown.append(msg))
+
+    app.on_discover()
+
+    assert refreshed
+    assert "Added 1 newly found backup" in shown[0]
+    assert "Could not add" in shown[0] and "not an NMS save folder" in shown[0]
+    assert "missing from the history" in shown[0]
+
+
+def test_the_confirm_dialog_survives_a_refused_grab(app, monkeypatch):
+    import tkinter as tk
+
+    from nms_save_vault import gui
+
+    def refuse(self):
+        raise tk.TclError("grab failed: window not viewable")
+
+    monkeypatch.setattr(gui.ConfirmDialog, "grab_set", refuse)
+    monkeypatch.setattr(gui.ConfirmDialog, "wait_window", lambda self, *a: None)
+    dialog = gui.ConfirmDialog(app, "Undo", "Undo the last change?")
+    try:
+        assert dialog.answer is False
+    finally:
+        dialog.destroy()
+
+
+def test_the_copy_dialog_fits_the_screen_and_keeps_its_buttons(app, live_target, monkeypatch):
+    from tkinter import ttk
+
+    from nms_save_vault import gui
+
+    monkeypatch.setattr(gui.CopySlotDialog, "grab_set", lambda self: None)
+    monkeypatch.setattr(gui.CopySlotDialog, "wait_window", lambda self, *a: None)
+    dialog = gui.CopySlotDialog(app)
+    try:
+        width = int(dialog.geometry().split("x")[0])
+        assert width <= dialog.winfo_screenwidth()
+        source_frame = next(
+            w for w in dialog.pack_slaves() if isinstance(w, ttk.LabelFrame) and "Copy from" in str(w.cget("text"))
+        )
+        first = source_frame.pack_slaves()[0]
+        assert isinstance(first, ttk.Button) and first.cget("text") == "Change..."
+        rule = next(
+            w for w in dialog.pack_slaves()
+            if isinstance(w, ttk.Label) and "only one save is refused" in str(w.cget("text"))
+        )
+        assert int(str(rule.cget("wraplength")) or 0) > 0, "the caption wraps instead of widening the window"
+    finally:
+        dialog.destroy()
+
+
+# --- step 11 final round ------------------------------------------------------------------------
+
+
+def test_promote_refuses_a_switched_off_folder_the_app_fell_back_to(app, live_target, monkeypatch):
+    """With every source switched off, the LIVE pane falls back to the folder the app was
+    started on; that is still a switched-off source, so nothing may be written into it."""
+    from nms_save_vault import gui
+    from nms_save_vault.core import operations as ops
+
+    app.state.sources[0].enabled = False
+    try:
+        monkeypatch.setattr(ops, "promote_member", lambda *a, **k: pytest.fail("must not promote"))
+        shown = []
+        monkeypatch.setattr(gui, "_showinfo", lambda *a, **k: shown.append(a))
+        calls = _capture_run(app, monkeypatch)
+
+        app.on_promote({"type": "member", "dir": str(live_target), "slot": 1, "live": True, "member": 0})
+
+        assert shown and calls == {}
+    finally:
+        app.state.sources[0].enabled = True
+
+
+def test_a_partly_done_write_names_its_snapshot_for_undo(app, monkeypatch):
+    from nms_save_vault import gui
+    from nms_save_vault.core import operations as ops
+
+    result = ops.OpResult(False, "repopulate_slot", "slot 1 -> 1", snapshot_id="snapshot-9")
+    error = ops.WrittenButInvalidError("Slot 1A is still not the newest after promoting it.", result)
+    monkeypatch.setattr(app, "_run_worker", lambda fn, force, message: {"error": error})
+    monkeypatch.setattr(app, "refresh", lambda: None)
+    shown = []
+    monkeypatch.setattr(gui, "_showerror", lambda title, msg: shown.append(msg))
+
+    app._run(lambda force: None, success="Copied.")
+
+    assert "Undo available (snapshot snapshot-9)." in shown[0]
+
+
+def test_the_confirm_dialog_starts_on_yes_and_answers_to_the_keys(app, monkeypatch):
+    from tkinter import ttk
+
+    from nms_save_vault import gui
+
+    monkeypatch.setattr(gui.ConfirmDialog, "grab_set", lambda self: None)
+    monkeypatch.setattr(gui.ConfirmDialog, "wait_window", lambda self, *a: None)
+    # The session's app is withdrawn, so the dialog is never mapped and Tk records no
+    # focus for it: watch which button is given the focus instead.
+    focused = []
+    monkeypatch.setattr(ttk.Button, "focus_set", lambda self: focused.append(self.cget("text")))
+    dialog = gui.ConfirmDialog(app, "Undo", "Undo the last change?")
+    try:
+        assert focused == ["Yes"]
+        assert dialog.bind("<Escape>") and dialog.bind("<Return>")
+    finally:
+        if dialog.winfo_exists():
+            dialog.destroy()

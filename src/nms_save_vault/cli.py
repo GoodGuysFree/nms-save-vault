@@ -370,21 +370,17 @@ def cmd_discover(args) -> int:
     if search.skipped_live:
         n = len(search.skipped_live)
         print(f"skipped {n} live save folder{'' if n == 1 else 's'} (not backups)")
-    vault_root = vault.root.resolve()
-    vault_is_live = discover.is_inside(vault_root, live)
+    vault_is_live, aliased = discover.entries_in_live_folders(vault, live)
     if vault_is_live:
         print(
             f"note: the vault {vault.root} is or lies inside a live save folder; its entries "
             "are left as they are."
         )
-    for e in vault.entries:
-        if vault_is_live and discover.is_inside(e.path, [vault_root]):
-            continue
-        if discover.is_inside(e.path, live):
-            print(
-                f"note: catalog entry '{e.id}' ({e.path}) is or lies inside a live save folder, "
-                "not a backup; it is left as it is."
-            )
+    for e in aliased:
+        print(
+            f"note: catalog entry '{e.id}' ({e.path}) is or lies inside a live save folder, "
+            "not a backup; it is left as it is."
+        )
     return 0
 
 

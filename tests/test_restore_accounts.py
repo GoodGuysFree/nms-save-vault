@@ -128,7 +128,7 @@ def test_an_xbox_backup_of_another_account_is_refused(xbox_pair, tmp_path):
     backup = ops.create_full_backup(vault, x, include_cache=False)
     index_before = (y / "containers.index").read_bytes()
 
-    with pytest.raises(ops.OperationError, match="another Xbox account"):
+    with pytest.raises(ops.ForeignAccountError, match="another Xbox account"):
         ops.restore_full(vault, backup, y, allow_game_running=True)
 
     assert (y / "containers.index").read_bytes() == index_before

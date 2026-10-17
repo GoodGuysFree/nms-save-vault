@@ -314,3 +314,89 @@ def test_damage_after_the_operation_can_be_accepted(tmp_path, capsys, monkeypatc
 
     assert code == 0 and savedir.scan(live).slots[1].occupied
     assert "damaged lines" in capsys.readouterr().out             # the warning is shown
+
+
+# --- f: what an undo would do, asked before doing it (the GUI names it) -----------------------
+
+
+def test_plan_undo_names_the_change_and_changes_nothing(tmp_path):
+    live = _steam_live(tmp_path, "st_1")
+    vault = Vault(tmp_path / "vault")
+    ops.clear_slot(vault, live, 2, allow_game_running=True)
+    after, log = _state(live), vault.oplog_path.read_bytes()
+
+    plan = ops.plan_undo(vault, live)
+
+    assert (plan.op, plan.damaged_after) == ("clear_slot", False)
+    assert plan.snapshot_id in [e.id for e in vault.entries]
+    assert _state(live) == after and vault.oplog_path.read_bytes() == log
+
+
+def test_plan_undo_reports_damage_that_undo_would_refuse(tmp_path):
+    live = _steam_live(tmp_path, "st_1")
+    vault = Vault(tmp_path / "vault")
+    ops.clear_slot(vault, live, 1, allow_game_running=True)
+    with open(vault.oplog_path, "ab") as f:
+        f.write(b'{"ts": "2026-10-17T12:01:00", "op": "clea')
+
+    plan = ops.plan_undo(vault, live)
+
+    assert plan.damaged_after and "damaged" in plan.log_warning
+    with pytest.raises(ops.OperationError, match="damaged, so undo is unsafe"):
+        ops.undo_last(vault, live, allow_game_running=True)
+
+
+def test_plan_undo_refuses_where_undo_would(tmp_path):
+    live = _steam_live(tmp_path, "st_1")
+    with pytest.raises(ops.OperationError, match="Nothing has been done yet"):
+        ops.plan_undo(Vault(tmp_path / "vault"), live)
+
+
+def test_an_undo_is_held_to_the_change_the_user_confirmed(tmp_path):
+    live = _steam_live(tmp_path, "st_1")
+    vault = Vault(tmp_path / "vault")
+    ops.clear_slot(vault, live, 1, allow_game_running=True)
+    confirmed = ops.plan_undo(vault, live)
+    ops.clear_slot(vault, live, 2, allow_game_running=True)        # a newer change meanwhile
+    before = _state(live)
+
+    with pytest.raises(ops.OperationError, match="changed after you were asked"):
+        ops.undo_last(vault, live, allow_game_running=True, acknowledge_damage=True, expected=confirmed.token)
+    assert _state(live) == before
+
+    ops.undo_last(vault, live, allow_game_running=True, expected=ops.plan_undo(vault, live).token)
+    assert savedir.scan(live).slots[2].occupied and not savedir.scan(live).slots[1].occupied
+
+
+def test_an_undo_is_refused_when_damage_appears_after_the_user_was_asked(tmp_path):
+    live = _steam_live(tmp_path, "st_1")
+    vault = Vault(tmp_path / "vault")
+    ops.clear_slot(vault, live, 1, allow_game_running=True)
+    confirmed = ops.plan_undo(vault, live)
+    with open(vault.oplog_path, "ab") as f:
+        f.write(b'{"ts": "2026-10-17T12:01:00", "op": "clea')
+    before = _state(live)
+
+    with pytest.raises(ops.OperationError, match="changed after you were asked"):
+        ops.undo_last(vault, live, allow_game_running=True, acknowledge_damage=True, expected=confirmed.token)
+    assert _state(live) == before
+
+
+def test_a_legacy_xbox_record_still_undoes_with_its_xgs_twin_known(make_wgs_account, tmp_path):
+    """Placed by folder name, an old record must not count the live folder's own xgs mirror
+    -- same name, same platform -- as another folder that makes it ambiguous."""
+    live = make_wgs_account(tmp_path / "SystemAppData", [
+        ("Slot1Auto", '{"a":1}', "Run", "", 100, 1000), ("Slot2Auto", '{"b":2}', "Other", "", 200, 1000),
+    ])
+    twin = tmp_path / "SystemAppData" / "xgs" / live.name
+    for identifier in ("Slot1Auto", "Slot2Auto"):
+        (twin / identifier).mkdir(parents=True)
+        (twin / identifier / "data").write_bytes(b"x")
+        (twin / identifier / "meta").write_bytes(b"x")
+    vault = Vault(tmp_path / "vault")
+    ops.clear_slot(vault, live, 1, allow_game_running=True)
+    _rewrite_oplog(vault, lambda r: {k: v for k, v in r.items() if k != "target"})
+
+    ops.undo_last(vault, live, allow_game_running=True, other_live_dirs=[live, twin])
+
+    assert savedir.scan_any(live).slots[1].occupied

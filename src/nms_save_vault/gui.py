@@ -234,17 +234,88 @@ def _clear_question(plan, directory) -> str:
         f"Slot {plan.slot} holds: {plan.live_name}"
         f"   ({ops.format_duration(plan.live_play_time)} play time)",
     ]
-    if plan.backed_up:
+    if plan.entry_id is not None:
         lines.append(
             f"Best copy in the vault: {plan.entry_id}"
             f"   ({ops.format_duration(plan.backup_play_time)} play time)"
         )
+        if plan.identical:
+            lines.append("  An identical copy: the vault holds this very save.")
     if plan.warning:
-        lines += ["", "WARNING: " + plan.warning]
+        lines += ["", ("CANNOT VERIFY: " if plan.unverifiable else "WARNING: ") + plan.warning]
+    if plan.notes:
+        lines += ["", "Not checked (could not be read):"] + [f" - {n}" for n in plan.notes[:5]]
+        if len(plan.notes) > 5:
+            lines.append(f" - and {len(plan.notes) - 5} more")
     if plan.cloud_warning:
         lines += ["", "STEAM CLOUD: " + plan.cloud_warning]
     lines += ["", "The current state is auto-snapshotted first, so Undo can put it back."]
     return "\n".join(lines)
+
+
+#: The account-data choice Restore and Undo offer; unticked unless the user ticks it.
+ACCOUNT_DATA_CHOICE = "Also put back the account data (unlocks, settings) - this rolls them back too"
+
+#: What a copy into a live slot writes, and when it is refused (P6).
+COPY_RULE = (
+    "Both saves of the slot are copied, replacing what is in the destination. A slot\n"
+    "holding only one save is refused unless the destination's other save is missing or\n"
+    "the same playthrough (that save then stays). The live folder is auto-snapshotted\n"
+    "first, so Undo puts it back."
+)
+
+#: How the undo confirmation names a recorded change.
+_OP_NAMES = {
+    "restore_full": "a restore",
+    "repopulate_slot": "a copy into a slot",
+    "promote_member": "a promote",
+    "clear_slot": "a clear slot",
+}
+
+
+def _undo_question(plan, directory) -> str:
+    """The undo confirmation: which folder, which change, and what it goes back to."""
+    what = _OP_NAMES.get(plan.op, plan.op.replace("_", " "))
+    detail = f" ({plan.detail})" if plan.detail else ""
+    lines = [
+        f"Undo the last change to {Path(directory).name}?",
+        "",
+        f"That change: {what}{detail}, at {plan.ts}.",
+        f"The folder is put back as it was just before it, from auto-snapshot {plan.snapshot_id}.",
+    ]
+    if plan.with_accountdata:
+        lines.append("That restore put back the account data too, so undoing it does as well.")
+    lines += ["", "Each Undo steps one change further back. The current state is auto-snapshotted first."]
+    return "\n".join(lines)
+
+
+def _undo_damage_question(plan) -> str:
+    return (
+        "The undo history has damaged lines newer than this change. One of them may be a "
+        "later change to this folder, so undo could put back an older state than you "
+        f"expect.\n\n{plan.log_warning}\n\nUndo anyway?"
+    )
+
+
+def _undo_note(snapshot_id: str | None) -> str:
+    return f"\n\nUndo available (snapshot {snapshot_id})." if snapshot_id else ""
+
+
+def _with_warnings(message: str, warnings) -> str:
+    return message + ("\n\nWarnings:\n - " + "\n - ".join(warnings) if warnings else "")
+
+
+def _flow_rows(widths: list[int], available: int) -> list[int]:
+    """The row each item lands on when laid out left to right and wrapped at ``available``
+    pixels; an item wider than a whole row still gets a row of its own."""
+    rows: list[int] = []
+    row = used = 0
+    for width in widths:
+        if used and used + width > available:
+            row, used = row + 1, 0
+        rows.append(row)
+        used += width
+    return rows
 
 
 def _filtered(dialog):
@@ -261,6 +332,103 @@ _showwarning = _filtered(messagebox.showwarning)
 _showerror = _filtered(messagebox.showerror)
 _askyesno = _filtered(messagebox.askyesno)
 _askyesnocancel = _filtered(messagebox.askyesnocancel)
+
+
+class ConfirmDialog(tk.Toplevel):
+    """A yes/no question with an optional checkbox, which starts unticked."""
+
+    def __init__(self, master, title: str, message: str, check: str | None = None):
+        super().__init__(master)
+        self.title(title)
+        self.transient(master)
+        self.resizable(False, False)
+        self.answer = False
+        self.ticked = False
+        self._check = tk.BooleanVar(value=False)
+        # Buttons and checkbox first, from the bottom: a long message can then never push
+        # them out of the window.
+        buttons = ttk.Frame(self, padding=(14, 0, 14, 12))
+        buttons.pack(side=tk.BOTTOM, fill=tk.X)
+        ttk.Button(buttons, text="No", command=self.destroy).pack(side=tk.RIGHT)
+        yes = ttk.Button(buttons, text="Yes", command=self._yes)
+        yes.pack(side=tk.RIGHT, padx=6)
+        if check:
+            ttk.Checkbutton(self, text=check, variable=self._check).pack(
+                side=tk.BOTTOM, anchor="w", padx=14, pady=(0, 10)
+            )
+        ttk.Label(self, text=message, justify="left", wraplength=620).pack(
+            side=tk.TOP, anchor="w", padx=14, pady=(14, 10)
+        )
+        self.bind("<Escape>", lambda _e: self.destroy())
+        # Enter presses the focused button (Yes to start with, No once tabbed to).
+        self.bind("<Return>", lambda e: e.widget.invoke() if isinstance(e.widget, ttk.Button) else None)
+        # Centred over the main window and focused, as _busy is.
+        self.update_idletasks()
+        x = master.winfo_rootx() + (master.winfo_width() - self.winfo_width()) // 2
+        y = master.winfo_rooty() + (master.winfo_height() - self.winfo_height()) // 3
+        self.geometry(f"+{max(x, 0)}+{max(y, 0)}")
+        yes.focus_set()
+        try:
+            if master.winfo_viewable():
+                self.wait_visibility()             # a grab needs a mapped window
+            self.grab_set()
+        except tk.TclError:
+            pass                                   # still answerable, only not modal
+        self.wait_window()
+
+    def _yes(self) -> None:
+        self.answer = True
+        self.ticked = bool(self._check.get())
+        self.destroy()
+
+
+def _confirm(master, title: str, message: str, check: str | None = None) -> tuple[bool, bool]:
+    """Ask yes/no, with an optional checkbox. Returns (yes, ticked). The message passes
+    through the account-alias filter, like every other dialog's."""
+    dialog = ConfirmDialog(master, title, aliases.redact(message), check)
+    return dialog.answer, dialog.ticked
+
+
+class FlowBar(ttk.Frame):
+    """A toolbar that wraps its buttons onto more rows when one row does not fit (P10: at
+    a 120% font zoom one row needs about 1,400 px, and the buttons past the window edge,
+    Undo among them, could not be reached)."""
+
+    PAD = 2
+
+    def __init__(self, master, **kw):
+        super().__init__(master, **kw)
+        self.buttons: list[ttk.Button] = []
+        self._rows: list[ttk.Frame] = []
+        self._layout: list[int] | None = None
+        self.bind("<Configure>", lambda _e: self.reflow())
+
+    def add(self, text: str, command) -> ttk.Button:
+        button = ttk.Button(self, text=text, command=command)
+        self.buttons.append(button)
+        self._place([0] * len(self.buttons))      # one row until the bar knows its width
+        return button
+
+    def reflow(self, width: int | None = None) -> None:
+        width = width or self.winfo_width()
+        if width <= 1:
+            return                                 # not laid out yet
+        self._place(_flow_rows([b.winfo_reqwidth() + 2 * self.PAD for b in self.buttons], width))
+
+    def _place(self, layout: list[int]) -> None:
+        if layout == self._layout:
+            return
+        self._layout = layout
+        needed = max(layout, default=-1) + 1
+        while len(self._rows) < needed:
+            self._rows.append(ttk.Frame(self))
+        for widget in (*self._rows, *self.buttons):
+            widget.pack_forget()
+        for frame in self._rows[:needed]:
+            frame.pack(side=tk.TOP, fill=tk.X)
+        for button, row in zip(self.buttons, layout):
+            button.pack(in_=self._rows[row], side=tk.LEFT, padx=self.PAD, pady=1)
+            button.lift()                          # above the row frame made after it
 
 
 class RedactingTreeview(ttk.Treeview):
@@ -335,6 +503,26 @@ class App(tk.Tk):
                 pass  # read-only location; carry on with the in-memory state
         return st
 
+    def _live_paths(self) -> list[Path]:
+        """Every live folder, configured (enabled or not) or on disk: what undo and the
+        clear plan must never take for another folder of the same name, or for a backup.
+        The core adds each one's xgs twin (msstore.with_xgs_twins)."""
+        return [Path(p) for p in discover.all_live_paths(self.state)]
+
+    def _writable_dir(self, directory) -> bool:
+        """Whether writes may go into ``directory``: an enabled, writable live source, the
+        rule of the active-live dropdown and Copy. Only with no source configured at all is
+        the folder the app was started on (--live) taken as that source."""
+        if self.state.sources:
+            folders = [Path(s.path) for s in self._writable_sources()]
+        else:
+            folders = [Path(self.live_dir)] if self.live_dir else []
+        try:
+            wanted = Path(directory).resolve()
+            return any(wanted == f.resolve() for f in folders)
+        except OSError:
+            return False
+
     def _writable_sources(self) -> list[appstate.Source]:
         return [s for s in self.state.live_sources if s.writable and s.exists]
 
@@ -380,8 +568,8 @@ class App(tk.Tk):
     # --- layout --------------------------------------------------------------
 
     def _build_widgets(self) -> None:
-        bar = ttk.Frame(self)
-        bar.pack(side=tk.TOP, fill=tk.X, padx=6, pady=4)
+        self.toolbar = FlowBar(self)
+        self.toolbar.pack(side=tk.TOP, fill=tk.X, padx=6, pady=4)
         for text, cmd in [
             ("Backup live", self.on_backup),
             ("Restore", self.on_restore),
@@ -398,7 +586,7 @@ class App(tk.Tk):
             ("Accounts...", self.on_accounts),
             ("Help", self.on_help),
         ]:
-            ttk.Button(bar, text=text, command=cmd).pack(side=tk.LEFT, padx=2)
+            self.toolbar.add(text, cmd)
 
         controls = ttk.Frame(self)
         controls.pack(side=tk.TOP, fill=tk.X, padx=6, pady=(0, 4))
@@ -495,6 +683,7 @@ class App(tk.Tk):
         light-mode green and amber are unreadable on a dark tree background.
         """
         self.state.font_scale = theme.apply_font_scale(self, self.state.font_scale)
+        self.after_idle(self.toolbar.reflow)       # the buttons' widths follow the font
         name = theme.apply(self, self.state.theme, self._native_ttk_theme)
         p = theme.PALETTES[name]
         for tree in (self.live_tree, self.backup_tree):
@@ -1223,7 +1412,9 @@ class App(tk.Tk):
                 command=lambda: self.on_copy_slot(dest_dir=meta["dir"]),
             )
             menu.add_separator()
-            menu.add_command(label="Undo the last change to live saves", command=self.on_undo)
+            menu.add_command(
+                label="Undo the last change to live saves", command=lambda: self.on_undo(meta["dir"])
+            )
         else:
             menu.add_command(
                 label="Import this Xbox folder as a backup",
@@ -1301,9 +1492,13 @@ class App(tk.Tk):
 
     # --- actions -------------------------------------------------------------
 
-    def _run(self, fn, *, success: str, message: str = "Working - please wait...") -> None:
+    def _run(
+        self, fn, *, success: str, message: str = "Working - please wait...",
+        warnings: list[str] | None = None,
+    ) -> None:
         """Run a core operation on a worker thread behind a modal wait dialog, prompting to
-        override the game-running guard if the op reports the game is open."""
+        override the game-running guard if the op reports the game is open. ``warnings`` is
+        the list an operation without an OpResult (backup, extract, import) fills."""
         holder = self._run_worker(fn, False, message)
         if isinstance(holder.get("error"), ops.GameRunningError):
             if not _askyesno("Game running", "No Man's Sky appears to be running.\nProceed anyway (risky)?"):
@@ -1314,6 +1509,16 @@ class App(tk.Tk):
         if isinstance(err, ops.FeatureNotYetAvailableError):
             _showinfo("Coming soon", str(err))
             return
+        if isinstance(err, ops.WrittenButInvalidError):
+            self.refresh()                         # the live folder WAS changed
+            _showerror(
+                "Only partly done - the live folder was changed",
+                _with_warnings(str(err) + _undo_note(err.result.snapshot_id), err.result.warnings),
+            )
+            return
+        if isinstance(err, ops.ForeignAccountError):
+            _showerror("Another account's backup - refused", str(err))
+            return
         if isinstance(err, ops.OperationError):
             _showerror("Operation failed", str(err))
             return
@@ -1321,16 +1526,13 @@ class App(tk.Tk):
             _showerror("Unexpected error", repr(err))
             return
         self.refresh()
-        self._present_result(holder.get("result"), success)
+        self._present_result(holder.get("result"), success, warnings or [])
 
-    def _present_result(self, result, success: str) -> None:
+    def _present_result(self, result, success: str, warnings: list[str] = ()) -> None:
         if isinstance(result, ops.OpResult):
-            msg = result.detail + (f"\n\nUndo available (snapshot {result.snapshot_id})." if result.snapshot_id else "")
-            if result.warnings:
-                msg += "\n\nWarnings:\n - " + "\n - ".join(result.warnings)
-            _showinfo("Done", msg)
+            _showinfo("Done", _with_warnings(result.detail + _undo_note(result.snapshot_id), result.warnings))
         else:
-            _showinfo("Done", success)
+            _showinfo("Done", _with_warnings(success, list(warnings)))
 
     def _busy(self, message: str) -> tk.Toplevel:
         """A small modal 'please wait' window with an animated indeterminate bar."""
@@ -1394,10 +1596,12 @@ class App(tk.Tk):
         label = simpledialog.askstring("Backup", "Optional label:", initialvalue=suggested)
         if label is None:  # user cancelled
             return
+        warns: list[str] = []
         self._run(
-            lambda _force: ops.create_full_backup(self.vault, Path(directory), label=label),
+            lambda _force: ops.create_full_backup(self.vault, Path(directory), label=label, warnings=warns),
             success="Backup created.",
             message="Creating backup - please wait...",
+            warnings=warns,
         )
 
     def on_restore(self, target: dict | None = None) -> None:
@@ -1413,6 +1617,7 @@ class App(tk.Tk):
             return
         entry = sel["entry"]
         slots = [s.slot for s in entry.occupied_slots]
+        with_account = False
         if _extract_slot_number(entry) is not None:
             # An extract is one slot lifted aside, not a whole folder: it goes back where
             # it came from, and nothing else in the live folder is touched.
@@ -1421,17 +1626,24 @@ class App(tk.Tk):
                 f"Only slot {slots[0]} is overwritten - every other save is left alone.\n"
                 "The current state is auto-snapshotted first."
             )
+            if not _askyesno("Restore", question):
+                return
         else:
             question = (
-                f"Replace the live saves with backup '{entry.id}'?\n\n"
+                f"Replace the live saves in {Path(self.live_dir).name} with backup '{entry.id}'?\n\n"
                 f"The backup holds {len(slots)} slot(s): {', '.join(map(str, slots)) or 'none'}.\n"
                 "Any live save NOT in the backup is REMOVED.\n"
+                "The live folder keeps its own account data (unlocks, settings) unless you tick the box.\n"
                 "The current state is auto-snapshotted first."
             )
-        if not _askyesno("Restore", question):
-            return
+            ok, with_account = _confirm(self, "Restore", question, check=ACCOUNT_DATA_CHOICE)
+            if not ok:
+                return
+        live_dir = self.live_dir
         self._run(
-            lambda force: ops.restore_entry(self.vault, entry, self.live_dir, allow_game_running=force),
+            lambda force: ops.restore_entry(
+                self.vault, entry, live_dir, allow_game_running=force, restore_accountdata=with_account
+            ),
             success="Restored.",
             message="Restoring - please wait...",
         )
@@ -1446,10 +1658,15 @@ class App(tk.Tk):
                 "pane or inside a backup, then press Extract slot.",
             )
             return
+        warns: list[str] = []
+        live_dirs = self._live_paths()
         self._run(
-            lambda _force: ops.extract_slot(self.vault, Path(sel["dir"]), sel["slot"], label=""),
+            lambda _force: ops.extract_slot(
+                self.vault, Path(sel["dir"]), sel["slot"], label="", warnings=warns, live_dirs=live_dirs
+            ),
             success=f"Extracted slot {sel['slot']}.",
             message=f"Extracting slot {sel['slot']} - please wait...",
+            warnings=warns,
         )
 
     def on_clear(self, target: dict | None = None) -> None:
@@ -1463,7 +1680,16 @@ class App(tk.Tk):
             )
             return
         directory, slot = Path(sel["dir"]), sel["slot"]
-        plan = ops.plan_clear_slot(self.vault, directory, slot)
+        others = self._live_paths()
+        # The plan reads every save in the vault: off the Tk thread, behind the wait dialog.
+        holder = self._run_worker(
+            lambda _force: ops.plan_clear_slot(self.vault, directory, slot, other_live_dirs=others),
+            False, "Looking for copies of this save in the vault - please wait...",
+        )
+        if "error" in holder:
+            _showerror("Clear slot", f"Could not check the vault for copies of this save:\n{holder['error']}")
+            return
+        plan = holder["result"]
         if not plan.occupied:
             _showinfo("Already empty", f"Live slot {slot} holds no saves.")
             return
@@ -1510,9 +1736,8 @@ class App(tk.Tk):
             if not _askyesno(
                 "Copy into a live slot",
                 f"Copy {source.caption}\ninto live slot {dest_slot} of {Path(dest_dir).name}?\n\n"
-                f"Live slot {dest_slot} currently holds: {occupant or 'nothing'}\n"
-                "Both saves in the slot are copied, and the current state is "
-                "auto-snapshotted first.",
+                f"Live slot {dest_slot} currently holds: {occupant or 'nothing'}\n\n"
+                + COPY_RULE.replace("\n", " "),
             ):
                 return
 
@@ -1535,8 +1760,16 @@ class App(tk.Tk):
                 "Auto-Save or Restore-Point.",
             )
             return
+        directory = Path(sel["dir"])               # the row's own folder, not the active one (P3)
+        if not self._writable_dir(directory):
+            _showinfo(
+                "Read-only folder",
+                f"{directory.name} is read-only here (an Xbox folder without its save index, "
+                "or a live folder that is switched off), so its saves cannot be promoted.",
+            )
+            return
         self._run(
-            lambda force: ops.promote_member(self.vault, self.live_dir, sel["slot"], sel["member"], allow_game_running=force),
+            lambda force: ops.promote_member(self.vault, directory, sel["slot"], sel["member"], allow_game_running=force),
             success="Promoted.",
             message="Promoting - please wait...",
         )
@@ -1552,10 +1785,12 @@ class App(tk.Tk):
             self._import_vault_dir(directory)
             return
         copy = _askyesno("Import", "Copy the backup into the vault?\n(No = index it where it is.)")
+        warns: list[str] = []
         self._run(
-            lambda _force: ops.import_backup(self.vault, directory, copy_into_vault=copy),
+            lambda _force: ops.import_backup(self.vault, directory, copy_into_vault=copy, warnings=warns),
             success="Imported.",
             message="Importing - please wait...",
+            warnings=warns,
         )
 
     def _import_vault_dir(self, directory: Path) -> None:
@@ -1617,25 +1852,68 @@ class App(tk.Tk):
     def on_discover(self) -> None:
         # No live folder, enabled or not, is a backup (a copy-paste "st_... - Copy" still
         # is one); the vault itself is not searched.
-        dirs = discover.discover_inplace_backups(
-            live=discover.all_live_paths(self.state), exclude=[self.vault.root]
-        )
+        live = discover.live_folders(discover.all_live_paths(self.state))
+        dirs = discover.discover_inplace_backups(live=live, exclude=[self.vault.root])
         known = {Path(e.path).resolve() for e in self.vault.entries}
         added = 0
-        for d in dirs:
-            if d.resolve() not in known:
-                ops.import_backup(self.vault, d, label=d.name, copy_into_vault=False)
-                added += 1
-        self.refresh()
-        _showinfo("Discover", f"Added {added} newly found backup(s) to the catalog.")
+        warns: list[str] = []
+        failures: list[str] = []
+        try:
+            for d in dirs:
+                try:
+                    if d.resolve() in known:
+                        continue
+                    ops.import_backup(self.vault, d, label=d.name, copy_into_vault=False, warnings=warns)
+                    added += 1
+                except Exception as exc:  # noqa: BLE001 - one folder must not stop the rest
+                    failures.append(f"{d}: {exc}")
+        finally:
+            self.refresh()
+        lines = [f"Added {added} newly found backup(s) to the catalog."]
+        if failures:
+            lines.append("Could not add:\n - " + "\n - ".join(failures))
+        # Entries an older version made of live folders are pointed out, never changed.
+        vault_is_live, aliased = discover.entries_in_live_folders(self.vault, live)
+        if vault_is_live:
+            lines.append(
+                f"Note: the vault ({self.vault.root}) is or lies inside a live save folder; "
+                "its entries are left as they are."
+            )
+        lines += [
+            f"Note: catalog entry '{e.id}' ({e.path}) is or lies inside a live save folder, "
+            "not a backup; it is left as it is."
+            for e in aliased
+        ]
+        _showinfo("Discover", _with_warnings("\n\n".join(lines), warns))
 
-    def on_undo(self) -> None:
-        if not self._require_live():
+    def on_undo(self, directory=None) -> None:
+        """Undo the last change to a live folder: the one whose menu was used, else the
+        active one. Names the change first, asks again over a damaged history, and offers
+        the account data."""
+        if directory is None:
+            if not self._require_live():
+                return
+            directory = self.live_dir
+        directory = Path(directory)
+        others = self._live_paths()
+        try:
+            plan = ops.plan_undo(self.vault, directory, other_live_dirs=others)
+        except ops.OperationError as exc:
+            _showerror("Cannot undo", str(exc))
             return
-        if not _askyesno("Undo", "Undo the last operation by restoring its auto-snapshot?"):
+        if plan.damaged_after and not _askyesno("Undo - damaged history", _undo_damage_question(plan)):
+            return
+        # When the change was a restore that put the account data back, undoing it does too:
+        # the question says so, and offers no choice that would not be honoured.
+        check = None if plan.with_accountdata else ACCOUNT_DATA_CHOICE
+        ok, with_account = _confirm(self, "Undo", _undo_question(plan, directory), check=check)
+        if not ok:
             return
         self._run(
-            lambda force: ops.undo_last(self.vault, self.live_dir, allow_game_running=force),
+            lambda force: ops.undo_last(
+                self.vault, directory, allow_game_running=force, acknowledge_damage=plan.damaged_after,
+                other_live_dirs=others, restore_accountdata=with_account, expected=plan.token,
+            ),
             success="Undone.",
             message="Undoing - please wait...",
         )
@@ -1911,7 +2189,6 @@ class CopySlotDialog(tk.Toplevel):
         self.result = None
         self.title("Copy a save into a live slot")
         self.transient(app)
-        self.geometry("700x540")
 
         self._targets = [s for s in app.state.live_sources if s.writable and s.exists]
         if not self._targets:
@@ -1922,10 +2199,23 @@ class CopySlotDialog(tk.Toplevel):
         frame = ttk.LabelFrame(self, text=" Copy from ", padding=(12, 8))
         frame.pack(fill=tk.X, padx=14, pady=(12, 6))
         self.source_var = tk.StringVar()
+        # The button first: a long caption is then what gets cut, never the button.
+        ttk.Button(frame, text="Change...", command=self._choose_source).pack(side=tk.RIGHT)
         ttk.Label(frame, textvariable=self.source_var, anchor="w").pack(
             side=tk.LEFT, fill=tk.X, expand=True
         )
-        ttk.Button(frame, text="Change...", command=self._choose_source).pack(side=tk.RIGHT)
+
+        # The buttons and the rule go in from the bottom BEFORE the slot list: when the
+        # window is short (a large font zoom), pack then shrinks the list, never them (P10).
+        buttons = ttk.Frame(self, padding=(14, 0, 14, 12))
+        buttons.pack(side=tk.BOTTOM, fill=tk.X)
+        ttk.Button(buttons, text="Cancel", command=self.destroy).pack(side=tk.RIGHT)
+        ttk.Button(buttons, text="Copy", command=self._accept).pack(side=tk.RIGHT, padx=6)
+        rule = ttk.Label(self, padding=(14, 0, 14, 6), justify="left", text=COPY_RULE.replace("\n", " "))
+        rule.pack(side=tk.BOTTOM, fill=tk.X)
+        # Wrapped to the window, however narrow: the caption grows taller, not wider.
+        rule.bind("<Configure>", lambda e: rule.configure(wraplength=max(200, e.width - 28)))
+        rule.configure(wraplength=640)
 
         frame = ttk.LabelFrame(self, text=" Into this live slot ", padding=(12, 8))
         frame.pack(fill=tk.BOTH, expand=True, padx=14, pady=6)
@@ -1960,17 +2250,6 @@ class CopySlotDialog(tk.Toplevel):
         vsb.pack(side=tk.RIGHT, fill=tk.Y)
         self.slots.bind("<Double-1>", lambda _e: self._accept())
 
-        ttk.Label(
-            self, padding=(14, 0, 14, 6), justify="left",
-            text="Both saves in the slot are copied. Whatever is in the destination slot is\n"
-                 "replaced - the live folder is auto-snapshotted first, so Undo puts it back.",
-        ).pack(anchor="w")
-
-        buttons = ttk.Frame(self, padding=(14, 0, 14, 12))
-        buttons.pack(fill=tk.X)
-        ttk.Button(buttons, text="Cancel", command=self.destroy).pack(side=tk.RIGHT)
-        ttk.Button(buttons, text="Copy", command=self._accept).pack(side=tk.RIGHT, padx=6)
-
         chosen = next(
             (s for s in self._targets if dest_dir and Path(s.path) == Path(dest_dir)),
             self._targets[0],
@@ -1979,6 +2258,12 @@ class CopySlotDialog(tk.Toplevel):
         self._reload_slots(select=dest_slot or (source.slot if source else None))
         self._show_source()
 
+        # Big enough for what it holds at the current font size, at least the old 700x540,
+        # and never wider or taller than the screen.
+        self.update_idletasks()
+        width = min(max(700, self.winfo_reqwidth()), int(self.winfo_screenwidth() * 0.95))
+        height = min(max(540, self.winfo_reqheight()), int(self.winfo_screenheight() * 0.9))
+        self.geometry(f"{width}x{height}")
         self.grab_set()
         self.wait_window()
 
@@ -2080,6 +2365,8 @@ BUTTONS
       save not in the backup is removed;
     * a single-slot extract goes back into ITS OWN slot and nothing else is touched.
   Either way the current state is auto-snapshotted first, so it is reversible with Undo.
+  A full restore keeps the live folder's own account data (unlocks, settings) unless you
+  tick "Also put back the account data". A backup of another Xbox account is refused.
 - Extract slot: Select a slot -- or either of the two saves inside it -- under LIVE or a
   backup, to copy just that one slot aside into the vault. You can free the slot now and
   bring it back later.
@@ -2095,6 +2382,8 @@ BUTTONS
     * select a slot in a backup and it is the source -- pick where it lands;
     * select a live slot and it is the destination -- press Change... to pick what fills it.
   The save data is copied exactly and the small meta is re-keyed for the new slot number.
+  A slot that holds only one save is refused when the live slot's other save is a
+  different playthrough - the game could load that one instead; clear the slot first.
 - Play time: How long you have actually played. Every copy of a save is folded onto one
   playthrough - its two members, every dated backup of it in the vault, and the same run
   on a second platform (an NMS cloud save keeps its identity across linked accounts) -
@@ -2114,8 +2403,14 @@ BUTTONS
   and offers to copy the new ones in or index them in place (re-importing is harmless).
 - Rescan: Re-detect live save folders (new Steam account, new Xbox account) and add them
   to the LIVE SAVES list. Your manual entries are left untouched.
-- Discover: Scan the NMS folder for existing backups and add any new ones found.
-- Undo: Restore the auto-snapshot taken just before the last change to your live saves.
+- Discover: Scan the NMS folder for existing backups and add any new ones found. A live
+  save folder is never added; a catalog entry that is (or lies inside) one is pointed
+  out, and left as it is.
+- Undo: Puts a live folder back as it was just before its last change, from the
+  auto-snapshot taken then. It acts on the active live folder - or, from a folder's
+  right-click menu, on that folder - and names the change before it asks. Each Undo steps
+  one change further back. The folder keeps its own account data unless you tick the
+  box. If the undo history has damaged lines, it says so and asks before going on.
   Only actions that WRITE into the live folder can be undone -- Backup, Extract and
   Import merely add to the vault, so after one of those there is nothing to put back.
 - Refresh: Re-scan the live folder and the catalog.

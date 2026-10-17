@@ -171,20 +171,25 @@ def discover_inplace_backups(
     return find_backups(nms_root, live=live, exclude=exclude).backups
 
 
-def live_folders(paths: Iterable[str | Path]) -> list[Path]:
-    """The resolved live save folders for ``paths`` (live sources), each with its xgs twin:
-    the game itself reads and writes there, so none of them is ever a backup."""
-    out: list[Path] = []
-    for p in paths:
-        for folder in (Path(p), msstore.xgs_twin(p)):
-            if folder is None:
-                continue
-            try:
-                resolved = folder.resolve()
-            except OSError:
-                continue
-            if resolved not in out:
-                out.append(resolved)
+class LiveFolders(list):
+    """Resolved live folders with their xgs twins, as :func:`live_folders` returns them.
+    Handing one back to a function here costs nothing: it is not resolved again."""
+
+
+def live_folders(paths: Iterable[str | Path]) -> LiveFolders:
+    """The resolved live save folders for ``paths`` (live sources), each with its xgs twin
+    (:func:`msstore.with_xgs_twins`): the game itself reads and writes there, so none of
+    them is ever a backup. A list this already returned is passed through as it is."""
+    if isinstance(paths, LiveFolders):
+        return paths
+    out = LiveFolders()
+    for folder in msstore.with_xgs_twins(paths):
+        try:
+            resolved = folder.resolve()
+        except OSError:
+            continue
+        if resolved not in out:
+            out.append(resolved)
     return out
 
 
@@ -245,6 +250,20 @@ def find_backups(
             seen.add(rd)
             (search.skipped_live if is_inside(rd, folders) else search.backups).append(d)
     return search
+
+
+def entries_in_live_folders(vault: catalog.Vault, live: Iterable[str | Path]) -> tuple[bool, list]:
+    """Whether the vault itself is, or lies inside, a live folder, and the catalog entries
+    that are or lie inside one (outside the vault, when it is) -- live folders an older
+    version catalogued as backups (P9). Read-only: the caller notes them, nothing changes."""
+    folders = live_folders(live)
+    root = vault.root.resolve()
+    vault_is_live = is_inside(root, folders)
+    entries = [
+        e for e in vault.entries
+        if not (vault_is_live and is_inside(e.path, [root])) and is_inside(e.path, folders)
+    ]
+    return vault_is_live, entries
 
 
 def bootstrap_state(

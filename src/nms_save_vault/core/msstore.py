@@ -34,6 +34,7 @@ import re
 import shutil
 import struct
 import uuid
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -133,6 +134,14 @@ def xgs_twin(folder: str | Path) -> Path | None:
         return None
     twin = folder.parent.parent / "xgs" / folder.name
     return twin if twin.is_dir() else None
+
+
+def with_xgs_twins(folders: Iterable[str | Path]) -> list[Path]:
+    """``folders`` plus the xgs twin of each wgs account folder among them. The game mirrors
+    a wgs account into its twin, so the two are one live save: wherever a live folder must
+    not be mistaken for a backup or for another folder, its twin must not be either."""
+    out = [Path(f) for f in folders]
+    return out + [twin for f in out if (twin := xgs_twin(f)) is not None]
 
 
 def _slot_member(identifier: str) -> tuple[int, int] | None:

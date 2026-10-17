@@ -292,6 +292,23 @@ def test_a_live_save_in_an_unreadable_container_is_noted_and_unverifiable(make_w
     assert any("HGSAVEV2" in n for n in plan.notes)
 
 
+def test_the_live_folders_xgs_twin_is_never_counted_as_a_copy(make_wgs_account, tmp_path):
+    """The xgs mirror holds the very bytes of the live wgs folder. Catalogued (an older
+    discover did that), it would answer "backed up" by pointing at the live save itself."""
+    live = make_wgs_account(tmp_path / "live", [("Slot1Auto", '{"a":1}', "Voyagers", "", 3000, 2000)])
+    twin = tmp_path / "live" / "xgs" / live.name
+    member = savedir.scan_any(live).slots[1].members[0]
+    (twin / "Slot1Auto").mkdir(parents=True)
+    (twin / "Slot1Auto" / "data").write_bytes(Path(member.data_path).read_bytes())
+    (twin / "Slot1Auto" / "meta").write_bytes(Path(member.meta_path).read_bytes())
+    vault = _vault(tmp_path)
+    ops.import_backup(vault, twin, copy_into_vault=False)
+
+    plan = ops.plan_clear_slot(vault, live, 1)
+
+    assert not plan.identical and plan.entry_id is None and "No copy" in plan.warning
+
+
 def test_a_live_save_whose_id_cannot_be_read_is_noted_like_a_vault_copy(make_wgs_account, tmp_path, monkeypatch):
     live = make_wgs_account(tmp_path / "live", [("Slot1Auto", '{"a":1}', "Voyagers", "", 3000, 2000, 0)])
 

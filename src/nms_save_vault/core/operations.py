@@ -27,6 +27,7 @@ from .catalog import (
     KIND_INPLACE,
     KIND_SNAPSHOT,
     CatalogEntry,
+    OplogRead,
     Vault,
     looks_like_vault_dir,
 )
@@ -78,6 +79,11 @@ class SourceChangedError(OperationError):
         self.name = name
         self.vanished = vanished
         self.live = live
+
+
+class ForeignAccountError(OperationError):
+    """A backup of another account was refused: restoring it would write that account's
+    identity into this one. Nothing was changed."""
 
 
 class OplogNotWrittenWarning(UserWarning):
@@ -989,7 +995,7 @@ def _restore_full_xbox(
         live_info, live_records = None, []
     if live_info is not None and src_info.account_id != live_info.account_id:
         # The backup's containers.index carries its own account's identity and sync state.
-        raise OperationError(
+        raise ForeignAccountError(
             f"'{entry.id}' was taken from another Xbox account. Restoring it would write that "
             "account's save index into this one, so it is refused. Nothing was changed."
         )
@@ -1188,10 +1194,10 @@ def _best_vault_copy(
     is closest (then the newest entry) -- shown only as information. Matched by the game's
     own playthrough id, wherever it sits in the vault -- never by slot number, which in
     another folder may hold a different save. A save too old to carry an id matches only a
-    byte-identical copy. Live folders never count (the live folder itself would answer
-    "backed up" by pointing at the save about to be deleted; another live folder is no
-    backup either), nor do entries whose folder has gone. A file that cannot be read is
-    noted in ``notes`` and skipped.
+    byte-identical copy. Live folders and their xgs twins never count (the live folder
+    itself would answer "backed up" by pointing at the save about to be deleted; its xgs
+    mirror holds the same bytes; another live folder is no backup either), nor do entries
+    whose folder has gone. A file that cannot be read is noted in ``notes`` and skipped.
     """
     target = sv.newest
     platform = savedir.platform_of(live_dir)
@@ -1214,7 +1220,7 @@ def _best_vault_copy(
             and safety.sha256_file(m.data_path) == target_hash
         )
 
-    lives = [Path(live_dir), *other_live_dirs]
+    lives = msstore.with_xgs_twins([live_dir, *other_live_dirs])
     copies: list[_VaultCopy] = []
     for entry in vault.entries:
         folder = Path(entry.path)
@@ -1472,25 +1478,62 @@ def _relocate_entry(
 # --- undo --------------------------------------------------------------------
 
 
-def undo_last(
-    vault: Vault, live_dir: Path, allow_game_running: bool = False, acknowledge_damage: bool = False,
-    other_live_dirs: Iterable[Path] = (), restore_accountdata: bool = False,
-) -> OpResult:
-    """Undo the newest not-yet-undone operation on ``live_dir``, by restoring the snapshot
-    taken just before it. Repeated calls step further back through that folder's history.
+@dataclass
+class UndoPlan:
+    """What :func:`undo_last` would undo in a folder now (see :func:`plan_undo`)."""
 
-    Only operations that *write into* the live folder take a snapshot. Backing up,
-    extracting and importing merely add to the vault, so there is nothing to put back --
-    and the message says so, rather than implying the op log is broken. Operations on other
-    folders are passed over; an old record that cannot be placed stops the undo rather than
-    being guessed at. Old records are placed by folder name, so ``other_live_dirs`` (the
-    caller's other known live folders) makes a name they share ambiguous rather than a match.
-    A damaged log line newer than the operation stops it too, unless the caller has had the
-    user accept that (``acknowledge_damage``). The account data is kept, as in
-    :func:`restore_full`, unless the caller asks (``restore_accountdata``) or the operation
-    being undone was a restore that rolled the account data back itself.
-    """
-    live_dir = Path(live_dir)
+    op: str
+    ts: str
+    snapshot_id: str
+    token: str = ""                  # the record's identity: pass to undo_last(expected=...)
+    detail: str = ""
+    damaged_after: bool = False      # a damaged log line is newer: undo needs acknowledge_damage
+    log_warning: str = ""            # what the damaged lines are, when there are any
+    with_accountdata: bool = False   # the change was a restore that put the account data back
+
+
+@dataclass
+class _UndoTarget:
+    records: OplogRead
+    entries: dict[str, CatalogEntry]
+    note: str
+    index: int
+    passed_over: list[dict]
+
+    @property
+    def record(self) -> dict:
+        return self.records[self.index]
+
+    @property
+    def token(self) -> str:
+        """Which record this is (its line and snapshot), and the log it was found in (how
+        many lines, which of them damaged): damage that appears after the user was asked
+        changes it too."""
+        damaged = ",".join(str(n) for n in self.records.damaged_lines)
+        size = len(self.records.lines) + len(self.records.damaged_lines)
+        return f"{self.records.lines[self.index]}:{self.record.get('snapshot_id')}:{size}:{damaged}"
+
+    @property
+    def damaged_after(self) -> bool:
+        line = self.records.lines[self.index]
+        return any(damaged > line for damaged in self.records.damaged_lines)
+
+    def snapshot(self) -> CatalogEntry:
+        sid = self.record.get("snapshot_id")
+        snap = self.entries.get(sid)
+        if snap is None or not Path(snap.path).is_dir():
+            # Never fall through to an older operation: that would skip this one silently.
+            why = "not in the catalog" if snap is None else "its folder is gone"
+            raise OperationError(
+                f"The auto-snapshot for the last change to this folder ({sid}) can no longer "
+                f"be found ({why}), so it cannot be undone." + self.note
+            )
+        return snap
+
+
+def _find_undo(vault: Vault, live_dir: Path, other_live_dirs: Iterable[Path]) -> _UndoTarget:
+    """The newest not-yet-undone operation on ``live_dir`` (see :func:`undo_last`), or
+    :class:`OperationError` when there is none or the log cannot settle it."""
     records = vault.read_oplog()
     note = f" {records.warning}" if records.warning else ""
     if not records:
@@ -1504,7 +1547,7 @@ def undo_last(
     passed_over: list[dict] = []
     last_here: dict | None = None             # the newest record of a change to this folder
     for index in range(len(records) - 1, -1, -1):
-        record, line = records[index], records.lines[index]
+        record = records[index]
         sid = record.get("snapshot_id")
         if not sid:
             continue
@@ -1525,31 +1568,7 @@ def undo_last(
                 "so undo cannot tell whether it belongs to this folder. Restore from a backup "
                 "instead." + note
             )
-        if not acknowledge_damage and any(damaged > line for damaged in records.damaged_lines):
-            # A damaged line after this record may be a later change to this folder: undoing
-            # this one would put back an older state than the user expects.
-            raise OperationError(
-                "The record of a later operation is damaged, so undo is unsafe: it could undo "
-                "an older operation instead. Restore from a backup instead, or confirm that "
-                "the damaged lines may be ignored." + note
-            )
-        snap = entries.get(sid)
-        if snap is None or not Path(snap.path).is_dir():
-            # Never fall through to an older operation: that would skip this one silently.
-            why = "not in the catalog" if snap is None else "its folder is gone"
-            raise OperationError(
-                f"The auto-snapshot for the last change to this folder ({sid}) can no longer "
-                f"be found ({why}), so it cannot be undone." + note
-            )
-        result = restore_full(
-            vault, snap, live_dir, mirror=True, allow_game_running=allow_game_running, undo_of=sid,
-            restore_accountdata=restore_accountdata or bool(record.get("with_accountdata")),
-        )
-        result.detail = f"undid {record.get('op')} (restored {sid})"
-        result.warnings += [_passed_over_note(r, "A newer operation") for r in passed_over]
-        if acknowledge_damage and records.warning:
-            result.warnings.append(records.warning)
-        return result
+        return _UndoTarget(records, entries, note, index, passed_over)
 
     if last_here is None:
         what = "the undo log records no change to it"
@@ -1563,6 +1582,80 @@ def undo_last(
         "importing only add to the vault -- they never change your live saves."
         + "".join(f" {_passed_over_note(r, 'An operation')}" for r in passed_over) + note
     )
+
+
+def plan_undo(vault: Vault, live_dir: Path, other_live_dirs: Iterable[Path] = ()) -> UndoPlan:
+    """What :func:`undo_last` would undo in ``live_dir`` now, changing nothing -- so the
+    caller can name it before asking. Raises :class:`OperationError` where undo_last would
+    refuse, except for a damaged log line newer than the operation: that is reported
+    (``damaged_after``) for the caller to put to the user (``acknowledge_damage``)."""
+    target = _find_undo(vault, Path(live_dir), other_live_dirs)
+    target.snapshot()
+    record = target.record
+    return UndoPlan(
+        op=record.get("op") or "",
+        ts=record.get("ts") or "",
+        snapshot_id=record.get("snapshot_id") or "",
+        token=target.token,
+        detail=record.get("detail") or record.get("entry_id") or "",
+        damaged_after=target.damaged_after,
+        log_warning=target.records.warning or "",
+        with_accountdata=bool(record.get("with_accountdata")),
+    )
+
+
+def undo_last(
+    vault: Vault, live_dir: Path, allow_game_running: bool = False, acknowledge_damage: bool = False,
+    other_live_dirs: Iterable[Path] = (), restore_accountdata: bool = False,
+    expected: str | None = None,
+) -> OpResult:
+    """Undo the newest not-yet-undone operation on ``live_dir``, by restoring the snapshot
+    taken just before it. Repeated calls step further back through that folder's history.
+
+    Only operations that *write into* the live folder take a snapshot. Backing up,
+    extracting and importing merely add to the vault, so there is nothing to put back --
+    and the message says so, rather than implying the op log is broken. Operations on other
+    folders are passed over; an old record that cannot be placed stops the undo rather than
+    being guessed at. Old records are placed by folder name, so ``other_live_dirs`` (the
+    caller's other known live folders) makes a name they share ambiguous rather than a match.
+    A damaged log line newer than the operation stops it too, unless the caller has had the
+    user accept that (``acknowledge_damage``). The account data is kept, as in
+    :func:`restore_full`, unless the caller asks (``restore_accountdata``) or the operation
+    being undone was a restore that rolled the account data back itself.
+
+    ``expected`` (:attr:`UndoPlan.token`) holds the undo to the operation the user was
+    shown: if the log now points at another one, nothing is done. ``acknowledge_damage``
+    then covers that operation only.
+    """
+    live_dir = Path(live_dir)
+    target = _find_undo(vault, live_dir, other_live_dirs)
+    if expected is not None and target.token != expected:
+        raise OperationError(
+            f"The undo history changed after you were asked (the last change to this folder is "
+            f"now '{target.record.get('op')}' at {target.record.get('ts')}, or new lines or "
+            "damage were added). Nothing was changed; press Undo again to see what it would "
+            "undo now."
+        )
+    if not acknowledge_damage and target.damaged_after:
+        # A damaged line after this record may be a later change to this folder: undoing
+        # this one would put back an older state than the user expects.
+        raise OperationError(
+            "The record of a later operation is damaged, so undo is unsafe: it could undo "
+            "an older operation instead. Restore from a backup instead, or confirm that "
+            "the damaged lines may be ignored." + target.note
+        )
+    snap = target.snapshot()
+    record = target.record
+    sid = record.get("snapshot_id")
+    result = restore_full(
+        vault, snap, live_dir, mirror=True, allow_game_running=allow_game_running, undo_of=sid,
+        restore_accountdata=restore_accountdata or bool(record.get("with_accountdata")),
+    )
+    result.detail = f"undid {record.get('op')} (restored {sid})"
+    result.warnings += [_passed_over_note(r, "A newer operation") for r in target.passed_over]
+    if acknowledge_damage and target.records.warning:
+        result.warnings.append(target.records.warning)
+    return result
 
 
 def _passed_over_note(record: dict, which: str) -> str:
@@ -1614,7 +1707,8 @@ def _changed_folder(
 
     if not could_be(live_dir):
         return False
-    if any(could_be(d) and not _same_folder(d, live_dir) for d in others):
+    this = msstore.with_xgs_twins([live_dir])          # its xgs mirror is the same save
+    if any(could_be(d) and not any(_same_folder(d, t) for t in this) for d in others):
         return None
     return True
 
