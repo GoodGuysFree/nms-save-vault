@@ -14,6 +14,7 @@ from .errors import (
     StoreUnavailable,
 )
 from .manifest import EntryKind, FileEntry, MemberRecord, StoreEntry
+from .materialize import MaterializeResult
 from .objects import ObjectStore, PutResult
 from .versionstore import (
     INLINE_MAX,

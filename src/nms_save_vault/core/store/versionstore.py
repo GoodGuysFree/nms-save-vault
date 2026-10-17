@@ -17,8 +17,8 @@ import shutil
 import threading
 import time
 import uuid
-from collections.abc import Callable, Mapping, Sequence
-from contextlib import AbstractContextManager
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -41,6 +41,7 @@ from .errors import (
     StoreUnavailable,
 )
 from .manifest import ENTRY_KINDS, EntryKind, FileEntry, StoreEntry, is_entry_id
+from .materialize import MaterializeResult, check_destination, select_files, write_entry
 from .objects import ObjectStore, sha256
 
 log = logging.getLogger(__name__)
@@ -225,6 +226,51 @@ class VersionStore:
     def read_file(self, entry_id: str, path: str) -> bytes:
         """One file of an entry, verified."""
         return self.file_bytes(self.entry(entry_id).file(path))
+
+    # --- materialize / export ------------------------------------------------------------------
+
+    def materialize(self, entry_id: str, dest: str | Path, *, slots: Iterable[int] | None = None,
+                    account_files: bool = True, cache: bool = True,
+                    keep_mtimes: bool = True) -> MaterializeResult:
+        """Write an entry (or some of its slots) into ``dest``, an empty or absent folder outside
+        the store and the live save folders; every file is verified after writing."""
+        dest = Path(dest)
+        check_destination(dest, refuse_inside=(self.root, *self.live_roots))
+        return self._materialize(entry_id, dest, slots=slots, account_files=account_files,
+                                 cache=cache, keep_mtimes=keep_mtimes)
+
+    @contextmanager
+    def materialized(self, entry_id: str, *, slots: Iterable[int] | None = None,
+                     account_files: bool = True, cache: bool = True) -> Iterator[Path]:
+        """A verified temporary folder holding the entry, on the store's volume; removed on
+        exit, also after an error. For reading only."""
+        dest = self.root / TMP / f"mat-{entry_id}-{secrets.token_hex(4)}"
+        try:
+            self._materialize(entry_id, dest, slots=slots, account_files=account_files,
+                              cache=cache, keep_mtimes=True)
+            yield dest
+        finally:
+            if dest.exists():
+                try:
+                    shutil.rmtree(dest)
+                except OSError as exc:
+                    log.warning("could not remove the temporary folder %s: %s", dest.name, exc)
+
+    def export_entry(self, entry_id: str, dest: str | Path, *, slots: Iterable[int] | None = None,
+                     account_files: bool = True, cache: bool = True,
+                     keep_mtimes: bool = True) -> MaterializeResult:
+        """Materialize to a folder outside the vault (and the live save folders), for other
+        tools or another machine."""
+        dest = Path(dest)
+        check_destination(dest, refuse_inside=(self.vault_root, *self.live_roots))
+        return self._materialize(entry_id, dest, slots=slots, account_files=account_files,
+                                 cache=cache, keep_mtimes=keep_mtimes)
+
+    def _materialize(self, entry_id: str, dest: Path, *, slots: Iterable[int] | None,
+                     account_files: bool, cache: bool, keep_mtimes: bool) -> MaterializeResult:
+        entry = self.entry(entry_id)
+        files = select_files(entry, slots=slots, account_files=account_files, cache=cache)
+        return write_entry(self, entry, files, dest, keep_mtimes=keep_mtimes)
 
     @property
     def corrupt_manifests(self) -> dict[str, str]:
