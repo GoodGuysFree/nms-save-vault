@@ -2,12 +2,16 @@
 from __future__ import annotations
 
 import ast
+import json
 from pathlib import Path
 
 import pytest
 
 from nms_save_vault.core.hashname import hash_name
-from nms_save_vault.core.index import nodes, privacy
+from nms_save_vault.core.index import extract, nodes, privacy
+from nms_save_vault.core.savejson import decode_save
+
+from .savebuilder import context_save, encode
 
 INDEX_SRC = Path(privacy.__file__).parent
 
@@ -79,3 +83,38 @@ def test_the_literal_scan_finds_a_reader(tmp_path):
     bad = tmp_path / "bad.py"
     bad.write_text('def f(b):\n    return get(b, "Owner", "UID")\n', encoding="utf-8")
     assert [(lit, func) for _l, lit, func in _denied_literals(bad)] == [("Owner", "f"), ("UID", "f")]
+
+
+# --- end to end: sentinels in every ownership block never reach the facts --------------------
+
+SENTINELS = ("SENTINEL-UID-000000001", "SENTINEL_USERNAME", "0xDEADBEEFDEADBEEF", "SENTINEL-LID-0002",
+             "SENTINEL-TOKEN")
+
+
+def sentinel_save() -> dict:
+    """A save whose every ownership block (Owner, OWS, SenderData, UsedDiscoveryOwnersV2,
+    LastEditedBy*, PlatformToken, BlockList) carries sentinel values."""
+    owner = {"UID": SENTINELS[0], "USN": SENTINELS[1], "LID": SENTINELS[3], "PTK": "XB", "TS": 1}
+    base = {"BaseType": {"PersistentBaseTypes": "HomePlanetBase"}, "Name": "Home", "Owner": owner,
+            "LastEditedById": SENTINELS[0], "LastEditedByUsername": SENTINELS[1], "PlatformToken": SENTINELS[4],
+            "GalacticAddress": "0x0000000100000002", "Position": [1, 2, 3],
+            "Objects": [{"ObjectID": "^C_WALL", "Owner": owner}]}
+    external = dict(base, BaseType={"PersistentBaseTypes": "ExternalPlanetBase"})
+    psd = {"PersistentPlayerBases": [base, external],
+           "Pets": [{"CreatureID": "^QUAD_PET", "CustomName": "",
+                     "SenderData": {"UID": SENTINELS[0], "USN": SENTINELS[1]}}],
+           "Eggs": [{"CreatureID": "^QUAD_PET", "SenderData": {"UID": SENTINELS[0]}}],
+           "BlockList": [{"UID": SENTINELS[0], "USN": SENTINELS[1]}]}
+    common = {"SaveName": "S", "TotalPlayTime": 1, "UsedDiscoveryOwnersV2": [owner, {"UID": SENTINELS[2]}]}
+    records = [{"DD": {"DT": "Planet", "UA": SENTINELS[2]}, "OWS": owner}]
+    return context_save(base=psd, expedition=psd, common=common, discoveries=records)
+
+
+def test_no_sentinel_reaches_the_facts_or_errors():
+    facts = extract.run_extractors(decode_save(encode(sentinel_save())[0]))
+    assert facts["status"] == "ok", facts["errors"]
+    blob = json.dumps(facts, ensure_ascii=False)
+    assert [s for s in SENTINELS if s in blob] == []
+    for ctx in facts["contexts"].values():
+        assert ctx["bases"]["ptk"] == ["XB"]
+        assert ctx["bases"]["external_cached"] == 1

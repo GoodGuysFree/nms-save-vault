@@ -145,6 +145,9 @@ def describe(exc: BaseException) -> str:
 from . import save as _save  # noqa: E402,F401
 from . import progression as _progression  # noqa: E402,F401
 from . import stats as _stats  # noqa: E402,F401
+from . import bases as _bases  # noqa: E402,F401
+from . import fleet as _fleet  # noqa: E402,F401
+from . import companions as _companions  # noqa: E402,F401
 
 __all__ = ["SaveInput", "CtxInput", "Extractor", "REGISTRY", "save_extractor", "context_extractor",
            "contexts_of", "run_extractors", "describe", "nodes"]
