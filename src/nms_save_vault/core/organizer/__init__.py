@@ -87,6 +87,10 @@ class Organizer:
         """The existing vault's history has not been read in yet (and can be)."""
         return not self.store.read_only and read_lineage(self.store).bootstrap is None
 
+    @property
+    def host(self) -> Host:
+        return self._host
+
     def refresh(self, *, record: bool = True, deep: bool = False,
                 progress: Callable[[int, int], None] | None = None,
                 cancel=None) -> ReadModel:

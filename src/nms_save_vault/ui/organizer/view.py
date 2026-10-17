@@ -18,6 +18,7 @@ from collections.abc import Callable, MutableMapping
 from tkinter import ttk
 
 from ...core import aliases
+from ...core.liveops import OpContext
 from ...core.organizer import Organizer
 from ...core.organizer.readmodel import BoardSlot, LiveSource, ReadModel
 from ..dpi import px, pxs
@@ -26,6 +27,7 @@ from ..themeaware import ThemeRegistry
 from ..worker import UiWorker
 from .detail import DetailPane
 from .live import LiveArea
+from .move import MoveDialog, source_for
 from .notes import NotesWindow, toggle_pin
 from .table import OrganizerTable
 
@@ -75,16 +77,30 @@ def scan_alerts(organizer: Organizer) -> dict[str, str]:
     return {key: aliases.scrub(text) for key, text in out.items()}
 
 
+def default_context(organizer: Organizer) -> OpContext:
+    """The live-operations context of the app's own organizer (worker thread)."""
+    from ... import __version__
+    from ...core.liveops import context_for
+    from ...core.liveops.opjournal import machine_id
+
+    host = organizer.host
+    return context_for(organizer, host=host, machine_id=machine_id(host),
+                       app_version=f"nms-save-vault {__version__}")
+
+
 class OrganizerView(ttk.Frame):
     def __init__(self, master, *, worker: UiWorker, themed: ThemeRegistry,
                  prefs: MutableMapping, save_prefs: Callable[[], None],
-                 make_organizer: Callable[[], Organizer]) -> None:
+                 make_organizer: Callable[[], Organizer],
+                 make_context: Callable[[Organizer], OpContext] | None = None) -> None:
         super().__init__(master)
         self.worker = worker
         self.themed = themed
         self.prefs = prefs
         self.save_prefs = save_prefs
         self.make_organizer = make_organizer
+        self.make_context = make_context or default_context
+        self.move_dialog: MoveDialog | None = None
         self.organizer: Organizer | None = None
         self.model: ReadModel | None = None
         self.notes_window: NotesWindow | None = None
@@ -101,6 +117,8 @@ class OrganizerView(ttk.Frame):
         bar.pack(side=tk.TOP, fill=tk.X, padx=px(6), pady=pxs(6, 2))
         self.notes_button = ttk.Button(bar, text="Notes...", command=self.open_notes)
         self.notes_button.pack(side=tk.LEFT)
+        self.move_button = ttk.Button(bar, text="Move to live...", command=self.open_move)
+        self.move_button.pack(side=tk.LEFT, padx=pxs(6, 0))
         self.rescan_button = ttk.Button(bar, text="Rescan", command=lambda: self.rescan())
         self.rescan_button.pack(side=tk.RIGHT)
         self.progress = ttk.Progressbar(bar, mode="indeterminate", length=px(120))
@@ -116,7 +134,7 @@ class OrganizerView(ttk.Frame):
         self.panes = panes
         self.table = OrganizerTable(panes, themed=self.themed, prefs=self.prefs,
                                     save_prefs=self.save_prefs, on_select=self._selected,
-                                    bar_parent=chips)
+                                    bar_parent=chips, on_move=self.open_move_for)
         right = ttk.Frame(panes)
         panes.add(self.table, weight=3)
         panes.add(right, weight=2)
@@ -126,7 +144,8 @@ class OrganizerView(ttk.Frame):
                              save_prefs=self.save_prefs, on_slot=self._slot_clicked)
         self.live.pack(side=tk.TOP, fill=tk.X)
         self.detail = DetailPane(right, themed=self.themed, on_link=self._link,
-                                 on_notes=self.open_notes_for, on_pin=self._pin)
+                                 on_notes=self.open_notes_for, on_pin=self._pin,
+                                 on_move=self.open_move_for)
         self.detail.pack(side=tk.TOP, fill=tk.BOTH, expand=True, pady=pxs(8, 0))
 
     # --- scanning ---------------------------------------------------------------------------
@@ -267,6 +286,39 @@ class OrganizerView(ttk.Frame):
     def _link(self, pid: str, head: str) -> None:
         self.table.select(pid, head)
         self._selected(pid, head)
+
+    # --- moving to live -------------------------------------------------------------------------
+
+    def open_move(self) -> None:
+        pid, head = self.table.selection_ref()
+        if pid is not None:
+            self.open_move_for(pid, head)
+
+    def open_move_for(self, pid: str, head: str | None = None, *,
+                      slot: int | None = None) -> MoveDialog | None:
+        """The Move to live dialog for a line (its newest version) or one version; the plan
+        and the write run in the worker, and a finished move rescans and says so."""
+        organizer = self.organizer
+        if self.model is None or organizer is None or self.scanning:
+            return None
+        if self.move_dialog is not None and self.move_dialog.winfo_exists():
+            self.move_dialog.lift()
+            return self.move_dialog
+        try:
+            source, name, card = source_for(self.model, pid, head)
+        except KeyError:
+            return None
+        labels = {s.ref: s.label for s in self.model.live_board().sources}
+        self.move_dialog = MoveDialog(
+            self.winfo_toplevel(), worker=self.worker, themed=self.themed,
+            make_context=lambda: self.make_context(organizer), source=source, name=name,
+            card=card, labels=labels, prefer_slot=slot, on_done=self._moved)
+        return self.move_dialog
+
+    def _moved(self, outcome) -> None:
+        undo = f"  Undo: {outcome.undo.label}" if outcome.undo else ""
+        self.alert("moved", aliases.scrub(f"Done: {outcome.outcome}.{undo}"))
+        self.rescan()
 
     # --- notes and pins -------------------------------------------------------------------------
 

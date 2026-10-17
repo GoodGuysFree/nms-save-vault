@@ -302,7 +302,8 @@ class OrganizerTable(ttk.Frame):
     def __init__(self, master, *, themed: ThemeRegistry, prefs: MutableMapping,
                  save_prefs: Callable[[], None],
                  on_select: Callable[[str | None, str | None], None] | None = None,
-                 bar_parent: tk.Misc | None = None) -> None:
+                 bar_parent: tk.Misc | None = None,
+                 on_move: Callable[[str, str | None], None] | None = None) -> None:
         """``bar_parent``: where the chips, Find and Columns... go (the Organizer tab
         gives them the whole width); by default above the table."""
         super().__init__(master)
@@ -310,6 +311,7 @@ class OrganizerTable(ttk.Frame):
         self.prefs = prefs
         self.save_prefs = save_prefs
         self.on_select = on_select
+        self.on_move = on_move
         self.model: ReadModel | None = None
         self.lines: tuple[Line, ...] = ()
         self.shown: tuple[Line, ...] = ()
@@ -383,6 +385,7 @@ class OrganizerTable(ttk.Frame):
         self.tree.bind("<<TreeviewClose>>", lambda _e: self._opened(self.tree.focus(), False))
         self.tree.bind("<Button-1>", self._on_click, add="+")
         self.tree.bind("<<TreeviewSelect>>", self._on_select)
+        self.tree.bind("<Button-3>", self._context_menu)
         self.tree.bind("<ButtonRelease-1>", self._remember_widths, add="+")
         self._dragging = False
         self.tree.bind("<ButtonPress-1>", lambda e: setattr(
@@ -698,6 +701,22 @@ class OrganizerTable(ttk.Frame):
         ColumnChooser(self)
 
     # --- selection and hover -----------------------------------------------------------
+
+    def _context_menu(self, event) -> None:
+        """Right click: select the row under the pointer; "Move to live..." for its line or
+        version."""
+        iid = self.tree.identify_row(event.y)
+        if not iid or self.on_move is None:
+            return
+        self.tree.selection_set(iid)
+        menu = tk.Menu(self.tree, tearoff=False)
+        pid, head = self.selection_ref()
+        if pid is not None:
+            menu.add_command(label="Move to live...", command=lambda: self.on_move(pid, head))
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
 
     def selection_ref(self) -> tuple[str | None, str | None]:
         """(pid, head) of the focused row: head None for a line."""
