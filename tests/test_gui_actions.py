@@ -908,3 +908,103 @@ def test_the_confirm_dialog_starts_on_yes_and_answers_to_the_keys(app, monkeypat
     finally:
         if dialog.winfo_exists():
             dialog.destroy()
+
+
+# --- D6 U3: the menu bar --------------------------------------------------------------------
+
+
+def _menus(app) -> dict[str, tk.Menu]:
+    bar = app.menubar
+    return {bar.entrycget(i, "label"): app.nametowidget(bar.entrycget(i, "menu"))
+            for i in range(bar.index("end") + 1)}
+
+
+def _entries(menu: tk.Menu) -> list[str]:
+    last = menu.index("end")
+    return [menu.entrycget(i, "label") for i in range(0 if last is None else last + 1)
+            if menu.type(i) != "separator"]
+
+
+def _invoke(menu: tk.Menu, label: str) -> None:
+    for i in range(menu.index("end") + 1):
+        if menu.type(i) != "separator" and menu.entrycget(i, "label") == label:
+            menu.invoke(i)
+            return
+    raise AssertionError(f"no menu entry {label!r}")
+
+
+def test_the_menu_bar_reaches_every_toolbar_action(app):
+    menus = _menus(app)
+    assert list(menus) == ["File", "Edit", "View", "Live", "Tools", "Help"]
+    assert app.cget("menu") == str(app.menubar)
+    offered = {label for menu in menus.values() for label in _entries(menu)}
+    in_menus = {
+        "Backup live": "Back up live folder now",
+        "Restore": "Restore whole folder from a backup...",
+        "Extract slot": "Extract a slot",
+        "Clear slot...": "Clear a slot...",
+        "Copy into live slot...": "Copy into a live slot...",
+        "Promote": "Promote",
+        "Import...": "Import...",
+        "Play time...": "Play time...",
+        "Rescan": "Rescan live folders",
+        "Discover": "Discover backups",
+        "Undo": "Undo the last change to the active live folder",
+        "Refresh": "Refresh",
+        "Accounts...": "Accounts...",
+        "Help": "Help",
+    }
+    assert sorted(b.cget("text") for b in app.toolbar.buttons) == sorted(in_menus)
+    assert set(in_menus.values()) <= offered
+    for name, menu in menus.items():
+        last = menu.index("end")
+        for i in range(last + 1):
+            if menu.type(i) in ("command", "cascade"):
+                assert int(menu.entrycget(i, "underline")) >= 0 or menu.entrycget(
+                    i, "accelerator"), (name, menu.entrycget(i, "label"))
+
+
+def test_the_theme_lives_in_the_view_menu(app, monkeypatch):
+    from nms_save_vault import gui, theme
+
+    monkeypatch.setattr(gui.appstate, "save", lambda *a, **k: None)
+    original = app.state.theme
+    themes = app.nametowidget(_menus(app)["View"].entrycget("Theme", "menu"))
+    assert _entries(themes) == ["System", "Light", "Dark"]
+    assert not hasattr(app, "theme_combo")                 # no longer in the toolbar row
+    try:
+        _invoke(themes, "Dark")
+        assert app.state.theme == theme.DARK and app.theme_var.get() == "Dark"
+    finally:
+        app.state.theme = original
+        app.theme_var.set(theme.CHOICE_LABELS.get(original, "System"))
+        app._apply_theme()
+
+
+def test_zoom_from_the_view_menu_and_back_to_actual_size(app, monkeypatch):
+    from nms_save_vault import gui
+
+    monkeypatch.setattr(gui.appstate, "save", lambda *a, **k: None)
+    original = app.state.font_scale
+    view = _menus(app)["View"]
+    try:
+        app.state.font_scale = 1.0
+        app._apply_theme()
+        _invoke(view, "Zoom in")
+        assert app.state.font_scale == 1.1
+        _invoke(view, "Actual size")
+        assert app.state.font_scale == 1.0
+        for sequence in ("<F1>", "<F5>", "<Control-Key-0>"):
+            assert app.bind_all(sequence), sequence
+    finally:
+        app.state.font_scale = original
+        app._apply_theme()
+
+
+def test_about_names_the_version(app, monkeypatch):
+    from nms_save_vault import __version__, gui
+
+    shown = {}
+    monkeypatch.setattr(gui, "_showinfo", lambda title, msg, **k: shown.update(title=title, msg=msg))
+    _invoke(_menus(app)["Help"], "About NMS Save Vault")
+    assert __version__ in shown["msg"]

@@ -577,7 +577,69 @@ class App(tk.Tk):
 
     # --- layout --------------------------------------------------------------
 
+    def _build_menubar(self) -> None:
+        """The native menu bar (D6 2.2): every action has a keyboard path (Alt, then the
+        underlined letter) whatever the window width or zoom, and the preferences that
+        are not actions (theme, zoom) live here instead of in the toolbar row."""
+        bar = tk.Menu(self, tearoff=False)
+        self.menubar = bar
+
+        def menu(label: str) -> tk.Menu:
+            sub = tk.Menu(bar, tearoff=False)
+            bar.add_cascade(label=label, menu=sub, underline=0)
+            return sub
+
+        file = menu("File")
+        file.add_command(label="Back up live folder now", command=self.on_backup, underline=0)
+        file.add_command(label="Restore whole folder from a backup...", command=self.on_restore,
+                         underline=0)
+        file.add_command(label="Import...", command=self.on_import, underline=0)
+        file.add_command(label="Discover backups", command=self.on_discover, underline=0)
+        file.add_separator()
+        file.add_command(label="Exit", command=self.destroy, underline=1)
+
+        edit = menu("Edit")
+        edit.add_command(label="Undo the last change to the active live folder",
+                         command=self.on_undo, underline=0)
+
+        view = menu("View")
+        view.add_command(label="Refresh", command=self.refresh, accelerator="F5", underline=0)
+        view.add_separator()
+        themes = tk.Menu(view, tearoff=False)
+        for choice in theme.CHOICES:
+            themes.add_radiobutton(label=theme.CHOICE_LABELS[choice], variable=self.theme_var,
+                                   value=theme.CHOICE_LABELS[choice],
+                                   command=self._on_theme_changed)
+        view.add_cascade(label="Theme", menu=themes, underline=0)
+        view.add_command(label="Zoom in", command=lambda: self._zoom(1), accelerator="Ctrl++")
+        view.add_command(label="Zoom out", command=lambda: self._zoom(-1), accelerator="Ctrl+-")
+        view.add_command(label="Actual size", command=self._zoom_reset, accelerator="Ctrl+0")
+
+        live = menu("Live")
+        live.add_command(label="Accounts...", command=self.on_accounts, underline=0)
+        live.add_command(label="Rescan live folders", command=self.on_rescan, underline=0)
+        live.add_command(label="Extract a slot", command=self.on_extract, underline=0)
+        live.add_command(label="Clear a slot...", command=self.on_clear, underline=0)
+        live.add_command(label="Copy into a live slot...", command=self.on_copy_slot,
+                         underline=5)
+        live.add_command(label="Promote", command=self.on_promote, underline=0)
+
+        tools = menu("Tools")
+        tools.add_command(label="Play time...", command=self.on_playtime, underline=0)
+        tools.add_command(label="Check for updates...", command=self.on_check_updates,
+                          underline=0)
+
+        about = menu("Help")
+        about.add_command(label="Help", command=self.on_help, accelerator="F1", underline=0)
+        about.add_command(label="About NMS Save Vault", command=self.on_about, underline=0)
+        self.configure(menu=bar)
+        self.bind_all("<F1>", lambda _e: self.on_help())
+        self.bind_all("<F5>", lambda _e: self.refresh())
+        self.bind_all("<Control-Key-0>", lambda _e: self._zoom_reset())
+
     def _build_widgets(self) -> None:
+        self.theme_var = tk.StringVar(value=theme.CHOICE_LABELS.get(self.state.theme, "System"))
+        self._build_menubar()
         self.toolbar = FlowBar(self)
         self.toolbar.pack(side=tk.TOP, fill=tk.X, padx=px(6), pady=px(4))
         for text, cmd in [
@@ -608,15 +670,6 @@ class App(tk.Tk):
         self.active_combo = ttk.Combobox(controls, textvariable=self.active_var, state="readonly", width=30)
         self.active_combo.pack(side=tk.LEFT, padx=pxs(4, 16))
         self.active_combo.bind("<<ComboboxSelected>>", self._on_active_changed)
-
-        self.theme_var = tk.StringVar(value=theme.CHOICE_LABELS.get(self.state.theme, "System"))
-        self.theme_combo = ttk.Combobox(
-            controls, textvariable=self.theme_var, state="readonly", width=8,
-            values=[theme.CHOICE_LABELS[c] for c in theme.CHOICES],
-        )
-        self.theme_combo.pack(side=tk.RIGHT)
-        self.theme_combo.bind("<<ComboboxSelected>>", self._on_theme_changed)
-        ttk.Label(controls, text="Theme:").pack(side=tk.RIGHT, padx=pxs(0, 4))
 
         self.status = tk.StringVar(value="")
         ttk.Label(
@@ -751,11 +804,18 @@ class App(tk.Tk):
         """Ctrl+/Ctrl-: step the font zoom; does nothing at the ends of the range.
 
         Saved quietly: a keystroke should not raise a modal because the install folder
-        is read-only, and the theme dropdown already reports that failure loudly.
+        is read-only, and the theme menu already reports that failure loudly.
         """
         wanted = theme.clamp_font_scale(
             self.state.font_scale + steps * theme.FONT_SCALE_STEP
         )
+        self._set_zoom(wanted)
+
+    def _zoom_reset(self) -> None:
+        """Ctrl+0 / View > Actual size."""
+        self._set_zoom(1.0)
+
+    def _set_zoom(self, wanted: float) -> None:
         if wanted == self.state.font_scale:
             return
         self.state.font_scale = wanted
@@ -767,7 +827,7 @@ class App(tk.Tk):
     def _save_state_quietly(self) -> None:
         """Persist preferences. A read-only install dir is not worth a modal at startup;
         the setting simply will not stick, and the user is told if they try to change it
-        from the theme dropdown (which reports the same failure loudly)."""
+        from the theme menu (which reports the same failure loudly)."""
         try:
             appstate.save(self.state)
         except OSError:
@@ -1977,6 +2037,16 @@ class App(tk.Tk):
                 f"Could not read the account display names.\n\nFix or delete this file:\n{exc}",
             )
 
+    def on_about(self) -> None:
+        _showinfo(
+            "About NMS Save Vault",
+            f"NMS Save Vault {__version__}\n\n"
+            "Backs up, catalogs and re-slots No Man's Sky saves (Steam and Xbox / Game "
+            "Pass).\n\n"
+            "GPL-3.0. Parts are a port of libNOM.io and NomNom; see the README for the "
+            "credits.",
+        )
+
     def on_help(self) -> None:
         win = tk.Toplevel(self)
         win.title("NMS Save Vault - Help")
@@ -2457,7 +2527,7 @@ BUTTONS
   Only actions that WRITE into the live folder can be undone -- Backup, Extract and
   Import merely add to the vault, so after one of those there is nothing to put back.
 - Refresh: Re-scan the live folder and the catalog.
-- Theme (top right): Light, Dark, or System, which follows your Windows light/dark
+- View > Theme: Light, Dark, or System, which follows your Windows light/dark
   setting. Your choice is remembered in the config.
 - Accounts: Give each account a display name to show instead of its real id (the Steam
   st_<steamid64> folder, the Xbox <xuid>_<titleid> folder). Once a name is set, the app
@@ -2466,10 +2536,15 @@ BUTTONS
   accounts.ini next to state.json; clearing a name shows the real id again.
 - Help: This dialog.
 
+MENUS
+Every button is also in the menu bar (File, Edit, View, Live, Tools, Help), so Alt and
+the underlined letter reach it whatever the window size.
+
 KEYBOARD
 - Ctrl+plus / Ctrl+minus make every font in the window bigger or smaller, from 70% to
-  200% of your system's own size. The tree rows grow with the text, and the size is
-  remembered in the config just like the theme is.
+  200% of your system's own size; Ctrl+0 goes back to 100%. The tree rows grow with the
+  text, and the size is remembered in the config just like the theme is.
+- F1 opens this help, F5 refreshes.
 
 RIGHT-CLICK
 Every row offers exactly what makes sense for it:
