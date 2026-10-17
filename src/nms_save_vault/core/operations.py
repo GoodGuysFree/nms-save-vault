@@ -368,7 +368,7 @@ def snapshot_live(vault: Vault, live_dir: Path, reason: str) -> CatalogEntry:
     """Copy the live save state into the vault as an auto-snapshot entry (in store mode, a
     store entry; refused while the vault is being upgraded)."""
     live_dir = Path(live_dir)
-    store = _store().store_of(vault.root)
+    store = _store().store_of(vault)
     if store is not None:
         return _store().keep_live(store, live_dir, kind=KIND_SNAPSHOT, label=f"auto: {reason}",
                                   scope=_store().CaptureScope(), reason=reason)
@@ -401,7 +401,7 @@ def create_full_backup(
         else:
             _copy_save_state(live_dir, dest, files, copy)
 
-    store = _store().store_of(vault.root)
+    store = _store().store_of(vault)
     if store is not None:
         entry = _store().keep_live(
             store, live_dir, kind=KIND_FULL, label=label,
@@ -638,7 +638,7 @@ def extract_slot(
     _check_slot(slot)
     collected: list[str] = []
     live = any(safety.same_path(source_dir, d) for d in live_dirs)
-    store = _store().store_of(vault.root)
+    store = _store().store_of(vault)
     if store is not None:
         entry = _extract_into_store(vault, store, source_dir, slot, label, live, collected)
     elif _is_xbox(source_dir):
@@ -1384,7 +1384,7 @@ def _best_vault_copy(
                 except _READ_ERRORS as exc:
                     _note(notes, f"{entry.id} slot {other.slot}{m.label}", exc)
     cache.flush()
-    store = _store().store_of(vault.root)
+    store = _store().store_of(vault)
     if store is not None:           # store entries hold no folder: their records say it all
         for entry, name, play, same in _store().store_copies(store, target_hash, key, identified):
             copies.append(_VaultCopy(entry, _StoredMember(name, play), same))   # type: ignore[arg-type]
@@ -1511,7 +1511,7 @@ def import_backup(
         raise OperationError(f"not an NMS save folder: {path}")
     plat = savedir.platform_of(path)
     collected: list[str] = []
-    store = _store().store_of(vault.root) if copy_into_vault else None
+    store = _store().store_of(vault) if copy_into_vault else None
     if store is not None:
         entry = _store().keep_folder(store, path, kind=KIND_IMPORTED, label=label or path.name,
                                      scope=_store().CaptureScope(cache="include"))
@@ -1572,7 +1572,7 @@ def import_vault(vault: Vault, source_dir: Path, copy_into_vault: bool) -> OpRes
     overwritten."""
     source_dir = Path(source_dir)
     total = preview_vault_import(vault, source_dir)["total"]  # also validates source_dir
-    store = _store().store_of(vault.root) if copy_into_vault else None
+    store = _store().store_of(vault) if copy_into_vault else None
     if store is None:
         vault.ensure()
     src = Vault(source_dir).load()
@@ -1728,7 +1728,7 @@ def _find_undo(vault: Vault, live_dir: Path, other_live_dirs: Iterable[Path]) ->
         raise OperationError("Nothing has been done yet, so there is nothing to undo.")
 
     entries = {e.id: e for e in vault.entries}
-    store = _store().store_of(vault.root)
+    store = _store().store_of(vault)
     if store is not None:       # a snapshot made in store mode is a store entry (D3 2.10)
         entries.update({e.id: _store().as_catalog_entry(e) for e in store.entries()})
     others = [Path(d) for d in other_live_dirs]

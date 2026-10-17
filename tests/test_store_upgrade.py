@@ -115,19 +115,19 @@ def test_upgrade_refusals(legacy, tmp_path, monkeypatch):
     assert refused.value.code == "bad-destination"
     assert _tree(vault.root) == before and not (vault.root / "store").exists()
 
-    state = vault.root / "store" / "state"
-    state.mkdir(parents=True)
     script = ("import sys, time\nfrom nms_save_vault.core.safety import exclusive_lock\n"
               "with exclusive_lock(sys.argv[1]):\n    print('held', flush=True)\n    time.sleep(30)\n")
-    holder = subprocess.Popen([sys.executable, "-c", script, str(state / "upgrade.lock")],
+    holder = subprocess.Popen([sys.executable, "-c", script,
+                               str(upgrade.upgrade_lock_path(vault.root))],
                               stdout=subprocess.PIPE, text=True, encoding="utf-8")
     try:
         assert holder.stdout.readline().strip() == "held"
         assert codes() == ["in-progress"]
+        plan = vstore.plan_upgrade(vault.root, live_roots=[live])
     finally:
         holder.kill()
         holder.wait()
-    shutil.rmtree(vault.root / "store")
+    assert not (vault.root / "store").exists()
     vstore.run_upgrade(vstore.plan_upgrade(vault.root, live_roots=[live]))
     assert codes()[0] == "already-upgraded"
 
@@ -168,13 +168,15 @@ def test_upgrade_crash_and_cancel(legacy, monkeypatch):
     _assert_untouched(vault, before)
 
     # A power loss mid-copy: upgrade.json says "copying", a .partial copy is lying around.
-    partial = vault.root.parent / "vault.pre-store-20261017T000000Z.partial"
+    dest = vault.root.parent / "vault.pre-store-20261017T000000Z"
+    partial = dest.with_name(dest.name + ".partial")
     (partial / "backups").mkdir(parents=True)
     (partial / "catalog.json").write_text("{}", "utf-8")
     state = vault.root / "store" / "state"
     state.mkdir(parents=True)
-    (state / "upgrade.json").write_text(json.dumps({"state": "copying", "dest": str(partial)}),
-                                        "ascii")
+    (state / "upgrade.json").write_text(json.dumps({
+        "state": "copying", "partial": str(partial), "dest": str(dest), "store_created": True}),
+        "ascii")
     assert vstore.vault_mode(vault.root) == "upgrading"
     with pytest.raises(vstore.StoreNotUpgraded, match="being upgraded"):
         operations.snapshot_live(vault, live, "x")

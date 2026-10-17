@@ -68,7 +68,11 @@ def run_fold(store: VersionStore, *, live_roots: Sequence[Path] | None = None,
              progress: Callable[[FoldProgress], None] | None = None,
              cancel: threading.Event | None = None) -> FoldReport:
     """Fold every managed old backup not folded yet, oldest first; check each against its
-    folder; then a deep check of the store when the fold is complete."""
+    folder; then a deep check of the store when the fold is complete. A store that cannot be
+    written (read-only, or written by a newer app) is refused before anything is recorded.
+    One entry that cannot be folded, for whatever reason, is recorded as failed and the fold
+    goes on."""
+    store._require_writable()
     root = store.vault_root
     vault = Vault(root).load()
     live = discover.live_folders(live_roots) if live_roots is not None else store.live_folders()
@@ -96,9 +100,9 @@ def run_fold(store: VersionStore, *, live_roots: Sequence[Path] | None = None,
         except InsufficientSpace as exc:
             waiting = exc.needed
             break
-        except (StoreError, OSError) as exc:
-            log.warning("could not fold %s: %s", entry.id, exc)
-            statuses[entry.id] = {"status": "failed", "reason": str(exc)}
+        except Exception as exc:    # noqa: BLE001 - one entry never stops the fold; it is reported
+            log.warning("could not fold %s: %s", entry.id, exc, exc_info=True)
+            statuses[entry.id] = {"status": "failed", "reason": str(exc) or type(exc).__name__}
         _save(store, statuses, state="running", waiting=0)
     complete = not cancelled and not waiting
     state = "done" if complete else "waiting-for-space" if waiting else "cancelled"

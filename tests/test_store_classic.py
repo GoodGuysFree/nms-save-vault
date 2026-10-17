@@ -52,7 +52,7 @@ def test_backups_snapshots_and_extracts_become_store_entries(tmp_path):
     full = operations.create_full_backup(vault, live, label="mine", warnings=[])
     extract = operations.extract_slot(vault, live, 2, warnings=[], live_dirs=[live])
     snap = operations.snapshot_live(vault, live, "test")
-    store = classic.store_of(vault.root)
+    store = classic.store_of(vault)
     assert [store.entry(e.id).kind for e in (full, extract, snap)] == ["full", "extract", "snapshot"]
     assert store.entry(full.id).scope["cache"] == "included"
     assert store.entry(extract.id).scope["slots"] == [2]
@@ -92,7 +92,7 @@ def test_classic_ops_through_store_entries(tmp_path):
 
 def test_a_preserve_entry_restores_only_its_slot(tmp_path):
     vault, live = _world(tmp_path, store_mode=True)
-    store = classic.store_of(vault.root)
+    store = classic.store_of(vault)
     loc = vstore.StoreLocator(store, live_dir=lambda t: live)
     vid = hashlib.sha256((live / "save.hg").read_bytes()).hexdigest()
     kept = loc.preserve([LiveMember(LiveTarget("steam", live.name, 1), "A", vid)],
@@ -125,14 +125,14 @@ def test_imports_in_store_mode(tmp_path):
     copy = tmp_path / "hand copy"
     shutil.copytree(live, copy)
     copied = operations.import_backup(vault, copy, copy_into_vault=True, warnings=[])
-    assert classic.store_of(vault.root).entry(copied.id).kind == "imported"
+    assert classic.store_of(vault).entry(copied.id).kind == "imported"
     in_place = operations.import_backup(vault, copy, copy_into_vault=False, warnings=[])
     assert vault.get(in_place.id).kind == "inplace"
 
     other, other_live = _world(tmp_path / "other", store_mode=False)
     old = operations.create_full_backup(other, other_live, warnings=[])
     result = operations.import_vault(vault, other.root, copy_into_vault=True)
-    store = classic.store_of(vault.root)
+    store = classic.store_of(vault)
     assert result.changed == [old.id] and store.entry(old.id).origin == {"imported_entry": old.id}
     assert store.entry(old.id).created_local == old.created
     assert operations.import_vault(vault, other.root, copy_into_vault=True).changed == []
@@ -194,7 +194,7 @@ def test_the_cli_reads_store_entries(tmp_path, monkeypatch, capsys):
     assert _saves(live)["save11.hg"] == original["save.hg"]
     assert cli.main(base + ["extract", "2", "--from", full.id]) == 0
     capsys.readouterr()
-    store = classic.store_of(vault.root)
+    store = classic.store_of(vault)
     extract = next(e for e in store.entries() if e.kind == "extract")
     assert extract.source == {"type": "entry", "entry": full.id}
     assert [s.slot for s in savedir.scan(live).occupied_slots] == [1, 2, 6]

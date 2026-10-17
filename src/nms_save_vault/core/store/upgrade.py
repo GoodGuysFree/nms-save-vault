@@ -40,7 +40,7 @@ from .versionstore import (
 
 log = logging.getLogger(__name__)
 
-UPGRADE_LOCK = "upgrade.lock"
+UPGRADE_LOCK = ".upgrade.lock"
 MIGRATION_JSON = "migration.json"
 PARTIAL = ".partial"
 COPY_INFIX = ".pre-store-"
@@ -65,6 +65,7 @@ class UpgradePlan:
     longest_dest_path: int
     copy: bool                        # False: a vault with no entries is upgraded without one
     problems: tuple[tuple[str, str], ...]   # (UpgradeError code, ASCII text); empty = can run
+    live_roots: tuple[Path, ...] = ()       # the live folders (and xgs twins) checked against
 
 
 @dataclass(frozen=True)
@@ -120,11 +121,42 @@ def _fingerprint(files: dict[str, tuple[int, int]]) -> str:
     return hashlib.sha256("\n".join(lines).encode("utf-8")).hexdigest()
 
 
+@dataclass(frozen=True)
+class _Assessment:
+    files: dict[str, tuple[int, int]]
+    total: int
+    fingerprint: str
+    free: int
+    needed: int
+    deepest: int
+    copy: bool
+    problems: tuple[tuple[str, str], ...]
+
+
 def plan_upgrade(vault_root: str | Path, *, dest_parent: str | Path | None = None,
                  live_roots: Sequence[Path] | None = None,
                  now: Callable[[], datetime] = utc_now) -> UpgradePlan:
     """What the upgrade would do, and every reason it cannot run now. Reads only."""
     root = Path(vault_root)
+    stamp = now().astimezone(timezone.utc)
+    parent = Path(dest_parent) if dest_parent is not None else root.parent
+    dest = parent / f"{root.name}{COPY_INFIX}{stamp:%Y%m%dT%H%M%SZ}"
+    live = tuple(discover.live_folders(live_roots if live_roots is not None
+                                       else discover.all_live_paths(None)))
+    a = _assess(root, dest, live)
+    problems = list(a.problems)
+    if _upgrade_lock_held(root):
+        problems.append(("in-progress", "The vault is being upgraded by another NMS Save Vault "
+                                        "window."))
+    return UpgradePlan(root, len(a.files), a.total, a.fingerprint, dest, a.free, a.needed,
+                       a.deepest, a.copy, tuple(problems), live)
+
+
+def _assess(root: Path, dest: Path, live: Sequence[Path]) -> _Assessment:
+    """The facts a plan rests on, checked again by the run under its lock. Reads only."""
+    if not root.is_dir() or not catalog.looks_like_vault_dir(root):
+        return _Assessment({}, 0, _fingerprint({}), 0, 0, 0, False,
+                           (("not-a-vault", "That folder is not a vault."),))
     problems: list[tuple[str, str]] = []
     mode = vault_mode(root)
     if mode == "store":
@@ -132,15 +164,15 @@ def plan_upgrade(vault_root: str | Path, *, dest_parent: str | Path | None = Non
     elif mode == "upgrading":
         problems.append(("in-progress", "The vault is being upgraded by another NMS Save Vault "
                                         "window, or the last upgrade was interrupted."))
+    elif store_root(root).exists():
+        problems.append(("damaged", "store folder present without FORMAT - run fsck"))
     if is_pre_upgrade_copy(root):
         problems.append(("bad-destination", "This is the pre-upgrade copy of a vault; use Undo "
                                             "the vault upgrade."))
-    files = tree(root) if root.is_dir() else {}
+    files = tree(root)
     total = sum(size for size, _ in files.values())
-    stamp = now().astimezone().astimezone(timezone.utc)
-    parent = Path(dest_parent) if dest_parent is not None else root.parent
-    dest = parent / f"{root.name}{COPY_INFIX}{stamp:%Y%m%dT%H%M%SZ}"
-    copy = bool(catalog.Vault(root).load().entries) if catalog.looks_like_vault_dir(root) else False
+    copy = bool(catalog.Vault(root, read_only=True).load().entries)
+    parent = dest.parent
     try:
         free = shutil.disk_usage(parent if parent.exists() else parent.parent).free
     except OSError:
@@ -155,18 +187,13 @@ def plan_upgrade(vault_root: str | Path, *, dest_parent: str | Path | None = Non
         if deepest >= MAX_PATH:
             problems.append(("path-too-long", "The copy would need paths longer than Windows "
                                               "allows. Choose a folder with a shorter path."))
-        live = discover.live_folders(live_roots if live_roots is not None
-                                     else discover.all_live_paths(None))
         partial = dest.with_name(dest.name + PARTIAL)
         if _inside(dest, root) or discover.is_inside(dest, live) or dest.exists() \
-                or partial.exists():
+                or partial.exists() or not parent.is_dir():
             problems.append(("bad-destination", "Choose a folder outside the vault and outside "
                                                 "the game's save folders for the copy."))
-    if _upgrade_lock_held(root):
-        problems.append(("in-progress", "The vault is being upgraded by another NMS Save Vault "
-                                        "window."))
-    return UpgradePlan(root, len(files), total, _fingerprint(files), dest, free, needed, deepest,
-                       copy, tuple(problems))
+    return _Assessment(files, total, _fingerprint(files), free, needed, deepest, copy,
+                       tuple(problems))
 
 
 def run_upgrade(plan: UpgradePlan, *,
@@ -175,33 +202,38 @@ def run_upgrade(plan: UpgradePlan, *,
                 cancel: threading.Event | None = None,
                 now: Callable[[], datetime] = utc_now) -> UpgradeResult:
     """Copy the vault aside, verify the copy, then turn store mode on (D3 4.1 steps 1-7).
-    Raises UpgradeError; the vault is then as it was (only the upgrade's own unfinished copy
-    and ``store/`` are removed)."""
+    Under the upgrade lock the plan is checked again (it must still hold, and the vault must
+    still be what was planned). Raises UpgradeError; the vault is then as it was: only what
+    this run made (its copy, its ``store/``) is removed, before the lock is released."""
     if plan.problems:
         code, text = plan.problems[0]
         raise UpgradeError(code, text)
     root = plan.vault_root
     lock = vault_lock_factory or vault_lock(root)
-    state_dir = store_root(root) / STATE
-    state_dir.mkdir(parents=True, exist_ok=True)
     partial = plan.dest.with_name(plan.dest.name + PARTIAL)
+    held = safety.exclusive_lock(upgrade_lock_path(root), timeout=0)
     try:
-        upgrade_lock = safety.exclusive_lock(state_dir / UPGRADE_LOCK, timeout=0)
-        upgrade_lock.__enter__()
+        held.__enter__()
     except (safety.LockTimeout, RuntimeError) as exc:
         raise UpgradeError("in-progress", "The vault is being upgraded by another NMS Save Vault "
                                           "window.") from exc
-    committed = False
+    owned = committed = False
     try:
-        if vault_mode(root) != "legacy":
-            raise UpgradeError("in-progress", "The vault is being upgraded by another NMS Save "
-                                              "Vault window.")
+        fresh = _assess(root, plan.dest, plan.live_roots)
+        if fresh.problems:
+            raise UpgradeError(*fresh.problems[0])
+        if (fresh.fingerprint, fresh.copy) != (plan.fingerprint, plan.copy):
+            raise UpgradeError("vault-changing", "The vault changed after the upgrade was "
+                                                 "planned. Nothing was changed; start it again.")
+        store_root(root).mkdir()                 # the vault exists: never parents=True here
+        owned = True
+        (store_root(root) / STATE).mkdir()
         with lock():
-            _write_json(state_dir / UPGRADE_JSON, {
-                "state": "copying", "dest": str(partial), "started_utc": iso_utc(now()),
+            _write_json(store_root(root) / STATE / UPGRADE_JSON, {
+                "state": "copying", "partial": str(partial), "dest": str(plan.dest),
+                "store_created": True, "started_utc": iso_utc(now()),
                 "fingerprint": plan.fingerprint})
-        run = _Run(plan, partial, lock, progress, cancel, now)
-        result = run.copy_and_commit()
+        result = _Run(plan, partial, lock, progress, cancel, now).copy_and_commit()
         committed = True
         return result
     except UpgradeError:
@@ -211,9 +243,11 @@ def run_upgrade(plan: UpgradePlan, *,
                                           f"{getattr(exc, 'filename', '') or 'a file'} "
                                           f"({exc.strerror or exc}). Your vault was not changed.") from exc
     finally:
-        upgrade_lock.__exit__(None, None, None)
-        if not committed:
-            _remove_unfinished(root, partial)
+        try:
+            if not committed:
+                _remove_unfinished(root, partial, plan.dest, store_owned=owned)
+        finally:
+            held.__exit__(None, None, None)
 
 
 class _Run:
@@ -232,7 +266,7 @@ class _Run:
             with self.lock():
                 self._commit(None, 0)
             return UpgradeResult(None, 0, 0, 0, "Vault upgraded.")
-        self.partial.mkdir(parents=True)
+        self.partial.mkdir()                     # its parent was checked; never parents=True
         files = tree(self.root)
         self._sync(files, stage="copy")
         for _round in range(MAX_ROUNDS + 1):
@@ -337,16 +371,17 @@ class _Run:
 
 
 def cleanup_interrupted_upgrade(vault_root: str | Path) -> UpgradeResult | None:
-    """At start-up, after a crash or power loss during an upgrade: an upgrade that had not
-    reached its commit point is cleaned up (its ``.partial`` copy and ``store/``); one that had
-    is finished. None when there is nothing to do, or another window is upgrading."""
+    """After a crash or power loss during an upgrade (the front ends call it when they open a
+    vault): one that had reached its commit point is finished; one that had not is cleaned up -
+    only what it made itself, as ``upgrade.json`` records it (its ``.partial`` copy or the
+    renamed copy, and a ``store/`` it created), never vault data. None when there is nothing
+    to do, or another window is upgrading."""
     root = Path(vault_root)
-    state_dir = store_root(root) / STATE
-    marker = state_dir / UPGRADE_JSON
+    marker = store_root(root) / STATE / UPGRADE_JSON
     if not marker.is_file():
         return None
     try:
-        with safety.exclusive_lock(state_dir / UPGRADE_LOCK, timeout=0):
+        with safety.exclusive_lock(upgrade_lock_path(root), timeout=0):
             try:
                 record = json.loads(marker.read_bytes().decode("utf-8"))
             except (OSError, ValueError):
@@ -356,25 +391,56 @@ def cleanup_interrupted_upgrade(vault_root: str | Path) -> UpgradeResult | None:
             if (store_root(root) / FORMAT_NAME).is_file():
                 marker.unlink()                                  # it had committed
                 return UpgradeResult(None, 0, 0, 0, "The last upgrade had finished.")
-            partial = Path(str(record.get("dest") or ""))
+            if not record.get("store_created"):
+                return UpgradeResult(None, 0, 0, 0, "store folder present without FORMAT - run "
+                                                    "fsck. Nothing was removed.")
+            partial, dest = _recorded_copy(record)
+            _remove_unfinished(root, partial, dest, store_owned=True)
     except (safety.LockTimeout, RuntimeError):
         return None
-    # The lock file lives in store/: it goes once the lock is released.
-    _remove_unfinished(root, partial if partial.name.endswith(PARTIAL) else None)
     return UpgradeResult(None, 0, 0, 0, "The last upgrade was interrupted and has been cleaned "
                                         "up. Your vault was not changed.")
+
+
+def startup_notice(vault_root: str | Path) -> str | None:
+    """For the front ends when they open a vault: clean up after an interrupted upgrade and
+    say so; None when there was nothing to do."""
+    result = cleanup_interrupted_upgrade(vault_root)
+    return result.message if result is not None else None
 
 
 # --- helpers ----------------------------------------------------------------------------------
 
 
-def _remove_unfinished(root: Path, partial: Path | None) -> None:
-    """After a failed or interrupted upgrade: its own ``.partial`` copy and ``store/`` go
-    (only while store mode never came on)."""
+def upgrade_lock_path(vault_root: str | Path) -> Path:
+    """The lock one upgrade (or one undo of it) holds for its whole run. Beside D1's locks in
+    ``organizer/``, never inside ``store/``: a failed run removes ``store/`` while it still
+    holds the lock."""
+    return Path(vault_root) / "organizer" / UPGRADE_LOCK
+
+
+def _recorded_copy(record: dict) -> tuple[Path | None, Path | None]:
+    """The copy folders an upgrade.json names, when they look like ours: ``<dest>.partial`` and
+    ``<vault>.pre-store-<UTC>``."""
+    dest = Path(str(record.get("dest") or ""))
+    partial = Path(str(record.get("partial") or ""))
+    if dest.name.endswith(PARTIAL):              # an upgrade.json of the first version
+        dest, partial = dest.with_name(dest.name[:-len(PARTIAL)]), dest
+    ok_dest = COPY_INFIX in dest.name and partial == dest.with_name(dest.name + PARTIAL)
+    return (partial if ok_dest else None), (dest if ok_dest else None)
+
+
+def _remove_unfinished(root: Path, partial: Path | None, dest: Path | None, *,
+                       store_owned: bool) -> None:
+    """After a failed or interrupted upgrade, while store mode never came on: the run's own
+    copy (unfinished, or renamed but not committed, note and all) and the ``store/`` it made."""
     if (store_root(root) / FORMAT_NAME).is_file():
         return
-    for folder in ([partial] if partial is not None else []) + [store_root(root)]:
-        if folder is not None and folder.exists():
+    folders = [f for f in (partial, dest) if f is not None]
+    if store_owned:
+        folders.append(store_root(root))
+    for folder in folders:
+        if folder.exists():
             try:
                 shutil.rmtree(folder)
             except OSError as exc:
@@ -382,7 +448,7 @@ def _remove_unfinished(root: Path, partial: Path | None) -> None:
 
 
 def _upgrade_lock_held(root: Path) -> bool:
-    lock_file = store_root(root) / STATE / UPGRADE_LOCK
+    lock_file = upgrade_lock_path(root)
     if not lock_file.exists():
         return False
     try:

@@ -43,9 +43,14 @@ def add_commands(sub: argparse._SubParsersAction) -> None:
 
 
 def _vault_root(args, state) -> Path:
-    if args.vault:
-        return Path(args.vault)
-    return Path(state.vault) if (state and state.vault) else locations.default_vault_dir()
+    from .core.store import upgrade
+
+    root = Path(args.vault) if args.vault else (
+        Path(state.vault) if (state and state.vault) else locations.default_vault_dir())
+    notice = upgrade.startup_notice(root)       # an interrupted upgrade: its own leftovers go
+    if notice:
+        print(f"note: {notice}", file=sys.stderr)
+    return root
 
 
 def _live_paths(state) -> list[Path]:

@@ -154,7 +154,17 @@ def _resolve_vault(args) -> Vault:
         root = Path(st.vault) if (st and st.vault) else locations.default_vault_dir()
     if (root / catalog.PRE_UPGRADE_COPY).is_file():
         _die("error: this is the pre-upgrade copy of a vault; use Undo the vault upgrade")
+    _upgrade_notice(root)
     return Vault(root).load()
+
+
+def _upgrade_notice(root: Path) -> None:
+    """An upgrade interrupted by a crash is cleaned up (only its own leftovers) and said."""
+    from .core.store import upgrade
+
+    notice = upgrade.startup_notice(root)
+    if notice:
+        print(f"note: {notice}", file=sys.stderr)
 
 
 def _resolve_source(vault: Vault, value: str) -> Path:

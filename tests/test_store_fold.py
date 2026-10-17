@@ -92,11 +92,11 @@ def test_fold_idempotent_resumable(upgraded, monkeypatch):
     def crash_on_the_second(store_, entry, folder):
         seen.append(entry.id)
         if len(seen) == 2:
-            raise RuntimeError("power loss")
+            raise KeyboardInterrupt("the process is stopped")
         return real(store_, entry, folder)
 
     monkeypatch.setattr(migrate, "_fold_one", crash_on_the_second)
-    with pytest.raises(RuntimeError):
+    with pytest.raises(KeyboardInterrupt):
         vstore.run_fold(store, live_roots=[live])
     monkeypatch.undo()
     monkeypatch.setattr(versionstore.discover, "all_live_paths", lambda *a, **k: [])

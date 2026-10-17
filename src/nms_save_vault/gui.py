@@ -488,6 +488,12 @@ class App(tk.Tk):
         self.vault = Vault(vault_root)
         self.vault.ensure()
         self.vault.load()
+        # D3 4.1: an upgrade interrupted by a crash is cleaned up (its own leftovers only).
+        from .core.store.upgrade import startup_notice
+
+        notice = startup_notice(vault_root)
+        if notice:
+            self.after(400, lambda: _showinfo("Vault upgrade", notice, parent=self))
 
         # The active *writable* live source is the target of write operations. An
         # explicit --live wins; otherwise the first writable (Steam) source.
