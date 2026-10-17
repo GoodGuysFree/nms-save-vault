@@ -25,7 +25,8 @@ from typing import Any, Literal, Protocol, runtime_checkable
 from .. import aliases, formats
 from ..state import Source
 from .journal import JournalState, ObsRecord, OpRecord
-from .lineage import LineageState
+from .history import CrossLink, HistoryGraph, HNode, project
+from .lineage import LineageGraph, LineageState
 from .model import (
     EdgeKind,
     EdgeMethod,
@@ -56,7 +57,6 @@ CrossPlatform = Literal["n/a", "same", "steam-behind", "xbox-behind", "diverged"
 SLOT_OPS = ("place", "place_into_empty", "restore_older", "swap", "repopulate", "clear")
 RECENT_EVENT_SECONDS = 30 * 86400
 EXPEDITION_MODE = 6
-_TIER_RANK = {"owner": 3, "recorded": 2, "observed": 1}
 
 
 # --- the content index, as the read model sees it (D1 2.10, D4 2.6) -----------
@@ -238,7 +238,12 @@ class _Pair:
 class ReadModel:
     def __init__(self, lines: Mapping[Pid, Line], versions: Mapping[Pid, tuple[VersionRow, ...]],
                  board: LiveBoard, events: Mapping[Pid, tuple[LineEvent, ...]],
-                 tokens: Mapping[LiveRef, int], notes: NotesState) -> None:
+                 tokens: Mapping[LiveRef, int], notes: NotesState, *,
+                 trees: Mapping[Pid, tuple] | None = None, graph: LineageGraph | None = None,
+                 vid_pid: Mapping[Vid, Pid] | None = None) -> None:
+        self._trees = trees or {}
+        self.graph = graph
+        self._vid_pid = vid_pid or {}
         self._lines = lines
         self._versions = versions
         self._board = board
@@ -266,6 +271,18 @@ class ReadModel:
 
     def live_board(self) -> LiveBoard:
         return self._board
+
+    def line_of(self, vid: Vid) -> Pid | None:
+        """The save file a version (a head or a partner) belongs to."""
+        return self._vid_pid.get(vid)
+
+    def history(self, pid: Pid, mode: Literal["default", "all", "key"] = "default"
+                ) -> HistoryGraph:
+        """The line's history as a tree (D1 2.10.4, 2.10.5): only what was recorded or
+        observed, lanes assigned; every other version listed by date. ``mode`` "default"
+        folds re-saves without play, "all" folds nothing, "key" keeps the key versions."""
+        nodes, links = self._trees.get(pid, ((), ()))
+        return project(pid, mode, self._versions.get(pid, ()), nodes, links)
 
     def events(self, pid: Pid) -> tuple[LineEvent, ...]:
         """Newest first."""
@@ -301,6 +318,8 @@ class _Builder:
         self.notes = notes
         self.sources = list(sources)
         self.now = now
+        self._effective: dict[Vid, Pid] | None = None
+        self.graph = LineageGraph.build(journal.edges, lineage)
         self.refs = live_refs(self.sources)
         self.tokens = {ref: i for i, ref in enumerate(self.refs)}
         per_platform = Counter(r.platform for r in self.refs)
@@ -323,8 +342,11 @@ class _Builder:
         return obs.pid if obs is not None else None
 
     def pid(self, vid: Vid) -> Pid | None:
-        raw = self.raw_pid(vid)
-        return self.lineage.canonical(raw) if raw is not None else None
+        """The save file ``vid`` belongs to: the owner's Combines and Splits applied."""
+        if self._effective is None:
+            known = {*self.scan.versions, *self.journal.metas}
+            self._effective = self.graph.effective_pids(sorted(known), self.raw_pid, self.lineage)
+        return self._effective.get(vid)
 
     def platform(self, vid: Vid) -> Platform:
         info = self.scan.versions.get(vid)
@@ -350,8 +372,15 @@ class _Builder:
         heads = {p.head for p in pairs.values()}
         children = Counter(parent.values())
         forks = {v for v, n in children.items() if n > 1}
-        candidates = heads | forks
+        in_pair = {v for p in pairs.values() for v in p.pair if v}
+        candidates = heads | (forks & in_pair)
         display = {h: self._display_parent(h, parent, candidates) for h in candidates}
+        # An edge that leaves its save file (a Split, an unrelated line) is a link, not a branch.
+        self.cross = {h: d for h, d in display.items()
+                      if d is not None and self.pid(h) != self.pid(d)}
+        for h in self.cross:
+            display[h] = None
+        self.cross_involved = set(self.cross) | set(self.cross.values())
         display_children = Counter(p for p in display.values() if p is not None)
         slot_ops = [r for r in self.journal.records
                     if isinstance(r, OpRecord) and r.status == "done" and r.kind in SLOT_OPS]
@@ -382,7 +411,35 @@ class _Builder:
             lines[pid] = self._line(pid, rows[pid], live_by_pid.get(pid, []), display_children)
         board = self._board(live, lines)
         events = self._events(lines)
-        return ReadModel(lines, rows, board, events, self.tokens, self.notes)
+        trees = self._trees(rows, display, candidates)
+        return ReadModel(lines, rows, board, events, self.tokens, self.notes, trees=trees,
+                         graph=self.graph, vid_pid=dict(self._effective or {}))
+
+    def _trees(self, rows: Mapping[Pid, tuple[VersionRow, ...]],
+               display: Mapping[Vid, Vid | None], candidates: set[Vid]) -> dict[Pid, tuple]:
+        """Per save file, the inputs of its HistoryGraph: the tree nodes (heads that are in the
+        tree, and fork points that are no head), where edges cross to another save file."""
+        out: dict[Pid, tuple] = {}
+        for pid, line_rows in rows.items():
+            by_vid = {v: r for r in line_rows for v in r.pair if v}
+            nodes = []
+            for vid in sorted(candidates):
+                row = by_vid.get(vid)
+                if row is None or row.pid != pid:
+                    continue
+                if vid == row.head and not row.in_tree:
+                    continue
+                kind = "version" if vid == row.head else "fork-member"
+                nodes.append(HNode(vid, row.head, kind, display.get(vid), self.edge_of.get(vid),
+                                   self.order(vid), self.platform(vid)))
+            links = []
+            for child, par in self.cross.items():
+                if self.pid(child) == pid:
+                    links.append(CrossLink(child, self.pid(par), par))
+                elif self.pid(par) == pid:
+                    links.append(CrossLink(par, self.pid(child), child))
+            out[pid] = (tuple(nodes), tuple(sorted(links, key=lambda k: (k.vid, k.other_vid))))
+        return out
 
     def _pairs(self) -> dict[PairKey, _Pair]:
         """Every pair the app has seen: in this scan, or in the journal (gone or past)."""
@@ -413,14 +470,10 @@ class _Builder:
         return MemberObs(member, vid, info.raw_pid, info.pid_src, info.platform, info.meta)
 
     def _parents(self) -> dict[Vid, Vid]:
-        """One parent per version: the highest tier of evidence, the later within a tier."""
-        best: dict[Vid, tuple] = {}
-        for e in self.journal.edges:
-            rank = (_TIER_RANK.get(e.tier, 0), e.created)
-            if e.child not in best or rank > best[e.child][0]:
-                best[e.child] = (rank, e)
-        self.edge_of = {child: e for child, (_, e) in best.items()}
-        self.parent_of = {child: e.parent for child, (_, e) in best.items()}
+        """One parent per version (D1 2.7.1): the owner's word, else the highest tier of
+        evidence, the later within a tier."""
+        self.edge_of = dict(self.graph.edge_of)
+        self.parent_of = dict(self.graph.parent)
         return dict(self.parent_of)
 
     def _view(self, vid: Vid) -> Any | None:
@@ -473,7 +526,8 @@ class _Builder:
         if any(lp.partner == p.head for lp in live.values()):
             flags.add("live-partner")
         n_children = display_children.get(p.head, 0)
-        in_tree = parent_vid is not None or n_children > 0 or p.head in marked
+        in_tree = (parent_vid is not None or n_children > 0 or p.head in marked
+                   or p.head in self.cross_involved)
         if in_tree and n_children == 0:
             flags.add("tip")
         if n_children > 1 or p.head in forks:
@@ -640,7 +694,8 @@ class _Builder:
         raw_pids = sorted({self.raw_pid(v) for v in vids if self.raw_pid(v)})
         return Line(
             pid=pid, raw_pids=tuple(raw_pids), identified=is_identified(pid),
-            name=names[0] if names else "", former_names=tuple(names[1:]),
+            name=self.lineage.split_names().get(pid) or (names[0] if names else ""),
+            former_names=tuple(names[1:]) if not self.lineage.split_names().get(pid) else tuple(names),
             difficulty=formats.difficulty_label(rep_meta.difficulty, rep_meta.game_mode)
             if rep_meta else "",
             mode=_mode(rep_meta),
