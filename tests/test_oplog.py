@@ -41,14 +41,14 @@ def test_a_torn_last_line_is_reported_and_later_appends_still_read(tmp_path, cap
     with caplog.at_level(logging.WARNING, logger=catalog.__name__):
         read = vault.read_oplog()
     assert [r["op"] for r in read] == ["first", "second"]
-    assert read.damaged_lines == [3] and read.tail_damaged
+    assert read.damaged_lines == [3] and read.lines == [1, 2]
     assert any("line 3" in r.getMessage() for r in caplog.records)
 
     vault.append_oplog(_record("third"))
 
     read = vault.read_oplog()
     assert [r["op"] for r in read] == ["first", "second", "third"]
-    assert read.damaged_lines == [3] and not read.tail_damaged and "3" in read.warning
+    assert read.damaged_lines == [3] and read.lines == [1, 2, 4] and "3" in read.warning
     lines = vault.oplog_path.read_bytes().split(b"\n")
     assert json.loads(lines[-2])["op"] == "third" and lines[-1] == b""   # on a line of its own
 
@@ -110,7 +110,7 @@ def test_damage_in_the_middle_leaves_the_valid_records_readable(tmp_path, caplog
     with caplog.at_level(logging.WARNING, logger=catalog.__name__):
         read = vault.read_oplog()
     assert [r["op"] for r in read] == ["one", "two"]
-    assert read.damaged_lines == [2, 3, 4] and not read.tail_damaged
+    assert read.damaged_lines == [2, 3, 4] and read.lines == [1, 6]
     skipped = " ".join(r.getMessage() for r in caplog.records)
     assert "line 2" in skipped and "line 3" in skipped and "line 4" in skipped
 
@@ -214,7 +214,7 @@ def test_a_finished_live_write_is_not_reported_failed_when_the_log_cannot_be_wri
     result = ops.repopulate_slot(vault, live, 1, live, 3, allow_game_running=True)
 
     assert result.ok and savedir.scan_any(live).slots[3].occupied
-    assert any("not recorded in the undo log" in w for w in result.warnings)
+    assert any("missing from the history" in w for w in result.warnings)
 
 
 def test_the_catalog_is_written_atomically_and_fsynced(tmp_path, monkeypatch):

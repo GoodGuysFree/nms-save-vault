@@ -454,6 +454,39 @@ def test_mark_modified_changes_only_the_sync_state_of_synced_records(make_wgs_ac
     assert info.filetime == SUB_SECOND_TICKS and info.sync_state == msstore.INDEX_SYNC_MODIFIED
 
 
+def _corrupt(raw: bytes, damage: str) -> bytes:
+    b = bytearray(raw)
+    if damage == "negative string length":
+        struct.pack_into("<i", b, 12, -5)
+    elif damage == "string past the end":
+        struct.pack_into("<i", b, 12, 10_000)
+    elif damage == "absurd record count":
+        struct.pack_into("<q", b, 4, 2**40)
+    elif damage == "negative record count":
+        struct.pack_into("<q", b, 4, -1)
+    elif damage == "cut inside a record":
+        del b[-30:]
+    elif damage == "cut inside the header":
+        del b[20:]
+    return bytes(b)
+
+
+@pytest.mark.parametrize("damage", [
+    "negative string length", "string past the end", "absurd record count",
+    "negative record count", "cut inside a record", "cut inside the header",
+])
+def test_a_corrupt_index_is_a_value_error_and_reads_as_an_empty_account(make_wgs_account, tmp_path, damage):
+    acct = make_wgs_account(tmp_path, SAVES_FOR_INDEX)
+    raw = _corrupt((acct / "containers.index").read_bytes(), damage)
+    (acct / "containers.index").write_bytes(raw)
+
+    with pytest.raises(ValueError):
+        msstore.split_index(raw)
+    with pytest.raises(ValueError):
+        msstore.parse_containers_index(acct)
+    assert msstore.scan(acct).occupied_slots == []          # degrades, as before; no crash
+
+
 def test_nothing_is_ever_written_with_a_1601_time(make_wgs_account, tmp_path):
     """A FILETIME of 0 reads as 1601-01-01: a record cannot be made without a time, and a
     write without a real time is refused before anything changes."""

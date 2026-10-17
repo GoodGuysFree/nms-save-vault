@@ -225,9 +225,14 @@ def _record_fields(c: _Container) -> tuple:
 
 
 def _read_lp_string(b: bytes, off: int) -> tuple[str, int]:
-    """Length-prefixed UTF-16LE string: [int char-count][chars]. Returns (str, new_off)."""
+    """Length-prefixed UTF-16LE string: [int char-count][chars]. Returns (str, new_off).
+    Raises ``ValueError`` when the count is negative or runs past the end of ``b``."""
+    if not 0 <= off <= len(b) - 4:
+        raise ValueError(f"containers.index: no string length at offset {off}, past the end")
     n = struct.unpack_from("<i", b, off)[0]
     end = off + 4 + 2 * n
+    if n < 0 or end > len(b):
+        raise ValueError(f"containers.index: the string at offset {off} claims an impossible length {n}")
     return b[off + 4 : end].decode("utf-16-le"), end
 
 
@@ -250,9 +255,12 @@ def split_index(raw: bytes) -> tuple[bytes, list[tuple[str, bytes]], bytes]:
     if len(raw) < 12 or struct.unpack_from("<i", raw, 0)[0] != CONTAINERSINDEX_HEADER:
         raise ValueError("bad containers.index header")
     count = struct.unpack_from("<q", raw, 4)[0]
+    # A record is at least three empty strings and its fixed tail.
+    if not 0 <= count <= (len(raw) - 12) // (3 * 4 + RECORD_TAIL_LENGTH):
+        raise ValueError(f"containers.index claims {count} records, impossible for its size")
     _proc, off = _read_lp_string(raw, 12)
     _acct, off = _read_lp_string(raw, off + 12)  # after [last write 8][sync state 4]
-    if struct.unpack_from("<q", raw, off)[0] != CONTAINERSINDEX_FOOTER:
+    if off + 8 > len(raw) or struct.unpack_from("<q", raw, off)[0] != CONTAINERSINDEX_FOOTER:
         raise ValueError("bad containers.index footer")
     off += 8
     header = raw[12:off]

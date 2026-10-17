@@ -192,8 +192,10 @@ def cmd_show(args) -> int:
 def cmd_backup(args) -> int:
     live = _resolve_live(args)
     vault = _resolve_vault(args)
-    entry = ops.create_full_backup(vault, live, label=args.label or "", include_cache=not args.no_cache)
+    warns: list[str] = []
+    entry = ops.create_full_backup(vault, live, label=args.label or "", include_cache=not args.no_cache, warnings=warns)
     print(f"created full backup '{entry.id}' ({len(entry.occupied_slots)} slots) at {entry.path}")
+    _print_warnings(warns)
     return 0
 
 
@@ -216,8 +218,10 @@ def cmd_restore(args) -> int:
 def cmd_extract(args) -> int:
     vault = _resolve_vault(args)
     source = _resolve_source(vault, args.source) if args.source else _resolve_live(args)
-    entry = ops.extract_slot(vault, source, args.slot, label=args.label or "")
+    warns: list[str] = []
+    entry = ops.extract_slot(vault, source, args.slot, label=args.label or "", warnings=warns)
     print(f"extracted slot {args.slot} -> '{entry.id}' at {entry.path}")
+    _print_warnings(warns)
     return 0
 
 
@@ -316,8 +320,10 @@ def cmd_import(args) -> int:
         res = ops.import_vault(vault, path, copy_into_vault=args.copy)
         _report(res)
         return 0
-    entry = ops.import_backup(vault, path, label=args.label or "", copy_into_vault=args.copy)
+    warns: list[str] = []
+    entry = ops.import_backup(vault, path, label=args.label or "", copy_into_vault=args.copy, warnings=warns)
     print(f"imported '{entry.id}' [{entry.kind}] ({len(entry.occupied_slots)} slots)")
+    _print_warnings(warns)
     return 0
 
 
@@ -343,15 +349,22 @@ def cmd_discover(args) -> int:
         new = d.resolve() not in known
         print(f"{'[+]' if new else '   '} {d}")
         if new and args.add:
-            entry = ops.import_backup(vault, d, label=d.name, copy_into_vault=False)
+            warns: list[str] = []
+            entry = ops.import_backup(vault, d, label=d.name, copy_into_vault=False, warnings=warns)
             print(f"      added as {entry.id}")
+            _print_warnings(warns)
     return 0
 
 
 def cmd_undo(args) -> int:
     live = _resolve_live(args)
     vault = _resolve_vault(args)
-    res = ops.undo_last(vault, live, allow_game_running=args.force)
+    st = appstate.load()
+    others = [Path(s.path) for s in st.live_sources] if st is not None else []
+    res = ops.undo_last(
+        vault, live, allow_game_running=args.force, acknowledge_damage=args.accept_damaged_log,
+        other_live_dirs=others,
+    )
     _report(res)
     return 0
 
@@ -386,12 +399,16 @@ def ops_discover(root, exclude):
     return discover_save_dirs(root, exclude=exclude)
 
 
+def _print_warnings(warnings: list[str]) -> None:
+    for w in warnings:
+        print(f"  warning: {w}")
+
+
 def _report(res: ops.OpResult) -> None:
     print(f"{res.op}: {'OK' if res.ok else 'FAILED'} - {res.detail}")
     if res.changed:
         print(f"  changed: {', '.join(res.changed)}")
-    for w in res.warnings:
-        print(f"  warning: {w}")
+    _print_warnings(res.warnings)
     if res.snapshot_id:
         print(f"  (undo available: nmsvault undo  -> restores snapshot {res.snapshot_id})")
 
@@ -536,8 +553,12 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--add", action="store_true", help="add newly found backups to the catalog (in place)")
     s.set_defaults(func=cmd_discover)
 
-    s = sub.add_parser("undo", help="undo the last operation (restore its snapshot)")
+    s = sub.add_parser("undo", help="undo the last operation on the live folder (restore its snapshot)")
     s.add_argument("--force", action="store_true")
+    s.add_argument(
+        "--accept-damaged-log", action="store_true",
+        help="undo even though a newer line of the undo log is damaged (it may record a change this skips)",
+    )
     s.set_defaults(func=cmd_undo)
 
     s = sub.add_parser(

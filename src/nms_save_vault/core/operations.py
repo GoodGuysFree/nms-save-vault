@@ -10,8 +10,10 @@ member only edits the meta timestamp. The data bytes are never recompressed.
 from __future__ import annotations
 
 import logging
+import os
 import shutil
-from collections.abc import Callable
+import warnings as pywarnings
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
@@ -56,6 +58,26 @@ class WrittenButInvalidError(ValidationError):
     def __init__(self, message: str, result: "OpResult"):
         super().__init__(message)
         self.result = result
+
+
+class SourceChangedError(OperationError):
+    """A save file changed (``vanished`` False) or disappeared (True) while it was being
+    copied into the vault: most likely the game or the Xbox app was writing meanwhile."""
+
+    def __init__(self, name: str, vanished: bool):
+        super().__init__(
+            f"The save file {name} {'disappeared' if vanished else 'changed'} while it was "
+            "being copied into the vault, so nothing was saved. Close the game (or let the "
+            "Xbox app finish syncing) and try again."
+        )
+        self.name = name
+        self.vanished = vanished
+
+
+class OplogNotWrittenWarning(UserWarning):
+    """An operation that returns no OpResult (backup, extract, import) finished, but its
+    op-log record could not be written. Issued with ``warnings.warn`` only when the caller
+    passed no ``warnings`` list to collect it in."""
 
 
 class FeatureNotYetAvailableError(OperationError):
@@ -151,21 +173,6 @@ def _copy_save_state(src: Path, dst: Path, files: list[Path]) -> None:
             shutil.copy2(p, dst / p.name)
 
 
-def _changed_during_copy(name: str) -> ValidationError:
-    return ValidationError(
-        f"The save file {name} changed while it was being copied into the vault, so nothing "
-        "was saved. Close the game (or let the Xbox app finish syncing) and try again."
-    )
-
-
-def _changed_while_copying(name: str) -> OperationError:
-    return OperationError(
-        f"The save file {name} disappeared while it was being copied into the vault, so "
-        "nothing was saved. Close the game (or whatever else is changing the saves) and try "
-        "again."
-    )
-
-
 def _require_free_space(folder: Path, needed: int) -> None:
     free = shutil.disk_usage(folder).free
     if free < needed + SPACE_MARGIN:
@@ -214,7 +221,7 @@ def _new_managed_entry(
     try:
         needed = sum(p.stat().st_size for p in files)
     except FileNotFoundError as exc:
-        raise _changed_while_copying(Path(exc.filename or "").name) from exc
+        raise SourceChangedError(Path(exc.filename or "").name, vanished=True) from exc
     _require_free_space(parent, needed)
     entry_id = vault.new_id(kind, tag=tag, folder=parent)
     dest = parent / entry_id
@@ -230,7 +237,7 @@ def _new_managed_entry(
         _remove_partial(dest)
         gone = next((f for f in files if not f.exists()), None)
         if isinstance(exc, OSError) and gone is not None:
-            raise _changed_while_copying(gone.name) from exc
+            raise SourceChangedError(gone.name, vanished=True) from exc
         raise
     return entry
 
@@ -249,7 +256,12 @@ def snapshot_live(vault: Vault, live_dir: Path, reason: str) -> CatalogEntry:
 # --- feature 1: full backup / restore ---------------------------------------
 
 
-def create_full_backup(vault: Vault, live_dir: Path, label: str = "", include_cache: bool = True) -> CatalogEntry:
+def create_full_backup(
+    vault: Vault, live_dir: Path, label: str = "", include_cache: bool = True,
+    warnings: list[str] | None = None,
+) -> CatalogEntry:
+    """Copy the live folder into the vault. ``warnings`` collects anything the caller should
+    show (today: an op-log record that could not be written)."""
     live_dir = Path(live_dir)
     files = _all_files(live_dir) if include_cache else _save_state_files(live_dir)
 
@@ -263,7 +275,7 @@ def create_full_backup(vault: Vault, live_dir: Path, label: str = "", include_ca
         vault, KIND_FULL, vault.backups_dir, tag=savedir.platform_of(live_dir),
         source_root=live_dir, files=files, fill=fill, label=label, source=live_dir.name, live=True,
     )
-    _log_op(vault, _oplog("full_backup", entry_id=entry.id), None)
+    _log_op(vault, _oplog("full_backup", entry_id=entry.id), warnings)
     return entry
 
 
@@ -273,7 +285,7 @@ def _verify_copy(src: Path, dst: Path, files: list[Path], live: bool) -> None:
         d = dst / rel
         if not d.is_file() or safety.sha256_file(p) != safety.sha256_file(d):
             if live:
-                raise _changed_during_copy(str(rel))
+                raise SourceChangedError(str(rel), vanished=False)
             raise ValidationError(f"the copy of {rel} in the vault does not match the original")
 
 
@@ -311,9 +323,13 @@ def restore_entry(
 
 
 def restore_full(
-    vault: Vault, entry: CatalogEntry, live_dir: Path, mirror: bool = True, allow_game_running: bool = False
+    vault: Vault, entry: CatalogEntry, live_dir: Path, mirror: bool = True, allow_game_running: bool = False,
+    *, undo_of: str | None = None,
 ) -> OpResult:
+    """Put a whole backup back into the live folder. ``undo_of`` (used by :func:`undo_last`)
+    records the restore as the undo of the op whose snapshot that was."""
     warnings: list[str] = []
+    op = "undo" if undo_of else "restore_full"
     _guard_game(allow_game_running, warnings)
     live_dir = Path(live_dir)
     src = Path(entry.path)
@@ -329,7 +345,7 @@ def restore_full(
         )
     _guard_same_platform(src, live_dir)
     if _is_xbox(live_dir):
-        return _restore_full_xbox(vault, entry, src, live_dir, warnings)
+        return _restore_full_xbox(vault, entry, src, live_dir, warnings, undo_of)
     if not _hg_files(src):
         raise OperationError(
             f"'{entry.id}' has no Steam-format save*.hg files, so it cannot be restored into a "
@@ -359,18 +375,21 @@ def restore_full(
                 changed.append(f"-{p.name}")
 
     _validate_dir_metas(live_dir, warnings)
-    _log_op(vault, _oplog("restore_full", entry_id=entry.id, snapshot_id=snap.id, changed=changed), warnings)
-    return OpResult(True, "restore_full", f"restored {entry.id}", snapshot_id=snap.id, changed=changed, warnings=warnings)
+    _log_op(vault, _oplog(op, entry_id=entry.id, snapshot_id=snap.id, changed=changed, target=live_dir, undo_of=undo_of), warnings)
+    return OpResult(True, op, f"restored {entry.id}", snapshot_id=snap.id, changed=changed, warnings=warnings)
 
 
 # --- feature 2: extract a slot, repopulate a slot, promote a member ----------
 
 
-def extract_slot(vault: Vault, source_dir: Path, slot: int, label: str = "") -> CatalogEntry:
+def extract_slot(
+    vault: Vault, source_dir: Path, slot: int, label: str = "", warnings: list[str] | None = None
+) -> CatalogEntry:
+    """Copy one slot into the vault. ``warnings`` as in :func:`create_full_backup`."""
     source_dir = Path(source_dir)
     _check_slot(slot)
     if _is_xbox(source_dir):
-        return _extract_slot_xbox(vault, source_dir, slot, label)
+        return _extract_slot_xbox(vault, source_dir, slot, label, warnings)
     files: list[Path] = []
     for fno in slot_file_numbers(slot):
         data, meta_file = _member_paths(source_dir, fno)
@@ -383,7 +402,7 @@ def extract_slot(vault: Vault, source_dir: Path, slot: int, label: str = "") -> 
         source_root=source_dir, files=files, fill=lambda dest: _copy_save_state(source_dir, dest, files),
         label=label or f"slot {slot} from {source_dir.name}", source=source_dir.name, slots=[slot],
     )
-    _log_op(vault, _oplog("extract_slot", entry_id=entry.id, detail=f"slot {slot}"), None)
+    _log_op(vault, _oplog("extract_slot", entry_id=entry.id, detail=f"slot {slot}"), warnings)
     return entry
 
 
@@ -441,13 +460,18 @@ def repopulate_slot(
             safety.set_file_mtime(dst_meta, mtime)
         changed += [dst_data.name, dst_meta.name]
 
-    _validate_slot(live_dir, dest_slot, warnings)
+    # Logged before the read-back check, so a failed check still leaves undo its snapshot.
     _log_op(
         vault,
-        _oplog("repopulate_slot", snapshot_id=snap.id, detail=f"{source_dir.name} slot {source_slot} -> slot {dest_slot}", changed=changed),
+        _oplog("repopulate_slot", snapshot_id=snap.id, detail=f"{source_dir.name} slot {source_slot} -> slot {dest_slot}", changed=changed, target=live_dir),
         warnings,
     )
-    return OpResult(True, "repopulate_slot", f"slot {source_slot} -> {dest_slot}", snapshot_id=snap.id, changed=changed, warnings=warnings)
+    result = OpResult(True, "repopulate_slot", f"slot {source_slot} -> {dest_slot}", snapshot_id=snap.id, changed=changed, warnings=warnings)
+    try:
+        _validate_slot(live_dir, dest_slot, warnings)
+    except ValidationError as exc:
+        raise _written_but_invalid(f"{exc}.", result) from exc
+    return result
 
 
 def promote_member(vault: Vault, live_dir: Path, slot: int, member: int, allow_game_running: bool = False) -> OpResult:
@@ -460,6 +484,8 @@ def promote_member(vault: Vault, live_dir: Path, slot: int, member: int, allow_g
     _check_slot(slot)
     promote = _promote_member_xbox if _is_xbox(live_dir) else _promote_member_steam
     result, after = promote(vault, live_dir, slot, member, allow_game_running)
+    if result.snapshot_id is None:              # already the newest: nothing was written
+        return result
     newest = after.newest
     if newest is None or newest.label != "AB"[member]:
         raise _written_but_invalid(
@@ -473,6 +499,20 @@ def _written_but_invalid(problem: str, result: OpResult) -> WrittenButInvalidErr
         f"{problem} The live folder was changed: undo restores it from snapshot "
         f"{result.snapshot_id}.",
         replace(result, ok=False),
+    )
+
+
+def _already_newest(target, sibling, own_time: float, sibling_time: float) -> bool:
+    """True when ``target`` already wins on every signal: the meta save time (wherever the
+    sibling has one) and the file or index time."""
+    meta_ok = not sibling.timestamp or target.timestamp > sibling.timestamp
+    return meta_ok and own_time > sibling_time
+
+
+def _nothing_to_promote(slot: int, member: int, warnings: list[str]) -> OpResult:
+    return OpResult(
+        True, "promote_member",
+        f"slot {slot}{'AB'[member]} is already the newest; nothing was changed", warnings=warnings,
     )
 
 
@@ -496,13 +536,6 @@ def _promote_member_steam(
     base = target.timestamp
     if sibling.exists and sibling.info is not None:
         base = max(base, sibling.timestamp)
-    new_ts = base + 1
-
-    ordinal = target.ordinal_used or target.mapped_ordinal
-    plain = meta.decrypt(target.meta_path.read_bytes(), ordinal)
-    new_meta = meta.encrypt(meta.set_timestamp(plain, new_ts), ordinal)
-    if not meta.is_valid_for(new_meta, ordinal):
-        raise ValidationError("promote: re-encrypted meta failed validation")
 
     # A sibling without a meta time makes the file times order the pair (SlotView.order_time),
     # so the target's files must end up later than the sibling's as well -- and they never
@@ -510,17 +543,34 @@ def _promote_member_steam(
     # time, and an older one would let its copy win on the next launch.
     own = _newest_file_time(target.data_path, target.meta_path)
     sibling_time = _newest_file_time(sibling.data_path, sibling.meta_path)  # even half-present
-    mtime = max(float(new_ts), own, sibling_time + 1 if sibling_time else 0.0)
+    if _already_newest(target, sibling, own, sibling_time):
+        return _nothing_to_promote(slot, member, warnings), sv
+    mtime = max(own, sibling_time + 1 if sibling_time else 0.0)
+    new_meta = None
+    if base:
+        new_ts = base + 1
+        ordinal = target.ordinal_used or target.mapped_ordinal
+        plain = meta.decrypt(target.meta_path.read_bytes(), ordinal)
+        new_meta = meta.encrypt(meta.set_timestamp(plain, new_ts), ordinal)
+        if not meta.is_valid_for(new_meta, ordinal):
+            raise ValidationError("promote: re-encrypted meta failed validation")
+        mtime = max(mtime, float(new_ts))
+        moved = f"ts->{new_ts}"
+    else:
+        # Neither member has a meta save time, so the file times alone order the pair and
+        # the meta is left as it is (a save time of 1 would read as 1970).
+        moved = "file time only"
     if _steam_cloud_on(live_dir):
         mtime = max(mtime, _now())
 
     snap = snapshot_live(vault, live_dir, reason=f"pre-promote slot {slot}{'AB'[member]}")
-    safety.atomic_write_bytes(target.meta_path, new_meta)
+    if new_meta is not None:
+        safety.atomic_write_bytes(target.meta_path, new_meta)
     safety.set_file_mtime(target.meta_path, mtime)
     if target.data_path.is_file():
         safety.set_file_mtime(target.data_path, mtime)
     changed = [target.meta_path.name, target.data_path.name]
-    _log_op(vault, _oplog("promote_member", snapshot_id=snap.id, detail=f"slot {slot}{'AB'[member]} ts->{new_ts}", changed=changed), warnings)
+    _log_op(vault, _oplog("promote_member", snapshot_id=snap.id, detail=f"slot {slot}{'AB'[member]} {moved}", changed=changed, target=live_dir), warnings)
     result = OpResult(True, "promote_member", f"slot {slot}{'AB'[member]} promoted", snapshot_id=snap.id, changed=changed, warnings=warnings)
     return result, savedir.scan_slot(live_dir, slot)
 
@@ -580,6 +630,8 @@ def _promote_member_xbox(
         raise OperationError(f"slot {slot}{'AB'[member]} is missing or not an Xbox save")
     if not target.valid:
         raise OperationError(f"slot {slot}{'AB'[member]} is unreadable")
+    if _already_newest(target, sibling, target.data_mtime, sibling.data_mtime if sibling.exists else 0.0):
+        return _nothing_to_promote(slot, member, warnings), sv
     data_bytes = Path(target.data_path).read_bytes()
     meta_bytes = Path(target.meta_path).read_bytes()
     # The index FILETIME is the record's local write time, so: now (R8 Q8) -- but never back
@@ -602,13 +654,15 @@ def _promote_member_xbox(
     snap = snapshot_live(vault, live_dir, reason=f"pre-promote slot {slot}{'AB'[member]}")
     msstore.write_save(live_dir, target.xbox.identifier, data_bytes, meta_bytes, when)
     changed = [target.xbox.identifier]
-    _log_op(vault, _oplog("promote_member", snapshot_id=snap.id, detail=f"xbox slot {slot}{'AB'[member]} ts->{new_ts}", changed=changed), warnings)
+    _log_op(vault, _oplog("promote_member", snapshot_id=snap.id, detail=f"xbox slot {slot}{'AB'[member]} ts->{new_ts}", changed=changed, target=live_dir), warnings)
     result = OpResult(True, "promote_member", f"slot {slot}{'AB'[member]} promoted", snapshot_id=snap.id, changed=changed, warnings=warnings)
     after = _validate_xbox_slot(live_dir, slot, result)
     return result, after.slots[slot]
 
 
-def _extract_slot_xbox(vault: Vault, source_dir: Path, slot: int, label: str) -> CatalogEntry:
+def _extract_slot_xbox(
+    vault: Vault, source_dir: Path, slot: int, label: str, warnings: list[str] | None
+) -> CatalogEntry:
     """Extract one wgs slot into the vault as a minimal, self-contained wgs folder: its own
     ``containers.index`` (just this slot's records) plus the slot's blob directories copied
     verbatim. That way it scans, summarises and repopulates exactly like any Xbox source."""
@@ -632,7 +686,8 @@ def _extract_slot_xbox(vault: Vault, source_dir: Path, slot: int, label: str) ->
         vault, KIND_EXTRACT, vault.extracts_dir, tag="xbox", source_root=source_dir, files=files, fill=fill,
         label=label or f"slot {slot} from {source_dir.name}", source=source_dir.name, slots=[slot],
     )
-    _log_op(vault, _oplog("extract_slot", entry_id=entry.id, detail=f"xbox slot {slot}"), None)
+    # extract_slot -> here -> _log_op: one frame deeper than the other public operations.
+    _log_op(vault, _oplog("extract_slot", entry_id=entry.id, detail=f"xbox slot {slot}"), warnings, stacklevel=4)
     return entry
 
 
@@ -672,13 +727,16 @@ def _repopulate_slot_xbox(vault: Vault, source_dir: Path, source_slot: int, live
         changed.append(dest_ident)
 
     # Logged before the read-back check, so a failed check still leaves undo its snapshot.
-    _log_op(vault, _oplog("repopulate_slot", snapshot_id=snap.id, detail=f"xbox {Path(source_dir).name} slot {source_slot} -> slot {dest_slot}", changed=changed), warnings)
+    _log_op(vault, _oplog("repopulate_slot", snapshot_id=snap.id, detail=f"xbox {Path(source_dir).name} slot {source_slot} -> slot {dest_slot}", changed=changed, target=live_dir), warnings)
     result = OpResult(True, "repopulate_slot", f"slot {source_slot} -> {dest_slot}", snapshot_id=snap.id, changed=changed, warnings=warnings)
     _validate_xbox_slot(live_dir, dest_slot, result)
     return result
 
 
-def _restore_full_xbox(vault: Vault, entry: CatalogEntry, src: Path, live_dir: Path, warnings: list[str]) -> OpResult:
+def _restore_full_xbox(
+    vault: Vault, entry: CatalogEntry, src: Path, live_dir: Path, warnings: list[str], undo_of: str | None
+) -> OpResult:
+    op = "undo" if undo_of else "restore_full"
     _require_wgs(live_dir)
     if not (src / "containers.index").is_file():
         raise OperationError(f"'{entry.id}' is not an Xbox/wgs backup")
@@ -712,8 +770,8 @@ def _restore_full_xbox(vault: Vault, entry: CatalogEntry, src: Path, live_dir: P
     msstore.mark_modified(live_dir)  # so the Xbox app re-syncs the restored tree
     changed += msstore.mirror_xgs(live_dir)
     _validate_xbox_dir(live_dir, warnings)
-    _log_op(vault, _oplog("restore_full", entry_id=entry.id, snapshot_id=snap.id, changed=changed), warnings)
-    return OpResult(True, "restore_full", f"restored {entry.id}", snapshot_id=snap.id, changed=changed, warnings=warnings)
+    _log_op(vault, _oplog(op, entry_id=entry.id, snapshot_id=snap.id, changed=changed, target=live_dir, undo_of=undo_of), warnings)
+    return OpResult(True, op, f"restored {entry.id}", snapshot_id=snap.id, changed=changed, warnings=warnings)
 
 
 # --- feature 2b: clear a slot ------------------------------------------------
@@ -882,12 +940,13 @@ def clear_slot(
         p.unlink()
         changed.append(f"-{p.name}")
 
-    if savedir.scan(live_dir).slots[slot].occupied:
-        raise ValidationError(f"slot {slot} still holds a save after clearing it")
-    _log_op(vault, _oplog("clear_slot", snapshot_id=snap.id, detail=f"slot {slot}", changed=changed), warnings)
-    return OpResult(
+    _log_op(vault, _oplog("clear_slot", snapshot_id=snap.id, detail=f"slot {slot}", changed=changed, target=live_dir), warnings)
+    result = OpResult(
         True, "clear_slot", f"cleared slot {slot}", snapshot_id=snap.id, changed=changed, warnings=warnings
     )
+    if savedir.scan(live_dir).slots[slot].occupied:
+        raise _written_but_invalid(f"Slot {slot} still holds a save after clearing it.", result)
+    return result
 
 
 def _clear_slot_xbox(vault: Vault, live_dir: Path, slot: int, allow_game_running: bool) -> OpResult:
@@ -906,18 +965,24 @@ def _clear_slot_xbox(vault: Vault, live_dir: Path, slot: int, allow_game_running
         if msstore.delete_save(live_dir, identifier, when):
             changed.append(f"-{identifier}")
 
-    if savedir.scan_any(live_dir).slots[slot].occupied:
-        raise ValidationError(f"slot {slot} still holds a save after clearing it")
-    _log_op(vault, _oplog("clear_slot", snapshot_id=snap.id, detail=f"xbox slot {slot}", changed=changed), warnings)
-    return OpResult(
+    _log_op(vault, _oplog("clear_slot", snapshot_id=snap.id, detail=f"xbox slot {slot}", changed=changed, target=live_dir), warnings)
+    result = OpResult(
         True, "clear_slot", f"cleared slot {slot}", snapshot_id=snap.id, changed=changed, warnings=warnings
     )
+    if savedir.scan_any(live_dir).slots[slot].occupied:
+        raise _written_but_invalid(f"Slot {slot} still holds a save after clearing it.", result)
+    return result
 
 
 # --- feature 3: import -------------------------------------------------------
 
 
-def import_backup(vault: Vault, path: Path, label: str = "", copy_into_vault: bool = False) -> CatalogEntry:
+def import_backup(
+    vault: Vault, path: Path, label: str = "", copy_into_vault: bool = False,
+    warnings: list[str] | None = None,
+) -> CatalogEntry:
+    """Catalogue a backup folder, in place or copied in. ``warnings`` as in
+    :func:`create_full_backup`."""
     path = Path(path)
     if not savedir.looks_like_save_dir(path):
         raise OperationError(f"not an NMS save folder: {path}")
@@ -933,7 +998,7 @@ def import_backup(vault: Vault, path: Path, label: str = "", copy_into_vault: bo
         iid = vault.new_id(KIND_INPLACE, tag=plat)
         entry = vault.make_entry_from_dir(iid, KIND_INPLACE, label or path.name, path, managed=False, source=path.name)
         vault.upsert(entry)
-    _log_op(vault, _oplog("import", entry_id=entry.id, detail=str(path)), None)
+    _log_op(vault, _oplog("import", entry_id=entry.id, detail=str(path)), warnings)
     return entry
 
 
@@ -1034,13 +1099,23 @@ def _relocate_entry(
 # --- undo --------------------------------------------------------------------
 
 
-def undo_last(vault: Vault, live_dir: Path, allow_game_running: bool = False) -> OpResult:
-    """Restore the auto-snapshot taken before the last change to the live folder.
+def undo_last(
+    vault: Vault, live_dir: Path, allow_game_running: bool = False, acknowledge_damage: bool = False,
+    other_live_dirs: Iterable[Path] = (),
+) -> OpResult:
+    """Undo the newest not-yet-undone operation on ``live_dir``, by restoring the snapshot
+    taken just before it. Repeated calls step further back through that folder's history.
 
     Only operations that *write into* the live folder take a snapshot. Backing up,
     extracting and importing merely add to the vault, so there is nothing to put back --
-    and the message says so, rather than implying the op log is broken.
+    and the message says so, rather than implying the op log is broken. Operations on other
+    folders are passed over; an old record that cannot be placed stops the undo rather than
+    being guessed at. Old records are placed by folder name, so ``other_live_dirs`` (the
+    caller's other known live folders) makes a name they share ambiguous rather than a match.
+    A damaged log line newer than the operation stops it too, unless the caller has had the
+    user accept that (``acknowledge_damage``).
     """
+    live_dir = Path(live_dir)
     records = vault.read_oplog()
     note = f" {records.warning}" if records.warning else ""
     if not records:
@@ -1048,41 +1123,128 @@ def undo_last(vault: Vault, live_dir: Path, allow_game_running: bool = False) ->
             raise OperationError("No operation in the undo log can be read, so nothing can be undone." + note)
         raise OperationError("Nothing has been done yet, so there is nothing to undo.")
 
-    unusable: list[str] = []
-    for line, record in reversed(list(zip(records.lines, records))):
+    entries = {e.id: e for e in vault.entries}
+    others = [Path(d) for d in other_live_dirs]
+    undone, part_of_undo = _already_undone(records)
+    passed_over: list[dict] = []
+    last_here: dict | None = None             # the newest record of a change to this folder
+    for index in range(len(records) - 1, -1, -1):
+        record, line = records[index], records.lines[index]
         sid = record.get("snapshot_id")
         if not sid:
             continue
-        if any(damaged > line for damaged in records.damaged_lines):
-            # A damaged line after this record may be a later change to the live folder:
-            # undoing this one would put back an older state than the user expects.
+        mine = _changed_folder(entries, record, live_dir, others)
+        if mine and last_here is None:
+            last_here = record
+        if record.get("op") == "undo" or sid in undone or index in part_of_undo or mine is False:
+            continue
+        if mine is None and sid not in entries:
+            # An old record that names no folder and whose snapshot is gone could not be
+            # undone anyway; it must not block undo for every folder.
+            passed_over.append(record)
+            continue
+        if mine is None:
+            raise OperationError(
+                f"A record in the undo log ('{record.get('op')}' at {record.get('ts')}) does not "
+                "say which save folder it changed, and its snapshot does not settle it either, "
+                "so undo cannot tell whether it belongs to this folder. Restore from a backup "
+                "instead." + note
+            )
+        if not acknowledge_damage and any(damaged > line for damaged in records.damaged_lines):
+            # A damaged line after this record may be a later change to this folder: undoing
+            # this one would put back an older state than the user expects.
             raise OperationError(
                 "The record of a later operation is damaged, so undo is unsafe: it could undo "
-                "an older operation instead. Restore from a backup instead."
+                "an older operation instead. Restore from a backup instead, or confirm that "
+                "the damaged lines may be ignored." + note
             )
-        snap = vault.get(sid)
-        if snap is None:
-            unusable.append(f"{sid} (not in the catalog)")
-            continue
-        if not Path(snap.path).is_dir():
-            unusable.append(f"{sid} (its folder is gone)")
-            continue
-        result = restore_full(vault, snap, live_dir, mirror=True, allow_game_running=allow_game_running)
-        _log_op(vault, _oplog("undo", snapshot_id=sid, detail=f"undid {record.get('op')}"), result.warnings)
-        result.detail = f"undid {record.get('op')} (restored {sid})"
-        return result                   # any damage is older than the operation undone
-
-    if unusable:
-        raise OperationError(
-            "The auto-snapshot for the last change can no longer be found, so it cannot be "
-            f"undone: {'; '.join(unusable[:3])}." + note
+        snap = entries.get(sid)
+        if snap is None or not Path(snap.path).is_dir():
+            # Never fall through to an older operation: that would skip this one silently.
+            why = "not in the catalog" if snap is None else "its folder is gone"
+            raise OperationError(
+                f"The auto-snapshot for the last change to this folder ({sid}) can no longer "
+                f"be found ({why}), so it cannot be undone." + note
+            )
+        result = restore_full(
+            vault, snap, live_dir, mirror=True, allow_game_running=allow_game_running, undo_of=sid
         )
-    last = records[-1].get("op", "the last operation")
+        result.detail = f"undid {record.get('op')} (restored {sid})"
+        result.warnings += [_passed_over_note(r, "A newer operation") for r in passed_over]
+        if acknowledge_damage and records.warning:
+            result.warnings.append(records.warning)
+        return result
+
+    if last_here is None:
+        what = "the undo log records no change to it"
+    else:
+        what = (
+            f"the last recorded change to it was '{last_here.get('op')}' at {last_here.get('ts')}, "
+            "and changes already undone are not undone twice"
+        )
     raise OperationError(
-        f"There is nothing to undo. The last thing done was '{last}', and backing up, "
-        "extracting and importing only add to the vault -- they never change your live "
-        "saves, so there is nothing to put back." + note
+        f"There is nothing to undo in this folder: {what}. Backing up, extracting and "
+        "importing only add to the vault -- they never change your live saves."
+        + "".join(f" {_passed_over_note(r, 'An operation')}" for r in passed_over) + note
     )
+
+
+def _passed_over_note(record: dict, which: str) -> str:
+    return (
+        f"{which} ('{record.get('op')}' at {record.get('ts')}) does not say which save folder "
+        "it changed and its snapshot is gone, so it was passed over."
+    )
+
+
+def _already_undone(records: list[dict]) -> tuple[set[str], set[int]]:
+    """Snapshot ids of operations already undone, and the positions of the extra records an
+    undo wrote before this version. Such an undo logged ``restore_full`` (of the snapshot)
+    and then ``undo`` with that snapshot's id; it had no ``undo_of``."""
+    undone: set[str] = set()
+    part_of_undo: set[int] = set()
+    for i, record in enumerate(records):
+        if record.get("op") != "undo":
+            continue
+        if "undo_of" in record:
+            undone.add(record["undo_of"])
+            continue
+        restored = record.get("snapshot_id")
+        undone.add(restored)
+        before = records[i - 1] if i else {}
+        if before.get("op") == "restore_full" and before.get("entry_id") == restored:
+            part_of_undo.add(i - 1)
+    return undone, part_of_undo
+
+
+def _changed_folder(
+    entries: dict[str, CatalogEntry], record: dict, live_dir: Path, others: list[Path]
+) -> bool | None:
+    """Whether ``record`` changed ``live_dir``: True, False, or None when it cannot tell.
+
+    New records name their target. Older ones are placed by their snapshot: the folder
+    name it was taken of and, where its id carries one, the platform. A name that another
+    known live folder of that platform shares cannot place it."""
+    target = record.get("target")
+    if target:
+        return _same_folder(Path(target), live_dir)
+    snap = entries.get(record.get("snapshot_id"))
+    if snap is None or not snap.source:
+        return None
+    tag = Vault.tag_of(snap.id)
+    platform = tag if tag in ("steam", "xbox") else None
+
+    def could_be(folder: Path) -> bool:
+        return folder.name == snap.source and (platform is None or platform == savedir.platform_of(folder))
+
+    if not could_be(live_dir):
+        return False
+    if any(could_be(d) and not _same_folder(d, live_dir) for d in others):
+        return None
+    return True
+
+
+def _same_folder(a: Path, b: Path) -> bool:
+    return os.path.normcase(str(a.resolve())) == os.path.normcase(str(b.resolve()))
 
 
 # --- validation helpers ------------------------------------------------------
@@ -1121,22 +1283,30 @@ def _validate_dir_metas(folder: Path, warnings: list[str]) -> None:
                 warnings.append(f"slot {sv.slot}{m.label}: {m.note}")
 
 
-def _log_op(vault: Vault, record: dict, warnings: list[str] | None) -> None:
+def _log_op(vault: Vault, record: dict, warnings: list[str] | None, stacklevel: int = 3) -> None:
     """Append ``record`` to the op log. The operation has already happened, so a failure
     here does not make it a failed one: it is logged and, where the caller reports
-    warnings, reported -- Undo cannot reach an operation the log does not hold."""
+    warnings, reported -- Undo cannot reach an operation the log does not hold.
+    ``stacklevel`` makes a ``warnings.warn`` point at the public function's caller: 3 when
+    that function calls this directly."""
     try:
         vault.append_oplog(record)
     except OSError as exc:
         log.warning("the op-log record of '%s' could not be written: %s", record.get("op"), exc)
+        message = f"Done, but missing from the history: the undo log could not be written ({exc})."
         if warnings is not None:
-            warnings.append(
-                f"Done, but not recorded in the undo log ({exc}), so Undo cannot reverse it."
-            )
+            warnings.append(message)
+        else:  # backup, extract or import called without a collector
+            pywarnings.warn(OplogNotWrittenWarning(message), stacklevel=stacklevel)
 
 
-def _oplog(op: str, *, entry_id=None, snapshot_id=None, detail="", changed=None) -> dict:
-    return {
+def _oplog(
+    op: str, *, entry_id=None, snapshot_id=None, detail="", changed=None,
+    target: Path | None = None, undo_of: str | None = None,
+) -> dict:
+    """One op-log record. ``target`` (the live folder written) and ``undo_of`` (the snapshot
+    id of the record an undo reversed) are additive keys; older readers ignore them."""
+    record = {
         "ts": datetime.now().isoformat(timespec="seconds"),
         "op": op,
         "entry_id": entry_id,
@@ -1144,3 +1314,8 @@ def _oplog(op: str, *, entry_id=None, snapshot_id=None, detail="", changed=None)
         "detail": detail,
         "changed": changed or [],
     }
+    if target is not None:
+        record["target"] = str(Path(target).resolve())
+    if undo_of is not None:
+        record["undo_of"] = undo_of
+    return record

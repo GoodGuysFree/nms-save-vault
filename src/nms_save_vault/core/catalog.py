@@ -159,10 +159,9 @@ class OplogRead(list):
     """The readable op-log records, oldest first, plus where the log is damaged. ``lines``
     holds each record's line number, so damage can be placed relative to a record."""
 
-    def __init__(self, records=(), damaged_lines=(), tail_damaged: bool = False, lines=()):
+    def __init__(self, records=(), damaged_lines=(), lines=()):
         super().__init__(records)
         self.damaged_lines: list[int] = list(damaged_lines)
-        self.tail_damaged = tail_damaged
         self.lines: list[int] = list(lines)
 
     @property
@@ -277,6 +276,15 @@ class Vault:
             i += 1
         return f"{base}-{i}"
 
+    @staticmethod
+    def tag_of(entry_id: str) -> str | None:
+        """The tag :meth:`new_id` put into an id ('snapshot-steam-20261017-120000' ->
+        'steam'), or None for an id made without one."""
+        parts = entry_id.split("-")
+        if len(parts) >= 4 and not parts[1].isdigit() and parts[2].isdigit():
+            return parts[1]
+        return None
+
     def append_oplog(self, record: dict) -> None:
         """Append one record as one complete line, fsynced, so a crash can lose the record
         but never leave half a line in front of later ones. A line torn by an earlier crash
@@ -299,18 +307,16 @@ class Vault:
         """Every readable record, oldest first, and where the log is damaged. A line that is
         not a record -- torn by a crash mid-write, invalid UTF-8, or otherwise damaged -- is
         logged and skipped, never raised: one bad line must not make the whole history
-        unreadable. Whether the damage is the newest line is reported, because then the last
-        operation is unknown (undo must not act on an older one)."""
+        unreadable. Each record's line number is kept, so damage can be placed relative to
+        it (undo must not act on an operation older than a damaged line)."""
         if not self.oplog_path.is_file():
             return OplogRead()
         records: list[dict] = []
         record_lines: list[int] = []
         damaged: list[int] = []
-        last_line = 0
         for number, raw in enumerate(self.oplog_path.read_bytes().split(b"\n"), start=1):
             if not raw.strip():
                 continue
-            last_line = number
             try:
                 record = json.loads(raw.decode("utf-8"))
             except ValueError as exc:      # UnicodeDecodeError is a ValueError too
@@ -323,9 +329,7 @@ class Vault:
                 continue
             records.append(record)
             record_lines.append(number)
-        return OplogRead(
-            records, damaged, tail_damaged=bool(damaged) and damaged[-1] == last_line, lines=record_lines
-        )
+        return OplogRead(records, damaged, lines=record_lines)
 
     def make_entry_from_dir(self, entry_id, kind, label, path, *, managed, source=None, slots=None, note="") -> CatalogEntry:
         """Scan ``path`` and build a catalog entry with a cached slot summary."""

@@ -226,16 +226,20 @@ def test_promote_xbox_refuses_a_meta_layout_it_cannot_write(make_wgs_account, tm
 def test_promote_xbox_reports_a_failed_read_back_with_its_snapshot(make_wgs_account, tmp_path, monkeypatch):
     """The write happened but the slot does not read back: the error still carries the
     result, so the caller can point undo at the snapshot."""
-    live = make_wgs_account(tmp_path, [("Slot2Auto", '{"a":1}', "Run", "", 100, 1000)])
+    live = make_wgs_account(tmp_path, [
+        ("Slot2Auto", '{"a":1}', "Run", "", 100, 1000),
+        ("Slot2Manual", '{"b":2}', "Run", "", 144, 2000),
+    ])
     vault = _vault(tmp_path)
     real_write = msstore.write_save
 
     def write_then_lose_the_data(folder, identifier, *args, **kwargs):
         real_write(folder, identifier, *args, **kwargs)
-        Path(savedir.scan_any(folder).slots[2].a.data_path).unlink()
+        for member in savedir.scan_any(folder).slots[2].members:
+            Path(member.data_path).unlink()
 
     monkeypatch.setattr(msstore, "write_save", write_then_lose_the_data)
-    with pytest.raises(ops.WrittenButInvalidError) as failed:
+    with pytest.raises(ops.WrittenButInvalidError, match="no readable save") as failed:
         ops.promote_member(vault, live, 2, 0, allow_game_running=True)
 
     record = vault.read_oplog()[-1]
@@ -361,8 +365,15 @@ def test_promote_already_newest_xbox(make_wgs_account, tmp_path):
     ])
     vault = _vault(tmp_path)
     assert savedir.scan_any(live).slots[1].newest.label == "A"
-    ops.promote_member(vault, live, 1, 0, allow_game_running=True)   # promote A again
+    index_before = (live / "containers.index").read_bytes()
+
+    result = ops.promote_member(vault, live, 1, 0, allow_game_running=True)   # promote A again
+
     assert savedir.scan_any(live).slots[1].newest.label == "A"
+    # Already the newest on every signal: nothing written, nothing snapshotted or logged.
+    assert result.ok and result.snapshot_id is None and "already the newest" in result.detail
+    assert (live / "containers.index").read_bytes() == index_before
+    assert vault.entries == [] and vault.read_oplog() == []
 
 
 def test_xbox_op_honors_game_running_guard(make_wgs_account, tmp_path, monkeypatch):

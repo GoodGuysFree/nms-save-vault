@@ -278,6 +278,45 @@ def test_steam_promote_never_moves_a_file_time_back(tmp_path):
     assert a.timestamp == 2001 and a.data_mtime >= 1_700_000_000
 
 
+def test_a_steam_promote_that_would_change_nothing_writes_nothing(tmp_path):
+    """A is newer by its meta time and by its file time already: no snapshot, no log line,
+    no write -- just a note saying so."""
+    live = tmp_path / "live"
+    _steam_pair(live, 1_700_000_000, 2000)          # A: meta 1000 < B's 2000 ...
+    vault = Vault(tmp_path / "vault")
+    ops.promote_member(vault, live, 1, 0, allow_game_running=True)   # ... so this one writes
+    before = {p.name: (p.read_bytes(), p.stat().st_mtime) for p in live.iterdir()}
+    snapshots = len(vault.entries)
+
+    result = ops.promote_member(vault, live, 1, 0, allow_game_running=True)
+
+    assert result.ok and result.snapshot_id is None and "already the newest" in result.detail
+    assert {p.name: (p.read_bytes(), p.stat().st_mtime) for p in live.iterdir()} == before
+    assert len(vault.entries) == snapshots and vault.read_oplog()[-1]["op"] == "promote_member"
+    assert len(vault.read_oplog()) == 1
+
+
+def test_steam_promote_without_any_meta_time_orders_by_file_time_only(tmp_path):
+    """Neither member carries a save time: the meta is left alone (a time of 1 would read
+    as 1970) and the target's file time moves past the sibling's."""
+    live = tmp_path / "live"
+    steam_save(live, 1, 0, "Run", 3600, 0x1234, 0)
+    steam_save(live, 1, 1, "Run", 3700, 0x1234, 0)
+    for member, when in ((0, 1_700_000_000), (1, 1_700_005_000)):
+        fno = slotmap.slot_file_numbers(1)[member]
+        for name in (slotmap.data_filename(fno), slotmap.meta_filename(fno)):
+            os.utime(live / name, (when, when))
+    a_meta = live / slotmap.meta_filename(slotmap.slot_file_numbers(1)[0])
+    meta_before = a_meta.read_bytes()
+
+    ops.promote_member(Vault(tmp_path / "vault"), live, 1, 0, allow_game_running=True)
+
+    slot = savedir.scan(live).slots[1]
+    assert slot.newest.label == "A" and slot.a.timestamp == 0
+    assert a_meta.read_bytes() == meta_before
+    assert slot.a.data_mtime > 1_700_005_000
+
+
 def test_steam_promote_beats_a_sibling_whose_data_is_missing(tmp_path):
     """A half-present sibling (meta, no data) has no data time; its meta file's time still
     counts, so the promoted files end up later than it."""
@@ -551,7 +590,7 @@ def test_a_corrupted_vault_copy_is_caught_and_removed(tmp_path, monkeypatch, mak
 
     monkeypatch.setattr(ops.shutil, "copy2", copy2_corrupting)
     monkeypatch.setattr(ops.shutil, "copytree", copytree_corrupting)
-    with pytest.raises(ops.ValidationError, match=message):
+    with pytest.raises(ops.OperationError, match=message):
         make(vault, live)
     monkeypatch.undo()
 
