@@ -489,6 +489,10 @@ class App(tk.Tk):
         self._report: playtime.PlaytimeReport | None = None
         self._history_key: str | None = None  # the save file the backups are narrowed to
         self._history_choices: dict[str, str] = {}  # dropdown label -> playthrough key
+        self._dark = False
+        # Every window opened later gets the title bar of the current theme when it maps.
+        for window_class in ("Toplevel", self.winfo_class()):
+            self.bind_class(window_class, "<Map>", self._on_window_mapped, add="+")
         self._build_widgets()
         self._apply_theme()
         self.refresh()
@@ -702,11 +706,29 @@ class App(tk.Tk):
         TOOLTIP_STYLE.update(
             background=p["tip_bg"], foreground=p["tip_fg"], border=p["tip_border"]
         )
+        self._dark = name == theme.DARK
+        for window in self._windows():
+            theme.dark_title_bar(window, self._dark)
         if persist:
             try:
                 appstate.save(self.state)
             except OSError as exc:
                 _showwarning("Theme", f"Could not save your theme choice:\n{exc}")
+
+    def _windows(self) -> list[tk.Misc]:
+        """The main window and every open window of the app."""
+        out: list[tk.Misc] = [self]
+        stack = list(self.winfo_children())
+        while stack:
+            widget = stack.pop()
+            if isinstance(widget, tk.Toplevel):
+                out.append(widget)
+            stack.extend(widget.winfo_children())
+        return out
+
+    def _on_window_mapped(self, event) -> None:
+        if self._dark and isinstance(event.widget, (tk.Tk, tk.Toplevel)):
+            theme.dark_title_bar(event.widget, True)
 
     def _rezoom_pixels(self, zoom: float) -> None:
         """Move px() to ``zoom`` and stretch the tree columns by the same ratio.
