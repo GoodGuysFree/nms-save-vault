@@ -438,3 +438,58 @@ def test_a_backup_made_since_the_last_refresh_is_seen(world):
     org.refresh(record=False)
     assert entry.id in org.scan.entries and entry.id not in before
     assert first is not org.model
+
+
+# --- history and lineage (D1 2.13, phase 4) ------------------------------------
+
+
+def _two_versions(world):
+    """Main Save in slots 9 and 4: two versions that nothing in the record links."""
+    vault, live, state = world
+    steam_save(live, 4, 0, "Main Save", 9000, MAIN, T0 + 50, extra="later")
+    return vault, live
+
+
+def test_history_shows_nothing_it_was_not_told_and_writes_nothing(world, capsys):
+    vault, _ = _two_versions(world)
+    before = _fingerprint(vault.root)
+    code, out = _run(capsys, "history", "Main Save")
+    assert code == 0 and "no recorded history, by date:" in out and "*" not in out
+    assert out.count("\n-") == 2 or out.count("-  ") >= 2
+    for argv in (["history", "S9", "--key"], ["history", "S9", "--all"], ["history", "S9", "--json"]):
+        assert _run(capsys, *argv)[0] == 0
+    assert _fingerprint(vault.root) == before
+
+
+def test_lineage_comes_from_draws_the_link_and_is_validated(world, capsys):
+    _two_versions(world)
+    _, out = _run(capsys, "lineage", "comes-from", "S4", "S9")
+    assert "comes from" in out
+    _, out = _run(capsys, "history", "Main Save")
+    assert "set by you" in out and "tip" in out and "root" in out and "live S4" in out
+    data = json.loads(_run(capsys, "history", "Main Save", "--json")[1])
+    assert data["lanes"] == 1 and len(data["edges"]) == 1 and data["edges"][0]["tier"] == "owner"
+    with pytest.raises(SystemExit) as err:
+        cli.main(["lineage", "set-parent", "S9", "S4"])
+    assert "comes after" in str(err.value)
+    with pytest.raises(SystemExit) as err:
+        cli.main(["lineage", "set-parent", "S4"])
+    assert "--none" in str(err.value)
+    _run(capsys, "lineage", "set-parent", "S4", "--root")
+    assert "no recorded history" in _run(capsys, "history", "Main Save")[1]
+    _run(capsys, "lineage", "comes-from", "S4", "S9")
+    _run(capsys, "lineage", "unrelated", "S4", "S9")
+
+
+def test_lineage_combine_and_split(world, capsys):
+    _two_versions(world)
+    _, out = _run(capsys, "lineage", "combine", "Other Run", "Main Save")
+    assert "now part of Main Save" in out
+    assert "Other Run" not in _run(capsys, "saves")[1]
+    _run(capsys, "lineage", "uncombine", "9E8385F0")
+    assert "Other Run" in _run(capsys, "saves")[1]
+    _, out = _run(capsys, "lineage", "split", "S4", "--name", "second try")
+    assert "1 version(s) are now the save file split:" in out
+    assert "second try" in _run(capsys, "saves")[1]
+    with pytest.raises(SystemExit):
+        cli.main(["lineage", "unsplit", "Nobody"])

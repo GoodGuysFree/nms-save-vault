@@ -240,7 +240,9 @@ class ReadModel:
                  board: LiveBoard, events: Mapping[Pid, tuple[LineEvent, ...]],
                  tokens: Mapping[LiveRef, int], notes: NotesState, *,
                  trees: Mapping[Pid, tuple] | None = None, graph: LineageGraph | None = None,
-                 vid_pid: Mapping[Vid, Pid] | None = None) -> None:
+                 vid_pid: Mapping[Vid, Pid] | None = None,
+                 vid_raw: Mapping[Vid, Pid] | None = None) -> None:
+        self._vid_raw = vid_raw or {}
         self._trees = trees or {}
         self.graph = graph
         self._vid_pid = vid_pid or {}
@@ -275,6 +277,10 @@ class ReadModel:
     def line_of(self, vid: Vid) -> Pid | None:
         """The save file a version (a head or a partner) belongs to."""
         return self._vid_pid.get(vid)
+
+    def raw_pid_of(self, vid: Vid) -> Pid | None:
+        """The save file id the game wrote into a version, before the owner's Combines."""
+        return self._vid_raw.get(vid)
 
     def history(self, pid: Pid, mode: Literal["default", "all", "key"] = "default"
                 ) -> HistoryGraph:
@@ -413,7 +419,9 @@ class _Builder:
         events = self._events(lines)
         trees = self._trees(rows, display, candidates)
         return ReadModel(lines, rows, board, events, self.tokens, self.notes, trees=trees,
-                         graph=self.graph, vid_pid=dict(self._effective or {}))
+                         graph=self.graph, vid_pid=dict(self._effective or {}),
+                         vid_raw={v: self.raw_pid(v) for v in (self._effective or {})
+                                  if self.raw_pid(v)})
 
     def _trees(self, rows: Mapping[Pid, tuple[VersionRow, ...]],
                display: Mapping[Vid, Vid | None], candidates: set[Vid]) -> dict[Pid, tuple]:
