@@ -19,6 +19,7 @@ from ..state import Source
 from . import bootstrap as _bootstrap
 from .bootstrap import BootstrapReport
 from .cache import FILENAME, ScanCache, cache_dir
+from .facts import SEEN_FILENAME, SeenMarker, facts_targets
 from .folders import FolderLocator
 from .journal import SKIP_BUSY, SKIP_LOCK_FAILED, Journal, ObserveResult
 from .lineage import read_lineage
@@ -56,7 +57,7 @@ class Organizer:
                  clock: Callable[[], float] = time.time, host: Host | None = None,
                  facts: FactsProvider | None = None) -> None:
         self.vault_root = Path(vault_root)
-        self.facts = facts                  # D4's content index, when it runs (phase 3)
+        self._facts: FactsProvider | None = facts   # D4's content index, when it runs (phase 3)
         self._facts_seen: set | None = None
         self.sources = list(sources)
         self.read_only = read_only
@@ -67,20 +68,33 @@ class Organizer:
         self.store = OrganizerStore(self.vault_root, create=False, read_only=read_only, clock=clock)
         self._host = host
         self._rekey = False
+        on_disk = not (machine_cache is False or (machine_cache is None and read_only))
+        machine_dir = cache_dir(self.vault_root, self.store.vault_id, host)
         if cache is None:
-            if machine_cache is False or (machine_cache is None and read_only):
-                cache = ScanCache(None, self.store.vault_id)
-            else:
-                path = cache_dir(self.vault_root, self.store.vault_id, host) / FILENAME
-                cache = ScanCache.load(path, self.store.vault_id)
+            if on_disk:
+                cache = ScanCache.load(machine_dir / FILENAME, self.store.vault_id)
                 self._rekey = self.store.vault_id is None
+            else:
+                cache = ScanCache(None, self.store.vault_id)
         self.cache = cache
+        self.seen_marker = SeenMarker(machine_dir / SEEN_FILENAME if on_disk else None)
         self.notes = Notes(self.store, clock)
         self.version_store = _open_version_store(self.vault_root, self.sources, read_only)
         self.scan: ScanResult | None = None
         self.model: ReadModel | None = None
         self.locator: VaultLocator | None = None
         self.observed: ObserveResult | None = None
+
+    @property
+    def facts(self) -> FactsProvider | None:
+        return self._facts
+
+    @facts.setter
+    def facts(self, provider: FactsProvider | None) -> None:
+        """A new provider starts its session afresh: its first request asks for everything."""
+        if provider is not self._facts:
+            self._facts = provider
+            self._facts_seen = None
 
     @property
     def needs_bootstrap(self) -> bool:
@@ -93,7 +107,7 @@ class Organizer:
 
     def refresh(self, *, record: bool = True, deep: bool = False,
                 progress: Callable[[int, int], None] | None = None,
-                cancel=None) -> ReadModel:
+                cancel=None, request_facts: bool = True) -> ReadModel:
         """Scan, journal the live slots when ``record`` (listings do not), build the model.
 
         Recording scans the vault's entries first, without any lock, then tries the
@@ -131,7 +145,8 @@ class Organizer:
                                      read_notes(self.store), self.sources, now=int(self.clock()),
                                      facts=self.facts)
         self.locator = self._locator()
-        self.request_facts()
+        if request_facts:
+            self.request_facts()
         return self.model
 
     def _adopt_vault_id(self) -> None:
@@ -149,30 +164,31 @@ class Organizer:
             self.cache.path, self.cache.vault_id = path, self.store.vault_id
             self.cache._dirty = True
 
-    def request_facts(self) -> None:
+    def request_facts(self) -> int:
         """Ask the content index for what the view shows first (D4 2.10.2): the live members
-        at LIVE, each save file's representative and branch tips at TIP; then, on the first
-        refresh of the session, every other version at BACKFILL, and afterwards the versions
-        first seen since the last refresh at NEW. Queueing only: nothing waits."""
-        if self.facts is None or self.scan is None or self.model is None:
-            return
-        from ..index.pool import Priority
-
+        at LIVE, each save file's representative and branch tips at TIP, the versions first
+        seen since the last run (or, later, the last refresh) at NEW, and on the first
+        refresh of the session every other version at BACKFILL. Queueing only: nothing
+        waits. Returns how many versions were newly queued."""
+        facts = self._facts
+        if facts is None or self.scan is None or self.model is None:
+            return 0
+        tier = facts.Priority
         known = set(self.scan.versions)
-        live = [m.vid for f in self.scan.live.values() for c in f.captures for m in c.members
-                if m.vid in known]
-        lines = self.model.lines()
-        tips = [line.representative for line in lines]
-        tips += [r.head for line in lines for r in self.model.versions(line.pid) if "tip" in r.flags]
-        tips = [v for v in dict.fromkeys(tips) if v in known]
-        self.facts.request(live, Priority.LIVE)
-        self.facts.request(tips, Priority.TIP)
-        asked = set(live) | set(tips)
+        live, tips = facts_targets(self.scan, self.model)
+        queued = facts.request(live, tier.LIVE) + facts.request(tips, tier.TIP)
+        rest = known - set(live) - set(tips)
         if self._facts_seen is None:
-            self.facts.request(sorted(known - asked), Priority.BACKFILL)
+            last_run = self.seen_marker.load()
+            new = {v for v in rest if last_run is not None and not SeenMarker.contains(last_run, v)}
+            queued += facts.request(sorted(new), tier.NEW)
+            queued += facts.request(sorted(rest - new), tier.BACKFILL)
         else:
-            self.facts.request(sorted(known - self._facts_seen - asked), Priority.NEW)
+            queued += facts.request(sorted(rest - self._facts_seen), tier.NEW)
         self._facts_seen = (self._facts_seen or set()) | known
+        if getattr(facts, "active", True):          # an index that is off keeps nothing: do not mark
+            self.seen_marker.save(known)
+        return queued
 
     def _locator(self) -> VaultLocator:
         """D1 2.11 by phase: the folders only; from store mode the store first, then the

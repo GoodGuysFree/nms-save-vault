@@ -315,7 +315,7 @@ class Dispatcher:
 
     def submit(self, vids: Iterable[str], priority: Priority, kind: str = "facts") -> int:
         """Queue ``vids`` at ``priority``; a vid already queued moves up to a better tier.
-        Returns how many were newly queued (not counting moves or running ones). A ``deep``
+        Returns how many were newly queued or moved to a better tier (not counting running ones). A ``deep``
         job is queued under its own key (:func:`job_key`), so it never merges with facts."""
         added = 0
         with self._lock:
@@ -326,8 +326,8 @@ class Dispatcher:
                 current = self._pending.get(vid)
                 if current is not None and current[0] <= priority:
                     continue
+                added += 1                                  # newly queued, or moved up a tier
                 if current is None:
-                    added += 1
                     self.stats.queued_bytes += self._json_estimate(vid) or 0
                 self._push(vid, Priority(priority))
             self._lock.notify_all()

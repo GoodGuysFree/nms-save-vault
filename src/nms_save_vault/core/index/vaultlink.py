@@ -15,16 +15,12 @@ from pathlib import Path
 from .. import locations, platform, safety
 from ..organizer import Organizer
 from ..organizer import cache as org_cache
-from ..organizer.journal import Journal
 from ..organizer.locator import OpenedVersion, VersionUnavailable
 from ..organizer.model import Vid
-from ..organizer.scanner import ScanResult
 from ..state import Source
 from .cache import cache_file
 from .pool import ExecutionPolicy
 from .service import IndexService
-
-TIER_RANK = {"owner": 3, "recorded": 2, "observed": 1}     # the read model's own order
 
 
 class OrganizerLocator:
@@ -48,18 +44,21 @@ def read_only_organizer(vault_root: Path, sources: Sequence[Source], *, host: pl
                      host=host)
 
 
-def drawn_parents(organizer: Organizer) -> dict[Vid, tuple[Vid, str]]:
-    """child -> (parent, edge kind) from the journal's edges: the highest tier, the later
-    within a tier, as the read model draws them. Never inferred from content (N1)."""
-    if organizer.scan is None:
+def drawn_parents(organizer: Organizer) -> dict[Vid, tuple[Vid, str | None]]:
+    """version -> (drawn parent, edge kind), exactly as the read model draws them
+    (``VersionRow.parent`` / ``parent_kind``). Never inferred from content (N1)."""
+    model = organizer.model
+    if model is None:
         raise ValueError("refresh the organizer first")
-    state = Journal(organizer.store, organizer.scan.versions).replay()
-    best: dict[Vid, tuple[tuple[int, int], Vid, str]] = {}
-    for edge in state.edges:
-        rank = (TIER_RANK.get(edge.tier, 0), edge.created)
-        if edge.child not in best or rank > best[edge.child][0]:
-            best[edge.child] = (rank, edge.parent, edge.kind)
-    return {child: (parent, kind) for child, (_rank, parent, kind) in best.items()}
+    out: dict[Vid, tuple[Vid, str | None]] = {}
+    for line in model.lines():
+        for r in model.versions(line.pid):
+            if r.parent is None:
+                continue
+            out[r.head] = (r.parent, r.parent_kind)
+            if r.partner is not None:                   # the pair is one drawn entry: its other member too
+                out.setdefault(r.partner, (r.parent, r.parent_kind))
+    return out
 
 
 def resolve(ref: str, vids: Sequence[Vid] | Mapping[Vid, object]) -> Vid:
@@ -73,10 +72,6 @@ def resolve(ref: str, vids: Sequence[Vid] | Mapping[Vid, object]) -> Vid:
     return found[0]
 
 
-def live_vids(scan: ScanResult) -> list[Vid]:
-    return [vid for f in scan.live.values() for c in f.captures for m in c.members for vid in [m.vid] if vid]
-
-
 def forbidden_roots(vault_root: Path, sources: Sequence[Source], host: platform.Host | None = None) -> list[Path]:
     """Where the cache must never be: the vault, every live folder, every NMS save root."""
     return [Path(vault_root), *(Path(s.path) for s in sources), *platform.nms_roots(host)]
@@ -86,10 +81,10 @@ def open_service(vault_root: Path, sources: Sequence[Source], *, workers: str | 
                  host: platform.Host | None = None,
                  game_running: Callable[[], bool | None] = safety.is_game_running,
                  ) -> tuple[IndexService, Organizer]:
-    """A refreshed read-only organizer and an index service reading through its locator."""
+    """A read-only organizer, refreshed with the index attached (so its read model carries
+    facts), and the index service reading through its locator. Nothing is requested yet."""
     host = host or platform.Host.current()
     organizer = read_only_organizer(vault_root, sources, host=host, game_running=game_running)
-    organizer.refresh(record=False)
     policy: ExecutionPolicy = platform.index_execution_policy(
         host, portable_kit=bool(host.env.get("NMSVAULT_PORTABLE_ROOT")), cpu_count=os.cpu_count(), setting=workers)
     vault_id = organizer.store.vault_id
@@ -100,11 +95,14 @@ def open_service(vault_root: Path, sources: Sequence[Source], *, workers: str | 
 
     service = IndexService(
         cache_path=cache_file(org_cache.cache_dir(Path(vault_root), vault_id, host)), vault_id=vault_id or "nostore",
-        locator=OrganizerLocator(organizer), policy=policy,
+        locator=OrganizerLocator(organizer), policy=policy, defer_refresh=True,
         size_hint=lambda vid: (m.size_decompressed or None) if (m := meta(vid)) else None,
         when=lambda vid: m.meta_ts if (m := meta(vid)) else None,
         forbidden=forbidden_roots(vault_root, sources, host), app_version=_app_version(), game_running=game_running)
-    organizer.facts = service           # the read model shows facts and asks for them from now on
+    organizer.facts = service
+    service.flush()                     # the cached views are loaded (a command line may wait)
+    organizer.refresh(record=False, request_facts=False)
+    service.queue_refresh()                    # only now can the locator open bytes
     return service, organizer
 
 

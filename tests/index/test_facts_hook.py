@@ -19,6 +19,8 @@ from .test_service import wait_for
 class SpyFacts:
     """A FactsProvider that answers from dictionaries and records every request."""
 
+    Priority = Priority
+
     def __init__(self, views=None, milestones=()) -> None:
         self.views = dict(views or {})
         self.milestones = set(milestones)
@@ -63,7 +65,7 @@ def test_lines_and_versions_carry_their_facts_and_the_index_is_asked_by_tier(wor
     rows = {r.head: r for r in model.versions(line.pid)}
     assert rows[world["old"]].facts is spy.views[world["old"]]
     assert spy.tier(Priority.LIVE) == [world["new"]]
-    assert world["new"] in spy.tier(Priority.TIP)
+    assert spy.tier(Priority.TIP) == []                     # the representative is live: asked at LIVE
     assert spy.tier(Priority.BACKFILL) == [world["old"]]
     assert spy.tier(Priority.NEW) == []
 

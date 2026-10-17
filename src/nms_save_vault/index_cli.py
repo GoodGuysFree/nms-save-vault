@@ -24,6 +24,7 @@ from .core import aliases, safety
 from .core.index import IndexService, Priority, derive
 from .core.index import vaultlink
 from .core.organizer import Organizer
+from .core.organizer.facts import facts_targets
 from .core.organizer.readmodel import RefError, resolve_version
 
 WAIT_S = 300.0
@@ -105,6 +106,19 @@ def _wait(service: IndexService, vids: list[str], timeout: float = WAIT_S) -> No
         time.sleep(0.05)
 
 
+def _await_changes(service: IndexService, child: str, parent: str, edge_kind: str | None,
+                   timeout: float = WAIT_S):
+    """The change set, once the writer thread has worked it out (None: not indexed)."""
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        cs = service.changes(child, parent, edge_kind=edge_kind)
+        gone = [v for v in (child, parent) if service.view(v) is None and service.status(v) not in ("queued", "running")]
+        if cs is not None or gone:
+            return cs
+        time.sleep(0.02)
+    return None
+
+
 def _wait_deep(service: IndexService, vid: str, timeout: float = WAIT_S) -> None:
     end = time.monotonic() + timeout
     while time.monotonic() < end and service.deep(vid) is None:
@@ -148,18 +162,16 @@ def cmd_build(args) -> int:
             return 0
         if args.rebuild:
             service.rebuild()
-        scan = org.scan
-        live = vaultlink.live_vids(scan)
-        wanted = list(dict.fromkeys(live + ([] if args.live_only else list(scan.versions))))
+        live, _tips = facts_targets(org.scan, org.model)
+        wanted = live if args.live_only else list(org.scan.versions)
         started = time.monotonic()
-        queued = sum(1 for v in wanted if service.status(v) in ("not-indexed", "stale", "unreadable"))
         if args.live_only:
-            service.request(live, Priority.LIVE)
+            queued = service.request(live, Priority.LIVE)
         else:
-            org.request_facts()             # D4's tiers: live, then representatives and tips
+            queued = org.request_facts()    # D4's tiers: live, representatives and tips, new, the rest
         p = service.policy
         _out(f"Indexing {queued} of {len(wanted)} versions ({p.mode}, {p.workers} worker"
-             f"{'s' if p.workers != 1 else ''}); {len(wanted) - queued} already indexed.")
+             f"{'s' if p.workers != 1 else ''}); {len(wanted) - queued} already indexed or queued.")
         stuck = _follow(service, args.timeout)
         if stuck:
             _out(stuck)
@@ -262,10 +274,11 @@ def cmd_changes(args) -> int:
                 _out(f"{child[:8]}: no recorded parent")
                 return 0
             parent, edge_kind = found
-            heading = f"{parent[:8]} -> {child[:8]} (recorded parent, {edge_kind})"
+            relation = f"recorded parent, {edge_kind}" if edge_kind else "recorded ancestor"
+            heading = f"{parent[:8]} -> {child[:8]} ({relation})"
         service.request([child, parent], Priority.INTERACTIVE)
         _wait(service, [child, parent])
-        cs = service.changes(child, parent, edge_kind=edge_kind)
+        cs = _await_changes(service, child, parent, edge_kind)
         if cs is None:
             _out(f"Not indexed: {service.status(child)} / {service.status(parent)}")
             return 1
