@@ -26,10 +26,16 @@ from .. import catalog, safety
 from ..catalog import CatalogEntry, Vault
 from . import capture
 from .errors import RollbackError
-from .listing import entry_folder, read_migration
+from .listing import MIGRATION_JSON, entry_folder
 from .manifest import StoreEntry
 from .objects import sha256
-from .upgrade import _rename_retrying, _upgrade_lock_held, _write_json, upgrade_lock_path
+from .upgrade import (
+    _rename_retrying,
+    _upgrade_lock_held,
+    _write_json,
+    is_pre_upgrade_copy,
+    upgrade_lock_path,
+)
 from .versionstore import (
     STATE,
     UPGRADE_JSON,
@@ -58,6 +64,9 @@ class RollbackPlan:
     bytes_needed: int
     free: int
     problems: tuple[tuple[str, str], ...]  # (RollbackError code, ASCII text)
+    skipped: tuple[tuple[str, str], ...] = ()   # (entry id, why) left as they are
+    corrupt: tuple[str, ...] = ()         # store manifests that cannot be read (left behind)
+    force: bool = False                   # the owner accepted leaving ``corrupt`` behind
 
 
 @dataclass(frozen=True)
@@ -66,6 +75,7 @@ class RollbackResult:
     restored: tuple[str, ...]
     store_moved_to: str                   # the folder name next to the vault
     message: str
+    skipped: tuple[tuple[str, str], ...] = ()   # (entry id, why) not put back
 
 
 def rollback_interrupted(vault_root: str | Path) -> bool:
@@ -82,6 +92,8 @@ def keep_upgrade(vault_root: str | Path) -> None:
     """After an interrupted undo: stay in store mode. The staging folder goes; folders already
     written out stay as catalog entries, hidden by their store entries of the same id."""
     root = Path(vault_root)
+    if not root.is_dir():
+        return                                  # the lock must not create a missing vault
     with safety.exclusive_lock(upgrade_lock_path(root), timeout=0):
         if not rollback_interrupted(root):
             return
@@ -94,18 +106,34 @@ def keep_upgrade(vault_root: str | Path) -> None:
 
 
 def plan_rollback(vault_root: str | Path, store: VersionStore, *, copy: str | Path | None = None,
-                  cancel: threading.Event | None = None) -> RollbackPlan:
+                  cancel: threading.Event | None = None, force: bool = False) -> RollbackPlan:
     """What undoing the upgrade would do, and why it cannot run now. Reads only (it re-hashes
-    the whole copy: about as long as the upgrade's copy took)."""
+    the whole copy: about as long as the upgrade's copy took). ``force`` accepts leaving
+    unreadable store manifests behind (they are listed in the plan, never dropped silently)."""
     root = Path(vault_root)
     problems: list[tuple[str, str]] = []
     if vault_mode(root) == "legacy":
         problems.append(("not-upgraded", "The vault is not upgraded."))
-    migration = read_migration(root)
-    recorded = migration.get("copy_aside")
+    migration = _strict_migration(root)
+    recorded = migration.get("copy_aside") if migration is not None else None
     folder: Path | None = Path(copy) if copy is not None else (
         root.parent / recorded["name"] if isinstance(recorded, dict) else None)
-    copy_ok = recorded is None and copy is None
+    if migration is None:
+        # No record of the upgrade: never assume "upgraded without a copy".
+        copy_ok = False
+        if folder is None:
+            problems.append(("migration-missing", "The record of the upgrade (migration.json) "
+                                                  "is missing or unreadable, so the copy made "
+                                                  "before it cannot be found. Choose the folder "
+                                                  "the copy is in."))
+        elif not (folder.is_dir() and catalog.looks_like_vault_dir(folder)
+                  and is_pre_upgrade_copy(folder)):
+            problems.append(("copy-mismatch", "That folder is not the copy of the vault made "
+                                              "before the upgrade."))
+        else:
+            copy_ok = True       # no recorded hash to check it against
+    else:
+        copy_ok = recorded is None
     if isinstance(recorded, dict):
         if folder is None or not folder.is_dir():
             problems.append(("copy-missing", "The copy of the vault made before the upgrade was "
@@ -115,14 +143,17 @@ def plan_rollback(vault_root: str | Path, store: VersionStore, *, copy: str | Pa
                                               "before the upgrade, or it has changed since."))
         else:
             copy_ok = True
-    copy_entries = _entries_of(folder) if copy_ok and folder is not None else []
-    known = {e.id for e in copy_entries}
-    export = tuple(_exports(root, store, known))
-    restore = tuple(e.id for e in copy_entries if _managed(e)
-                    and not _same_tree(entry_folder(Vault(folder), e), _vault_folder(root, e)))
-    needed = sum(f.size for sid, _fid, _kind in export for f in store.entry(sid).files)
-    needed += sum(_tree_bytes(entry_folder(Vault(folder), e)) for e in copy_entries
-                  if e.id in restore)
+    use_copy = folder if copy_ok and (recorded is not None or migration is None) else None
+    work = _work(root, store, use_copy)
+    corrupt = tuple(sorted(store.corrupt_manifests))
+    if corrupt and not force:
+        problems.append(("corrupt-manifests", f"{len(corrupt)} backups in the store cannot be "
+                                              f"read ({', '.join(corrupt[:5])}); undoing the "
+                                              "upgrade would leave them behind. Check the "
+                                              "store first, or force the undo."))
+    needed = sum(f.size for sid, _fid, _kind in work.export for f in store.entry(sid).files)
+    needed += sum(_tree_bytes(entry_folder(Vault(use_copy, read_only=True), e))
+                  for e in work.copy_entries if e.id in work.restore)
     try:
         free = shutil.disk_usage(root).free
     except OSError:
@@ -133,8 +164,45 @@ def plan_rollback(vault_root: str | Path, store: VersionStore, *, copy: str | Pa
     if _upgrade_lock_held(root):
         problems.append(("in-progress", "The vault is being upgraded, or the upgrade undone, by "
                                         "another NMS Save Vault window."))
-    return RollbackPlan(root, folder if recorded is not None else None, copy_ok, export, restore,
-                        needed, free, tuple(problems))
+    return RollbackPlan(root, use_copy, copy_ok, work.export, work.restore, needed, free,
+                        tuple(problems), work.skipped, corrupt, force)
+
+
+@dataclass(frozen=True)
+class _Work:
+    copy_entries: list[CatalogEntry]
+    export: tuple[tuple[str, str, str], ...]
+    restore: tuple[str, ...]
+    skipped: tuple[tuple[str, str], ...]
+
+
+def _work(root: Path, store: VersionStore, copy: Path | None) -> _Work:
+    """What the undo would do right now. A copy entry whose folder is missing from the copy
+    (deleted by hand before the upgrade) is skipped and reported, as the fold skipped it."""
+    copy_entries = _entries_of(copy) if copy is not None else []
+    export = tuple(_exports(root, store, {e.id for e in copy_entries}))
+    restore: list[str] = []
+    skipped: list[tuple[str, str]] = []
+    if copy is not None:
+        copy_vault = Vault(copy, read_only=True)
+        for e in copy_entries:
+            if not _managed(e):
+                continue
+            src = entry_folder(copy_vault, e)
+            if not src.is_dir():
+                skipped.append((e.id, "its folder is missing from the copy"))
+            elif not _same_tree(src, _vault_folder(root, e)):
+                restore.append(e.id)
+    return _Work(copy_entries, export, tuple(restore), tuple(skipped))
+
+
+def _strict_migration(root: Path) -> dict | None:
+    """migration.json as written by the upgrade (it always has ``copy_aside``), else None."""
+    try:
+        body = json.loads((store_root(root) / STATE / MIGRATION_JSON).read_bytes().decode("utf-8"))
+    except (OSError, ValueError):
+        return None
+    return body if isinstance(body, dict) and "copy_aside" in body else None
 
 
 def run_rollback(plan: RollbackPlan, store: VersionStore, *,
@@ -148,6 +216,8 @@ def run_rollback(plan: RollbackPlan, store: VersionStore, *,
         code, text = plan.problems[0]
         raise RollbackError(code, text)
     root = plan.vault_root
+    if not root.is_dir():
+        raise RollbackError("not-upgraded", "The vault folder was not found.")
     lock = vault_lock_factory or vault_lock(root)
     state_dir = store_root(root) / STATE
     staging = root / STAGING
@@ -158,28 +228,55 @@ def run_rollback(plan: RollbackPlan, store: VersionStore, *,
         raise RollbackError("in-progress", "The upgrade is being undone by another NMS Save "
                                            "Vault window.") from exc
     try:
+        # Under the lock the plan is made again: the vault may have changed since it was made.
+        mode = vault_mode(root)
+        if mode == "legacy":
+            raise RollbackError("not-upgraded", "The vault is not upgraded (any more).")
+        if mode == "upgrading" and not rollback_interrupted(root):
+            raise RollbackError("in-progress", "The vault is being upgraded.")
+        if store.corrupt_manifests and not plan.force:
+            raise RollbackError("corrupt-manifests", "Some backups in the store cannot be read; "
+                                                     "check the store first, or force the undo.")
+        fresh = _work(root, store, plan.copy)
+        if (fresh.export, fresh.restore) != (plan.export, plan.restore):
+            raise RollbackError("vault-changed", "The vault changed after the undo was planned. "
+                                                 "Nothing was changed; start it again.")
+        ids = {e.id for e in store.entries()}
         with lock():
+            if {e.id for e in store.entries()} != ids or not state_dir.is_dir():
+                raise RollbackError("vault-changed", "The vault changed after the undo was "
+                                                     "planned. Nothing was changed; start it "
+                                                     "again.")
             _write_json(state_dir / UPGRADE_JSON, {"state": "rolling-back",
                                                    "started_utc": iso_utc(now())})
         staging.mkdir(exist_ok=True)
-        copy_vault = Vault(plan.copy) if plan.copy is not None else None
-        copy_entries = {e.id: e for e in (copy_vault.load().entries if copy_vault else [])}
+        copy_vault = Vault(plan.copy, read_only=True) if plan.copy is not None else None
+        copy_entries = {e.id: e for e in fresh.copy_entries}
         exported: list[CatalogEntry] = []
         for store_id, folder_id, kind in plan.export:
             _check(cancel)
             exported.append(_export(root, store, store.entry(store_id), folder_id, kind))
         _fault(faults, "rollback.after_export")
-        restored = []
+        restored: list[str] = []
+        not_restored = list(plan.skipped)
         for entry_id in plan.restore:
             _check(cancel)
-            if _restore(root, copy_vault, copy_entries[entry_id]):
-                restored.append(entry_id)
+            try:
+                if _restore(root, copy_vault, copy_entries[entry_id]):
+                    restored.append(entry_id)
+            except (RollbackError, OSError) as exc:
+                # One bad folder never leaves the vault stuck: it stays as it is, and is reported.
+                log.warning("could not put back %s: %s", entry_id, exc)
+                not_restored.append((entry_id, str(exc) or type(exc).__name__))
         with lock():
             vault = Vault(root).load()
-            have = {e.id for e in vault.entries}
             for entry in list(copy_entries.values()) + exported:
-                if entry.id not in have or entry in exported:
+                kept = vault.get(entry.id)
+                if kept is None:
                     vault.upsert(entry)
+                elif entry in exported:     # the owner's notes and label stay; the folder is ours
+                    vault.upsert(dataclasses.replace(kept, path=entry.path, slots=entry.slots,
+                                                     managed=True))
         _fault(faults, "rollback.before_store_move")
         stamp = now().astimezone(timezone.utc)
         moved = root.parent / f"{root.name}{ROLLED_BACK_INFIX}{stamp:%Y%m%dT%H%M%SZ}"
@@ -189,12 +286,18 @@ def run_rollback(plan: RollbackPlan, store: VersionStore, *,
     finally:
         upgrade_lock.__exit__(None, None, None)
     size = sum(p.stat().st_size for p in moved.rglob("*") if p.is_file())
-    return RollbackResult(
-        tuple(e.id for e in exported), tuple(restored), moved.name,
-        f"Upgrade undone. Your vault is back in the old layout with everything made since "
-        f"({len(exported)} backups added as folders). The version store was moved to "
-        f"{moved.name} ({size / (1 << 30):.1f} GB); delete it when you no longer need it. The "
-        "pre-upgrade copy was not changed.")
+    message = (f"Upgrade undone. Your vault is back in the old layout with everything made since "
+               f"({len(exported)} backups added as folders). The version store was moved to "
+               f"{moved.name} ({size / (1 << 30):.1f} GB); delete it when you no longer need it. "
+               "The pre-upgrade copy was not changed.")
+    if not_restored:
+        message += f" {len(not_restored)} old folders were not put back: " + "; ".join(
+            f"{k} ({why})" for k, why in not_restored)
+    if plan.corrupt:
+        message += (f" {len(plan.corrupt)} unreadable backups stayed in the moved store: "
+                    + ", ".join(plan.corrupt))
+    return RollbackResult(tuple(e.id for e in exported), tuple(restored), moved.name, message,
+                          tuple(not_restored))
 
 
 # --- steps ------------------------------------------------------------------------------------
@@ -271,7 +374,7 @@ def _vault_folder(root: Path, entry: CatalogEntry) -> Path:
 
 
 def _entries_of(copy: Path) -> list[CatalogEntry]:
-    return Vault(copy).load().entries if catalog.looks_like_vault_dir(copy) else []
+    return Vault(copy, read_only=True).load().entries if catalog.looks_like_vault_dir(copy) else []
 
 
 def _tree(folder: Path) -> dict[str, tuple[int, str]]:

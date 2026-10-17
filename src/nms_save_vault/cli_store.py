@@ -47,6 +47,9 @@ def add_commands(sub: argparse._SubParsersAction) -> None:
                                                      "not next to the vault any more")
     r.add_argument("--keep-upgrade", action="store_true",
                    help="after an interrupted undo: stay upgraded instead of finishing it")
+    r.add_argument("--force", action="store_true",
+                   help="undo even though some backups in the store cannot be read (they stay "
+                        "in the moved store)")
     r.add_argument("--yes", action="store_true", help="do not ask for confirmation")
     r.set_defaults(func=cmd_store_rollback)
 
@@ -142,7 +145,8 @@ def cmd_store_rollback(args) -> int:
     store = vstore.VersionStore.open(root, lock=vstore.vault_lock(root),
                                      app_version=_version(), app_state=state,
                                      for_rollback=interrupted)
-    plan = rollback.plan_rollback(root, store, copy=Path(args.copy) if args.copy else None)
+    plan = rollback.plan_rollback(root, store, copy=Path(args.copy) if args.copy else None,
+                                  force=args.force)
     for _code, text in plan.problems:
         print(f"error: {text}", file=sys.stderr)
     if plan.problems:

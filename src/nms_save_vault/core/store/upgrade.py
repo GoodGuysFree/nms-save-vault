@@ -209,6 +209,8 @@ def run_upgrade(plan: UpgradePlan, *,
         code, text = plan.problems[0]
         raise UpgradeError(code, text)
     root = plan.vault_root
+    if not root.is_dir():                        # the lock must not create a missing vault
+        raise UpgradeError("not-a-vault", "That folder is not a vault.")
     lock = vault_lock_factory or vault_lock(root)
     partial = plan.dest.with_name(plan.dest.name + PARTIAL)
     held = safety.exclusive_lock(upgrade_lock_path(root), timeout=0)

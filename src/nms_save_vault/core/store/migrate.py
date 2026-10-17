@@ -20,11 +20,12 @@ from .. import catalog, discover, safety
 from ..catalog import CatalogEntry, Vault
 from . import capture
 from .capture import CaptureScope
-from .errors import FoldVerifyError, InsufficientSpace, StoreError
+from .errors import FoldVerifyError, InsufficientSpace, StoreBusy, StoreError, StoreNotUpgraded
 from .listing import entry_folder, read_migration
 from .manifest import ENTRY_KINDS, FileEntry
 from .objects import sha256
-from .versionstore import STATE, VersionStore, iso_utc, store_root
+from .upgrade import upgrade_lock_path
+from .versionstore import STATE, VersionStore, iso_utc, store_root, vault_mode
 
 log = logging.getLogger(__name__)
 
@@ -71,9 +72,28 @@ def run_fold(store: VersionStore, *, live_roots: Sequence[Path] | None = None,
     folder; then a deep check of the store when the fold is complete. A store that cannot be
     written (read-only, or written by a newer app) is refused before anything is recorded.
     One entry that cannot be folded, for whatever reason, is recorded as failed and the fold
-    goes on."""
+    goes on. It holds the upgrade lock for its whole run, so an undo of the upgrade cannot
+    move ``store/`` away under it (and it never recreates it)."""
     store._require_writable()
     root = store.vault_root
+    if not root.is_dir():
+        raise StoreNotUpgraded("The vault folder was not found.")
+    try:
+        held = safety.exclusive_lock(upgrade_lock_path(root), timeout=0)
+        held.__enter__()
+    except (safety.LockTimeout, RuntimeError) as exc:
+        raise StoreBusy("The vault is being upgraded or the upgrade undone; try again "
+                        "afterwards.") from exc
+    try:
+        return _run_fold(store, live_roots, progress, cancel)
+    finally:
+        held.__exit__(None, None, None)
+
+
+def _run_fold(store: VersionStore, live_roots, progress, cancel) -> FoldReport:
+    root = store.vault_root
+    if vault_mode(root) != "store":
+        raise StoreNotUpgraded("The vault is not in store mode.")
     vault = Vault(root).load()
     live = discover.live_folders(live_roots) if live_roots is not None else store.live_folders()
     entries = sorted(vault.entries, key=lambda e: (e.created, e.id))
@@ -172,6 +192,8 @@ def _statuses(root: Path) -> dict[str, dict]:
 def _save(store: VersionStore, statuses: dict, *, state: str, waiting: int) -> None:
     """Under the vault lock: the record of the fold, the copy-aside record kept as it is."""
     with store._lock():
+        if vault_mode(store.vault_root) != "store":      # never recreate store/state/
+            raise StoreNotUpgraded("The vault is not in store mode.")
         body = read_migration(store.vault_root)
         body["fold"] = {"state": state, "waiting_for_space_bytes": waiting,
                         "entries": statuses}

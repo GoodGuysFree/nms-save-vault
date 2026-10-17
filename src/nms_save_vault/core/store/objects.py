@@ -163,9 +163,10 @@ class ObjectStore:
 
 
 def _ensure_dir(folder: Path) -> None:
-    """Create ``folder`` if needed and make its entry in the parent durable."""
+    """Create ``folder`` if needed and make its entry in the parent durable. Its parent must
+    exist: a store write never recreates ``store/`` (an undo may have moved it aside)."""
     if not folder.is_dir():
-        folder.mkdir(parents=True, exist_ok=True)
+        folder.mkdir(parents=False, exist_ok=True)
         safety.fsync_dir(folder.parent)
 
 
