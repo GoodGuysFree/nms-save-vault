@@ -87,6 +87,24 @@ def test_config_dir_on_macos_and_windows(tmp_path):
     assert host_platform.user_config_dir(host(WINDOWS, tmp_path)) == tmp_path / "NMSSaveVault"
 
 
+def test_cache_dir_per_os(tmp_path):
+    win = host(WINDOWS, tmp_path, LOCALAPPDATA=str(tmp_path / "Local"))
+    assert host_platform.user_cache_dir(win) == tmp_path / "Local" / "NMSSaveVault" / "cache"
+    assert host_platform.user_cache_dir(host(WINDOWS, tmp_path)) == (
+        tmp_path / "NMSSaveVault" / "cache"
+    )
+    assert host_platform.user_cache_dir(host(MACOS, tmp_path)) == (
+        tmp_path / "Library" / "Caches" / "NMSSaveVault"
+    )
+    assert host_platform.user_cache_dir(host(LINUX, tmp_path)) == (
+        tmp_path / ".cache" / "NMSSaveVault"
+    )
+    xdg = host(LINUX, tmp_path, XDG_CACHE_HOME=str(tmp_path / "xc"))
+    assert host_platform.user_cache_dir(xdg) == tmp_path / "xc" / "NMSSaveVault"
+    relative = host(LINUX, tmp_path, XDG_CACHE_HOME="relative/cache")
+    assert host_platform.user_cache_dir(relative) == tmp_path / ".cache" / "NMSSaveVault"
+
+
 # --- Windows ------------------------------------------------------------------
 
 

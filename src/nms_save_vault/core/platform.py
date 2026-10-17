@@ -106,6 +106,17 @@ def user_data_dir(host: Host | None = None) -> Path:
     return _app_support(host) / APP_DIRNAME
 
 
+def user_cache_dir(host: Host | None = None) -> Path:
+    """Per-machine derived data (scan cache, content index); never inside the vault, which
+    may travel to another machine. Everything here can be rebuilt."""
+    host = host or Host.current()
+    if host.system == LINUX:
+        return _xdg(host, "XDG_CACHE_HOME", (".cache",)) / APP_DIRNAME
+    if host.system == MACOS:
+        return host.home / "Library" / "Caches" / APP_DIRNAME
+    return _app_support(host) / APP_DIRNAME / "cache"
+
+
 def _app_support(host: Host) -> Path:
     """The per-user application-data root on Windows and macOS."""
     if host.system == MACOS:

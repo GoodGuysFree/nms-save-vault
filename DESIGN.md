@@ -71,7 +71,7 @@ src/nms_save_vault/
     savedir.py    enumerate a folder's slots/members, decode metas
     catalog.py    JSON index of backups; scan/import; dedup by sha256
     operations.py backup/restore/extract/repopulate/promote
-    safety.py     game-running check, atomic staged writes, auto-snapshot, op-log/undo
+    safety.py     game-running check, atomic staged writes, auto-snapshot, op-log/undo, inter-process lock
     aliases.py    account-id -> display-name filter (accounts.ini); display only
   theme.py        light/dark/system palettes + ttk restyling (front-end)
   updates.py      opt-in GitHub release check + in-place self-update (the only network access)
