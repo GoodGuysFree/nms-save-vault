@@ -50,6 +50,8 @@ def newer_plain(platform: str, plain: bytes) -> bool:
         if platform == "steam":
             info = meta.parse(plain, 0)
             return newer(platform, info.meta_format, info.base_version)
+        if len(plain) < msstore.MS_META_LEN_WAYPOINT:
+            return False                      # not a meta blob: nothing to judge
         fields = msstore.parse_ms_meta(plain)
         return newer(platform, fields.get("meta_format", 0), fields.get("base_version", 0))
     except (ValueError, KeyError, OSError):
