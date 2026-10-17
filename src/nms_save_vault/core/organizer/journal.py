@@ -220,6 +220,7 @@ class JournalState:
     first_seen: Mapping[Vid, ObsOrder]
     note_rev: Mapping[Vid, int]         # the save-file note revision when first journaled
     problems: tuple[str, ...]
+    records: tuple[Record, ...] = ()    # every record, in replay order
 
 
 @dataclass(frozen=True)
@@ -330,7 +331,7 @@ def replay(records: tuple[Record, ...], registry: Mapping[Vid, VersionInfo],
     return JournalState(
         targets=run.states, edges=tuple(run.edges), events=tuple(e for _, e in run.events),
         events_by_seq={k: tuple(v) for k, v in by_seq.items()}, ops=run.ops, metas=metas,
-        first_seen=first_seen, note_rev=note_rev, problems=problems,
+        first_seen=first_seen, note_rev=note_rev, problems=problems, records=tuple(ordered),
     )
 
 

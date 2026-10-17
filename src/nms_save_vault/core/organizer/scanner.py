@@ -85,6 +85,7 @@ class EntryScan:
     created: int                    # UTC unix
     source: str | None              # the live folder name the entry was taken from
     captures: tuple[Capture, ...]
+    label: str = ""                 # the owner's name for it (user text)
 
 
 @dataclass(frozen=True)
@@ -136,7 +137,7 @@ def scan(vault: Vault | None, sources: Sequence[Source], cache: ScanCache, *,
 
     started = time.perf_counter()
     live: dict[LiveRef, LiveFolderScan] = {}
-    for source, ref in zip(sources, _live_refs(sources)):
+    for source, ref in zip(sources, live_refs(sources)):
         _check(cancel)
         live[ref] = run.scan_live(source, ref)
         done += 1
@@ -225,7 +226,8 @@ class _Run:
                     self.pids.setdefault(m.vid, (m.pid, m.pid_src))
                     if m.pid_src == "legacy" and self.cache.legacy_pid(m.vid) is None:
                         self.cache.put_legacy_pid(m.vid, m.pid)
-        return EntryScan(entry.id, entry.kind, entry.managed, created or 0, entry.source, captures)
+        return EntryScan(entry.id, entry.kind, entry.managed, created or 0, entry.source, captures,
+                         entry.label)
 
     def _entry_captures(self, entry: CatalogEntry, folder: Path, where: EntryRef,
                         created: int) -> tuple[Capture, ...] | None:
@@ -424,7 +426,7 @@ def _created_utc(entry: CatalogEntry) -> int | None:
         return None
 
 
-def _live_refs(sources: Sequence[Source]) -> list[LiveRef]:
+def live_refs(sources: Sequence[Source]) -> list[LiveRef]:
     """One LiveRef per source: its folder name, plus an instance tag only when two live
     folders of one platform share that name here (two Proton prefixes)."""
     def platform_of(s: Source) -> Platform:
