@@ -91,7 +91,7 @@ def candidate_values(c: SlotCandidate, *, in_banner: bool = False) -> tuple[str,
         notes.append("pinned - not suggested")
     if c.blocked and not in_banner:
         notes.append(f"not possible: {plain(c.blocked)}")
-    return (f"S{c.target.slot}", now, play_time(c.play_time), local_time(c.last_played),
+    return (f"{'X' if c.target.platform == 'xbox' else 'S'}{c.target.slot}", now, play_time(c.play_time), local_time(c.last_played),
             "-" if c.state == "empty" else VAULT_WORDS[c.vault_copy], "; ".join(notes))
 
 

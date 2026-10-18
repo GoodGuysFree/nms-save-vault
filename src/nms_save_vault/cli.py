@@ -263,7 +263,8 @@ def cmd_backup(args) -> int:
     vault = _resolve_vault(args)
     warns: list[str] = []
     entry = ops.create_full_backup(vault, live, label=args.label or "", include_cache=not args.no_cache, warnings=warns)
-    print(f"created full backup '{entry.id}' ({len(entry.occupied_slots)} slots) at {entry.path}")
+    print(f"created full backup '{entry.id}' ({len(entry.occupied_slots)} slots) "
+          f"{('at ' + str(entry.path)) if entry.path else 'in the vault'}")
     _print_warnings(warns)
     return 0
 

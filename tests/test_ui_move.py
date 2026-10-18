@@ -342,6 +342,15 @@ def test_a_block_that_is_only_some_slots_shows_in_plain_words_on_their_rows(view
     d.cancel()
 
 
+def test_slot_rows_use_the_target_platform_prefix(view, gui_app):
+    d = _open(view, gui_app)
+    c = d.picker.candidates[0]
+    assert M.candidate_values(c)[0] == f"S{c.target.slot}"
+    xbox = dataclasses.replace(c, target=dataclasses.replace(c.target, platform="xbox"))
+    assert M.candidate_values(xbox)[0] == f"X{c.target.slot}"
+    d.cancel()
+
+
 def test_every_code_has_plain_words_and_none_shows_a_raw_code():
     import re
     from nms_save_vault.core.liveops.planner import TEXTS

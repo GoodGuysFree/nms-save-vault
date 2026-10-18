@@ -47,6 +47,14 @@ def _play(live, slot=1, member=0, play=9999, extra="changed"):
     steam_save(live, slot, member, "Main", play, IDENT, 1_790_100_000, extra=BIG + extra)
 
 
+def test_the_cli_backup_message_has_no_empty_path_in_store_mode(tmp_path, capsys):
+    vault, live = _world(tmp_path, store_mode=True)
+    assert cli.main(["--live", str(live), "--vault", str(vault.root), "backup", "--no-cache"]) == 0
+    line = next(ln for ln in capsys.readouterr().out.splitlines()
+                if ln.startswith("created full backup"))
+    assert line.endswith("in the vault") and " at" not in line.split("slots)")[1]
+
+
 def test_backups_snapshots_and_extracts_become_store_entries(tmp_path):
     vault, live = _world(tmp_path, store_mode=True)
     full = operations.create_full_backup(vault, live, label="mine", warnings=[])

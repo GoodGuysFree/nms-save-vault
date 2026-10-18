@@ -143,6 +143,15 @@ def test_a_non_empty_target_is_refused(both):
     assert picker.suggested_slot == 2 and picker.candidates[1].blocked == ""
 
 
+def test_a_cross_platform_place_carries_other_account_even_without_a_capture_account(both):
+    both.backup(both.acct, "xbox")
+    src = dataclasses.replace(both.steam_source(), prefer=None)
+    plan = plan_place(both.ctx, src, XBOX.target(2))
+    assert not plan.blocked and plan.source.platform == "steam"
+    assert "OTHER_ACCOUNT" in plan.confirmations
+    assert [w.code for w in plan.warnings].count("OTHER_ACCOUNT") == 1
+
+
 def test_steam_to_xbox_into_an_empty_slot(both):
     both.backup(both.acct, "xbox")
     steam_before = tree_hash(both.steam_dir)

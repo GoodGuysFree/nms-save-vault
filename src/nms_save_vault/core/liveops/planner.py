@@ -475,7 +475,10 @@ def recovery_pending(ctx: OpContext, accounts: Iterable[LiveRef]) -> Warning | N
 
 def _other_account(src: LoadedSource, account: LiveRef) -> Warning | None:
     """F7b: one confirmation whenever the version was captured from another account (no
-    ownership id is read); none when the capture account is unknown."""
+    ownership id is read); none when the capture account is unknown, except that another
+    platform is always another account (D5 3.5 G5)."""
+    if src.platform != account.platform:
+        return warning("OTHER_ACCOUNT")
     if src.capture_account is None or _same_account(src.capture_account, account):
         return None
     return warning("OTHER_ACCOUNT")
