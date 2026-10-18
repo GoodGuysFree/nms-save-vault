@@ -66,7 +66,7 @@ Stop. Do not play on. Note which check failed and what the game said.
 
 ## Undo
 
-The app never empties a slot, so a transfer has no Undo button. To undo it: 
-game session, then in the game's own load menu on the target platform delete the transferred
+The app never empties a slot, so a transfer has no Undo button. To undo it: close the
+game, then in the game's own load menu on the target platform delete the transferred
 save, exactly as in step 3. The vault keeps the copy you made in step 3 and the backups; the
 source save was never touched.
