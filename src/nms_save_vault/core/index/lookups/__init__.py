@@ -21,6 +21,13 @@ def galaxy_name(index: int | None) -> str | None:
     return f"Galaxy {index + 1}"
 
 
+def galaxy_label(index: int | None) -> str | None:
+    """The galaxy as the game numbers it, then its name: "1-Euclid", "10-Eissentam"."""
+    if index is None:
+        return None
+    return f"{index + 1}-{galaxy_name(index)}"
+
+
 def expedition_name(number: int | None, name_key: str | None = None, display: int | None = None) -> str:
     """The English name: by the save's own name key, else by season number, else a number."""
     if name_key and name_key in seasons.SEASON_NAME_KEYS:

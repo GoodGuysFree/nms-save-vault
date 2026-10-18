@@ -61,6 +61,12 @@ def test_galaxy_names_and_fallback():
     assert lookups.galaxy_name(None) is None
 
 
+def test_galaxy_label_puts_the_game_number_first():
+    assert lookups.galaxy_label(0) == "1-Euclid" and lookups.galaxy_label(9) == "10-Eissentam"
+    assert lookups.galaxy_label(300) == "301-Galaxy 301"
+    assert lookups.galaxy_label(None) is None
+
+
 def test_expedition_names_by_key_then_number_then_a_number():
     assert lookups.expedition_name(46, "UI_SEASON_22_NAME") == "Swarm"
     assert lookups.expedition_name(13, "UI_SEASON_5_NAME") == "Exobiology"       # a remix: not in the table

@@ -162,7 +162,7 @@ def view(vid: str, facts: Mapping) -> FactsView:
     planet = [b for b in bases if b.get("type") == "HomePlanetBase"]
     largest = max(bases, key=lambda b: b.get("parts", 0), default=None)
     per_galaxy = Counter(b.get("galaxy") for b in planet if b.get("galaxy") is not None)
-    galaxies = tuple((lookups.galaxy_name(g) or "", n)
+    galaxies = tuple((lookups.galaxy_label(g) or "", n)
                      for g, n in sorted(per_galaxy.items(), key=lambda kv: (-kv[1], kv[0])))
     legacy = [b.get("legacy_structures", 0) + b.get("legacy_freighter", 0) for b in bases]
     known = ctx.get("legacy_known") or {}
@@ -192,7 +192,7 @@ def view(vid: str, facts: Mapping) -> FactsView:
         companions=len(pets), companion_names=tuple(companion_display(p) for p in pets),
         eggs=ctx.get("eggs", 0),
         expedition=expedition_of(facts),
-        current_galaxy=lookups.galaxy_name(ctx.get("galaxy")),
+        current_galaxy=lookups.galaxy_label(ctx.get("galaxy")),
         journey_rank=lookups.journey_rank(stats.get("JM")),
         quicksilver=ctx.get("quicksilver"), nanites=ctx.get("nanites"), units=ctx.get("units"),
         freighter=(f"{freighter.get('name') or freighter.get('model')}"
@@ -303,7 +303,7 @@ def _context_card(ctx: Mapping) -> dict[str, object]:
     stats = ctx.get("stats") or {}
     return {
         "bases": [{"name": b.get("name", ""), "type": lookups.base_type_label(b.get("type", "")),
-                   "galaxy": lookups.galaxy_name(b.get("galaxy")), "parts": b.get("parts", 0),
+                   "galaxy": lookups.galaxy_label(b.get("galaxy")), "parts": b.get("parts", 0),
                    "legacy_structures": b.get("legacy_structures", 0),
                    "legacy_freighter": b.get("legacy_freighter", 0),
                    "older_format": (b.get("orig_version") or 8) < 8} for b in bases],
@@ -330,7 +330,7 @@ def _context_card(ctx: Mapping) -> dict[str, object]:
         "words": ctx.get("words") or {},
         "stats": {STAT_LABELS[k]: stats[k] for k in STAT_LABELS if k in stats},
         "journey_rank": lookups.journey_rank(stats.get("JM")),
-        "galaxy": lookups.galaxy_name(ctx.get("galaxy")),
+        "galaxy": lookups.galaxy_label(ctx.get("galaxy")),
         "inventories": {k: {"slots": i.get("slots", 0), "capacity": i.get("capacity", 0)}
                         for k, i in (ctx.get("inventories") or {}).items()},
     }

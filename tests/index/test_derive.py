@@ -34,7 +34,7 @@ def test_the_owner_facts_of_a_rich_base_save():
     assert (v.own_bases, v.base_parts) == (5, 13)             # the orphan corvette layout is not counted
     assert (v.planet_bases, v.planet_base_parts) == (3, 8)
     assert v.largest_base == ("Synth Home", 5)
-    assert v.galaxies_with_bases == (("Eissentam", 2), ("Loychazinq", 1))     # galaxy 9 and 20
+    assert v.galaxies_with_bases == (("10-Eissentam", 2), ("21-Loychazinq", 1))     # galaxy 9 and 20
     assert (v.legacy_placed, v.legacy_placed_bases, v.legacy_buildable) == (6, 2, (3, 2))
     assert (v.ships, v.corvettes, v.archived_ships) == (2, 1, 1)
     assert v.ship_names == ("Synth Runner", "Big Synth")      # primary first
@@ -42,7 +42,7 @@ def test_the_owner_facts_of_a_rich_base_save():
     assert v.freighter == "Synth Hauler (S)" and v.frigates == 2
     assert (v.quicksilver, v.nanites, v.units) == (1500, 2500, 4_294_967_295)
     assert (v.words, v.deaths, v.systems_discovered, v.last_played) == (6, 3, 12, 1_790_000_000)
-    assert v.current_galaxy == "Eissentam"
+    assert v.current_galaxy == "10-Eissentam"
     assert v.expedition is None                              # SeasonId 0
     assert v.lookups == lookups.LOOKUP_VERSION
 
@@ -109,7 +109,7 @@ def test_the_card_has_checklists_names_and_errors():
     assert steps[5]["text"] == "not started"
     assert base["choices"] == ["new galaxy"]
     assert [b["type"] for b in base["bases"]][:2] == ["Planet base", "Planet base"]
-    assert base["bases"][0]["galaxy"] == "Eissentam"
+    assert base["bases"][0]["galaxy"] == "10-Eissentam"
     assert base["ships"][1] == {"name": "Big Synth", "type": "Corvette", "class": None, "primary": False}
     assert base["archived_ships"] == [{"name": "Old Synth", "type": "Hauler", "class": "A"}]
     assert base["companions"][1] == {"name": "Quad", "creature": "Quad", "named": False}
