@@ -23,6 +23,7 @@ field. Every interactive widget below therefore gets a ``map`` as well as a ``co
 """
 from __future__ import annotations
 
+import logging
 import sys
 import tkinter as tk
 from tkinter import font as tkfont
@@ -536,6 +537,112 @@ def wants_menu_strip(dark: bool) -> bool:
     the dark theme, the window shows an in-window bar. Everywhere else the native one is kept
     (macOS' global bar, screen readers, X11's colourable menubar)."""
     return dark and sys.platform == "win32"
+
+
+_log = logging.getLogger(__name__)
+_MSGF_MENU, _WM_KEYDOWN, _WH_MSGFILTER = 2, 0x0100, -1
+_VK_LEFT, _VK_RIGHT = 0x25, 0x27
+
+
+class MenuKeyHook:
+    """Left / Right in a menu the in-window bar posted (Windows): leave it, name the neighbour.
+
+    Windows runs a posted Tk menu as a native popup whose modal loop passes its messages
+    through a WH_MSGFILTER hook. While installed (``install`` .. ``remove``, around one post)
+    a Left, or a Right that is not on an entry opening a cascade, is swallowed, the popup is
+    ended and the step recorded; ``remove`` returns it (-1, 0 or +1) for the bar to act on once
+    the popup has returned. The callback only records and calls ``EndMenu``: it runs inside
+    Tk's own call, so it must never call back into Tk."""
+
+    def __init__(self) -> None:
+        self.in_submenu = False   # one of the posted menu's cascades is open: Left closes that
+        self.on_cascade = False   # the highlighted entry opens a cascade: Right opens it
+        self._step = 0
+        self._handle = None
+        self._proc = None
+
+    def handle(self, code: int, wparam: int, lparam: int) -> bool:
+        """Whether this message is swallowed (and the popup ended) by the hook."""
+        if code != _MSGF_MENU or self._step:
+            return False
+        msg = _msg_struct().from_address(lparam)
+        if msg.message != _WM_KEYDOWN:
+            return False
+        if msg.wParam == _VK_LEFT and not self.in_submenu:
+            self._step = -1
+        elif msg.wParam == _VK_RIGHT and not self.on_cascade:
+            self._step = 1
+        else:
+            return False
+        self._end_menu()
+        return True
+
+    @staticmethod
+    def _end_menu() -> None:
+        import ctypes
+
+        ctypes.windll.user32.EndMenu()
+
+    def install(self) -> None:
+        import ctypes
+        from ctypes import wintypes
+
+        self.in_submenu = self.on_cascade = False
+        self._step = 0
+        if self._handle:
+            return
+        user32 = ctypes.windll.user32
+        proto = ctypes.WINFUNCTYPE(ctypes.c_ssize_t, ctypes.c_int, wintypes.WPARAM,
+                                   wintypes.LPARAM)
+        user32.CallNextHookEx.argtypes = [ctypes.c_void_p, ctypes.c_int, wintypes.WPARAM,
+                                          wintypes.LPARAM]
+        user32.CallNextHookEx.restype = ctypes.c_ssize_t
+        user32.SetWindowsHookExW.argtypes = [ctypes.c_int, proto, wintypes.HINSTANCE,
+                                             wintypes.DWORD]
+        user32.SetWindowsHookExW.restype = ctypes.c_void_p
+        user32.UnhookWindowsHookEx.argtypes = [ctypes.c_void_p]
+
+        def proc(code, wparam, lparam):
+            try:
+                if self.handle(code, wparam, lparam):
+                    return 1
+            except Exception:       # a hook must never raise into the OS
+                _log.exception("menu key hook failed")
+            return user32.CallNextHookEx(None, code, wparam, lparam)
+
+        self._proc = proto(proc)    # kept alive while the hook is
+        self._handle = user32.SetWindowsHookExW(
+            _WH_MSGFILTER, self._proc, None, ctypes.windll.kernel32.GetCurrentThreadId())
+        if not self._handle:
+            _log.warning("menu key hook not installed (error %s): Left / Right keep Windows' "
+                         "own behaviour", ctypes.GetLastError())
+
+    def remove(self) -> int:
+        """Take the hook out; the step it recorded (-1, 0, +1)."""
+        import ctypes
+
+        if self._handle:
+            ctypes.windll.user32.UnhookWindowsHookEx(self._handle)
+            self._handle = None
+        step, self._step = self._step, 0
+        return step
+
+
+def _msg_struct():
+    import ctypes
+    from ctypes import wintypes
+
+    class MSG(ctypes.Structure):
+        _fields_ = [("hwnd", wintypes.HWND), ("message", wintypes.UINT),
+                    ("wParam", wintypes.WPARAM), ("lParam", wintypes.LPARAM),
+                    ("time", wintypes.DWORD), ("pt", wintypes.POINT)]
+
+    return MSG
+
+
+def menu_key_hook() -> MenuKeyHook | None:
+    """The key hook for the in-window menu bar; only Windows has the native popups it needs."""
+    return MenuKeyHook() if sys.platform == "win32" else None
 
 
 def style_menu(menu: tk.Menu, p: dict) -> None:

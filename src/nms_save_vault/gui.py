@@ -596,7 +596,7 @@ class App(tk.Tk):
         # there - an in-window copy takes its place (see _place_menubar).
         self._menu_slot = tk.Frame(self, borderwidth=0, highlightthickness=0, height=0)
         self._menu_slot.pack(side=tk.TOP, fill=tk.X)
-        self.menu_strip = MenuStrip(self._menu_slot, bar)
+        self.menu_strip = MenuStrip(self._menu_slot, bar, key_hook=theme.menu_key_hook())
         self._menu_rule = ttk.Separator(self._menu_slot)
         self.themed.register(self.menu_strip)
         self._strip_active = False
