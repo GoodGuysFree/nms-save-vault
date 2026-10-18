@@ -223,7 +223,7 @@ def _bases(out: _Collector, ctx: str, c: Mapping, p: Mapping) -> None:
     cb, pb = _own(c), _own(p)
     pairs, new, gone = match_bases(cb, pb)
     for b in new:
-        galaxy = lookups.galaxy_name(b.get("galaxy")) or "?"
+        galaxy = lookups.galaxy_label(b.get("galaxy")) or "?"
         out.add("base.new", ctx, 90, f"new base '{b.get('name', '')}' ({b.get('parts', 0)} parts, {galaxy})",
                 magnitude=b.get("parts", 0))
     for b in gone:
@@ -231,7 +231,7 @@ def _bases(out: _Collector, ctx: str, c: Mapping, p: Mapping) -> None:
                 magnitude=b.get("parts", 0))
     before = {b.get("galaxy") for b in pb if b.get("type") == "HomePlanetBase"}
     for g in sorted({b.get("galaxy") for b in cb if b.get("type") == "HomePlanetBase"} - before - {None}):
-        out.add("galaxy.first_base", ctx, 85, f"first base in {lookups.galaxy_name(g)}")
+        out.add("galaxy.first_base", ctx, 85, f"first base in {lookups.galaxy_label(g)}")
     deltas = []
     minor = []
     for now, was in pairs:
@@ -375,8 +375,8 @@ def _simple(out: _Collector, ctx: str, c: Mapping, p: Mapping) -> None:
     if found:
         out.add("discoveries", ctx, 21, "discovered " + ", ".join(found))
     if c.get("galaxy") is not None and p.get("galaxy") is not None and c["galaxy"] != p["galaxy"]:
-        out.add("galaxy.current", ctx, 12, f"galaxy {lookups.galaxy_name(p['galaxy'])} -> "
-                f"{lookups.galaxy_name(c['galaxy'])}")
+        out.add("galaxy.current", ctx, 12, f"galaxy {lookups.galaxy_label(p['galaxy'])} -> "
+                f"{lookups.galaxy_label(c['galaxy'])}")
 
 
 _KINDS = (("exosuit", "exosuit"), ("freighter", "freighter"), ("storage", "storage"), ("vehicles", "vehicles"),

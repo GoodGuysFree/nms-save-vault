@@ -182,7 +182,7 @@ def test_n16_items_sorted_by_weight_then_magnitude_top_three():
     c = facts(base=ctx(glyphs=16, quicksilver=60, bases={"own": [base("a", "Small", 10), base("b", "Big", 200)]}))
     cs = diff(c, p)
     assert [x.kind for x in cs.items] == ["base.new", "base.new", "galaxy.first_base", "glyphs", "currencies"]
-    assert cs.items[0].text == "new base 'Big' (200 parts, Euclid)"
+    assert cs.items[0].text == "new base 'Big' (200 parts, 1-Euclid)"
     assert len(cs.top()) == 3 and cs.lines(2) == [cs.header, cs.items[0].text, cs.items[1].text]
 
 
