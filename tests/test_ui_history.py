@@ -1,6 +1,7 @@
 """The History window (D6 U24): rows, tips and panel from D1's graph, and the window."""
 from __future__ import annotations
 
+import time
 import tkinter as tk
 
 import pytest
@@ -459,3 +460,73 @@ def test_what_changed_comes_from_the_content_index_for_the_drawn_parent(forked):
     assert H.PENDING in pending and "+3 min played" in pending
     plain = "".join(t for t, _ in H.panel_segments(model, PID, d))
     assert H.PENDING not in plain and "+3 min played" in plain
+
+
+class _StatusFacts(_Facts):
+    def __init__(self, found=None, statuses=None):
+        super().__init__(found)
+        self.statuses = statuses or {}
+
+    def status(self, vid):
+        return self.statuses.get(vid, "queued")
+
+
+def _event(kind, vid):
+    from types import SimpleNamespace
+    return SimpleNamespace(seq=1, kind=kind, vid=vid, status=None)
+
+
+def test_an_unreadable_version_ends_the_wait_with_a_plain_line(forked):
+    w, (a, b, c, d, e), _ = forked
+    model = w.refresh()
+    row = next(r for r in model.versions(PID) if r.head == d)
+    for bad in (d, row.parent):
+        facts = _StatusFacts(statuses={bad: "unreadable"})
+        text = "".join(t for t, _ in H.panel_segments(model, PID, d, facts))
+        assert H.UNREADABLE in text and H.PENDING not in text
+    waiting = "".join(t for t, _ in H.panel_segments(model, PID, d, _StatusFacts()))
+    assert H.PENDING in waiting and H.UNREADABLE not in waiting
+
+
+def test_the_panel_follows_index_events_instead_of_polling(host, gui_app, forked):
+    from types import SimpleNamespace
+
+    w, (a, b, c, d, e), _ = forked
+    model = w.refresh()
+    row = next(r for r in model.versions(PID) if r.head == d)
+    facts = _StatusFacts()
+    win = H.HistoryWindow(host, model=model, themed=gui_app.themed, pid=PID, head=d,
+                          facts=lambda: facts)
+    try:
+        assert H.PENDING in win.panel_text()
+        gui_app.update()
+        asked = len(facts.asked)
+        time.sleep(0.9)                                        # longer than the old 700 ms poll
+        gui_app.update()
+        assert len(facts.asked) == asked
+        win.on_index_events([_event("changes", "someone-else")])
+        assert len(facts.asked) == asked                       # not about this version
+        facts.found = SimpleNamespace(lines=lambda: ["2 bases changed"])
+        win.on_index_events([_event("changes", d)])
+        assert "2 bases changed" in win.panel_text() and H.PENDING not in win.panel_text()
+        facts.found = None
+        facts.statuses = {row.parent: "error"}
+        win.on_index_events([_event("failed", row.parent)])
+        assert H.UNREADABLE in win.panel_text()
+    finally:
+        win.destroy()
+
+
+def test_an_event_for_a_version_no_longer_shown_leaves_the_panel_alone(host, gui_app, forked):
+    w, (a, b, c, d, e), _ = forked
+    facts = _StatusFacts()
+    win = H.HistoryWindow(host, model=w.refresh(), themed=gui_app.themed, pid=PID, head=d,
+                          facts=lambda: facts)
+    try:
+        win._select_head(a)
+        before, asked = win.panel_text(), len(facts.asked)
+        win.on_index_events([_event("changes", d), _event("indexed", d)])
+        assert win.panel_text() == before and len(facts.asked) == asked
+        assert win.head == a
+    finally:
+        win.destroy()

@@ -228,6 +228,9 @@ class OrganizerView(ttk.Frame):
         kinds = {e.kind for e in events}
         if kinds & {"indexed", "failed", "stale", "warmed", "changes", "finished", "cleared"}:
             self.table.refresh()           # values and the facts sort, in memory: no rescan
+        history = self.histories.history
+        if history is not None and history.winfo_exists():
+            history.on_index_events(events)
         shown = self.detail.facts_head
         if shown is not None and any(e.vid == shown and e.kind in ("indexed", "deep-ready", "changes")
                                      for e in events):

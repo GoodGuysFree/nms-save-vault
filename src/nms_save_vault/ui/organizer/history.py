@@ -297,6 +297,14 @@ def branch_tips(model: ReadModel, pid: str) -> list[Tip]:
 
 
 PENDING = "reading what changed..."
+UNREADABLE = "could not read what changed"
+_UNREADABLE_STATES = ("error", "unreadable", "corrupt", "unsupported")
+
+
+def _never_readable(facts, *vids: str) -> bool:
+    """True when a version's index status says it will not be indexed, so waiting is over."""
+    status = getattr(facts, "status", None)
+    return status is not None and any(status(v) in _UNREADABLE_STATES for v in vids)
 
 
 def panel_segments(model: ReadModel, pid: str, head: str, facts=None) -> list[Segment]:
@@ -330,8 +338,12 @@ def panel_segments(model: ReadModel, pid: str, head: str, facts=None) -> list[Se
                     else "no play time since\n", ("item",)))
         if facts is not None:
             found = facts.changes(row.head, row.parent, edge_kind=row.parent_kind)
-            out += [(PENDING + "\n", ("k",))] if found is None else \
-                [(line + "\n", ("item",)) for line in found.lines()]
+            if found is not None:
+                out += [(line + "\n", ("item",)) for line in found.lines()]
+            elif _never_readable(facts, row.head, row.parent):
+                out.append((UNREADABLE + "\n", ("k",)))
+            else:
+                out.append((PENDING + "\n", ("k",)))
     events = [e for e in model.events(pid) if head in e.vids]
     if events:
         out.append(("EVENTS\n", ("h",)))
@@ -376,7 +388,6 @@ class HistoryWindow(tk.Toplevel):
         super().__init__(master)
         self.model = model
         self.facts = facts
-        self._pending_after: str | None = None
         self.pid = pid
         self.mode = "key"
         self.on_move, self.on_compare = on_move, on_compare
@@ -740,11 +751,18 @@ class HistoryWindow(tk.Toplevel):
         for part, tags in parts:
             rtext(p, "end", part, *tags)
         p.configure(state="disabled")
-        if self._pending_after is not None:
-            self.after_cancel(self._pending_after)
-            self._pending_after = None
-        if any(t.startswith(PENDING) for t, _ in parts):
-            self._pending_after = self.after(700, self._show_panel)
+
+    def on_index_events(self, events: list) -> None:
+        """Index events (already on the Tk thread): redraw the panel when one of them is about
+        the shown version or its parent. ``_show_panel`` reads the current selection, so a
+        switch of version while waiting can never leave a stale panel."""
+        row = next((r for r in self.model.versions(self.pid) if r.head == self.head), None)
+        if row is None:
+            return
+        mine = {row.head, row.parent}
+        if any(e.kind in ("changes", "indexed", "failed", "cleared") and
+               (e.vid is None or e.vid in mine) for e in events):
+            self._show_panel()
 
     def panel_text(self) -> str:
         return self.panel.get("1.0", "end")
