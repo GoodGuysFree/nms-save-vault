@@ -24,7 +24,7 @@ from ...core.store import (
     VersionStore, copy_in, not_copied_in, plan_upgrade, run_fold, run_upgrade, store_status,
     vault_lock, vault_mode)
 from ...core.store import rollback, upgrade
-from ...core.store.migrate import fold_pending
+from ...core.store.migrate import fold_pending, unfolded
 from ..dpi import px, pxs
 from ..redact import set_label, shown
 from ..themeaware import ThemeRegistry
@@ -74,7 +74,8 @@ def _folder_label(path: Path) -> str:
 def read_state(env: VaultEnv, dest_parent: Path | None = None) -> SimpleNamespace:
     root = env.vault_root
     mode = vault_mode(root)
-    out = SimpleNamespace(mode=mode, plan=None, status=None, fold_pending=False,
+    out = SimpleNamespace(mode=mode, plan=None, status=None, fold_pending=False, unfolded=0,
+                          new_vault=False,
                           interrupted_undo=False, not_copied=[], eligible=upgrade.upgrade_needed(root))
     if mode == "legacy" and out.eligible:
         out.plan = plan_upgrade(root, dest_parent=dest_parent, live_roots=list(env.live_roots))
@@ -85,6 +86,8 @@ def read_state(env: VaultEnv, dest_parent: Path | None = None) -> SimpleNamespac
         out.status = store_status(root, store, live_roots=list(env.live_roots),
                                   app_state=env.app_state)
         out.fold_pending = fold_pending(root)
+        out.unfolded = len(unfolded(store, live_roots=list(env.live_roots)))
+        out.new_vault = rollback.created_as_store(root)
         out.not_copied = [(e.id, e.label or e.id, _folder_label(Path(e.path)))
                           for e in not_copied_in(store, live_roots=list(env.live_roots))]
     return out
@@ -268,9 +271,15 @@ class VaultWindow(_Dialog):
                            "space on the vault drive.")
             if st.damage:
                 self._text(f"{len(st.damage)} damaged file(s) were found in the store.")
-        if s.fold_pending:
-            self.fold_button = ttk.Button(self.body, text="Resume reading in the old backups",
-                                          command=self.fold)
+        if s.fold_pending or s.unfolded:
+            if s.unfolded and not s.fold_pending:
+                self._text(f"{s.unfolded} old backup folder(s) in this vault are not in the "
+                           "store yet. Reading them in keeps them (the folders stay where they "
+                           "are) and lists them with the rest.")
+            self.fold_button = ttk.Button(
+                self.body, text=("Resume reading in the old backups" if s.fold_pending
+                                 else "Read the old backups into the store"),
+                command=self.fold)
             self.fold_button.pack(anchor="w", pady=px(4))
         if s.not_copied:
             box = ttk.LabelFrame(self.body, text="Copy into the vault (folders you made by hand)",
@@ -296,6 +305,9 @@ class VaultWindow(_Dialog):
         self.undo_button = ttk.Button(self.body, text="Undo the vault upgrade...",
                                       command=self.plan_undo)
         self.undo_button.pack(anchor="w", pady=pxs(10, 2))
+        if s.new_vault:
+            self.undo_button.state(["disabled"])
+            self._text(rollback.NEW_VAULT_TEXT)
         self._update_buttons()
 
     def _render_interrupted(self, s) -> None:

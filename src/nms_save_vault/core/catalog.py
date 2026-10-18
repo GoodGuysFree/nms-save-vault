@@ -202,9 +202,6 @@ class Vault:
             raise PermissionError(f"the vault at {self.root.name} is opened read-only")
         for d in (self.root, self.backups_dir, self.snapshots_dir, self.extracts_dir):
             d.mkdir(parents=True, exist_ok=True)
-        from .store.versionstore import start_new_vault
-
-        start_new_vault(self.root)      # a brand-new vault starts in store mode (D3 4.1)
 
     def load(self) -> "Vault":
         if not self.read_only:
@@ -217,8 +214,16 @@ class Vault:
         self._loaded = True
         return self
 
+    def start_store(self) -> None:
+        """The first write into a vault with nothing in it: it becomes a store-mode vault
+        (D3 4.1). Browsing a vault (``ensure``) does not."""
+        from .store.versionstore import start_new_vault
+
+        start_new_vault(self.root)
+
     def save(self) -> None:
         self.ensure()
+        self.start_store()
         data = {"version": CATALOG_VERSION, "entries": [asdict(e) for e in self._entries]}
         # Temp file, fsync, os.replace: a crash leaves the old catalog or the new one, whole.
         safety.atomic_write_bytes(
@@ -303,6 +308,7 @@ class Vault:
         is never extended: the record starts on a fresh line. One handle checks the last
         byte and writes, and every byte is written even if the OS takes them in pieces."""
         self.ensure()
+        self.start_store()
         data = (json.dumps(record) + "\n").encode("utf-8")
         with open(self.oplog_path, "a+b", buffering=0) as f:
             size = f.seek(0, os.SEEK_END)
@@ -363,7 +369,8 @@ def looks_like_vault_dir(path: str | Path) -> bool:
     """True if ``path`` is an NMS Save Vault root. The authoritative marker is
     ``catalog.json`` (written the first time the vault gains an entry); a vault copied
     elsewhere carries it along with its ``backups``/``snapshots``/``extracts`` folders."""
-    return (Path(path) / "catalog.json").is_file()
+    return ((Path(path) / "catalog.json").is_file()
+            or (Path(path) / "store" / "FORMAT").is_file())
 
 
 def discover_save_dirs(root: str | Path, exclude=(), max_depth: int = 3) -> list[Path]:

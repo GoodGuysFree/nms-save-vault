@@ -315,3 +315,40 @@ def test_closing_does_not_wait_for_an_inline_job(make):
     took = time.monotonic() - start
     gate.set()
     assert took < 5
+
+
+def test_the_cache_is_closed_exactly_once_when_the_writer_leaves_just_after_close_gave_up(
+        make, monkeypatch):
+    """close() stops waiting while the writer is wedged; the writer then leaves through the
+    plain "stop" op (not the abandon check) - one side closes the cache, once."""
+    from nms_save_vault.core.index import service as service_mod
+
+    gate = threading.Event()
+    orig = IndexService._apply
+
+    def slow_apply(self, op):
+        if op[0] == "touch" and not gate.is_set():
+            gate.wait(20)
+        return orig(self, op)
+
+    monkeypatch.setattr(IndexService, "_apply", slow_apply)
+    monkeypatch.setattr(service_mod, "WRITER_JOIN_S", 0.2)
+    loc = SpyLocator()
+    a = loc.add(save_bytes(1))
+    svc = make(loc)
+    closes = []
+    real_close = svc.cache.close
+    svc.cache.close = lambda: (closes.append(1), real_close())
+    svc.request([a], Priority.LIVE)
+    time.sleep(0.3)
+    writer = svc._writer
+    svc.close()
+    svc._writes.put(None)                                    # a second stop op is queued too
+    gate.set()
+    writer.join(10)
+    assert not writer.is_alive()
+    wait_for(lambda: closes)
+    time.sleep(0.1)
+    assert closes == [1]
+    svc.close()
+    assert closes == [1]

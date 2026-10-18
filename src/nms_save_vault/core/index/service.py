@@ -89,6 +89,9 @@ class IndexService:
         self._error: str | None = None
         self._closed = False
         self._abandon = False             # close() gave up waiting: the writer stops and closes the cache
+        self._handoff = threading.Lock()  # who closes the cache: close() or, once abandoned, the writer
+        self._writer_done = False
+        self._cache_closed = False
         self._started_at: float | None = None
         self.cache: IndexCache | None = None
         self.dispatcher: Dispatcher | None = None
@@ -314,12 +317,19 @@ class IndexService:
         if writer is not None:
             self._writes.put(None)
             writer.join(WRITER_JOIN_S)
-            if writer.is_alive():
-                self._abandon = True
-                if writer.is_alive():
-                    return                        # the writer closes the cache when it gets out
-        if self.cache is not None:
-            self.cache.close()
+            with self._handoff:
+                if not self._writer_done:
+                    self._abandon = True
+                    return                        # the writer closes the cache as it leaves
+        self._close_cache()
+
+    def _close_cache(self) -> None:
+        """Closes the cache exactly once, whichever side gets here first."""
+        with self._handoff:
+            if self._cache_closed or self.cache is None:
+                return
+            self._cache_closed = True
+        self.cache.close()
 
     # --- progress and events -----------------------------------------------------------------
 
@@ -367,14 +377,21 @@ class IndexService:
     # --- the writer thread ---------------------------------------------------------------------
 
     def _write_loop(self) -> None:
+        try:
+            self._write_ops()
+        finally:
+            with self._handoff:
+                self._writer_done = True
+                abandoned = self._abandon
+            if abandoned:                         # close() stopped waiting and left the cache to us
+                self._close_cache()
+
+    def _write_ops(self) -> None:
         self.cache.adopt_writer()
         unfinished = False
         while True:
             op = self._writes.get()
-            if self._abandon:                     # close() stopped waiting: no further writes
-                self.cache.close()
-                return
-            if op is None:
+            if self._abandon or op is None:       # abandoned: no further writes
                 return
             self._apply_safely(op)
             unfinished = unfinished or op[0] == "result"

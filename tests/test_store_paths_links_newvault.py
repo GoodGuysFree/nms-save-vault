@@ -137,14 +137,16 @@ def test_walk_skips_and_strict_refuses_a_symlink(tmp_path):
 # --- a new vault --------------------------------------------------------------------------
 
 
-def test_a_new_vault_starts_in_store_mode(tmp_path, new_vault_store):
+def test_a_new_vault_starts_in_store_mode_at_its_first_write(tmp_path, new_vault_store):
     vault = Vault(tmp_path / "fresh")
     assert versionstore.vault_mode(vault.root) == "legacy"      # nothing yet: nothing created
-    vault.ensure()
+    vault.ensure()                                               # browsing creates no store
+    assert versionstore.vault_mode(vault.root) == "legacy"
+    vault.save()
     assert versionstore.vault_mode(vault.root) == "store"
-    assert not catalog.looks_like_vault_dir(vault.root)
+    assert catalog.looks_like_vault_dir(vault.root)
     assert not vstore.upgrade_needed(vault.root)
-    vault.ensure()                                               # idempotent
+    vault.save()                                                 # idempotent
     assert versionstore.vault_mode(vault.root) == "store"
 
 

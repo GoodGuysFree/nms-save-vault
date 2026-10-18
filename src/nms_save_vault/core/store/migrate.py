@@ -65,6 +65,19 @@ def fold_pending(vault_root: str | Path) -> bool:
     return isinstance(fold, dict) and fold.get("state") not in (None, "done")
 
 
+def unfolded(store: VersionStore, *, live_roots: Sequence[Path] | None = None
+             ) -> list[CatalogEntry]:
+    """The managed old backup folders of the vault that the store does not hold (the owner
+    copied an old vault's folders in, or the upgrade's fold never ran): what a fold would read
+    in. Reads only."""
+    vault = Vault(store.vault_root, read_only=True).load()
+    live = discover.live_folders(live_roots) if live_roots is not None else store.live_folders()
+    statuses = _statuses(store.vault_root)
+    return [e for e in sorted(vault.entries, key=lambda e: (e.created, e.id))
+            if not _skip_reason(vault, e, live)[0] and not store.has_entry(e.id)
+            and statuses.get(e.id, {}).get("status") != "verified"]
+
+
 def run_fold(store: VersionStore, *, live_roots: Sequence[Path] | None = None,
              progress: Callable[[FoldProgress], None] | None = None,
              cancel: threading.Event | None = None) -> FoldReport:

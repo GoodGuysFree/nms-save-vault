@@ -222,6 +222,10 @@ def start_new_vault(vault_root: str | Path, *,
             if not is_new_vault(root):          # another window got here first
                 return False
             create_store(root, clock=clock)
+        from .migrate import write_migration
+
+        write_migration(root, {"created_in_store_mode": True})   # no upgrade ever happened here
+        catalog.Vault(root).save()                               # an empty catalog: a vault to import
     except (safety.LockTimeout, RuntimeError):
         return False        # a writer holds the lock (or this thread does): not a first write
     return True

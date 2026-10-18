@@ -26,7 +26,7 @@ from .. import catalog, safety
 from ..catalog import CatalogEntry, Vault
 from . import capture
 from .errors import RollbackError
-from .listing import MIGRATION_JSON, entry_folder
+from .listing import MIGRATION_JSON, entry_folder, read_migration
 from .manifest import StoreEntry
 from .objects import sha256
 from .upgrade import (
@@ -105,6 +105,15 @@ def keep_upgrade(vault_root: str | Path) -> None:
         (store_root(root) / STATE / UPGRADE_JSON).unlink()
 
 
+NEW_VAULT_TEXT = ("This vault was made as a version store, so there is no upgrade to undo.")
+
+
+def created_as_store(vault_root: str | Path) -> bool:
+    """A vault that began in store mode (no upgrade ever ran on it, so none can be undone)."""
+    migration = read_migration(Path(vault_root))
+    return bool(migration.get("created_in_store_mode")) and "copy_aside" not in migration
+
+
 def plan_rollback(vault_root: str | Path, store: VersionStore, *, copy: str | Path | None = None,
                   cancel: threading.Event | None = None, force: bool = False) -> RollbackPlan:
     """What undoing the upgrade would do, and why it cannot run now. Reads only (it re-hashes
@@ -114,6 +123,8 @@ def plan_rollback(vault_root: str | Path, store: VersionStore, *, copy: str | Pa
     problems: list[tuple[str, str]] = []
     if vault_mode(root) == "legacy":
         problems.append(("not-upgraded", "The vault is not upgraded."))
+    if created_as_store(root):
+        return RollbackPlan(root, None, False, (), (), 0, 0, (("new-vault", NEW_VAULT_TEXT),))
     migration = _strict_migration(root)
     recorded = migration.get("copy_aside") if migration is not None else None
     folder: Path | None = Path(copy) if copy is not None else (
