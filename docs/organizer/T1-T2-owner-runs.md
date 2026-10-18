@@ -11,18 +11,17 @@ T1 = Steam to Xbox (the target slot is on Xbox). T2 = Xbox to Steam (the target 
 ## Before either run
 
 1. Close No Man's Sky, Steam's sync prompt and the Xbox app. Wait 60 seconds.
-2. Free a slot IN THE GAME on the TARGET platform (Xbox for T1, Steam for T2): in the game's
-   own load menu delete one save you do not need. Close the game.
-3. Back up both live folders and keep the save you deleted:
+2. Back up both live folders:
    ```pwsh
    cd C:\Devel\NMSVault
    uv run nmsvault backup --vault D:\VaultCopy --live "<Steam account folder>" --label "T1 before"
    uv run nmsvault backup --vault D:\VaultCopy --live "<Xbox wgs account folder>" --label "T1 before"
    ```
-   Do step 2's delete AFTER you have the vault copy of that save: in the app, open the save you
-   will delete and use "Keep a copy in the vault now" (do it on each platform you delete from).
-   Then delete it in the game (step 2), and redo the backup of the target folder (the backup
-   must be under 30 minutes old when you move).
+   Then start the app normally (`uv run nmsvault-gui --vault D:\VaultCopy`), open the save you
+   will delete on the TARGET platform and use "Keep a copy in the vault now". Close the app.
+3. Free a slot IN THE GAME on the TARGET platform (Xbox for T1, Steam for T2): in the game's
+   own load menu delete that save. Close the game. Redo the backup command for the target
+   folder (it must be under 30 minutes old when you move).
 4. Start the app with the gate, in its own shell (close the shell afterwards so the gate does
    not stay on):
    ```pwsh
@@ -67,7 +66,7 @@ Stop. Do not play on. Note which check failed and what the game said.
 
 ## Undo
 
-The app never empties a slot, so a transfer has no Undo button. To undo it: close the app's
+The app never empties a slot, so a transfer has no Undo button. To undo it: 
 game session, then in the game's own load menu on the target platform delete the transferred
-save, exactly as in step 2. The vault keeps the copy you made in step 3 and the backups; the
+save, exactly as in step 3. The vault keeps the copy you made in step 3 and the backups; the
 source save was never touched.
