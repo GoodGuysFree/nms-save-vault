@@ -11,11 +11,15 @@ T1 = Steam to Xbox (the target slot is on Xbox). T2 = Xbox to Steam (the target 
 ## Before either run
 
 1. Close No Man's Sky, Steam's sync prompt and the Xbox app. Wait 60 seconds.
-2. Back up both live folders:
+2. Back up both live folders. List your Steam folders first and set `$steam` to the account
+   you play on (there may be more than one `st_` folder):
    ```pwsh
    cd C:\Devel\NMSVault
-   uv run nmsvault backup --vault D:\VaultCopy --live "<Steam account folder>" --label "T1 before"
-   uv run nmsvault backup --vault D:\VaultCopy --live "<Xbox wgs account folder>" --label "T1 before"
+   Get-ChildItem "$env:APPDATA\HelloGames\NMS" -Directory -Filter "st_*" | Select-Object Name
+   $steam = "$env:APPDATA\HelloGames\NMS\st_<your Steam id>"
+   $xbox = (Get-ChildItem "$env:LOCALAPPDATA\Packages\HelloGames.NoMansSky_bs190hzg1sesy\SystemAppData\wgs" -Directory -Filter "*_*" | Select-Object -First 1).FullName
+   uv run nmsvault backup --vault D:\VaultCopy --live $steam --label "T1 before"
+   uv run nmsvault backup --vault D:\VaultCopy --live $xbox --label "T1 before"
    ```
    Then start the app normally (`uv run nmsvault-gui --vault D:\VaultCopy`), open the save you
    will delete on the TARGET platform and use "Keep a copy in the vault now". Close the app.
