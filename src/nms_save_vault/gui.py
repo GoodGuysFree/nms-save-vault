@@ -522,9 +522,10 @@ class App(tk.Tk):
     # --- layout --------------------------------------------------------------
 
     def _build_menubar(self) -> None:
-        """The menu bar (D6 2.2): every action has a keyboard path (Alt, then the
-        underlined letter) whatever the window width or zoom, and the preferences that
-        are not actions (theme, zoom) live here instead of in the toolbar row."""
+        """The menu bar (D6 2.2): native, except in the dark theme on Windows (see
+        _place_menubar). Every action has a keyboard path (Alt, then the underlined letter)
+        whatever the window width or zoom, and the preferences that are not actions (theme,
+        zoom) live here instead of in the toolbar row."""
         bar = tk.Menu(self, tearoff=False)
         self.menubar = bar
 
@@ -588,21 +589,72 @@ class App(tk.Tk):
         about = menu("Help")
         about.add_command(label="Help", command=self.on_help, accelerator="F1", underline=0)
         about.add_command(label="About NMS Save Vault", command=self.on_about, underline=0)
-        # Not attached with configure(menu=): the OS would draw its own light strip. The
-        # model menu feeds an in-window bar that follows the theme.
-        self.menu_strip = MenuStrip(self, bar)
-        self.menu_strip.pack(side=tk.TOP, fill=tk.X)
-        ttk.Separator(self).pack(side=tk.TOP, fill=tk.X)
+        # The native bar is the default (OS look, screen readers, the global bar on macOS).
+        # Windows draws it light whatever the theme, so in the dark theme there - and only
+        # there - an in-window copy takes its place (see _place_menubar).
+        self._menu_slot = tk.Frame(self, borderwidth=0, highlightthickness=0, height=0)
+        self._menu_slot.pack(side=tk.TOP, fill=tk.X)
+        self.menu_strip = MenuStrip(self._menu_slot, bar)
+        self._menu_rule = ttk.Separator(self._menu_slot)
         self.themed.register(self.menu_strip)
-        for letter, button in self.menu_strip.mnemonics.items():
-            for key in (letter.lower(), letter.upper()):
-                self.bind_all(f"<Alt-Key-{key}>", self._shortcut(lambda b=button: self.menu_strip.post(b)))
-        self.bind_all("<F10>", self._shortcut(self.menu_strip.open_first))
+        self._strip_active = False
+        self.configure(menu=bar)
+        self._alt_down = 0.0
+        # Tk's own Alt / F10 bindings, kept to be put back when the native bar returns.
+        self._tk_menu_keys = {seq: self.tk.call("bind", "all", seq) for seq in _MENU_KEYS}
         self.bind_all("<F1>", self._shortcut(self.on_help))
         self.bind_all("<F5>", self._shortcut(self.refresh))
         self.bind_all("<Control-Key-0>", self._shortcut(self._zoom_reset))
         self.bind_all("<Control-Key-z>", self._shortcut(self._undo_shortcut))
         self.bind_all("<Control-Key-Z>", self._shortcut(self._undo_shortcut))
+
+    def _place_menubar(self, strip: bool) -> None:
+        """Show the in-window bar (``strip``) or the native one, and the keys that go with it.
+
+        With the in-window bar Tk's Alt / F10 bindings must go: they hand the key to the OS
+        menu mode, which has no native bar to show - an invisible mode whose next letter
+        beeps. Alt+letter then opens that menu, a lone Alt tap or F10 the first one."""
+        if strip == self._strip_active:
+            return
+        self._strip_active = strip
+        if strip:
+            self.configure(menu="")
+            self.menu_strip.pack(side=tk.TOP, fill=tk.X)
+            self._menu_rule.pack(side=tk.TOP, fill=tk.X)
+            for letter, button in self.menu_strip.mnemonics.items():
+                for key in (letter.lower(), letter.upper()):
+                    self.bind_all(f"<Alt-Key-{key}>", self._shortcut(lambda b=button: self.menu_strip.post(b), main_only=True))
+            self.bind_all("<Alt-Key>", self._shortcut(self._alt_other, main_only=True))
+            self.bind_all("<Key-Alt_L>", self._shortcut(self._alt_pressed, main_only=True))
+            self.bind_all("<Key-Alt_R>", self._shortcut(self._alt_pressed, main_only=True))
+            self.bind_all("<KeyRelease-Alt_L>", self._shortcut(self._alt_released, main_only=True))
+            self.bind_all("<KeyRelease-Alt_R>", self._shortcut(self._alt_released, main_only=True))
+            self.bind_all("<Alt-KeyRelease>", self._shortcut(self._alt_other, main_only=True))
+            self.bind_all("<Key-F10>", self._shortcut(self.menu_strip.open_first, main_only=True))
+            self.bind_all("<KeyRelease-F10>", self._shortcut(self._alt_other, main_only=True))
+        else:
+            self.menu_strip.pack_forget()
+            self._menu_rule.pack_forget()
+            self.configure(menu=self.menubar)
+            for letter in self.menu_strip.mnemonics:
+                for key in (letter.lower(), letter.upper()):
+                    self.tk.call("bind", "all", f"<Alt-Key-{key}>", "")
+            for seq, script in self._tk_menu_keys.items():
+                self.tk.call("bind", "all", seq, script)
+
+    def _alt_pressed(self) -> None:
+        self._alt_down = time.monotonic()
+
+    def _alt_other(self) -> None:
+        """Any other Alt chord, or the release of F10: swallowed, so it does not beep."""
+        self._alt_down = 0.0
+
+    def _alt_released(self) -> None:
+        """Alt tapped on its own, as the OS menu key: open the first menu."""
+        tapped = self._alt_down and time.monotonic() - self._alt_down < 1.5
+        self._alt_down = 0.0
+        if tapped:
+            self.menu_strip.open_first()
 
     def _undo_shortcut(self) -> None:
         """Ctrl+Z (through the grab check): a text field keeps its own undo; elsewhere it is
@@ -672,10 +724,18 @@ class App(tk.Tk):
         if needs_attention(self.vault.root):
             self.open_vault_window()
 
-    def _shortcut(self, action):
+    def _shortcut(self, action, *, main_only: bool = False):
         """A window-wide key. Ignored while a dialog or the "Please wait" window holds the
-        grab: F5 must not refresh the panes under an open dialog, nor zoom rebuild them."""
-        def run(_event=None):
+        grab: F5 must not refresh the panes under an open dialog, nor zoom rebuild them.
+        ``main_only``: also ignored in the app's other windows (Notes, History ...), whose
+        Alt+E must not open the main window's Edit menu."""
+        def run(event=None):
+            if main_only and event is not None:
+                try:
+                    if event.widget.winfo_toplevel() is not self:
+                        return "break"
+                except (AttributeError, KeyError, tk.TclError):
+                    return "break"
             if self.grab_current() is None:
                 action()
             return "break"
@@ -879,6 +939,7 @@ class App(tk.Tk):
         )
         self._dark = name == theme.DARK
         self._palette = p
+        self._place_menubar(theme.wants_menu_strip(self._dark))
         for window in self._windows():
             theme.dark_title_bar(window, self._dark)
         self.themed.apply(p)
@@ -2694,6 +2755,10 @@ class CopySlotDialog(tk.Toplevel):
         self.result = (self.source, Path(self._target_source().path), slot)
         self.destroy()
 
+
+#: The bindings Tk puts on every window for its native menu bar (Alt, Alt+letter, F10).
+_MENU_KEYS = ("<Alt-Key>", "<Alt-KeyRelease>", "<Key-Alt_L>", "<Key-Alt_R>",
+              "<KeyRelease-Alt_L>", "<KeyRelease-Alt_R>", "<Key-F10>", "<KeyRelease-F10>")
 
 HELP_TEXT = """NMS Save Vault - Help
 

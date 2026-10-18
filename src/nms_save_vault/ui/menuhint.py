@@ -12,10 +12,13 @@ def bind_menu_hints(menu: tk.Menu, hints: Mapping[str, str],
     highlight leaves such an entry."""
     state = {"shown": False}
 
-    def on_select(_event=None) -> None:
+    def on_select(event=None) -> None:
+        # The in-window menu bar posts a copy of the menu: the event names the posted one.
+        posted = getattr(event, "widget", None)
+        target = posted if isinstance(posted, tk.Menu) else menu
         try:
-            active = menu.index("active")
-            label = menu.entrycget(active, "label") if active is not None else ""
+            active = target.index("active")
+            label = target.entrycget(active, "label") if active is not None else ""
         except tk.TclError:
             label = ""
         text = hints.get(label, "")

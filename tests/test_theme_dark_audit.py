@@ -123,28 +123,142 @@ def check(gui_app, window, name):
 
 def test_the_main_window_both_tabs_and_the_menu_bar(gui_app, mode):
     check(gui_app, gui_app, mode)
-    assert not gui_app.cget("menu")                    # the OS draws a light strip; ours follows
     strip = gui_app.menu_strip
-    assert strip.winfo_class() == "Frame"
-    palette = theme.PALETTES[mode]
+    # Native bar by default; the in-window one only in dark on Windows.
+    assert gui_app._strip_active == theme.wants_menu_strip(mode == theme.DARK)
+    assert bool(gui_app.cget("menu")) != gui_app._strip_active
+    assert bool(strip.winfo_manager()) == gui_app._strip_active
+
+
+@pytest.fixture
+def strip_app(gui_app, monkeypatch):
+    """The in-window bar, whatever the platform: dark theme with the strip forced on."""
+    monkeypatch.setattr(theme, "dark_title_bar", lambda *a, **k: False)
+    monkeypatch.setattr(theme, "wants_menu_strip", lambda dark: dark)
+    original = gui_app.state.theme
+    gui_app.state.theme = theme.DARK
+    gui_app._apply_theme()
+    gui_app.update()
+    yield gui_app
+    gui_app.state.theme = original
+    gui_app._apply_theme()
+
+
+def test_the_in_window_bar_follows_the_palette(strip_app):
+    strip = strip_app.menu_strip
+    palette = theme.PALETTES[theme.DARK]
+    assert strip.winfo_manager() == "pack" and not strip_app.cget("menu")
     assert _hex(strip, strip.cget("background")) == palette["bg"]
     for button in strip.buttons:
         assert _hex(button, button.cget("background")) == palette["bg"]
-        dropdown = gui_app.nametowidget(str(button.cget("menu")))
+        dropdown = strip.dropdown(button)
         assert _hex(dropdown, dropdown.cget("background")) == palette["btn_bg"]
         assert _hex(dropdown, dropdown.cget("activebackground")) == palette["sel_bg"]
+    assert audit(strip, theme.DARK) == []
 
 
-def test_the_menu_bar_keeps_its_keyboard_access(gui_app):
-    strip = gui_app.menu_strip
-    assert [b.cget("text") for b in strip.buttons] == [
-        "File", "Edit", "View", "Live", "Tools", "Help"]
-    assert all(b.cget("underline") == 0 for b in strip.buttons)
-    assert set(strip.mnemonics) == set("fevlth")
-    for letter in strip.mnemonics:
-        assert gui_app.bind_all(f"<Alt-Key-{letter}>") and gui_app.bind_all(
-            f"<Alt-Key-{letter.upper()}>")
-    assert gui_app.bind_all("<F10>")
+def test_the_dropdowns_are_descendants_of_their_buttons_and_copy_the_model(strip_app):
+    """Tk refuses to post a dropdown that is not a descendant of its Menubutton."""
+    strip = strip_app.menu_strip
+    model = strip_app.menubar
+    for i, button in enumerate(strip.buttons):
+        dropdown = strip.dropdown(button)
+        assert str(dropdown).startswith(str(button) + ".")
+        source = strip_app.nametowidget(model.entrycget(i, "menu"))
+        types = [source.type(n) for n in range(source.index("end") + 1)]
+        assert [dropdown.type(n) for n in range(dropdown.index("end") + 1)] == types
+        for n, kind in enumerate(types):
+            if kind != "separator":
+                assert dropdown.entrycget(n, "label") == source.entrycget(n, "label")
+                assert dropdown.entrycget(n, "underline") == source.entrycget(n, "underline")
+                assert dropdown.entrycget(n, "accelerator") == source.entrycget(n, "accelerator")
+    view = strip.dropdown(strip.buttons[2])
+    theme_menu = strip_app.nametowidget(view.entrycget("Theme", "menu"))
+    assert [theme_menu.entrycget(n, "label") for n in range(3)] == ["System", "Light", "Dark"]
+    assert str(theme_menu).startswith(str(view) + ".")
+
+
+def test_alt_letter_and_f10_open_menus_and_other_windows_do_not(strip_app, monkeypatch):
+    strip = strip_app.menu_strip
+    opened = []
+    monkeypatch.setattr(strip, "post", lambda b: opened.append(b.cget("text")))
+    strip_app.deiconify()                 # key events need a mapped window with the focus
+    strip_app.update()
+    strip_app.focus_force()
+    strip_app.update()
+    try:
+        _keys(strip_app, strip, opened)
+    finally:
+        strip_app.withdraw()
+
+
+def _keys(strip_app, strip, opened):
+    for letter, button in strip.mnemonics.items():
+        for key in (letter, letter.upper()):
+            strip_app.event_generate(f"<Alt-Key-{key}>")
+            assert opened[-1] == button.cget("text")
+    opened.clear()
+    strip_app.event_generate("<Key-F10>")
+    assert opened == ["File"]
+    opened.clear()
+    strip_app.event_generate("<Key-Alt_L>")                     # an Alt tap opens the first menu
+    strip_app.event_generate("<KeyRelease-Alt_L>")
+    assert opened == ["File"]
+    opened.clear()
+    strip_app.event_generate("<KeyRelease-Alt_L>")              # a release with no press: ignored
+    other = tk.Toplevel(strip_app)
+    entry = tk.Entry(other)
+    entry.pack()
+    try:
+        other.update()
+        entry.focus_force()
+        other.update()
+        entry.event_generate("<Alt-Key-e>")
+        entry.event_generate("<Key-F10>")
+        assert opened == []
+    finally:
+        other.destroy()
+
+
+def test_a_window_is_retinted_when_it_maps(gui_app, mode):
+    """The <Map> path: a window that appears after the theme was applied gets its stale
+    light widgets recoloured as it is shown."""
+    win = tk.Toplevel(gui_app)                       # not a transient: it really maps
+    stale = tk.Frame(win, background="#f0f0f0" if mode == theme.DARK else "#242424")
+    stale.pack()
+    try:
+        win.geometry("+5000+5000")                   # off screen
+        win.deiconify()
+        win.update()
+        assert win.winfo_ismapped()
+        assert _hex(stale, stale.cget("background")) == theme.PALETTES[mode]["bg"]
+    finally:
+        win.destroy()
+
+
+def test_the_native_bar_comes_back_with_its_keys(gui_app, monkeypatch):
+    monkeypatch.setattr(theme, "dark_title_bar", lambda *a, **k: False)
+    monkeypatch.setattr(theme, "wants_menu_strip", lambda dark: dark)
+    original = gui_app.state.theme
+    try:
+        gui_app.state.theme = theme.DARK
+        gui_app._apply_theme()
+        assert gui_app._strip_active and not gui_app.cget("menu")
+        assert gui_app.bind_all("<Alt-Key-f>")
+        gui_app.state.theme = theme.LIGHT
+        gui_app._apply_theme()
+        assert not gui_app._strip_active and gui_app.cget("menu") == str(gui_app.menubar)
+        assert not gui_app.menu_strip.winfo_manager()
+        assert not gui_app.bind_all("<Alt-Key-f>")
+        for seq, script in gui_app._tk_menu_keys.items():
+            assert gui_app.tk.call("bind", "all", seq) == script
+    finally:
+        gui_app.state.theme = original
+        gui_app._apply_theme()
+
+
+def test_the_bar_adds_no_tab_stops(gui_app):
+    assert not any(int(b.cget("takefocus") or 0) for b in gui_app.menu_strip.buttons)
 
 
 def test_check_marks_are_readable_in_both_themes(gui_app, mode):

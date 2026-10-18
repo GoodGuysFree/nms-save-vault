@@ -531,6 +531,13 @@ def apply(root: tk.Misc, choice: str, native_ttk_theme: str) -> str:
     return name
 
 
+def wants_menu_strip(dark: bool) -> bool:
+    """Windows draws its native menu bar light whatever the theme, so only there, and only in
+    the dark theme, the window shows an in-window bar. Everywhere else the native one is kept
+    (macOS' global bar, screen readers, X11's colourable menubar)."""
+    return dark and sys.platform == "win32"
+
+
 def style_menu(menu: tk.Menu, p: dict) -> None:
     """Colour a dropdown or context menu; Tk draws its items itself on Windows."""
     menu.configure(
