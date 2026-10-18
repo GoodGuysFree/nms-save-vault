@@ -34,6 +34,8 @@ from ..tooltip import Tooltip
 from .words import NO_BACKUP_TIP
 
 ONE, TWO = "one", "two"
+SLOT, GAME = "slot", "game"
+GAME_ORDER_TIP = "As in game: newest save first, the order of the game's load screen."
 NEVER_EMPTIES = "The app never empties a slot; this one was emptied outside the app."
 
 #: What each marker means, in the legend and in words wherever it is drawn.
@@ -74,6 +76,16 @@ def refill_text(source: LiveSource) -> str | None:
 def refill_inline(source: LiveSource) -> str:
     return ("Xbox sync may put a save back here" if source.platform == "xbox"
             else "Steam Cloud may put a save back here at the next game start")
+
+
+def game_order(slots) -> list[BoardSlot]:
+    """The game's load-screen order: newest save time first (the clock of "Last played");
+    empty and unreadable slots last, in slot order."""
+    def key(s: BoardSlot) -> tuple:
+        if s.state in ("empty", "unreadable"):
+            return (1, 0, s.target.slot)
+        return (0, -s.saved_at, s.target.slot)
+    return sorted(slots, key=key)
 
 
 def slot_markers(slot: BoardSlot, source: LiveSource) -> list[str]:
@@ -142,6 +154,7 @@ class LiveArea(ttk.Frame):
         self.model: ReadModel | None = None
         self.sources: tuple[LiveSource, ...] = ()
         self.mode = prefs.get("live_mode") if prefs.get("live_mode") in (ONE, TWO) else None
+        self.order = GAME if prefs.get("live_order") == GAME else SLOT
         self.chosen: list[str] = list(prefs.get("live_sources") or [])
         self.selected_pid: str | None = None
         self.focus_token: str | None = None
@@ -164,11 +177,20 @@ class LiveArea(ttk.Frame):
                            padx=px(10), pady=px(2), relief="flat", borderwidth=1,
                            offrelief="flat", overrelief="raised")
             for text, value in (("One", ONE), ("Two", TWO))]
+        self.order_var = tk.StringVar(value=self.order)
+        self.order_buttons = [
+            tk.Radiobutton(self.bar, text=text, value=value, variable=self.order_var,
+                           indicatoron=False, command=lambda v=value: self.set_order(v),
+                           padx=px(10), pady=px(2), relief="flat", borderwidth=1,
+                           offrelief="flat", overrelief="raised")
+            for text, value in (("Slot order", SLOT), ("As in game", GAME))]
         self.pick_vars = [tk.StringVar(), tk.StringVar()]
         self.pickers = [ttk.Combobox(self.bar, textvariable=var, state="readonly", width=18)
                         for var in self.pick_vars]
         for n, picker in enumerate(self.pickers):
             picker.bind("<<ComboboxSelected>>", lambda _e, i=n: self._picked(i))
+        self.order_tip = Tooltip(self.order_buttons[1], lambda _w, _k: GAME_ORDER_TIP,
+                              key_at=lambda _e: "order")
         self.canvas = tk.Canvas(self, highlightthickness=px(1), borderwidth=0,
                                 takefocus=True, height=px(200), width=px(460))
         self.canvas.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
@@ -190,7 +212,7 @@ class LiveArea(ttk.Frame):
         self._p = dict(p)
         self.canvas.configure(background=p["field"], highlightbackground=p["border"],
                               highlightcolor=p["accent"])
-        for button in self.mode_buttons:
+        for button in (*self.mode_buttons, *self.order_buttons):
             button.configure(background=p["btn_bg"], foreground=p["fg"],
                              selectcolor=p["chip_on"], activebackground=p["hover_bg"],
                              activeforeground=p["fg"], highlightbackground=p["bg"])
@@ -226,7 +248,7 @@ class LiveArea(ttk.Frame):
         self.chosen = chosen
 
     def _layout_bar(self) -> None:
-        for widget in (self.title, *self.mode_buttons, *self.pickers):
+        for widget in (self.title, *self.mode_buttons, *self.order_buttons, *self.pickers):
             widget.pack_forget()
         self.message.pack_forget()
         if not self.sources:
@@ -234,11 +256,16 @@ class LiveArea(ttk.Frame):
             self.message.pack(side=tk.TOP, fill=tk.X, before=self.canvas)
             return
         self.title.pack(side=tk.LEFT, padx=pxs(0, 6))
-        if len(self.sources) == 1:
-            return                               # one folder: no switch, no selector
-        self.mode_var.set(self.mode)
-        for button in self.mode_buttons:
+        self.order_var.set(self.order)
+        if len(self.sources) > 1:
+            self.mode_var.set(self.mode)
+            for button in self.mode_buttons:
+                button.pack(side=tk.LEFT)
+            tk.Frame(self.bar, width=px(10)).pack(side=tk.LEFT)
+        for button in self.order_buttons:
             button.pack(side=tk.LEFT)
+        if len(self.sources) == 1:
+            return                               # one folder: no mode switch, no selector
         names = self.labels()
         labels = list(names.values())
         lists = 2 if self.mode == TWO else 1
@@ -255,6 +282,14 @@ class LiveArea(ttk.Frame):
         self.prefs["live_mode"] = mode
         self.save_prefs()
         self._layout_bar()
+        self.redraw()
+
+    def set_order(self, order: str) -> None:
+        if order not in (SLOT, GAME):
+            return
+        self.order = order
+        self.prefs["live_order"] = order
+        self.save_prefs()
         self.redraw()
 
     def set_source(self, index: int, key: str) -> None:
@@ -334,7 +369,8 @@ class LiveArea(ttk.Frame):
               anchor="e", font=small, fill=p["muted"])
         labels = {} if self.model is None else {
             b.target: b.label for line in self.model.lines() for b in line.live}
-        for i, slot in enumerate(source.slots):
+        slots = game_order(source.slots) if self.order == GAME else source.slots
+        for i, slot in enumerate(slots):
             y0 = head_h + i * (row_h + px(2))
             token = self.model.token(slot.target) if self.model is not None else str(i)
             self._draw_slot(token, source, slot, x0, y0, x1, y0 + row_h, wide, used, labels,

@@ -350,3 +350,20 @@ def test_every_code_has_plain_words_and_none_shows_a_raw_code():
         text = plain(code)
         assert text and code not in text and "{" not in text and not re.search(r"[A-Z]{3,}_[A-Z_]+", text)
     assert "_" not in plain("NO_SUCH_CODE")
+
+
+def test_a_drop_on_the_first_row_in_game_order_targets_that_rows_slot(view, gui_app, monkeypatch):
+    pid = _polestar(view)
+    view.table.select(pid)
+    view.live.set_order("game")
+    gui_app.update()
+    top = min(e.box[1] for e in view.live.drawn.values())
+    drawn = next(d for d in view.live.drawn.values()
+                 if d.box[1] == top and d.slot.target.slot != 1 and d.slot.state != "empty")
+    x0, y0, x1, y1 = drawn.box
+    monkeypatch.setattr(view, "winfo_containing", lambda x, y: view.live.canvas)
+    asked = []
+    monkeypatch.setattr(view, "open_move_for", lambda *a, **kw: asked.append(kw))
+    iid = view.table.tree.focus()
+    assert view.drop_at(iid, (x0 + x1) // 2, (y0 + y1) // 2)
+    assert asked == [{"slot": drawn.slot.target.slot, "account": drawn.slot.target.ref}]

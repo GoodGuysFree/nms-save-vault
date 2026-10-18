@@ -254,3 +254,53 @@ def test_chip_text_reads_on_both_palettes():
     for p in theme.PALETTES.values():
         for key in ("steam", "xbox"):
             assert contrast(L.text_on(p[key]), p[key]) >= 4.5, (key, p[key])
+
+
+def _rows(area):
+    """The drawn rows top to bottom (first list only): (slot number, label)."""
+    drawn = sorted(area.drawn.values(), key=lambda d: (d.box[0], d.box[1]))
+    first = drawn[0].source
+    return [(d.slot.target.slot, d.slot.label) for d in drawn if d.source is first]
+
+
+def test_as_in_game_orders_newest_first_empty_last_and_is_remembered(host, gui_app, world):
+    prefs = {}
+    area = _area(host, gui_app, world.model, prefs)
+    assert area.order == L.SLOT and prefs.get("live_order") is None
+    slot_order = _rows(area)
+    assert [n for n, _ in slot_order] == sorted(n for n, _ in slot_order)
+    area.set_order(L.GAME)
+    assert prefs["live_order"] == L.GAME
+    rows = _rows(area)
+    source = area.shown_sources()[0]
+    expected = [s.target.slot for s in L.game_order(source.slots)]
+    assert [n for n, _ in rows] == expected and rows != slot_order
+    stamps = [s.saved_at for s in L.game_order(source.slots) if s.state != "empty"]
+    assert stamps == sorted(stamps, reverse=True)
+    tail = [s for s in L.game_order(source.slots) if s.state in ("empty", "unreadable")]
+    assert [s.target.slot for s in tail] == sorted(s.target.slot for s in tail)
+    assert L.game_order(source.slots)[-len(tail):] == tail
+    assert L.LiveArea(host, themed=gui_app.themed, prefs=prefs,
+                      save_prefs=lambda: None).order == L.GAME
+    assert "newest save first" in L.GAME_ORDER_TIP
+
+
+def test_reordered_rows_still_map_to_their_own_slot(host, gui_app, world):
+    seen, menus = [], []
+    area = _area(host, gui_app, world.model, {"live_order": L.GAME},
+                 on_slot=lambda token, slot: seen.append(slot),
+                 on_context=lambda token, slot, event: menus.append(slot))
+    first = sorted(area.drawn.values(), key=lambda d: (d.box[0], d.box[1]))[0]
+    assert first.slot.target.slot != 1
+    x0, y0, x1, y1 = first.box
+    mid = ((x0 + x1) / 2, (y0 + y1) / 2)
+    token = area.token_at(*mid)
+    assert area.drawn[token].slot.target == first.slot.target
+    assert L.slot_tip(first.slot, first.source, {}).split(":")[0].endswith(
+        f"slot {first.slot.target.slot}") or f"slot {first.slot.target.slot}" in area._tip(token)
+    area._on_click(_Event(*mid))
+    area._on_right_click(_Event(*mid))
+    assert seen[-1].target == first.slot.target and menus[-1].target == first.slot.target
+    area.focus_token = None
+    area.move_focus(1)
+    assert seen[-1].target == next(iter(area.drawn.values())).slot.target
