@@ -1091,7 +1091,6 @@ def prepare_pair(folder: str | Path, writes: Sequence[XboxRecordWrite]) -> XboxP
     if len({ident for ident, _rec in records}) != len(records):
         raise ValueError("containers.index names a save twice")
     current = {ident: rec for ident, rec in records}
-    double_id = any(record_info(rec).second_identifier for _i, rec in records)
     index_ft = struct.unpack_from("<q", header, 4 + 2 * struct.unpack_from("<i", header, 0)[0])[0]
     twin = xgs_twin(folder)
 
@@ -1102,8 +1101,11 @@ def prepare_pair(folder: str | Path, writes: Sequence[XboxRecordWrite]) -> XboxP
     for w in sorted(writes, key=lambda w: w.when):
         _require_time(w.when)
         rec = current.get(w.identifier)
+        # A NEW record is written the way the current game writes new saves: the identifier
+        # once (the real index holds old records in the doubled form and the newest in this
+        # one). An existing record keeps the form it has.
         c = _parse_record(rec, folder) if rec is not None else _new_container(
-            folder, w.identifier, w.when, double_identifier=double_id)
+            folder, w.identifier, w.when)
         if twin is not None:
             pre_xgs[w.identifier] = _xgs_pre(twin, c)
         if not c.directory.is_dir():

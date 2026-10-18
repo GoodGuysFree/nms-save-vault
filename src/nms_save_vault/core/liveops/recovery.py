@@ -33,8 +33,9 @@ from .. import msstore, safety
 from ..organizer.locator import LiveMember
 from ..organizer.model import LiveTarget, MetaSnap, target_from_json
 from ..organizer.recorder import LiveOpBusy
-from . import opjournal, pairmeta, steamwrite
+from . import opjournal, pairmeta, steamwrite, transfer
 from .context import OpContext
+from . import convert
 from .execute import (
     LIVEOP_TIMEOUT,
     OpTarget,
@@ -442,12 +443,18 @@ def _rederive(ctx: OpContext, wt: OpTarget) -> None:
             raise
         src = load_source(ctx, PairSource(source.vid_a, source.vid_b, source.load, None))
     now = int(wt.writes[0].write.disk_time)
-    planned = pairmeta.compute(src.pair, wt.rt, now, stamped=wt.stamped)
+    # A transfer (F6) wrote the source's metas converted for this platform: derive them the
+    # same way, whatever the gate says now (the op already started).
+    try:
+        written = transfer.adapt(src, wt.rt.target.platform)
+    except convert.ConvertUnsupported as exc:
+        raise LiveOpError(f"the move cannot be written again exactly as recorded ({exc})") from exc
+    planned = pairmeta.compute(written.pair, wt.rt, now, stamped=wt.stamped)
     for got, recorded in zip(planned, wt.writes):
         g, r = got.write, recorded.write
         if (g.position, g.vid, g.meta_disk_sha256) != (r.position, r.vid, r.meta_disk_sha256):
             raise LiveOpError("the move cannot be written again exactly as recorded")
-    wt.src, wt.writes = src, planned
+    wt.src, wt.writes = written, planned
     slot = wt.rt.target.slot
     if wt.steam is not None:
         triples = [(pm.write, src.data[pm.write.vid], pm.meta_disk) for pm in planned]

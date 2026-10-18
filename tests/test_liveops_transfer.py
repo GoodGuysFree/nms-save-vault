@@ -251,3 +251,148 @@ def _single(b: Both, slot: int) -> PairSource:
     view = msstore.scan(b.acct).slots[slot]
     a = _sha(view.a.data_path)
     return PairSource(a, None, "A", Location(a, "live", XBOX, slot, "A", "xbox", False))
+
+
+# --- recovery of an interrupted transfer ---------------------------------------------------
+
+from nms_save_vault.core.liveops import SimulatedCrash                          # noqa: E402
+from nms_save_vault.core.liveops import recovery                                # noqa: E402
+from nms_save_vault.core.liveops import steamwrite                              # noqa: E402
+
+STEAM_POINTS = ["after_preparing", "in_preserve", "after_snapshot", "after_writing", "swapped:1",
+                "swapped:2", "swapped:3", "swapped:4", "after_validated", "after_oplog",
+                "after_record"]
+XBOX_POINTS = ["after_preparing", "in_preserve", "after_snapshot", "after_writing",
+               "before_index", "after_index", "xgs:Slot2Auto", "xgs:Slot2Manual",
+               "after_validated", "after_oplog", "after_record"]
+
+
+def _contents(root: Path) -> dict:
+    return {p.relative_to(root).as_posix(): _sha(p) for p in sorted(root.rglob("*"))
+            if p.is_file()}
+
+
+def _crashed(b: Both, plan, point: str) -> str:
+    b.ctx.faults = FaultInjector({point})
+    with pytest.raises(SimulatedCrash):
+        execute(b.ctx, plan, plan.confirmations)
+    b.ctx.faults = None
+    b.ctx = b.world.refresh()                       # "the next start"
+    (op_id,) = jr.read_ops(b.ctx)
+    return op_id
+
+
+def _post(b: Both, op_id: str) -> dict:
+    writing = jr.read_ops(b.ctx)[op_id].last("writing")["targets"][0]
+    return {p: jr.member_write_from_json(w) for p, w in writing["post"].items()}
+
+
+@pytest.mark.parametrize("choice", ["forward", "back"])
+@pytest.mark.parametrize("point", STEAM_POINTS)
+def test_a_crashed_xbox_to_steam_transfer_recovers_both_ways(both, point, choice):
+    both.backup(both.steam_dir, "steam")
+    before = tree_hash(both.steam_dir)
+    plan = plan_place(both.ctx, both.xbox_source(), STEAM.target(3))
+    assert not plan.blocked
+    op_id = _crashed(both, plan, point)
+    items = recovery.pending_recovery(both.ctx)
+    if items:
+        (item,) = items
+        assert item.recommended == "forward" or "back" in item.choices
+        if choice not in item.choices:
+            pytest.skip("this point offers only the other way")
+        outcome = recovery.resolve_recovery(both.ctx, op_id, choice)
+        assert outcome.status == ("done" if choice == "forward" else "rolled_back"), outcome
+    status = jr.read_ops(both.ctx)[op_id].status
+    if status == "abandoned" or choice == "back" and items:
+        assert tree_hash(both.steam_dir) == before
+    else:
+        assert status == "done"
+        for pos, mw in _post(both, op_id).items():
+            data, meta_name = steamwrite.file_names(3, pos)
+            assert _sha(both.steam_dir / data) == mw.vid
+            assert _sha(both.steam_dir / meta_name) == mw.meta_disk_sha256
+        assert savedir.scan_slot(both.steam_dir, 3).newest.label == "A"
+    assert recovery.pending_recovery(both.ctx) == []
+    assert not [p for p in both.steam_dir.iterdir() if p.name.startswith(".tmp_")]
+    again = plan_place(both.ctx, both.xbox_source(), STEAM.target(3))
+    assert "RECOVERY_PENDING" not in codes(again.blocked)
+
+
+@pytest.mark.parametrize("choice", ["forward", "back"])
+@pytest.mark.parametrize("point", XBOX_POINTS)
+def test_a_crashed_steam_to_xbox_transfer_recovers_both_ways(both, point, choice):
+    both.backup(both.acct, "xbox")
+    root = both.acct.parent.parent
+    before = _contents(root)
+    plan = plan_place(both.ctx, both.steam_source(), XBOX.target(2))
+    assert not plan.blocked
+    op_id = _crashed(both, plan, point)
+    items = recovery.pending_recovery(both.ctx)
+    if items:
+        (item,) = items
+        if choice not in item.choices:
+            pytest.skip("this point offers only the other way")
+        outcome = recovery.resolve_recovery(both.ctx, op_id, choice)
+        assert outcome.status == ("done" if choice == "forward" else "rolled_back"), outcome
+    status = jr.read_ops(both.ctx)[op_id].status
+    if status == "abandoned" or choice == "back" and items:
+        assert _contents(root) == before
+    else:
+        assert status == "done"
+        view = msstore.scan(both.acct).slots[2]
+        assert view.newest.label == "A"
+        for pos, mw in _post(both, op_id).items():
+            member = view.a if pos == "A" else view.b
+            assert _sha(member.data_path) == mw.vid
+            assert _sha(member.meta_path) == mw.meta_disk_sha256
+        twin = root / "xgs" / both.acct.name
+        assert (twin / "Slot2Auto" / "data").read_bytes() == Path(view.a.data_path).read_bytes()
+    assert recovery.pending_recovery(both.ctx) == []
+    again = plan_place(both.ctx, both.steam_source(), XBOX.target(2))
+    assert "RECOVERY_PENDING" not in codes(again.blocked)
+
+
+# --- an empty slot has no file at all -----------------------------------------------------
+
+
+@pytest.mark.parametrize("stray", ["mf_save6.hg", "save6.hg", "mf_save5.hg", "save5.hg"])
+def test_a_steam_slot_with_any_stray_file_is_not_empty(both, stray):
+    both.backup(both.steam_dir, "steam")
+    (both.steam_dir / stray).write_bytes(b"\x00" * 432)
+    both.ctx = both.world.refresh()
+    both.backup(both.steam_dir, "steam")
+    plan = plan_place(both.ctx, both.xbox_source(), STEAM.target(3))
+    assert "CROSS_TARGET_NOT_EMPTY" in codes(plan.blocked)
+    assert execute(both.ctx, plan, plan.confirmations).status == "refused"
+    picker = eviction_picker(both.ctx, both.xbox_source(), STEAM)
+    assert next(c for c in picker.candidates if c.target.slot == 3).blocked == \
+        "CROSS_TARGET_NOT_EMPTY"
+
+
+@pytest.mark.parametrize("name", ["Slot2Auto", "Slot2Manual"])
+def test_an_xbox_slot_with_any_record_is_not_empty(both, name):
+    from .conftest import chunked, xbox_meta
+    msstore.write_save(both.acct, name, chunked(_payload("Old", XPID).encode()),
+                       xbox_meta("Old", pid=XPID, ts=T0), T0 + 1.5, create_if_missing=True)
+    msstore.delete_save(both.acct, name, T0 + 2.5)      # a record with no save behind it
+    both.backup(both.acct, "xbox")
+    plan = plan_place(both.ctx, both.steam_source(), XBOX.target(2))
+    assert "CROSS_TARGET_NOT_EMPTY" in codes(plan.blocked)
+    assert execute(both.ctx, plan, plan.confirmations).status == "refused"
+
+
+def test_a_new_xbox_record_names_itself_once_like_the_current_game(both):
+    info, records = msstore.parse_containers_index(both.acct)
+    for c in records:                                       # an older tree: doubled identifiers
+        c.second_identifier = c.identifier
+    (both.acct / "containers.index").write_bytes(msstore.build_containers_index(info, records))
+    old = T0 - 3600
+    os.utime(both.acct / "containers.index", (old, old))
+    both.backup(both.acct, "xbox")
+    plan = plan_place(both.ctx, both.steam_source(), XBOX.target(2))
+    assert run(both, plan).status == "done"
+    _info, after = msstore.parse_containers_index(both.acct)
+    forms = {c.identifier: bool(c.second_identifier) for c in after}
+    assert forms["Slot2Auto"] is False and forms["Slot2Manual"] is False
+    assert forms["Slot1Auto"] is True                        # an existing record keeps its form

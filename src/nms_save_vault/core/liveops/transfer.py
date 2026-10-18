@@ -11,8 +11,9 @@ from __future__ import annotations
 
 import dataclasses
 from datetime import datetime, timezone
+from pathlib import Path
 
-from .. import lz4_block, meta, msstore, playtime
+from .. import lz4_block, meta, msstore, playtime, slotmap
 from . import convert
 from .context import OpContext
 from .pairmeta import SourceMember, SourcePair, facts
@@ -83,6 +84,19 @@ def _identity(platform: str, plain: bytes) -> tuple[int, int]:
         return info.slot_identifier, info.size_decompressed
     fields = msstore.parse_ms_meta(plain)
     return fields["slot_id"], fields["size_field"]
+
+
+def slot_has_files(folder: Path, platform: str, slot: int) -> bool:
+    """Is anything of this slot on disk at all? Empty means NO file: Steam ``saveN.hg`` and
+    ``mf_saveN.hg`` of either member, or an Xbox index record of either member (with or
+    without blobs). A partial slot is not empty."""
+    if platform == "steam":
+        names = [n for pos in (0, 1) for n in (slotmap.data_filename(slotmap.file_no(slot, pos)),
+                                                slotmap.meta_filename(slotmap.file_no(slot, pos)))]
+        return any((folder / n).exists() for n in names)
+    wanted = {f"Slot{slot}Auto", f"Slot{slot}Manual"}
+    _info, containers = msstore.parse_containers_index(folder)
+    return any(c.identifier in wanted for c in containers)
 
 
 def fresh_backup(ctx: OpContext, platform: str, account_key: str) -> bool:

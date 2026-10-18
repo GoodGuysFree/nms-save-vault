@@ -4,8 +4,9 @@ Experimental. The transfer is off unless you start the app with the gate (step 3
 THROWAWAY save only. Background: D5 3.5.3, R9.
 
 What the app does: copies the save data unchanged and converts only the small meta file. It
-goes into an EMPTY slot only, and only if the destination folder has a full backup younger than
-30 minutes. The app never empties a slot, so a fill has no Undo button (see "Undo").
+goes into an EMPTY slot only (no file of that slot at all), and only if the destination folder
+has a full backup younger than 30 minutes. The app never empties a slot, so a fill has no Undo
+button.
 
 ## Before either run
 
@@ -13,14 +14,17 @@ goes into an EMPTY slot only, and only if the destination folder has a full back
 2. Full backup of BOTH live folders (the vault is the copy `D:\VaultCopy`). Run each, then look
    for "created full backup":
    ```pwsh
+   cd C:\Devel\NMSVault
    uv run nmsvault backup --vault D:\VaultCopy --live "<Steam account folder>" --label "T1 before"
    uv run nmsvault backup --vault D:\VaultCopy --live "<Xbox wgs account folder>" --label "T1 before"
    ```
    Redo the backup of the destination folder if more than 30 minutes pass before step 5.
-3. Start the app with the gate:
+3. Start the app with the gate, in its own shell, and close that shell afterwards so the gate
+   does not stay on:
    ```pwsh
+   cd C:\Devel\NMSVault
    $env:NMSVAULT_CROSS_PLATFORM=1
-   uv run python -c "from nms_save_vault import gui; gui.App(vault=r'D:\VaultCopy').mainloop()"
+   uv run nmsvault-gui --vault D:\VaultCopy
    ```
 4. Make the throwaway save in the SOURCE platform's game: new game, play about 5 minutes, build a
    base computer and 3 parts (more than one base if you can), discover one planet, save at a
@@ -35,13 +39,15 @@ goes into an EMPTY slot only, and only if the destination folder has a full back
    than 30 minutes, or the slot is not empty.
 7. Move. Wait for "Put ... into Xbox slot N". Do not start the game yet.
 8. Start NMS (Game Pass). Check:
-   - (a) the slot shows the right name, play time and date;
+   - (a) the slot shows the right name and play time (the date reads "now" by design: the game
+     lists the save as just saved; the original date stays in the vault record);
    - (b) it loads;
    - (c) a base is editable (move a part) and the discovery is listed. Check EVERY base, not
      one: one 2025 Xbox copy kept 2 of 4 bases on the other owner (R9);
    - (d) save at a beacon, quit.
-9. Back in the app: rescan. Tell me (GGF) the slot; I check read-only that the base owner, the
-   local id and the platform token on bases and discoveries switched to the Xbox identity.
+9. Quit the game, then in the app rescan. Tell me (GGF) the slot; I check read-only that the
+   base owner, the local id and the platform token on bases and discoveries switched to the
+   Xbox identity.
 10. Wait for the Xbox app to show the save as synced. Start NMS again: (e) no conflict dialog,
     the save is intact.
 
@@ -57,10 +63,3 @@ Steam asks which copy to keep, choose the one on this PC and note that it asked.
 ## If something looks wrong
 
 Stop. Do not play on. Note which check failed and what the game said.
-
-## Undo
-
-A fill into an empty slot has no Undo button (the app never empties a slot). To go back, restore
-the destination folder from the move's safety snapshot using the app's whole-folder restore, or
-`uv run nmsvault restore <the backup id from step 2>`. With the game closed. The throwaway save
-is the only thing lost.

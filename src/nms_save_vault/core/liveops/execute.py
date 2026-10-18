@@ -336,7 +336,7 @@ def _cross_source(ctx: OpContext, src: LoadedSource, rt: ResolvedTarget,
                   before: SlotNow) -> LoadedSource:
     if not transfer.gate_on(ctx):
         raise _Abandon("not_started", "CROSS_PLATFORM_GATED", warning_text("CROSS_PLATFORM_GATED"))
-    if before.present:
+    if before.present or transfer.slot_has_files(rt.folder, rt.target.platform, rt.target.slot):
         raise _Abandon("not_started", "CROSS_TARGET_NOT_EMPTY",
                        warning_text("CROSS_TARGET_NOT_EMPTY").format(slot=rt.label))
     if not transfer.fresh_backup(ctx, rt.target.platform, rt.target.account_key):

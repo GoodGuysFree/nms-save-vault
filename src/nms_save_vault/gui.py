@@ -2839,6 +2839,11 @@ def _window_chrome(root) -> tuple[int, int]:
 
 
 def main(argv=None) -> int:
+    import argparse
+
+    parser = argparse.ArgumentParser(prog="nmsvault-gui", allow_abbrev=False)
+    parser.add_argument("--vault", help="open this vault instead of the configured one")
+    options, _unknown = parser.parse_known_args(argv)
     # First: under pythonw there is no console, so warnings and tracebacks go to a file.
     logfile.configure(host_platform.user_cache_dir() / "logs")
     # Before the first tk.Tk(): Tk reads the DPI once, when the root is made. Without this
@@ -2857,7 +2862,7 @@ def main(argv=None) -> int:
         )
         root.destroy()
         return 1
-    App().mainloop()
+    App(**({"vault": options.vault} if options.vault else {})).mainloop()
     return 0
 
 

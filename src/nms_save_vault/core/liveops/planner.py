@@ -339,7 +339,9 @@ def _slot_warnings(ctx: OpContext, src: LoadedSource, now: AccountNow, slot: Slo
     if newer_slot(slot):
         out.append(warning("GAME_NEWER"))
     head = slot.head
-    if slot.present and slot.target.platform != src.platform and transfer.gate_on(ctx):
+    if slot.target.platform != src.platform and transfer.gate_on(ctx) and (
+            slot.present or transfer.slot_has_files(now.account.folder, slot.target.platform,
+                                                    slot.target.slot)):
         out.append(warning("CROSS_TARGET_NOT_EMPTY", slot=label))
     if kind == "noop":
         out.append(warning("ALREADY_LIVE", slot=label))
