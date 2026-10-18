@@ -321,7 +321,9 @@ class OrganizerView(ttk.Frame):
         """In the worker: the organizer is opened there too (it reads the catalog)."""
         if self.organizer is None or self._reopen_organizer:
             self._reopen_organizer = False
-            self.organizer = self.make_organizer()
+            old, self.organizer = self.organizer, self.make_organizer()
+            if old is not None and old is not self.organizer and old.facts is not None:
+                old.facts.close()               # its pool and writer would otherwise run on
         organizer = self.organizer
         model = organizer.refresh(record=record)
         return organizer, model, self._extras(organizer, record)

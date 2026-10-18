@@ -301,7 +301,7 @@ class Dispatcher:
         self._seq = itertools.count()
         self._tokens = itertools.count(1)
         self._running: dict[int, _Running] = {}
-        self._opening = 0
+        self._opening: set[str] = set()                 # keys being opened: still queued
         self._completions: deque = deque()
         self._held: _Held | None = None
         self._paused = False
@@ -320,7 +320,8 @@ class Dispatcher:
         job is queued under its own key (:func:`job_key`), so it never merges with facts."""
         added = 0
         with self._lock:
-            running = {r.vid for r in self._running.values()} | ({self._held.vid} if self._held else set())
+            running = {r.vid for r in self._running.values()} | self._opening
+            running |= {self._held.vid} if self._held else set()
             for vid in (job_key(v, kind) for v in vids):
                 if vid in running:
                     continue
@@ -366,7 +367,7 @@ class Dispatcher:
 
     def is_queued(self, vid: str) -> bool:
         with self._lock:
-            return vid in self._pending or (self._held is not None and self._held.vid == vid)
+            return vid in self._pending or vid in self._opening or (self._held is not None and self._held.vid == vid)
 
     def is_running(self, vid: str) -> bool:
         with self._lock:
@@ -374,7 +375,7 @@ class Dispatcher:
 
     def counts(self) -> DispatchStats:
         with self._lock:
-            self.stats.queued = len(self._pending) + (1 if self._held else 0) + self._opening
+            self.stats.queued = len(self._pending) + (1 if self._held else 0) + len(self._opening)
             self.stats.running = len(self._running)
             return DispatchStats(**vars(self.stats))
 
@@ -501,10 +502,10 @@ class Dispatcher:
             live = list(self._running)
         dead = self.executor.dead_tokens(live) if live else set()
         for token in dead:
-            with self._lock:
+            with self._lock:                                # leave _running and be re-queued/reported in one step
                 run = self._running.pop(token, None)
-            if run is not None:
-                self._retry_or_fail(run, "worker-died", "worker process ended without a result")
+                if run is not None:
+                    self._retry_or_fail(run, "worker-died", "worker process ended without a result")
         return bool(dead)
 
     def _retry_or_fail(self, run: _Running, kind: str, error: str) -> None:
@@ -536,11 +537,13 @@ class Dispatcher:
             others = [r for r in self._running.values() if r not in late]
             self._running.clear()
             self._completions.clear()
+            for r in others:
+                self._requeue(r.vid, r.tier)
+            for r in late:
+                self._retry_or_fail(r, "timeout", "timed out")
+        # Only this thread starts jobs, so terminating after the re-queue (and outside the lock)
+        # cannot start anything on the old pool.
         self.executor.terminate()                           # the only way to stop a hung worker
-        for r in others:
-            self._requeue(r.vid, r.tier)
-        for r in late:
-            self._retry_or_fail(r, "timeout", "timed out")
         return True
 
     def _allowed(self, tier: Priority) -> bool:
@@ -557,21 +560,21 @@ class Dispatcher:
                 if popped is None:
                     return False
                 vid, tier = popped
-                self._opening += 1                          # still counts as queued while it opens
+                self._opening.add(vid)                      # still counts as queued while it opens
         if opening:
             try:
                 held = self._open(vid, tier)
             except BaseException:
                 with self._lock:
-                    self._opening -= 1
+                    self._opening.discard(vid)
                 raise
             if held is None:
                 with self._lock:
-                    self._opening -= 1
+                    self._opening.discard(vid)
                 return True
         with self._lock:
             if opening:
-                self._opening -= 1
+                self._opening.discard(vid)
             if self._stopped:
                 return False                                # opened while stopping: drop it
             if self._paused:
@@ -604,8 +607,8 @@ class Dispatcher:
         except Exception as exc:  # noqa: BLE001 - a broken pool: this job fails, the next gets a new pool
             log.warning("index job %s could not be started: %s", held.vid[:12], extract.describe(exc))
             with self._lock:
-                self._running.pop(token, None)
-            self._retry_or_fail(run, "worker-died", f"could not start: {extract.describe(exc)}")
+                if self._running.pop(token, None) is not None:
+                    self._retry_or_fail(run, "worker-died", f"could not start: {extract.describe(exc)}")
         return True
 
     def _open(self, key: str, tier: Priority) -> _Held | None:

@@ -530,3 +530,16 @@ def test_an_event_for_a_version_no_longer_shown_leaves_the_panel_alone(host, gui
         assert win.head == a
     finally:
         win.destroy()
+
+
+def test_the_panel_redraws_when_the_cache_has_warmed(host, gui_app, forked):
+    w, (a, b, c, d, e), _ = forked
+    facts = _StatusFacts()
+    win = H.HistoryWindow(host, model=w.refresh(), themed=gui_app.themed, pid=PID, head=d,
+                          facts=lambda: facts)
+    try:
+        asked = len(facts.asked)
+        win.on_index_events([_event("warmed", None)])
+        assert len(facts.asked) > asked
+    finally:
+        win.destroy()

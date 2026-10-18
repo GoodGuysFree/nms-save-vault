@@ -139,6 +139,7 @@ class IndexStrip(ttk.Frame):
         super().__init__(master, padding=pxs(4, 2))
         self.provider, self.on_events = provider, on_events
         self.seq = 0
+        self._service = None
         self._after: str | None = None
         self.state = "off"
         self.bar = ttk.Progressbar(self, mode="determinate", length=px(180))
@@ -167,6 +168,8 @@ class IndexStrip(ttk.Frame):
         self._after = None
         service = self.provider()
         if service is not None and getattr(service, "active", False):
+            if service is not self._service:        # a new index service numbers its events from 1
+                self._service, self.seq = service, 0
             events = service.events_since(self.seq)
             if events:
                 self.seq = events[-1].seq

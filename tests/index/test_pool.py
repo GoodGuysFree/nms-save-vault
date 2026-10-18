@@ -453,3 +453,61 @@ def test_entry_modules_are_import_safe_for_spawn():
             "print(threading.active_count(), tkinter._default_root is None)")
     out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, encoding="utf-8", check=True)
     assert out.stdout.split() == ["1", "True"]
+
+
+def _blocked_reader(r, seen):
+    """Reads counts() on another thread while the dispatcher thread holds its lock mid-step."""
+    reader = threading.Thread(target=lambda: seen.append(r.d.counts()), daemon=True)
+    reader.start()
+    reader.join(0.3)
+    blocked = reader.is_alive()
+    return blocked
+
+
+def test_a_job_being_opened_is_queued_and_not_submitted_twice():
+    r = Rig(workers=2)
+    seen = {}
+
+    def opener(vid):
+        if not seen:
+            seen.update(queued=r.d.is_queued("a"), again=r.d.submit(["a"], Priority.LIVE))
+        return b"x" * 10, None
+
+    r.d.opener = opener
+    r.d.submit(["a"], Priority.LIVE)
+    r.settle()
+    assert seen == {"queued": True, "again": 0} and r.ex.started == ["a"]
+
+
+def test_a_dead_worker_is_never_seen_between_running_and_requeued():
+    r = Rig()
+    r.d.submit(["b"], Priority.LIVE)
+    r.settle()
+    r.ex.dead.add("b")
+    states = []
+    orig = r.d._retry_or_fail
+
+    def spy(run, kind, error):
+        states.append(_blocked_reader(r, []))
+        orig(run, kind, error)
+
+    r.d._retry_or_fail = spy
+    r.d.step()
+    assert states == [True] and r.ex.started == ["b", "b"]
+
+
+def test_a_timed_out_job_is_never_seen_between_running_and_requeued():
+    r = Rig()
+    r.d.submit(["a"], Priority.LIVE)
+    r.settle()
+    r.clock.t += pool.TIMEOUT_FLOOR_S + 1
+    states = []
+    orig = r.d._retry_or_fail
+
+    def spy(run, kind, error):
+        states.append(_blocked_reader(r, []))
+        orig(run, kind, error)
+
+    r.d._retry_or_fail = spy
+    r.d.step()
+    assert states == [True] and r.ex.terminated

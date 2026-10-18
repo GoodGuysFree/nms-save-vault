@@ -760,7 +760,7 @@ class HistoryWindow(tk.Toplevel):
         if row is None:
             return
         mine = {row.head, row.parent}
-        if any(e.kind in ("changes", "indexed", "failed", "cleared") and
+        if any(e.kind in ("changes", "indexed", "failed", "cleared", "warmed") and
                (e.vid is None or e.vid in mine) for e in events):
             self._show_panel()
 

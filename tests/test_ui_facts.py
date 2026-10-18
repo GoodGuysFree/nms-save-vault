@@ -353,3 +353,52 @@ def test_a_facts_event_re_sorts_in_memory_without_a_rescan(view, index, world, g
     index.push("indexed", other.representative)
     view.index_strip.poll()
     assert first()[:2] == [PIDS["other"], PIDS["main"]] and scans == []
+
+
+def test_a_new_index_service_has_its_events_handed_on_from_seq_one(gui_app):
+    root = tk.Toplevel(gui_app)
+    root.withdraw()
+    got = []
+    current = {}
+
+    class Service:
+        active = True
+
+        def __init__(self, n):
+            self.n = n
+
+        def events_since(self, seq, limit=500):
+            return [SimpleNamespace(seq=i, kind="changes", vid="h") for i in range(1, self.n + 1)
+                    if i > seq]
+
+        def progress(self):
+            return SimpleNamespace(state="idle", queued=0, running=0, done=0, failed=0,
+                                   done_bytes=0, total_bytes=0, eta_s=None, message="")
+
+    strip = factsui.IndexStrip(root, provider=lambda: current["svc"], on_events=got.append)
+    try:
+        current["svc"] = Service(40)
+        strip.poll()
+        strip.stop()
+        got.clear()
+        current["svc"] = Service(1)               # the organizer was reopened: a new service
+        strip.poll()
+        strip.stop()
+        assert [e.seq for batch in got for e in batch] == [1]
+    finally:
+        strip.stop()
+        root.destroy()
+
+
+def test_reopening_the_organizer_closes_the_old_index_service(view, index, world):
+    import copy
+
+    closed = []
+    index.close = lambda: closed.append(True)
+    fresh = copy.copy(world.organizer)
+    fresh.facts = FakeIndex()
+    view.make_organizer = lambda: fresh
+    view.sources_changed()
+    view.rescan()
+    _wait(view.winfo_toplevel(), lambda: not view.scanning)
+    assert closed == [True] and view.organizer is fresh
