@@ -350,3 +350,20 @@ stays readable, but no live write may read from it or replace it until the app i
 
 `tools/check_upstream.py` is a development tool: the app never imports it and never calls the
 network for this.
+
+## Kit check (Windows portable kit, content-index spawn)
+
+Build: `packaging\build_portable.ps1 -OutDir build\kit` (build/ is git-ignored). Make a synthetic vault
+with the test builders (`tests/index/test_cli.py::steam_pair`, `tests/index/fixtures.py::rich_base`) through
+`uv run --extra dev python`; point LOCALAPPDATA, APPDATA, HOME, USERPROFILE and the XDG folders at a temp dir
+(as `tests/conftest.py` does); then run the CLI only: `build\kit\nmsvault.exe index build --vault V --live L`.
+
+`--vault` / `--live` must come after the command in the kit: `nmsvault.exe` is CPython's own signed launcher,
+and CPython rejects an unknown first option ("unknown option --vault") in its C argument parser, before `site`
+and `sitecustomize` run, so the launcher cannot fix it. `cli.parse_args` therefore accepts both options before
+or after the command (a leading `--` also works). `--live` also selects the organizer's source (`board`, `saves`).
+
+Result (D4 step 18, 3 saves x 6 backups = 18 versions): `index build` ran through the process pool
+(4 workers, spawn of the kit interpreter, sitecustomize `-c` bypass) in 0.2 s of work, 0.7 s wall: 18 ok,
+no worker processes left (tasklist empty); `selftest` clean (18 decoded), `saves` and `board` exit 0.
+No spawn fix was needed. Still open: the POSIX kit spawn check and `SPAWN_VERIFIED_POSIX_KIT`.

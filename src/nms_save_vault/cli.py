@@ -560,7 +560,14 @@ def _organizer(args, *, writable: bool = False) -> Organizer:
         root = Path(args.vault)
     else:
         root = Path(st.vault) if (st and st.vault) else locations.default_vault_dir()
-    sources = st.live_sources if st is not None else discover.discover_live_sources()
+    if args.live:
+        # --live names the one live folder to look at, instead of the configured sources.
+        live = Path(args.live)
+        sources = [appstate.Source(id="live", platform=savedir.platform_of(live) or "steam",
+                                   account=discover.steam_account_id(live) or live.name,
+                                   path=str(live), label="Live")]
+    else:
+        sources = st.live_sources if st is not None else discover.discover_live_sources()
     keep_cache = not getattr(args, "no_cache", False)
     org = Organizer(root, sources, read_only=not writable, machine_cache=keep_cache)
     for problem in org.problems:
@@ -1066,6 +1073,23 @@ def _absolutize(args) -> None:
                           for v in fallbacks]
 
 
+def parse_args(argv=None):
+    """Parse the command line. ``--live`` and ``--vault`` may stand before or after the
+    subcommand: the packaged ``nmsvault.exe`` is CPython's own launcher, which rejects an
+    unknown first option ("unknown option --vault") before the app runs, so the kit's users
+    write ``nmsvault.exe index build --vault V``."""
+    argv = sys.argv[1:] if argv is None else list(argv)
+    globals_ = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
+    globals_.add_argument("--live")
+    globals_.add_argument("--vault")
+    found, rest = globals_.parse_known_args(argv)
+    args = build_parser().parse_args(rest)
+    for name in ("live", "vault"):
+        if getattr(found, name) is not None:
+            setattr(args, name, getattr(found, name))
+    return args
+
+
 def main(argv=None) -> int:
     # Save names/summaries can contain Unicode the Windows console (cp1252) can't encode.
     for stream in (sys.stdout, sys.stderr):
@@ -1073,7 +1097,7 @@ def main(argv=None) -> int:
             stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
         except (AttributeError, ValueError):
             pass
-    args = build_parser().parse_args(argv)
+    args = parse_args(argv)
     _absolutize(args)
     try:
         return args.func(args)
