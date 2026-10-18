@@ -29,7 +29,7 @@ from ..organizer.store import StoreBusy as OrganizerBusy
 from ..organizer.store import StoreReadOnly
 from ..store import CaptureScope, PreserveMismatch, StoreError
 from ..store import errors as store_errors
-from . import opjournal, pairmeta, steamwrite
+from . import convert, opjournal, pairmeta, steamwrite, transfer
 from .context import OpContext
 from .errors import ConfirmationRequired, LiveChanged, LiveOpError, SourceUnreadable
 from .faults import at
@@ -310,6 +310,8 @@ def _prepare(ctx: OpContext, plan: PlacePlan, rts: list[ResolvedTarget], op_id: 
             raise _Abandon("not_started", "SOURCE_UNREADABLE", str(exc)) from exc
         now = (scanned or {}).get(rt.target.ref) or             read_account(ctx, resolve_account(ctx, rt.target.ref))
         before = now.slots[rt.target.slot]       # a change since is caught by the pre-image checks
+        if src.platform != rt.target.platform:   # D5 3.5.1: re-checked, the plan may be old
+            src = _cross_source(ctx, src, rt, before)
         wts.append(OpTarget(tp, rt, src, before, stamped=plan.kind != "panic_restore"))
     progress(Progress("preserving", 0, len(wts)))
     for wt in wts:
@@ -328,6 +330,25 @@ def _prepare(ctx: OpContext, plan: PlacePlan, rts: list[ResolvedTarget], op_id: 
     _prepare_xbox(wts)
     set_containment(wts)
     return wts
+
+
+def _cross_source(ctx: OpContext, src: LoadedSource, rt: ResolvedTarget,
+                  before: SlotNow) -> LoadedSource:
+    if not transfer.gate_on(ctx):
+        raise _Abandon("not_started", "CROSS_PLATFORM_GATED", warning_text("CROSS_PLATFORM_GATED"))
+    if before.present:
+        raise _Abandon("not_started", "CROSS_TARGET_NOT_EMPTY",
+                       warning_text("CROSS_TARGET_NOT_EMPTY").format(slot=rt.label))
+    if not transfer.fresh_backup(ctx, rt.target.platform, rt.target.account_key):
+        raise _Abandon("not_started", "CROSS_NEEDS_BACKUP", warning_text("CROSS_NEEDS_BACKUP"))
+    problems = transfer.source_problems(src)
+    if problems:
+        raise _Abandon("not_started", problems[0], warning_text(problems[0]))
+    try:
+        return transfer.adapt(src, rt.target.platform)
+    except convert.ConvertUnsupported as exc:
+        code = transfer.code_of(exc)
+        raise _Abandon("not_started", code, warning_text(code)) from exc
 
 
 def _preserve(ctx: OpContext, wt: OpTarget, op_id: str, kind: str) -> list[Location]:

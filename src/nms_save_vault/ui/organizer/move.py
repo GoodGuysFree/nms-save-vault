@@ -511,7 +511,9 @@ class MoveDialog(tk.Toplevel):
         for i, (ref, blocked, warns, label) in enumerate(
                 [(picker.account, "", (), self._label(picker.account))] +
                 [(c.account, c.blocked, c.warnings, c.label) for c in picker.other_accounts]):
-            text = shown(self, label + (" (locked)" if blocked else ""))
+            experimental = any(w.code == "CROSS_PLATFORM_EXPERIMENTAL" for w in warns)
+            text = shown(self, label + (" (locked)" if blocked else
+                                        " (experimental)" if experimental else ""))
             ttk.Radiobutton(self.account_bar, text=text, value=i, variable=self.account_var,
                             command=lambda r=ref: self._account_picked(r),
                             state="disabled" if blocked else "normal").pack(side=tk.LEFT, padx=px(2))
@@ -519,6 +521,9 @@ class MoveDialog(tk.Toplevel):
                 notes.append(f"{label}: " + (
                     "moving saves between Steam and Xbox comes in a later version."
                     if blocked == "CROSS_PLATFORM_GATED" else f"not available: {plain(blocked)}"))
+            elif experimental:
+                notes.append(f"{label}: experimental - for validation runs. Only into an empty "
+                             "slot; you confirm it in the plan below.")
         set_label(self.account_note, " ".join(notes))
         if len(self.accounts) == 1:
             self.account_bar.pack_configure(padx=px(2))

@@ -22,7 +22,7 @@ from ..organizer.locator import LiveMember, Location
 from ..organizer.model import LiveRef, LiveTarget
 from ..store import CaptureScope, vault_mode
 from ..store import capture as store_capture
-from . import crosssave, opjournal, pairmeta, steamcloud
+from . import convert, crosssave, opjournal, pairmeta, steamcloud, transfer
 from .context import OpContext
 from .errors import SourceUnreadable, TargetError
 from .model import (
@@ -86,6 +86,21 @@ TEXTS = {
     "ALREADY_LOADS": ("block", "That save already loads in {slot}."),
     "NOTHING_TO_PROMOTE": ("block", "{slot} has no readable save in that position."),
     "CROSS_PLATFORM_GATED": ("block", "Moving saves between Steam and Xbox is not available yet."),
+    "CROSS_PLATFORM_EXPERIMENTAL": ("confirm", "Experimental - for validation runs. Moving a save "
+                                    "between Steam and Xbox has not been proven yet. Use a "
+                                    "throwaway save and keep your backups."),
+    "CROSS_TARGET_NOT_EMPTY": ("block", "{slot} is not empty. For now a save goes to the other "
+                               "platform only into an empty slot."),
+    "CROSS_NEEDS_BACKUP": ("block", "Make a full backup of the destination folder first (it must "
+                           "be less than 30 minutes old)."),
+    "CONVERT_UNSUPPORTED": ("block", "This save cannot be converted for the other platform "
+                            "with certainty, so it was not touched. Nothing was changed."),
+    "UNSUPPORTED_META": ("block", "This save's file layout is not supported for the other "
+                         "platform yet. Nothing was changed."),
+    "SOURCE_OLD_FORMAT": ("block", "This save uses an older format. Load and save it once in "
+                          "the game first."),
+    "SOURCE_NO_ID": ("block", "This save has no readable identity, so it cannot go to the "
+                     "other platform."),
     "OTHER_ACCOUNT": ("confirm", "This save comes from another account. Its bases may not be "
                       "editable until the game takes them over when you play it here."),
     "XGS_READ_ONLY": ("block", "This Xbox folder can only be read."),
@@ -235,14 +250,16 @@ def _default_account(ctx: OpContext, src: LoadedSource) -> LiveRef:
 
 def _account_choice(ctx: OpContext, src: LoadedSource, ref: LiveRef) -> AccountChoice:
     label = account_label(ctx, ref)
-    if ref.platform != src.platform:
+    cross = ref.platform != src.platform
+    if cross and not transfer.gate_on(ctx):
         return AccountChoice(ref, label, "CROSS_PLATFORM_GATED", ())
     try:
         resolve_account(ctx, ref)
     except TargetError as exc:
         return AccountChoice(ref, label, exc.code, ())
     other = _other_account(src, ref)
-    return AccountChoice(ref, label, "", (other,) if other else ())
+    notes = ((warning("CROSS_PLATFORM_EXPERIMENTAL"),) if cross else ()) +         ((other,) if other else ())
+    return AccountChoice(ref, label, "", notes)
 
 
 def _blocked_candidate(target: LiveTarget, code: str) -> SlotCandidate:
@@ -322,6 +339,8 @@ def _slot_warnings(ctx: OpContext, src: LoadedSource, now: AccountNow, slot: Slo
     if newer_slot(slot):
         out.append(warning("GAME_NEWER"))
     head = slot.head
+    if slot.present and slot.target.platform != src.platform and transfer.gate_on(ctx):
+        out.append(warning("CROSS_TARGET_NOT_EMPTY", slot=label))
     if kind == "noop":
         out.append(warning("ALREADY_LIVE", slot=label))
     if any(not d for d in kept.values()):
@@ -375,7 +394,7 @@ def _plan_warnings(ctx: OpContext, src: LoadedSource, account: LiveRef,
     if vault:
         out.append(vault)
     if account.platform != src.platform:
-        out.append(warning("CROSS_PLATFORM_GATED"))
+        out += _cross_platform_warnings(ctx, src, account)
     if now is None:
         out.append(warning("XGS_READ_ONLY"))
     game = game_warning(ctx)
@@ -404,6 +423,18 @@ def _plan_warnings(ctx: OpContext, src: LoadedSource, account: LiveRef,
             out.append(warning("STEAM_CLOUD_OTHER_DEVICE"))
         if _sync_busy(ctx, now):
             out.append(warning("XBOX_SYNC_BUSY"))
+    return out
+
+
+def _cross_platform_warnings(ctx: OpContext, src: LoadedSource, account: LiveRef) -> list[Warning]:
+    """D5 3.5.1: the gate (G1) and the checks of the source (G2-G4). G5-G7 are the ordinary
+    OTHER_ACCOUNT, XBOX_QUOTA and CROSS_SAVE_ON warnings of the plan."""
+    if not transfer.gate_on(ctx):
+        return [warning("CROSS_PLATFORM_GATED")]
+    out = [warning("CROSS_PLATFORM_EXPERIMENTAL")]
+    out += [warning(code) for code in transfer.source_problems(src)]
+    if not transfer.fresh_backup(ctx, account.platform, account.account_key):
+        out.append(warning("CROSS_NEEDS_BACKUP"))
     return out
 
 
@@ -599,9 +630,14 @@ def _plan(ctx: OpContext, kind: str, parts, warnings: list[Warning], outcome: st
     targets, members, write_bytes, folders = [], [], 0, []
     for rt, now, slot, src, pair_source in parts:
         writes = ()
-        if src.platform == rt.target.platform:
+        if src.platform == rt.target.platform or transfer.gate_on(ctx):
             try:
-                planned = pairmeta.compute(src.pair, rt, stamp, stamped=kind != "panic_restore")
+                written = transfer.adapt(src, rt.target.platform)
+                planned = pairmeta.compute(written.pair, rt, stamp,
+                                           stamped=kind != "panic_restore")
+            except convert.ConvertUnsupported as exc:
+                code = transfer.code_of(exc)
+                return _refusal(ctx, parts[0][0], kind, warning(code), parts[0][4])
             except ValueError:
                 return _refusal(ctx, parts[0][0], kind, warning("META_LAYOUT"), parts[0][4])
             writes = tuple(p.write for p in planned)
