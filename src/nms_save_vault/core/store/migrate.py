@@ -75,7 +75,14 @@ def unfolded(store: VersionStore, *, live_roots: Sequence[Path] | None = None
     statuses = _statuses(store.vault_root)
     return [e for e in sorted(vault.entries, key=lambda e: (e.created, e.id))
             if not _skip_reason(vault, e, live)[0] and not store.has_entry(e.id)
-            and statuses.get(e.id, {}).get("status") != "verified"]
+            and statuses.get(e.id, {}).get("status") not in ("verified", "failed")]
+
+
+def fold_failed(vault_root: str | Path) -> list[tuple[str, str]]:
+    """(entry id, reason) of the old backups a fold could not read in: they stay folders, and
+    are listed, not offered again and again."""
+    return sorted((k, str(v.get("reason", ""))) for k, v in _statuses(Path(vault_root)).items()
+                  if v.get("status") == "failed")
 
 
 def run_fold(store: VersionStore, *, live_roots: Sequence[Path] | None = None,

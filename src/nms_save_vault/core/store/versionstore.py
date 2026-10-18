@@ -160,7 +160,8 @@ def read_format(root: Path) -> StoreFormat:
     return fmt
 
 
-def create_store(vault_root: str | Path, *, clock: Callable[[], datetime] = utc_now) -> StoreFormat:
+def create_store(vault_root: str | Path, *, clock: Callable[[], datetime] = utc_now,
+                 record: dict | None = None) -> StoreFormat:
     """Create an empty store: its folders first, FORMAT last, since FORMAT appearing is what
     turns store mode on. The upgrade's commit step (D3 4.1 step 7) and a new vault use it; the
     caller holds the vault lock. Refuses a vault that already has a store."""
@@ -170,6 +171,13 @@ def create_store(vault_root: str | Path, *, clock: Callable[[], datetime] = utc_
     created = not root.is_dir()
     for name in (OBJECTS, ENTRIES, QUARANTINE, TMP, STATE):
         (root / name).mkdir(parents=True, exist_ok=True)
+    if record is not None:      # migration.json goes in before FORMAT: never a store without it
+        from .listing import MIGRATION_JSON
+
+        safety.atomic_write_bytes(
+            root / STATE / MIGRATION_JSON,
+            json.dumps(record, indent=1, sort_keys=True, ensure_ascii=True).encode("ascii"),
+            temp_prefix=".migration.tmp_")
     safety.fsync_dir(root)                    # the folders exist before FORMAT says so
     if created:
         safety.fsync_dir(Path(vault_root))
@@ -221,11 +229,7 @@ def start_new_vault(vault_root: str | Path, *,
         with lock:
             if not is_new_vault(root):          # another window got here first
                 return False
-            create_store(root, clock=clock)
-        from .migrate import write_migration
-
-        write_migration(root, {"created_in_store_mode": True})   # no upgrade ever happened here
-        catalog.Vault(root).save()                               # an empty catalog: a vault to import
+            create_store(root, clock=clock, record={"created_in_store_mode": True})
     except (safety.LockTimeout, RuntimeError):
         return False        # a writer holds the lock (or this thread does): not a first write
     return True

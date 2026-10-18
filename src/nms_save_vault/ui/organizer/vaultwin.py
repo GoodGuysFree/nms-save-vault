@@ -24,7 +24,7 @@ from ...core.store import (
     VersionStore, copy_in, not_copied_in, plan_upgrade, run_fold, run_upgrade, store_status,
     vault_lock, vault_mode)
 from ...core.store import rollback, upgrade
-from ...core.store.migrate import fold_pending, unfolded
+from ...core.store.migrate import fold_failed, fold_pending, unfolded
 from ..dpi import px, pxs
 from ..redact import set_label, shown
 from ..themeaware import ThemeRegistry
@@ -75,6 +75,7 @@ def read_state(env: VaultEnv, dest_parent: Path | None = None) -> SimpleNamespac
     root = env.vault_root
     mode = vault_mode(root)
     out = SimpleNamespace(mode=mode, plan=None, status=None, fold_pending=False, unfolded=0,
+                          fold_failed=[],
                           new_vault=False,
                           interrupted_undo=False, not_copied=[], eligible=upgrade.upgrade_needed(root))
     if mode == "legacy" and out.eligible:
@@ -86,6 +87,7 @@ def read_state(env: VaultEnv, dest_parent: Path | None = None) -> SimpleNamespac
         out.status = store_status(root, store, live_roots=list(env.live_roots),
                                   app_state=env.app_state)
         out.fold_pending = fold_pending(root)
+        out.fold_failed = fold_failed(root)
         out.unfolded = len(unfolded(store, live_roots=list(env.live_roots)))
         out.new_vault = rollback.created_as_store(root)
         out.not_copied = [(e.id, e.label or e.id, _folder_label(Path(e.path)))
@@ -281,6 +283,9 @@ class VaultWindow(_Dialog):
                                  else "Read the old backups into the store"),
                 command=self.fold)
             self.fold_button.pack(anchor="w", pady=px(4))
+        if s.fold_failed:
+            self._text("These old backups stay as folders (they could not be read in): "
+                       + "; ".join(f"{k} ({why})" for k, why in s.fold_failed))
         if s.not_copied:
             box = ttk.LabelFrame(self.body, text="Copy into the vault (folders you made by hand)",
                                  padding=px(6))

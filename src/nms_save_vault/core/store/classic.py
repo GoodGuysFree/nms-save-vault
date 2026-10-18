@@ -47,7 +47,7 @@ def store_of(vault: Vault, *, app_state: AppState | None = None,
     if mode == "legacy" and start_new and not vault.read_only:
         try:
             vault.ensure()
-            vault.start_store()         # nothing in it yet: the store, not the old folders
+            # a vault the app creates now (missing or empty) starts as a store
         except OSError as exc:
             log.warning("could not create the vault folders: %s", exc)
         mode = vault_mode(vault.root)
