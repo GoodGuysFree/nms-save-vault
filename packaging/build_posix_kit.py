@@ -1,6 +1,6 @@
 """Assemble the portable Linux and macOS kits for NMS Save Vault.
 
-Output: ``build/kits/NMSSaveVault-<os>-<arch>.tar.gz`` -- a self-contained folder that runs
+Output: ``build/kits/NMSSaveVault-v<version>-<os>-<arch>.tar.gz`` -- a self-contained folder that runs
 on a machine with no Python installed.
 
 The Windows kit is intricate because it has an Authenticode signature to preserve, which is

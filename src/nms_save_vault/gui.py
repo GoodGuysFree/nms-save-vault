@@ -2807,7 +2807,41 @@ _MENU_KEYS = ("<Alt-Key>", "<Alt-KeyRelease>", "<Key-Alt_L>", "<Key-Alt_R>",
 
 HELP_TEXT = """NMS Save Vault - Help
 
-The window is split into two panes. Drag the divider to give either one more room.
+The window has two tabs: Organizer (Ctrl+1) and Live saves and backups (Ctrl+2). The
+ORGANIZER section below describes the first; everything after it describes the second.
+
+ORGANIZER
+The Organizer tab shows every save file as one line - live or only in the vault - and a
+> opens its versions. Live markers show which slot of your Steam and Xbox folders holds
+each one. Facts columns (story and Atlas progress, bases, ships, companions, play time and
+more) are read from the saves. Chips, Find, sorting and a column chooser narrow the list.
+- Move to live / Replace with / Swap / Keep a copy / Undo: put a version into a live slot,
+  pick the version for a slot, exchange two slots, or keep a copy of a live slot in the
+  vault. The save being replaced always goes to the vault first, every move is checked
+  and rolled back exactly if it is wrong, and each one has an Undo. The app never empties
+  a slot: where a slot would end up empty it shows the steps to do it yourself.
+- Steam <-> Xbox moves work in Move to live: the data is copied unchanged, only the small
+  info file is converted, the game takes ownership at your first save there, and you
+  confirm once because it is another account.
+- History lists a save file's versions and what changed between them. Compare puts two
+  versions side by side.
+- Notes keeps a note per save file and a label, comment and lock per version. They live in
+  the vault, never in the save. A Pin stops the app suggesting that save's slot for
+  another save.
+- Corrections: if the app linked two saves wrongly, say where a version comes from,
+  Combine two save files into one, or Split one apart. Each can be undone, and none
+  touches a save file.
+- Tools > Vault upgrade: moves an older vault into the version store once. The vault is
+  copied aside first, and Undo the vault upgrade goes back. Older app versions cannot open
+  an upgraded vault.
+- Tools > Free old backup folders: gives back the disk space of the old backup folders
+  once they are in the version store.
+- Selftest (command line: nmsvault selftest): reads every live save and vault version in
+  memory, writes nothing and reports what it could not understand. A save written by a
+  newer game than the app knows is flagged and never moved.
+
+LIVE SAVES AND BACKUPS TAB
+The tab is split into two panes. Drag the divider to give either one more room.
   * LIVE SAVES (top)  -- every save folder found on this PC: each Steam account and each
      Xbox / Game Pass account. The ACTIVE one (green, bold) is the target of write
      actions; pick it from the "Active live" dropdown or right-click a folder to set it.
@@ -2872,8 +2906,6 @@ BUTTONS
     * select a slot in a backup and it is the source -- pick where it lands;
     * select a live slot and it is the destination -- press Change... to pick what fills it.
   The save data is copied exactly and the small meta is re-keyed for the new slot number.
-  A slot that holds only one save is refused when the live slot's other save is a
-  different playthrough - the game could load that one instead; clear the slot first.
 - Play time: How long you have actually played. Every copy of a save is folded onto one
   playthrough - its two members, every dated backup of it in the vault, and the same run
   on a second platform (an NMS cloud save keeps its identity across linked accounts) -
@@ -2923,7 +2955,8 @@ BUTTONS
 
 MENUS
 Every button is also in the menu bar (File, Edit, View, Live, Tools, Help), so Alt and
-the underlined letter reach it whatever the window size.
+the underlined letter reach it whatever the window size. In the dark theme on Windows the
+menu bar is drawn inside the window; Alt, F10 and Alt+letter work the same.
 
 KEYBOARD
 - Ctrl+plus / Ctrl+minus make every font in the window bigger or smaller, from 70% to
@@ -2947,7 +2980,7 @@ Every row offers exactly what makes sense for it:
 - a live save folder: back it up, make it the active write target, copy a save into one
   of its slots, or undo the last change;
 - a live slot: replace it with a save from anywhere, copy it to another live slot,
-  extract it to the vault, or clear it;
+  extract it to the vault, or show the steps to empty it;
 - one of the two saves in a live slot: the same, plus Promote to make that one the save
   the game loads;
 - a backup: restore all of it (which replaces the live folder), and for a single-slot

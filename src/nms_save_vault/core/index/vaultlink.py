@@ -133,10 +133,10 @@ def attach_service(organizer: Organizer, sources: Sequence[Source], *, workers: 
     return service
 
 
-def index_enabled(setting: object = None) -> bool:
+def index_enabled(setting: object = None, env: Mapping[str, str] = os.environ) -> bool:
     """The app runs the content index unless ``NMSVAULT_INDEX=off`` (tests, support) or the
     ``ui.index`` preference says off."""
-    return os.environ.get("NMSVAULT_INDEX", "").lower() != "off" and setting != "off"
+    return env.get("NMSVAULT_INDEX", "").lower() != "off" and setting != "off"
 
 
 def _app_version() -> str:

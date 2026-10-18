@@ -4,8 +4,8 @@ NMS Save Vault
 What this is
 ------------
 A safe backup, catalog and slot manager for No Man's Sky save files (PC), so you
-can keep far more than the game's 15 save slots. It reads and writes Steam saves,
-and reads and writes Xbox / Game Pass saves within Xbox.
+can keep far more than the game's 15 save slots. It reads and writes Steam and
+Xbox / Game Pass saves, and moves saves between them (Organizer tab).
 
 Run it
 ------
@@ -43,6 +43,7 @@ install.bat. It copies the NMSSaveVault folder to
 and asks whether to add a Desktop shortcut and/or a Start Menu entry. If you
 decline both it leaves a launcher named vault.bat in that folder instead.
 Installing over an older version keeps your config.
+Note: a vault made or upgraded by version 0.3.0 cannot be opened by older versions.
 
 To undo it, run uninstall.bat -- it is placed in the install folder next to the
 app, and is also in this zip. It removes the app, its config (state.json, accounts.ini) and the

@@ -46,6 +46,18 @@ def find_live_save_dirs() -> list[Path]:
     return out
 
 
+def windows_steam_install_roots(host: Host) -> list[Path]:
+    """The default Steam install places under Program Files; empty off Windows."""
+    if host.system != host_platform.WINDOWS:
+        return []
+    out = []
+    for var in ("ProgramFiles(x86)", "ProgramFiles"):
+        base = host.env.get(var)
+        if base and (Path(base) / "Steam").is_dir():
+            out.append(Path(base) / "Steam")
+    return out
+
+
 def default_live_save_dir() -> Path | None:
     dirs = find_live_save_dirs()
     return dirs[0] if dirs else None

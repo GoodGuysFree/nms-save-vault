@@ -25,6 +25,7 @@ accounts.ini
 
 # local agent state (scratchpad MCP store)
 .claude/scratchpad.db*
+.claude/settings.local.json
 
 # OS / editors
 .DS_Store
@@ -32,3 +33,8 @@ Thumbs.db
 .idea/
 .vscode/
 .claude/worktrees/
+
+# test / type-check output
+.coverage
+htmlcov/
+.mypy_cache/

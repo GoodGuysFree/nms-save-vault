@@ -101,7 +101,10 @@ src/nms_save_vault/
       undo.py, verify.py  slot-scoped undo and the history; post-launch verification
       panic.py    the panic restore: a whole snapshot back, slot by slot, metas verbatim
       classic.py  the adapters for today's names; guide.py: the steps to empty a slot
+      convert.py, crosssave.py, transfer.py  Steam <-> Xbox moves: meta conversion, the checks, the plan
+      steamcloud.py, targets.py, slots.py, source.py  Steam Cloud state; slot targets, slot and source views
     safety.py     game-running check, atomic staged writes, auto-snapshot, op-log/undo, inter-process lock
+    platform.py   per-OS facts the rest of core asks for (Steam roots, worker policy)
     aliases.py    account-id -> display-name filter (accounts.ini); display only
     store/        the version store: objects, manifests, upgrade, fold, copy-in, rollback, fsck
                   (docs/organizer/designs/D3-storage-version-store.md)
@@ -122,6 +125,8 @@ src/nms_save_vault/
       readmodel.py lines, version rows, live board, events, sort/filter; JSON with tokens
       locator.py  where a version's bytes are (VersionLocator, VaultLocator, Location)
       folders.py  FolderLocator: the read side over live and catalog folders
+      history.py  a save file's version history and what changed between versions
+      facts.py    the facts shown per version, read from the content index
       __init__.py Organizer facade: scan, record, build the model, bootstrap
   ui/             Tk building blocks for the views (docs/organizer/designs/D6-ui-tk.md)
     dpi.py        DPI awareness, px() for every pixel constant, first-start size, dialog fit
@@ -132,6 +137,7 @@ src/nms_save_vault/
     raster.py     images drawn in code: chevrons, sort arrows, radio marks, dots
     fmt.py        play time and local time as every view shows them
     tooltip.py    hover text for tree rows and canvas items, built on hover
+    menubar.py, menuhint.py  the in-window menu bar for the dark theme; menu hint text
     organizer/    the Organizer tab
       table.py    OrganizerTable: lines with > / v, chips, Find, sort, column chooser
       live.py     LiveArea: one or two live folders as canvas lists, markers, refill warning
@@ -139,9 +145,14 @@ src/nms_save_vault/
       words.py    shared words: names, #n numbers, how a version is linked
       notes.py    NotesWindow: save-file note + revisions, version label/comment/lock; pins
       view.py     OrganizerView: the tab assembled; scans in the worker, selection hub, alerts
+      move.py, ops.py, pick.py, lanes.py, panic.py  Move to live, Swap, Keep, Undo and their pickers
+      history.py, histhooks.py, compare.py  History and Compare windows
+      correct.py  comes-from, Combine, Split; vaultwin.py: vault upgrade and free old folders
+      factsui.py  the facts columns
   theme.py        light/dark/system palettes (incl. the organizer keys) + ttk restyling,
                   dark title bar (front-end)
   updates.py      opt-in GitHub release check + in-place self-update (the only network access)
+  index_cli.py    the `index` and `selftest` commands
   cli.py          argparse front end (cli_store.py: the version store; cli_live.py: place, swap,
                   keep, undo, ops, recover, clear, panic-restore)
   gui.py          Tkinter app: menu bar, tabs "Live saves and backups" (the two panes) and
@@ -153,14 +164,14 @@ src/nms_save_vault/
 * A **legacy vault** (a sibling of `st_...` by default) keeps whole-folder copies under
   `backups/`, `snapshots/` and `extracts/`, recorded in a JSON catalog.
 * The **version store** (design D3, `docs/organizer/designs/D3-storage-version-store.md`) is the
-  vault's next format, entered only by an explicit **upgrade**: `<vault>/store/` holds
+  vault's format: a new vault starts in it, and an older vault enters it only by an explicit **upgrade**: `<vault>/store/` holds
   content-addressed objects (`objects/<aa>/<sha256>`, verbatim bytes, each stored once) and one
   immutable manifest per backup (`entries/<id>.json`); `store/FORMAT` carries the version.
   A backup, snapshot or extract is then a manifest, so a backup that changes one file costs
   that file only.
 * The **upgrade** first makes a verified copy of the whole vault next to it
   (`<vault>.pre-store-<UTC>`, re-hashed against a recorded tree hash), then creates `store/`;
-  old backups are folded into the store on request and the old folders are never deleted by it.
+  old backups are folded into the store right after the upgrade (`store fold` resumes a fold that stopped) and the old folders are never deleted by it.
   **Free old folders** (`nmsvault store free-old-folders [--yes]`, Tools menu; `store/free.py`) is
   the one thing that deletes them, on the owner's request only: a deep fsck of the whole store
   first (damage stops the run before any deletion), then per folded entry the folder is re-read and
@@ -212,7 +223,7 @@ src/nms_save_vault/
 * **Sandbox** integration tests: copy the live folder to a temp dir and exercise all
   write paths there — the real `st_…` is never touched during development.
 
-## Microsoft / Xbox Game Pass ("wgs") format (read-only)
+## Microsoft / Xbox Game Pass ("wgs") format (read-write)
 
 Root: `%LOCALAPPDATA%\Packages\HelloGames.NoMansSky_bs190hzg1sesy\SystemAppData\wgs\<account>\`.
 Implemented in `core/msstore.py`, exposed via `savedir.scan_any()`.
@@ -264,7 +275,7 @@ Which copy the game *loads* from is not yet proven, so:
 
 ## Cross-platform support (Linux and macOS)
 
-**Status: decided, not yet implemented.** The save *format* work is zero — every platform
+**Status: shipped in 0.2.0.** The save *format* work is zero — every platform
 writes the identical Steam-format `save*.hg` / `mf_save*.hg` pair into an `st_<steamid64>`
 folder, so `formats`, `meta`, `lz4_block`, `slotmap`, `savedir`, `catalog` and `operations`
 are already platform-neutral. Measured: with `APPDATA`, `LOCALAPPDATA`, `USERPROFILE` and

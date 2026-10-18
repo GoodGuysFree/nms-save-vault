@@ -157,7 +157,7 @@ def test_parse_libraryfolders_modern_format():
     {
         "0"
         {
-            "path"        "/home/amit/.local/share/Steam"
+            "path"        "/home/player/.local/share/Steam"
             "label"       ""
             "apps"
             {
@@ -172,7 +172,7 @@ def test_parse_libraryfolders_modern_format():
     }
     """
     assert host_platform.parse_libraryfolders(text) == [
-        Path("/home/amit/.local/share/Steam"),
+        Path("/home/player/.local/share/Steam"),
         Path("/run/media/mmcblk0p1"),
     ]
 

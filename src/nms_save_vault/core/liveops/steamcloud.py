@@ -12,7 +12,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-from .. import platform
+from .. import locations, platform
 
 STEAM_ID64_BASE = 76561197960265728
 SYNCED = 1                              # ``syncstate`` of a file Steam has uploaded
@@ -96,12 +96,7 @@ def read_manifest(steam_root: Path, account32: int) -> dict[str, ManifestEntry]:
 def steam_install_roots(host: platform.Host) -> list[Path]:
     """Steam installs to look in: the ones ``platform.steam_roots`` finds, plus the Windows
     default places."""
-    roots = list(platform.steam_roots(host))
-    if host.system == platform.WINDOWS:
-        for var in ("ProgramFiles(x86)", "ProgramFiles"):
-            base = host.env.get(var)
-            if base and (Path(base) / "Steam").is_dir():
-                roots.append(Path(base) / "Steam")
+    roots = list(platform.steam_roots(host)) + locations.windows_steam_install_roots(host)
     seen, out = set(), []
     for r in roots:
         if r not in seen:

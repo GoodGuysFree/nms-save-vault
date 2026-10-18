@@ -20,7 +20,7 @@ shortcuts? `install.bat` in the zip adds them. Full details under
 
 ## The Organizer
 
-The **Organizer** tab (Ctrl+2) is the easy way to see and move your saves. It shows **every
+The **Organizer** tab (Ctrl+1) is the easy way to see and move your saves. It shows **every
 save file as one line** - live or only in the vault - and a `>` opens its **versions**. Live
 markers show which slot of your Steam and Xbox folders holds each one. Facts columns (story
 and Atlas progress, bases, ships, companions, play time and more) are read from the saves and
@@ -113,14 +113,16 @@ The full list is under [Usage](#usage).
   writes atomically (stage → validate → swap), validates by header + size cross-checks +
   hashes, rolls itself back exactly when the check fails, and refuses to run while the game
   is open. The app never deletes a save: it only replaces.
-* Every auto-snapshot is kept, so each live write adds a full copy of the live folder
-  (roughly 40-65 MB); a later deduplicated store will reclaim that space.
+* Every auto-snapshot is kept. In the version store a snapshot costs only the files that
+  changed; an older vault still in plain folders adds a full copy of the live folder
+  (roughly 40-65 MB) per live write until it is upgraded.
 
 ## The vault format and the upgrade
 
-A new vault keeps each backup as a plain folder. **Tools > Vault upgrade** (or
-`nmsvault store upgrade`) moves it to the version store: files are kept once by content, so a
-backup that changed one file costs only that file. It only runs when you ask, first makes a
+A new vault starts in the version store: files are kept once by content, so a backup that
+changed one file costs only that file. An older vault keeps each backup as a plain folder
+until **Tools > Vault upgrade** (or `nmsvault store upgrade`) moves it to the store. The upgrade
+only runs when you ask, first makes a
 verified copy of the whole vault next to it (`<vault>.pre-store-<UTC>`, so you need that much
 free space), and never touches your live saves.
 
@@ -318,8 +320,9 @@ small config file, `state.json`, kept **in the install directory next to the exe
 * Any *other* save folder under the NMS root — a hand-pasted `st_… - Copy`, a renamed or
   dated folder — is treated as an **in-place backup**, not a live target.
 
-The GUI shows the two groups separately (**● LIVE SAVES** vs **■ BACKUPS**), highlights the
-active write target, and badges Xbox folders read-only. Use **Rescan** (GUI) or
+The classic tab shows the two groups separately (**\* LIVE SAVES** vs **\# BACKUPS**),
+highlights the active write target, and badges an Xbox folder read-only only when it has no
+save index. Use **Rescan** (GUI) or
 `nmsvault sources --rescan` (CLI) to pick up a new account or backup later; your manual
 edits to the config are preserved. Discovery is strictly read-only.
 
@@ -404,9 +407,9 @@ per-save action — it changes *which* of a slot's two saves the game loads.
 
 ## Appearance and updates
 
-**Tabs.** Under the menu bar the window has two tabs: **Live saves and backups** (the two
-panes described above, as they have always been) and **Organizer**. **Ctrl+1** and
-**Ctrl+2** (or **View**) switch, and the app reopens the tab you used last (`state.json`,
+**Tabs.** Under the menu bar the window has two tabs: **Organizer** (**Ctrl+1**) and **Live
+saves and backups** (**Ctrl+2**; the two panes described above, as they have always been).
+The keys (or **View**) switch, and the app reopens the tab you used last (`state.json`,
 `ui.last_view`).
 
 **No backup yet** (Organizer tab): a version that exists only in the live save folder; no
@@ -427,7 +430,8 @@ version into a live slot is described in [The Organizer](#the-organizer).
 **Theme.** **View > Theme** offers **Light**, **Dark**, or **System**, which
 follows your Windows light/dark setting. Your choice is remembered in `state.json`. (Light
 keeps the native Windows widget styling the app has always had; dark switches to a
-fully-colourable widget theme, because the native one ignores colour settings.)
+fully-colourable widget theme, because the native one ignores colour settings.) In the dark
+theme on Windows the menu bar is drawn inside the window; Alt, F10 and Alt+letter work the same.
 
 **Font size.** **Ctrl+plus** and **Ctrl+minus** (the main keys or the numeric keypad) scale
 every font in the window, from 70% to 200% of your system's own size (**Ctrl+0** goes back
@@ -506,6 +510,15 @@ nmsvault note S9 --set "Next: Atlas"     # a save file's note (--append, --histo
 nmsvault pin S9 [--off]                  # never suggest that save's slot for another save
 nmsvault scan                            # record what the live slots hold now
 nmsvault organizer bootstrap [--dry-run] # read in the history of an existing vault
+nmsvault import <path> [--copy] [--label L]   # register a save folder, or a whole copied vault
+nmsvault show <entry-id|live>            # the slots of one catalog entry
+nmsvault history "Main Save" [--key|--all] [--json]   # what changed between its versions
+nmsvault lineage list                    # corrections: also set-parent, comes-from, unrelated,
+                                         #   combine, uncombine, split, unsplit, undo
+nmsvault store upgrade                   # one-time vault upgrade; also fold, copy-in,
+                                         #   free-old-folders, rollback, fsck
+nmsvault index status                    # the content index; also build, show, changes
+nmsvault selftest                        # read-only: does the app understand every save?
 ```
 
 Targets are `steam:7`, `xbox:4`, or `steam:<account>:7` when there is more than one
@@ -578,19 +591,22 @@ The vault lives outside `st_<id>`, so it is never scanned by the game or synced 
 ## Status
 
 Working. Core format/crypto and all operations are verified against the real save files and
-in a temp sandbox (2467 tests). Xbox / Game Pass saves are supported for reading **and**
+in a temp sandbox (2517 tests). Xbox / Game Pass saves are supported for reading **and**
 writing, including Steam ↔ Xbox moves (validated in the real game) — verified against a real install (reads) and synthetic `wgs` fixtures
 (writes). A full file-copy safety backup of the live folder was made before development
 (`C:\Devel\NMS-SaveBackup-SAFETY-2026-06-24`). The Organizer is in (see above); a
 read-only content index of every save version (story and Atlas progress, bases, ships,
 companions, expeditions, and what changed against the recorded parent) is kept in a
 per-machine cache and available as `nmsvault index status | build | show | changes`.
+For support, setting the environment variable `NMSVAULT_INDEX=off` stops the app running that
+index (the Organizer then shows no facts columns); the `ui.index` preference in `state.json`
+does the same.
 
 ## Version history
 
 | Version | Date | Highlights |
 |---|---|---|
-| **0.3.0** | 2026-10-18 | **The Organizer.** A new tab that shows every save file as one line with its versions, live markers and facts; Move to live, Replace with, Swap, Keep a copy and Undo (the replaced save always goes to the vault first); History, Compare, Notes, Pins and corrections; a one-time vault upgrade to the version store; `nmsvault selftest`; and the matching CLI commands. |
+| **0.3.0** | 2026-10-18 | **The Organizer.** A new tab that shows every save file as one line with its versions, live markers and facts; Move to live, Replace with, Swap, Keep a copy and Undo (the replaced save always goes to the vault first); Steam <-> Xbox moves; History, Compare, Notes, Pins and corrections; new vaults start in the version store, and **Tools > Vault upgrade** moves an older one (older app versions cannot open a vault made or upgraded by 0.3.0); **Free old backup folders** gives the old folders' disk space back; importing a copied vault in the new format merges only what is new; the dark theme now draws the menu bar in the window; `nmsvault selftest`; and the matching CLI commands. |
 | **0.2.8** | 2026-10-02 | **Xbox: keep the game's new `xgs` save copy in step.** The game now also keeps a plain copy of each Xbox save in `SystemAppData\xgs`, beside `wgs`. The vault only wrote `wgs`, so a promote, clear, repopulate, restore or undo left the game a stale `xgs` copy; every write now updates both. An account that has only `xgs` is shown read-only. |
 | **0.2.7** | 2026-09-26 | **Filter backups by save file.** A save's history was scattered: the same run sits in a different slot in one backup than in the next, and a rename makes its old copies look like somebody else's. The new **Save file** dropdown above the backups lists every save that has a backup, under its current name and the names it had before (here, *SHIPSTOGIVE-1400QS - was: ShipsToGive-2400qs*), with its platforms, play time and backup count. Pick one, or right-click any slot or save in either pane and choose **Show this save's history**, and the backups narrow to every copy of that run - renamed, moved, or carried to another platform by the NMS cloud - each opened to just the slot holding it, newest first. **All saves** clears it. It uses the same game-written save id as **Play time**, so it costs no extra decoding. |
 | **0.2.6** | 2026-09-19 | **Total play time.** How long have you actually played? Counting files cannot answer that: each playthrough exists twice in its slot (Auto-Save and Restore-Point), again in every dated backup in the vault, and - because an NMS cloud save carries a run to a linked account on another platform - once more under a second platform entirely. 821 save files here are 29 playthroughs. **Play time...** (toolbar) and `nmsvault playtime` fold every copy onto one row and count the highest play time of the copies, since play time only ever goes up. Identity is the game's own: the u64 the Steam meta carries at `OFF_SLOT_IDENTIFIER`, which is the same number the save data holds as `WmU` - it survives a rename, a move to another slot, and the trip through the cloud to another platform. Xbox metas leave that field 0, so an Xbox save is identified from its data blob instead, cached per file so the second run costs nothing. Saves older than the field are matched on their name and the report says how many those were. Also: `lz4_block` now reads the unframed container of pre-Waypoint Xbox saves - one bare LZ4 block with no chunk headers - which previously decoded to nothing. |

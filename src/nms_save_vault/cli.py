@@ -878,7 +878,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.set_defaults(func=cmd_show)
 
     s = sub.add_parser("backup", help="full backup of the live folder")
-    s.add_argument("--label", default="")
+    s.add_argument("--label", default="", help="a name for the backup in the catalog")
     s.add_argument("--no-cache", action="store_true", help="exclude the cache/ thumbnails")
     s.set_defaults(func=cmd_backup)
 
@@ -893,9 +893,9 @@ def build_parser() -> argparse.ArgumentParser:
     s.set_defaults(func=cmd_restore)
 
     s = sub.add_parser("extract", help="extract a single slot aside")
-    s.add_argument("slot", type=int)
+    s.add_argument("slot", type=int, help="the slot number to lift aside")
     s.add_argument("--from", dest="source", help="source entry id or folder (default: live)")
-    s.add_argument("--label", default="")
+    s.add_argument("--label", default="", help="a name for the extract in the catalog")
     s.set_defaults(func=cmd_extract)
 
     s = sub.add_parser("repopulate", help="write a slot from a backup into a live slot")
@@ -910,15 +910,17 @@ def build_parser() -> argparse.ArgumentParser:
     s.set_defaults(func=cmd_repopulate)
 
     s = sub.add_parser("promote", help="force a slot member to be the newest")
-    s.add_argument("--slot", type=int, required=True)
-    s.add_argument("--member", choices=["A", "B", "a", "b"], required=True)
-    s.add_argument("--force", action="store_true")
+    s.add_argument("--slot", type=int, required=True, help="the live slot")
+    s.add_argument("--member", choices=["A", "B", "a", "b"], required=True,
+                   help="the save to make the newest (the game loads that one)")
+    s.add_argument("--force", action="store_true",
+                   help="go on when it cannot be checked whether the game is running")
     s.set_defaults(func=cmd_promote)
 
     s = sub.add_parser("import", help="register a save folder, or a whole copied vault, in the catalog")
     s.add_argument("path")
     s.add_argument("--copy", action="store_true", help="copy files into the vault instead of indexing in place")
-    s.add_argument("--label", default="")
+    s.add_argument("--label", default="", help="a name for the entry in the catalog")
     s.set_defaults(func=cmd_import)
 
     s = sub.add_parser("discover", help="find existing backups under the NMS root")

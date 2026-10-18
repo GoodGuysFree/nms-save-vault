@@ -78,10 +78,13 @@ def add_commands(sub: argparse._SubParsersAction) -> None:
     s.set_defaults(func=cmd_swap)
 
     s = sub.add_parser("keep", help="copy a live slot into the vault, changing nothing live")
-    s.add_argument("target", metavar="TARGET")
-    s.add_argument("--yes", action="store_true")
-    s.add_argument("--confirm", action="append", default=[])
-    s.add_argument("--force", action="store_true")
+    s.add_argument("target", metavar="TARGET", help="the live slot to copy")
+    s.add_argument("--yes", action="store_true", help="do not ask for confirmation")
+    s.add_argument("--confirm", action="append", default=[], metavar="CODE",
+                   help="answer a confirmation the plan asks (repeatable)")
+    s.add_argument("--force", action="store_true",
+                   help="go on when it cannot be checked whether the game is running "
+                        "(a running game always refuses)")
     s.set_defaults(func=cmd_keep)
 
     s = sub.add_parser("undo", help="undo the newest move of a live slot (or one move, or "
@@ -100,9 +103,12 @@ def add_commands(sub: argparse._SubParsersAction) -> None:
     s.set_defaults(func=cmd_ops)
 
     s = sub.add_parser("recover", help="list, or finish, moves that were interrupted")
-    s.add_argument("--op", metavar="OP_ID")
-    s.add_argument("--choice", choices=["forward", "back", "leave"])
-    s.add_argument("--force", action="store_true")
+    s.add_argument("--op", metavar="OP_ID", help="the interrupted move to finish (default: list them)")
+    s.add_argument("--choice", choices=["forward", "back", "leave"],
+                   help="finish it, put it back, or leave it as it is")
+    s.add_argument("--force", action="store_true",
+                   help="go on when it cannot be checked whether the game is running "
+                        "(a running game always refuses)")
     s.set_defaults(func=cmd_recover)
 
     s = sub.add_parser("clear", help="how to empty a live slot yourself (the app never does)")
