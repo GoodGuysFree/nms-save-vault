@@ -32,8 +32,8 @@ def codes(warnings) -> set[str]:
     return {w.code for w in warnings}
 
 
-def _payload(name: str, pid: int) -> str:
-    return '{"<h0":{"Pk4":"%s","WmU":"0x%X"}}' % (name, pid)
+def _payload(name: str, pid: int, tag: str = "") -> str:
+    return '{"<h0":{"Pk4":"%s","WmU":"0x%X"},"tag":"%s"}' % (name, pid, tag)
 
 
 def _sha(path) -> str:
@@ -48,8 +48,8 @@ class Both:
         self.world = steam_world(tmp_path)
         self.acct = make_wgs_account(tmp_path / "SystemAppData", [
             ("AccountData", '{"acct":1}', "", "", 0, T0 + 0.5),
-            ("Slot1Auto", _payload("Xmain", XPID), "Xmain", "", 600, T0 + 10.5),
-            ("Slot1Manual", _payload("Xmain", XPID), "Xmain", "", 500, T0 + 5.5)])
+            ("Slot1Auto", _payload("Xmain", XPID, "auto"), "Xmain", "", 600, T0 + 10.5),
+            ("Slot1Manual", _payload("Xmain", XPID, "manual"), "Xmain", "", 500, T0 + 5.5)])
         (self.acct.parent.parent / "xgs" / self.acct.name).mkdir(parents=True)
         msstore.mirror_xgs(self.acct)
         old = T0 - 3600
@@ -348,6 +348,7 @@ def _kept_vids(b: Both, op_id: str) -> set[str]:
 
 def test_steam_to_xbox_replaces_an_occupied_slot_and_keeps_the_evicted_pair(both):
     old = both.xbox_source()
+    assert old.vid_a != old.vid_b
     src = both.steam_source()
     steam_before = tree_hash(both.steam_dir)
     plan = plan_place(both.ctx, src, XBOX.target(1))
@@ -427,21 +428,29 @@ def test_undo_after_a_steam_replace_puts_the_evicted_version_back(both):
         (old.vid_a, old.vid_b)
 
 
-REPLACE_POINTS = ["in_preserve", "after_writing", "after_validated"]
+STEAM_TARGET_POINTS = ["in_preserve", "after_writing", "swapped:1", "swapped:2", "swapped:3",
+                       "swapped:4", "after_validated"]
+XBOX_TARGET_POINTS = ["in_preserve", "after_writing", "before_index", "after_index",
+                      "xgs:Slot1Auto", "xgs:Slot1Manual", "after_validated"]
+REPLACE_CASES = [("steam_to_xbox", p) for p in XBOX_TARGET_POINTS] +     [("xbox_to_steam", p) for p in STEAM_TARGET_POINTS]
 
 
-@pytest.mark.parametrize("direction", ["steam_to_xbox", "xbox_to_steam"])
 @pytest.mark.parametrize("choice", ["forward", "back"])
-@pytest.mark.parametrize("point", REPLACE_POINTS)
+@pytest.mark.parametrize("direction,point", REPLACE_CASES)
 def test_a_crashed_replace_transfer_recovers_both_ways(both, point, choice, direction):
     if direction == "steam_to_xbox":
-        src, target, root = both.steam_source(), XBOX.target(1), both.acct.parent.parent
+        src, old, target, root = both.steam_source(), both.xbox_source(), XBOX.target(1),             both.acct.parent.parent
     else:
-        src, target, root = both.xbox_source(), STEAM.target(1), both.steam_dir
+        src, old, target, root = both.xbox_source(), both.steam_source(), STEAM.target(1),             both.steam_dir
     before = _contents(root)
     plan = plan_place(both.ctx, src, target)
     assert not plan.blocked
     op_id = _crashed(both, plan, point)
+    writing = jr.read_ops(both.ctx)[op_id].last("writing")
+    if writing is not None:                  # the evicted pair is in the vault before any write
+        kept = {jr.location_from_json(k["location"]).vid
+                for k in writing["targets"][0]["preserved"]}
+        assert kept == {old.vid_a, old.vid_b}
     items = recovery.pending_recovery(both.ctx)
     if items:
         (item,) = items
@@ -464,3 +473,29 @@ def test_a_crashed_replace_transfer_recovers_both_ways(both, point, choice, dire
                 assert _sha(member.data_path) == mw.vid
                 assert _sha(member.meta_path) == mw.meta_disk_sha256
     assert recovery.pending_recovery(both.ctx) == []
+
+
+def test_a_save_in_an_unvalidated_format_is_refused_by_the_record(both, monkeypatch):
+    plan = plan_place(both.ctx, both.steam_source(), XBOX.target(2))
+    assert not plan.blocked
+    rec = transfer.VALIDATED[("steam", "xbox")]
+    monkeypatch.setitem(transfer.VALIDATED, ("steam", "xbox"),
+                        dataclasses.replace(rec, meta_format=2003))
+    plan = plan_place(both.ctx, both.steam_source(), XBOX.target(2))
+    assert "UNSUPPORTED_META" in codes(plan.blocked)
+
+
+def test_a_steam_save_with_only_xbox_live_still_defaults_to_xbox(both):
+    from nms_save_vault.core.organizer.model import StoreRef
+    from nms_save_vault.core.store import CaptureScope
+
+    src = both.steam_source()
+    entry = both.ctx.versions.add_from_live(both.steam_dir, platform="steam",
+                                            account_key=both.steam_dir.name, kind="full",
+                                            label="old steam", scope=CaptureScope())
+    both.world.sources[:] = [s for s in both.world.sources if s.platform == "xbox"]
+    ctx = both.world.refresh()
+    where = Location(src.vid_a, "store", StoreRef(entry.id), 1, "A", "steam", True)
+    picker = eviction_picker(ctx, PairSource(src.vid_a, src.vid_b, None, where))
+    assert picker.account.platform == "xbox"
+    assert all(c.blocked == "" for c in picker.candidates)

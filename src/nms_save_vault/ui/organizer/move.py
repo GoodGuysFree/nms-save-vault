@@ -257,7 +257,7 @@ class MoveDialog(tk.Toplevel):
             slot = self.fixed_slot
             self.picker_widget = VersionPicker(
                 left, model=self.model, slot_pid=slot.pid, slot_head=slot.head,
-                platform=slot.target.platform, slot_name=slot.name or slot.label,
+                slot_name=slot.name or slot.label,
                 on_pick=self._version_picked)
             self.picker_widget.pack(side=tk.TOP, fill=tk.BOTH, expand=True, pady=pxs(4, 0))
         else:

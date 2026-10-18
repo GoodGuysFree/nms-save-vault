@@ -10,7 +10,7 @@ import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from .. import safety
 
@@ -36,16 +36,7 @@ class VersionStore(Protocol):
     def read_file(self, entry_id: str, path: str) -> bytes: ...
 
 
-@dataclass(frozen=True)
-class Policies:
-    """The owner's decisions F4a, F5b, F7b and F8 are fixed behaviour, not switches. Only the
-    Steam <-> Xbox transfer opens per direction after the owner's validation runs (F6)."""
-
-    cross_platform: Literal["off", "validated"] = "off"
-
-
 def context_for(organizer: Organizer, *, host: Host, machine_id: str, app_version: str,
-                policies: Policies | None = None,
                 game_probe: Callable[[], bool | None] = safety.is_game_running,
                 clock: Callable[[], float] = time.time,
                 faults: FaultInjector | None = None) -> OpContext:
@@ -64,7 +55,7 @@ def context_for(organizer: Organizer, *, host: Host, machine_id: str, app_versio
         locator=organizer.locator,
         lineage=LineageRecorder(organizer.store, Journal(organizer.store, organizer.scan.versions)),
         readmodel=organizer.model, sources=list(organizer.sources),
-        policies=policies or Policies(), host=host, app_version=app_version,
+        host=host, app_version=app_version,
         machine_id=machine_id, game_probe=game_probe, clock=clock, faults=faults)
     ctx.game_probe = recording_probe(game_probe, lambda: ctx)      # D5 2.12: game sessions seen
     return ctx
@@ -79,7 +70,6 @@ class OpContext:
     lineage: LineageRecorder              # D1: record_op, observe, expected_pair, op_outcome
     readmodel: ReadModel | None           # D1: live board, line names, pins
     sources: Sequence[Source]             # configured live sources (state.json)
-    policies: Policies
     host: Host                            # DESIGN.md D7: environment and home as arguments
     app_version: str
     machine_id: str                       # random per machine (opjournal.machine_id)

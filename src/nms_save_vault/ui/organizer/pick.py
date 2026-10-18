@@ -38,11 +38,10 @@ def pick_groups(model: ReadModel, slot_pid: str | None, text: str = "") -> dict[
 
 class VersionPicker(ttk.Frame):
     def __init__(self, master, *, model: ReadModel, slot_pid: str | None, slot_head: str | None,
-                 platform: str, slot_name: str,
-                 on_pick: Callable[[str, str], None]) -> None:
+                 slot_name: str, on_pick: Callable[[str, str], None]) -> None:
         super().__init__(master)
         self.model, self.slot_pid, self.slot_head = model, slot_pid, slot_head
-        self.platform, self.on_pick = platform, on_pick
+        self.on_pick = on_pick
         self.slot_name = slot_name
         self.chosen: tuple[str, str] | None = None
         self.on: dict[str, tk.BooleanVar] = {}

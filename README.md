@@ -137,7 +137,7 @@ See [DESIGN.md](DESIGN.md) for the architecture and the verified save-format det
 | **Steam** (Windows) | **Supported and tested** — the primary target. |
 | **GOG.com** (Windows) | **Should work — untested.** GOG uses the *identical* Steam save format, just in a `DefaultUser` folder instead of `st_<steamid>`. |
 | **Epic Games Store** (Windows) | **Should work — untested.** Same as GOG: Epic and GOG share the exact same `DefaultUser` folder and save format. |
-| **Microsoft Store / Xbox Game Pass** (Windows) | **Supported** — read *and* same-platform write; see [Xbox / Game Pass](#xbox--game-pass-read-and-write). |
+| **Microsoft Store / Xbox Game Pass** (Windows) | **Supported** — read *and* write, and Steam ↔ Xbox moves in the Organizer; see [Xbox / Game Pass](#xbox--game-pass-read-and-write). |
 | **Steam Deck / Linux** (Proton) | **Runs on real hardware.** The portable Linux kit has been launched on a Linux desktop and finds the Proton prefix in every Steam library (Flatpak, Snap and a Deck's SD card included). Not yet exercised across the full backup / restore round-trip by anyone but the author. |
 | **macOS** (native, Apple Silicon) | **Should work — untested.** A portable `.app` kit now builds, and auto-discovery finds `~/Library/Application Support/HelloGames/NMS`. Nobody has run it on a real Mac yet. |
 
@@ -529,9 +529,9 @@ The game now also keeps a plain copy of each save in `SystemAppData\xgs\<account
 there, so the two never disagree. An account that has only `xgs` (no `wgs`) is shown
 read-only.
 
-**Cross-platform transfer (Steam ↔ Xbox) is not yet supported** and is gated with a "coming
-soon" notice: the obfuscated save body carries a platform field and the two platforms use
-different meta formats, so a faithful transfer needs a conversion step that isn't built yet.
+**Cross-platform transfer (Steam ↔ Xbox)** works in the Organizer (Move to live, or
+`nmsvault place`): the save data is copied unchanged and only the small meta file is converted.
+The classic Backups view does not do it and points to the Organizer.
 
 > First time writing to a real Game Pass save? Close the game, and keep the auto-snapshot
 > (the app makes one before every write) — or take a full backup first.
@@ -567,7 +567,7 @@ The vault lives outside `st_<id>`, so it is never scanned by the game or synced 
 
 Working. Core format/crypto and all operations are verified against the real save files and
 in a temp sandbox (2366 tests). Xbox / Game Pass saves are supported for reading **and**
-same-platform writing — verified against a real install (reads) and synthetic `wgs` fixtures
+writing, including Steam ↔ Xbox moves (validated in the real game) — verified against a real install (reads) and synthetic `wgs` fixtures
 (writes). A full file-copy safety backup of the live folder was made before development
 (`C:\Devel\NMS-SaveBackup-SAFETY-2026-06-24`). The Organizer is in (see above); a
 read-only content index of every save version (story and Atlas progress, bases, ships,
@@ -599,8 +599,8 @@ per-machine cache and available as `nmsvault index status | build | show | chang
 | **0.0.5** | 2026-07-01 | **Import a whole Save Vault directory.** Point Import at a copied `_SaveVault` folder and it compares that vault's entries with yours (by entry id) and offers to copy the new ones into your vault (self-contained) or index them in place (referencing that folder) — idempotent, so re-importing is harmless. In-place-imported entries are unmanaged, and snapshot pruning now only touches snapshots this vault owns, so importing another vault in place can never delete its files. Works in the GUI (Import shows new/existing counts, then copy vs in-place) and the CLI (`nmsvault import <vault-dir> [--copy]`). |
 | **0.0.4** | 2026-07-01 | Installer-kit improvements (no changes to the app itself): added an uninstaller (`uninstall.bat`) that removes the app, its config (`state.json`), and the Desktop / Start Menu shortcuts while leaving your game saves and backups / vault untouched — no registry entries, no admin rights; `install.bat` drops it into the install folder so it's always available. The Desktop / Start Menu shortcuts now use the app icon directly (the `.ico` is installed on disk and referenced explicitly, instead of relying on the exe's embedded icon index). |
 | **0.0.3** | 2026-07-01 | Reliability fixes: auto-snapshot pruning is now chronological, so it can no longer delete the snapshot that an `undo` needs (it previously grouped by platform when both Steam and Xbox were in use); the game-running check no longer flashes a console window on every action in the windowed build; and every write operation (not just backup) now shows a modal "please wait" dialog while it works. |
-| **0.0.2** | 2026-06-30 | **Xbox / Game Pass saves are now read-write** for same-platform operations (backup, restore, per-slot repopulate, promote) — the wgs writer rotates blob GUIDs and rewrites `containers.index` with correct sync states, following the libNOM.io layout; every write auto-snapshots so `undo` works. Steam↔Xbox transfer remains gated ("coming soon"). |
-| **0.0.1** | 2026-06-30 | First public release. Full backup / restore; catalog with per-slot extract / repopulate (meta re-keyed across slots) / promote; manual-backup import; multi-account auto-config (Steam live read-write, Xbox / Game Pass read-only); Tkinter GUI + `nmsvault` CLI; one-file Windows installer kit. Xbox→Steam transfer is gated ("coming soon"). |
+| **0.0.2** | 2026-06-30 | **Xbox / Game Pass saves are now read-write** for same-platform operations (backup, restore, per-slot repopulate, promote) — the wgs writer rotates blob GUIDs and rewrites `containers.index` with correct sync states, following the libNOM.io layout; every write auto-snapshots so `undo` works. Steam↔Xbox transfer was still gated then (it opened in 2026-10). |
+| **0.0.1** | 2026-06-30 | First public release. Full backup / restore; catalog with per-slot extract / repopulate (meta re-keyed across slots) / promote; manual-backup import; multi-account auto-config (Steam live read-write, Xbox / Game Pass read-only); Tkinter GUI + `nmsvault` CLI; one-file Windows installer kit. Xbox→Steam transfer was gated then (it opened in 2026-10). |
 
 Each version's installer kit is attached to its
 [GitHub Release](https://github.com/GoodGuysFree/nms-save-vault/releases).

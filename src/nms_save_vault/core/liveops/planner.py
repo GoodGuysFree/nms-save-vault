@@ -229,6 +229,10 @@ def _default_account(ctx: OpContext, src: LoadedSource) -> LiveRef:
     from, else the first live account of its platform."""
     accounts = [r for r in live_accounts(ctx) if r.platform == src.platform]
     if not accounts:
+        other = "xbox" if src.platform == "steam" else "steam"
+        if transfer.validated(src.platform, other):
+            accounts = [r for r in live_accounts(ctx) if r.platform == other]
+    if not accounts:
         raise TargetError("UNKNOWN_ACCOUNT", "no live account of that platform is configured")
     line = _line(ctx, src.loading.pid)
     if line is not None:

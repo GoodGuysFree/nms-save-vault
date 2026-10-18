@@ -179,14 +179,11 @@ class OpContext:
     clock: Callable[[], float] = time.time
     faults: FaultInjector | None = None  # tests only (5.3); None in production
 
-@dataclass(frozen=True)
-class Policies:
-    cross_platform: Literal["off", "validated"] = "off"                        # F6 (3.5)
 ```
 
 The owner's decisions F4a, F5b, F7b and F8 are fixed behaviour (section 3), not switches; only
-the decided option is implemented. `cross_platform` stays a constant because F6 opens per
-direction after the owner's runs (3.5); it is not a user setting.
+the decided option is implemented. There is no policies object: the Steam <-> Xbox directions
+are a built-in validation record (3.5), not a setting.
 
 #### Inputs
 
@@ -407,7 +404,7 @@ class Progress:
 4. the first enabled, writable account of the source's platform (`sources` order).
 
 Every other configured account appears in `other_accounts` with its block reason or warnings:
-other platform -> `CROSS_PLATFORM_GATED` (until F6 opens, 3.5); same platform, an account other
+other platform -> `CROSS_PLATFORM_GATED` (only a direction without a validation record, 3.5); same platform, an account other
 than the capture account -> `OTHER_ACCOUNT` (confirm, 3.3); xgs-only Xbox folder ->
 `XGS_READ_ONLY`.
 
@@ -446,7 +443,7 @@ unless the caller echoes it; `block` means `execute` refuses.
 | `TWIN_LIVE` | confirm | candidate | source pid live in another slot of this account and this slot is not that one | "This save is already in Steam slot 4. A second copy makes two separate branches." |
 | `LIVE_ELSEWHERE` | info | plan | source pid live on another account/platform; `data["cross_platform"]` = D1 `Line.cross_platform` | "This save is also in Xbox slot 4." |
 | `ALREADY_LIVE` | block | candidate | kind noop | "This version is already in Steam slot 7." |
-| `CROSS_PLATFORM_GATED` | block | account | F6 not open | "Moving saves between Steam and Xbox is not available yet." |
+| `CROSS_PLATFORM_GATED` | block | account | no passing validation record for this direction | "Moving saves between Steam and Xbox is not available yet." |
 | `OTHER_ACCOUNT` | confirm | account | the capture account is known and differs from the target account (F7b, 3.3) | "This save comes from another account. Its bases may not be editable until the game takes them over when you play it here." |
 | `XGS_READ_ONLY` | block | account | Xbox folder without `containers.index` | "This Xbox folder can only be read." |
 | `GAME_RUNNING` | block | plan | `game_probe() is True` | "No Man's Sky is running. Close it first." |
@@ -1384,7 +1381,9 @@ the owner's own oplog, R8 E1; R7 2.6 row 7).
 
 **Status (2026-10-18): T1 and T2 passed; the gate is lifted; G1 is a built-in record.** Both
 directions are open (record in `liveops/transfer.py`: runs T1/T2, meta format 2004, Steam 432 B
-<-> Xbox 360 B, BaseVersion 4228). A transfer is now an ordinary Place: it may replace an
+<-> Xbox 360 B, BaseVersion 4228). The check uses the direction and the source meta format and
+lengths; BaseVersion is recorded as information only, a newer game is refused by `GAME_NEWER`.
+A transfer is now an ordinary Place: it may replace an
 occupied slot (the evicted pair is preserved into the vault first), needs no env switch and no
 fresh backup, and Undo of a replace puts the evicted version back (a same-platform place). A
 transfer into an empty slot has no Undo (F8). The text below is the original plan, kept as the
@@ -1463,9 +1462,8 @@ folders; the app never runs them by itself.
 1. On Steam start a new throwaway game; play ~5 minutes; build a base computer and 3 parts;
    discover one planet; save at a beacon; quit. Close Steam's sync prompt if any.
 2. Close the Xbox app; wait 60 s (sync settles, R8 E2).
-3. `set NMSVAULT_ALLOW_UNVALIDATED_TRANSFER=1` and run
-   `nmsvault place --from live:steam:<slot> --to xbox:<empty slot> --validation-run T1`.
-   The app records the op and the converted meta hash.
+3. (As run in 2026-10, with the then experimental env gate; no longer needed.) Run
+   `nmsvault place --from live:steam:<slot> --to xbox:<empty slot>`.
 4. Start NMS (Game Pass). Check: (a) the slot shows the right name, play time and date;
    (b) it loads; (c) the base is editable (move a part) and the discovery is listed; (d) save at
    a beacon; quit.
@@ -1584,7 +1582,7 @@ P3-P7 make today's flows safe until they are re-routed and become regression tes
 | `restore <extract-id>` | `place` |
 | `restore <full-id>` (`--no-mirror`) | panic restore of that snapshot/backup (4.3); `--no-mirror` = leave slots absent from it alone |
 | `undo` | slot-scoped undo of the newest op on `--to` (or the only target); `undo --op <op_id>`; `undo --whole-folder` = panic restore |
-| new `place`, `swap`, `keep`, `ops`, `recover`, `panic-restore`, (phase 5) `transfer-validated` | 2.2 API |
+| new `place`, `swap`, `keep`, `ops`, `recover`, `panic-restore` | 2.2 API |
 
 Targets are written `steam:7`, `xbox:4`, or `steam:<account>:7` when a platform has more than
 one live account; sources `--from <entry-id> --src-slot N [--member A|B]`, `--from live:steam:4`, or `--from vid:<prefix>` (`--from` as in today's `extract` and `repopulate`).
@@ -1774,9 +1772,9 @@ Rough total: phase 0 about 0.9 kLOC + tests; phase 2 about 4 kLOC + tests.
 | Step | Content | Size | Tests |
 |---|---|---|---|
 | 5.1 | `convert.py` (3.5.2) | M | unit + property tests; T-RD1 round trips on the owner's metas (read-only) |
-| 5.2 | gates G1-G7, `transfer-validation.json`, `nmsvault transfer-validated`, the run-only env flag | M | T-6x |
+| 5.2 | gates G1-G7 (G1 is a built-in record; no per-vault file, CLI or env flag) | M | T-6x |
 | 5.3 | owner runs T1 and T2 (and T2b if wanted) | owner | 3.5.3 |
-| 5.4 | open each validated direction (`policies.cross_platform = "validated"`) | S | gate tests flip |
+| 5.4 | open each validated direction (add its record in `transfer.py`) | S | gate tests flip |
 
 ## 7. Risks and open questions
 
@@ -1828,7 +1826,7 @@ copy; the "Note for this move" field (`execute(note=...)`); `LIVE_ELSEWHERE.data
 5. **New entry points**: `plan_keep` (vault-only Keep a copy), `empty_slot_guide`, the `note`
    argument of `execute`, `liveop_lock` for the classic writers (phase 1).
 6. **New files**: `<vault>/organizer/ops.jsonl` (reserved by D1), `<vault>/organizer/.liveop.lock`,
-   `<vault>/organizer/transfer-validation.json` (phase 5); per machine
+   per machine
    `user_cache_dir/vaults/<vault_id>/open-ops/` and `game-seen.json`, and
    `user_data_dir/machine-id`.
 7. **`msstore` write primitives** change to record-bytes editing (P-X1), a new prerequisite not

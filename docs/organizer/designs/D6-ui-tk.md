@@ -276,9 +276,9 @@ Layout, top to bottom:
    row is amber because its save goes out, the picked version row is green because it comes in,
    and the `OUT` / `IN` tags of "Your pick").
 3. **The picker** (left column):
-   - 03: `Into [Steam | Xbox (locked)]` from `EvictionPicker.account` / `other_accounts` (a blocked
-     account stays visible with its reason: "Moving saves between Steam and Xbox comes in a later
-     version"; with two Steam accounts the switch lists their alias labels and the other account is
+   - 03: `Into [Steam | Xbox]` from `EvictionPicker.account` / `other_accounts` (a blocked
+     account stays visible with its reason, e.g. "Moving a save in this direction between Steam
+     and Xbox is not available yet"; with two Steam accounts the switch lists their alias labels and the other account is
      selectable with D5's one `OTHER_ACCOUNT` confirm warning whenever the save comes from another
      account, F7-b; no ownership ids are read); a plan-level info strip (D5
      `STEAM_CLOUD_OTHER_DEVICE`: "Steam Cloud is on. If Steam asks at the next launch which copy to
@@ -720,9 +720,11 @@ Classic widgets (Canvas, Text, chip Checkbuttons, segmented Radiobuttons, card F
 with a small `ThemeAware` registry; a theme change calls each one's `apply_palette(P)`, regenerates
 images and redraws canvases. `tests/test_theme.py` gains contrast pairs for the new keys.
 Windows 11 dark title bar: `DwmSetWindowAttribute(hwnd, 20, 1)` on every toplevel in dark mode
-(best effort, VERIFIED in 01-dark). The **native menu bar stays light** in dark mode (a Win32 menu;
-Tk 8.6 cannot theme it) - visible in 01-dark; the alternative is an in-window bar of
-`ttk.Menubutton`s (themed and zoomable, but no Alt-key access without extra bindings). Chips are
+(best effort, VERIFIED in 01-dark). The native menu bar stayed light in dark mode (a Win32 menu
+that Tk 8.6 cannot theme), so the menu bar is now an in-window row of `tk.Menubutton`s
+(`ui/menubar.py`) opening the same menus; Alt+letter and F10 are bound by hand. Classic widgets
+that were never given a colour (Toplevels, Frames, Texts) are tinted by `theme.retint` and the
+option database; `tests/test_theme_dark_audit.py` walks every window. Chips are
 classic `tk.Checkbutton(indicatoron=False)` because the vista `Toolbutton` style draws unselected
 chips as plain text (VERIFIED probe).
 

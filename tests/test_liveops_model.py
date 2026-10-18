@@ -18,7 +18,6 @@ from nms_save_vault.core.liveops import (
     OpOutcome,
     PairSource,
     PlacePlan,
-    Policies,
     ResolvedTarget,
     SimulatedCrash,
     SourceSummary,
@@ -123,12 +122,9 @@ def test_errors_are_operation_errors_with_stable_codes():
     assert TargetError("XGS_READ_ONLY", "no index").text == "This Xbox folder can only be read."
 
 
-def test_context_defaults_ask_the_real_world_and_policies_keep_transfers_shut():
+def test_context_defaults_ask_the_real_world():
     ctx = OpContext(vault=None, versions=None, store=None, locator=None, lineage=None,
-                    readmodel=None, sources=[], policies=Policies(), host=None,
+                    readmodel=None, sources=[], host=None,
                     app_version="nms-save-vault test", machine_id="m-0123456789ab")
     assert ctx.game_probe is safety.is_game_running and ctx.clock is time.time
     assert ctx.faults is None
-    assert Policies().cross_platform == "off"
-    with pytest.raises(dataclasses.FrozenInstanceError):
-        Policies().cross_platform = "validated"  # type: ignore[misc]

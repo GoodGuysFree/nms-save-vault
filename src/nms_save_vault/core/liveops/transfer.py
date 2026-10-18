@@ -8,6 +8,7 @@ Place of the converted pair, into an empty or an occupied slot.
 from __future__ import annotations
 
 import dataclasses
+from collections.abc import Iterable
 
 from .. import lz4_block, meta, msstore, playtime
 from . import convert
@@ -24,13 +25,13 @@ class ValidationRecord:
     meta_format: int
     steam_meta_len: int
     xbox_meta_len: int
-    base_version: int
+    base_version: int                # information: the game build of the run
 
 
 _RUN_2026_10_18 = dict(date="2026-10-18", meta_format=2004, steam_meta_len=432,
                        xbox_meta_len=360, base_version=4228)
-#: G1: (source platform, target platform) -> its passing record. Any other source meta format
-#: or length is refused by G3 (``convert``) whatever the record says.
+#: G1: (source platform, target platform) -> its passing record. A source meta of another
+#: format or length is refused (``source_problems``, and G3 in ``convert``).
 VALIDATED = {("steam", "xbox"): ValidationRecord(runs="T1", **_RUN_2026_10_18),
              ("xbox", "steam"): ValidationRecord(runs="T2", **_RUN_2026_10_18)}
 
@@ -40,8 +41,25 @@ _CODES = {"data_format": "SOURCE_OLD_FORMAT", "data_walk": "SOURCE_OLD_FORMAT",
           "meta_header": "UNSUPPORTED_META", "GAME_NEWER": "GAME_NEWER"}
 
 
-def validated(source_platform: str, target_platform: str) -> bool:
-    return (source_platform, target_platform) in VALIDATED
+def validated(source_platform: str, target_platform: str, metas: Iterable[bytes] = ()) -> bool:
+    """The direction has a passing record and, for every source meta plaintext given, the
+    record's meta format and length for the source platform. BaseVersion is information only:
+    a newer game is refused by the GAME_NEWER guard."""
+    record = VALIDATED.get((source_platform, target_platform))
+    if record is None:
+        return False
+    want_len = record.steam_meta_len if source_platform == "steam" else record.xbox_meta_len
+    for plain in metas:
+        if len(plain) != want_len:
+            return False
+        try:
+            fmt = (meta.parse(plain, 0).meta_format if source_platform == "steam"
+                   else msstore.parse_ms_meta(plain)["meta_format"])
+        except ValueError:
+            return False
+        if fmt != record.meta_format:
+            return False
+    return True
 
 
 def code_of(exc: convert.ConvertUnsupported) -> str:
@@ -76,6 +94,10 @@ def source_problems(src: LoadedSource) -> list[str]:
         adapt(src, "xbox" if src.platform == "steam" else "steam")
     except convert.ConvertUnsupported as exc:
         return [code_of(exc)]
+    target = "xbox" if src.platform == "steam" else "steam"
+    plains = [m.meta_plain for m in (src.pair.a, src.pair.b) if m is not None]
+    if not validated(src.platform, target, plains):
+        return ["UNSUPPORTED_META"]
     for pos in ("A", "B"):
         m = src.pair.member(pos)
         if m is None:

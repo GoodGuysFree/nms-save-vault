@@ -230,7 +230,7 @@ version. Left: the two ends, a search box, chips (Not live 4, Older versions of
 Ex-Beachhead-160qs 1, Live elsewhere 16 Steam save files), and a grouped tree of lines with
 expandable versions (radio per version). The 893F line shows its note as a warning row ("Permadeath
 try - died. Parked for the video, do not restore."). "Live elsewhere" warns that a second live
-copy makes two branches (`TWIN_LIVE`); Xbox-only save files are not listed until F6. Right:
+copy makes two branches (`TWIN_LIVE`); Saves of the other platform are listed too. Right:
 "What you are putting in" - the chosen version's facts and its automatic changes (R4: show the
 facts before a swap). Footer and button as in 03. Calls: `GET /api/lines`,
 `/api/lines/{pid}/versions`, `/api/versions/{vid}/card`, then `plan` and `execute` as above.
@@ -767,7 +767,7 @@ green. Phases per 01-consolidation section 5.
 | 16 | Compare view | M | 3 |
 | 17 | History style C view (key / all, branch tips), versions endpoint lanes | M | 4 |
 | 18 | Corrections UI (set parent, not related, Combine, Split) | M | 4 |
-| 19 | Account switch unlocks Xbox targets when F6 opens (after the owner's test runs) | S | 5 |
+| 19 | Account switch unlocks Xbox targets (done: F6 opened 2026-10-18) | S | 5 |
 | 20 | Optional: app-window setting after the gate (4.2) | S | later |
 
 Phase 1 is about 10 commits (1 L, 6 M, 3 S); the whole option about 20.

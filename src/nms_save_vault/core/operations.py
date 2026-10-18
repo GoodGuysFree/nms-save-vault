@@ -100,7 +100,7 @@ class FeatureNotYetAvailableError(OperationError):
 # Same-platform writes (Steam->Steam, Xbox->Xbox) run here; a cross-platform move goes through
 # the Organizer's plan, which has the checks and the confirmation the classic path lacks.
 CROSS_PLATFORM_MSG = ("To move a save between Steam and Xbox, use the Organizer tab "
-                      "(Move to live).")
+                      "(Move to live) or `nmsvault place`.")
 
 
 @dataclass
@@ -524,9 +524,9 @@ def promote_member(vault: Vault, live_dir: Path, slot: int, member: int, allow_g
 
 # --- Xbox / Game Pass (wgs) extract ------------------------------------------
 #
-# Same-platform only: data + meta blobs are copied verbatim and the slot identity lives in
-# containers.index (no XXTEA, no re-keying). Cross-platform Steam<->Xbox transfer stays
-# gated (see _guard_same_platform).
+# Same-platform only here: data + meta blobs are copied verbatim and the slot identity lives in
+# containers.index (no XXTEA, no re-keying). Steam<->Xbox goes through the Organizer
+# (see _guard_same_platform).
 
 
 def _ms_identifier(slot: int, member: int) -> str:

@@ -8,7 +8,7 @@ from pathlib import Path
 
 from nms_save_vault.core import platform
 from nms_save_vault.core.catalog import Vault
-from nms_save_vault.core.liveops import OpContext, PairSource, Policies
+from nms_save_vault.core.liveops import OpContext, PairSource
 from nms_save_vault.core.organizer.locator import Location
 from nms_save_vault.core.organizer.model import StoreRef
 from nms_save_vault.core.organizer.store import OrganizerStore
@@ -42,7 +42,7 @@ def make_ctx(tmp_path: Path, sources=(), *, vault_root: Path | None = None,
         vault=Vault(root), versions=None,
         store=OrganizerStore(root, create=False, clock=clock, lock_timeout=lock_timeout),
         locator=None, lineage=None, readmodel=None, sources=list(sources),
-        policies=Policies(), host=host_in(tmp_path), app_version="nms-save-vault test",
+        host=host_in(tmp_path), app_version="nms-save-vault test",
         machine_id=machine_id, game_probe=game_probe, clock=clock, faults=faults)
 
 

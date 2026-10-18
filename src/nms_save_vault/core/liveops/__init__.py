@@ -6,7 +6,7 @@ write target itself.
 """
 from __future__ import annotations
 
-from .context import OpContext, Policies, VersionStore
+from .context import OpContext, VersionStore
 from .errors import (
     ConfirmationRequired,
     LiveChanged,
@@ -58,7 +58,7 @@ __all__ = [
     "Estimate", "EvictionPicker", "Eviction", "FaultInjector", "LiveAccount", "LiveChanged",
     "LiveOpError",
     "MemberFacts", "MemberWrite", "OpContext", "OpOutcome", "OpSummary", "PairSource",
-    "PlacePlan", "Policies", "Position", "Progress", "RecoveryItem", "ResolvedTarget",
+    "PlacePlan", "Position", "Progress", "RecoveryItem", "ResolvedTarget",
     "RollbackError", "SimulatedCrash", "SlotCandidate", "SourceSummary", "TargetError",
     "TargetPlan", "UndoOffer", "VerifyItem", "VersionStore", "Warning", "WriteError",
     "SourceUnreadable", "busy_targets", "context_for", "eviction_picker", "execute",
