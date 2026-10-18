@@ -7,10 +7,13 @@ it follows the palette like every other widget. (Tk only posts a dropdown that i
 descendant of its Menubutton, hence copies rather than the model's own menus.)
 
 Keyboard access is kept by hand: Alt + the underlined letter opens a menu, F10 (or Alt on its
-own) the first one, and Left / Right move between open menus (Tk's Menubutton traversal).
+own) the first one. Left / Right between open menus are done by hand too: Windows runs a posted
+Tk menu as a native popup that knows nothing of its neighbours, so a message-filter hook
+(``_MenuKeyHook``) ends the popup and posts the neighbour.
 """
 from __future__ import annotations
 
+import sys
 import tkinter as tk
 from collections.abc import Mapping
 
@@ -41,6 +44,69 @@ def _copy_entries(source: tk.Menu, target: tk.Menu) -> None:
         target.add(kind, **options)
 
 
+_WH_MSGFILTER, _MSGF_MENU, _WM_KEYDOWN = -1, 2, 0x0100
+_VK_LEFT, _VK_RIGHT = 0x25, 0x27
+
+
+class _MenuKeyHook:
+    """Left / Right inside a posted dropdown (Windows only): leave it, open the neighbour.
+
+    The popup's modal loop passes its messages through a WH_MSGFILTER hook; a Left or a Right
+    on a top-level dropdown (not in a cascade, not on a cascade entry that Right opens) is
+    swallowed and handed to ``move``."""
+
+    def __init__(self, move) -> None:
+        import ctypes
+        from ctypes import wintypes
+
+        self._ctypes = ctypes
+        self._move = move
+        self._handle = None
+        self.active = False       # a dropdown posted by keyboard is on screen
+        self.in_submenu = False   # ... and one of its cascades is open: Left closes that
+        self.on_cascade = False   # ... or its highlighted entry opens one: Right does that
+
+        class MSG(ctypes.Structure):
+            _fields_ = [("hwnd", wintypes.HWND), ("message", wintypes.UINT),
+                        ("wParam", wintypes.WPARAM), ("lParam", wintypes.LPARAM),
+                        ("time", wintypes.DWORD), ("pt", wintypes.POINT)]
+
+        proto = ctypes.WINFUNCTYPE(ctypes.c_ssize_t, ctypes.c_int, wintypes.WPARAM,
+                                   wintypes.LPARAM)
+        user32 = ctypes.windll.user32
+        user32.CallNextHookEx.argtypes = [ctypes.c_void_p, ctypes.c_int, wintypes.WPARAM,
+                                          wintypes.LPARAM]
+        user32.CallNextHookEx.restype = ctypes.c_ssize_t
+        user32.SetWindowsHookExW.argtypes = [ctypes.c_int, proto, wintypes.HINSTANCE,
+                                             wintypes.DWORD]
+        user32.SetWindowsHookExW.restype = ctypes.c_void_p
+        self._user32 = user32
+
+        def hook(code, wparam, lparam):
+            try:
+                if code == _MSGF_MENU and self.active and not self.in_submenu:
+                    msg = MSG.from_address(lparam)
+                    if msg.message == _WM_KEYDOWN and (
+                            msg.wParam == _VK_LEFT
+                            or (msg.wParam == _VK_RIGHT and not self.on_cascade)):
+                        self.active = False
+                        user32.EndMenu()
+                        self._move(-1 if msg.wParam == _VK_LEFT else 1)
+                        return 1
+            except Exception:       # a hook must never raise into the OS
+                pass
+            return user32.CallNextHookEx(None, code, wparam, lparam)
+
+        self._proc = proto(hook)    # kept alive for the life of the hook
+        self._handle = user32.SetWindowsHookExW(
+            _WH_MSGFILTER, self._proc, None, ctypes.windll.kernel32.GetCurrentThreadId())
+
+    def close(self) -> None:
+        if self._handle:
+            self._user32.UnhookWindowsHookEx(self._handle)
+            self._handle = None
+
+
 class MenuStrip(tk.Frame):
     def __init__(self, master: tk.Misc, model: tk.Menu) -> None:
         super().__init__(master, borderwidth=0, highlightthickness=0)
@@ -66,10 +132,55 @@ class MenuStrip(tk.Frame):
             self.buttons.append(button)
             if 0 <= underline < len(label):
                 self.mnemonics[label[underline].lower()] = button
+        self._hook = None
+        self._posted: tk.Menubutton | None = None
+        if sys.platform == "win32" and self.buttons:
+            self._hook = _MenuKeyHook(self._move)
+            self.bind_all("<<MenuSelect>>", self._on_select, add="+")
+            self.bind("<Destroy>", lambda e: self._hook.close() if e.widget is self else None,
+                      add="+")
 
     def post(self, button: tk.Menubutton) -> None:
         """Open ``button``'s menu as a click on it would."""
-        self.tk.call("tk::MbPost", str(button))
+        self._posted = button
+        if self._hook is not None:
+            self._hook.active = True
+            self._hook.in_submenu = self._hook.on_cascade = False
+        # Tk refuses to post the menu it believes is still posted, and a popup ended by the OS
+        # (Escape, EndMenu) never tells it.
+        self.tk.eval("set ::tk::Priv(postedMb) {}")
+        try:
+            self.tk.call("tk::MbPost", str(button))
+        finally:
+            self.tk.eval("set ::tk::Priv(postedMb) {}")
+            if self._hook is not None:
+                self._hook.active = False
+
+    def _on_select(self, event: tk.Event) -> None:
+        """Track what the posted dropdown highlights: a cascade entry keeps Right, an open
+        cascade keeps Left."""
+        menu, hook = event.widget, self._hook
+        if hook is None or self._posted is None or not isinstance(menu, tk.Menu):
+            return
+        top = self.dropdown(self._posted)
+        if menu is top:
+            hook.in_submenu = False
+            try:
+                hook.on_cascade = menu.type("active") == "cascade"
+            except tk.TclError:
+                hook.on_cascade = False
+        elif str(menu).startswith(str(top) + "."):
+            # Windows also announces cascades that are merely initialised: only one with a
+            # highlighted entry is open.
+            hook.in_submenu = menu.index("active") not in (None, "none")
+
+    def _move(self, step: int) -> None:
+        """Open the menu ``step`` places along from the posted one, wrapping round."""
+        if self._posted is None:
+            return
+        i = (self.buttons.index(self._posted) + step) % len(self.buttons)
+        target = self.buttons[i]
+        self.after(10, lambda: self.post(target))
 
     def open_first(self) -> None:
         if self.buttons:
