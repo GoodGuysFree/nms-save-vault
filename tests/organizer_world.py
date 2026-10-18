@@ -5,7 +5,7 @@ Two live sources - Steam (slot 1 empty) and Xbox - and a vault:
 
 - "Main Save" (MAIN): live in Steam slot 9, noted and pinned; two versions linked by the
   live journal - #1 backed up, #2 (played on since) not in the vault;
-- "Other Run" (OTHER): live in Steam slot 3, never backed up (NOT IN VAULT);
+- "Other Run" (OTHER): live in Steam slot 3, never backed up (NO BACKUP YET);
 - "Cross Save" (CROSS): Steam slot 5 and Xbox slot 1, the Xbox copy 2h behind;
 - "Old Run" (OLD): only in the vault (an old backup);
 - "Xbox Only" (XONLY): Xbox slot 2.

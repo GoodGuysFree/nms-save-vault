@@ -22,8 +22,9 @@ from ..dpi import px, pxs
 from ..fmt import local_time, play_time
 from ..redact import rtext, set_label
 from ..themeaware import ThemeRegistry
+from ..tooltip import Tooltip
 from .live import NEVER_EMPTIES, refill_text
-from .words import METHOD_WORDS, find_row, line_name, slot_words, version_numbers
+from .words import METHOD_WORDS, NO_BACKUP, NO_BACKUP_TIP, find_row, line_name, slot_words, version_numbers
 
 #: A segment of a page: its text and its tags. ``("link", head)`` makes a link to a version
 #: of the shown save file, ``("link", head, pid)`` to one of another.
@@ -70,8 +71,7 @@ def line_summary(model: ReadModel, pid: str) -> list[Segment]:
         if row is not None:
             parts.append((f", saved {local_time(row.saved_at)}", ()))
         if vault.get(badge.target, "none") != "durable":
-            parts.append(("  NOT IN VAULT", ("warn",)))
-            parts.append((" - a backup keeps it", ()))
+            parts.append(("  " + NO_BACKUP, ("warn", "nobackup")))
         if badge.behind_by:
             parts.append((f"  {play_time(badge.behind_by)} behind", ("warn",)))
         out += _row("Live", *parts)
@@ -159,7 +159,7 @@ def version_card(model: ReadModel, pid: str, head: str) -> list[Segment]:
         out += _row("Led to", *parts)
     words = _version_state(row)
     if words:
-        out += _row("State", (words, ("warn",) if "NOT IN VAULT" in words else ()))
+        out += _row("State", (words, ("warn", "nobackup") if NO_BACKUP in words else ()))
     if row.label:
         out += _row("Label", (row.label, ("note",)))
     if row.comment:
@@ -180,7 +180,7 @@ def _version_state(row: VersionRow) -> str:
         words.append("live")
     if row.durable_copies == 0 and "gone" not in row.flags:
         words.append("only outside the vault" if "outside-only" in row.flags
-                     else "NOT IN VAULT")
+                     else NO_BACKUP)
     if "edited" in row.flags:
         words.append("edited outside the game")
     if "unreadable" in row.flags:
@@ -333,6 +333,9 @@ class DetailPane(ttk.Frame):
         text.configure(yscrollcommand=bar.set, state="disabled")
         bar.pack(side=tk.RIGHT, fill=tk.Y)
         text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        text.nobackup_tip = Tooltip(text, lambda _w, key: NO_BACKUP_TIP if key else "",
+                                    lambda e: "tip" if "nobackup" in text.tag_names(
+                                        f"@{e.x},{e.y}") else None)
         return text
 
     # --- theme ---------------------------------------------------------------------------

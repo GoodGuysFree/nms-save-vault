@@ -349,10 +349,14 @@ panes described above, as they have always been) and **Organizer**. **Ctrl+1** a
 **Ctrl+2** (or **View**) switch, and the app reopens the tab you used last (`state.json`,
 `ui.last_view`).
 
+**No backup yet** (Organizer tab): a version that exists only in the live save folder; no
+backup in the vault holds it, so overwriting the slot would lose it. Back up, or let a move
+keep it. Hovering the words explains this.
+
 **The Organizer tab** shows every save file once - live or only in the vault - with its
 versions under a `>`: first the ones the app saw connected (its own moves, the live slot,
 consecutive backups), then the rest by date; nothing is guessed. Filter chips (Live, Vault
-only, Steam, Xbox, On both, Has note, Pinned, Not in vault, Expedition), Find, sortable
+only, Steam, Xbox, On both, Has note, Pinned, No backup yet, Expedition), Find, sortable
 columns and a column chooser. On the right, your live slots as one or two lists (any of
 your Steam accounts and Xbox, chosen in the selectors); an empty slot warns that Steam Cloud
 or Xbox sync may fill it again (the app never empties a slot). Below them, the selection's

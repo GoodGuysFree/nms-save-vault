@@ -36,7 +36,7 @@ from ..themeaware import ThemeRegistry
 from ..tooltip import Tooltip
 from . import factsui
 from .lanes import lane_cells, lane_width
-from .words import line_name, version_numbers
+from .words import NO_BACKUP, NO_BACKUP_TIP, line_name, version_numbers
 
 STYLE = "Organizer.Treeview"
 FIND_DELAY_MS = 150
@@ -89,7 +89,7 @@ CHIPS = (
     Chip("both", "platform", "On both", LineFilter(cross_platform=True)),
     Chip("note", "flags", "Has note", LineFilter(has_note=True)),
     Chip("pinned", "flags", "Pinned", LineFilter(pinned=True)),
-    Chip("risk", "flags", "Not in vault", LineFilter(at_risk=True)),
+    Chip("risk", "flags", "No backup yet", LineFilter(at_risk=True)),
     Chip("expedition", "flags", "Expedition", LineFilter(expedition=True)),
 )
 CHIP = {c.name: c for c in CHIPS}
@@ -102,7 +102,7 @@ def state_words(line: Line) -> str:
     """The State column (D6 2.2): words, because a Tk 8.6 cell cannot be coloured."""
     words = []
     if "at-risk" in line.flags:
-        words.append("NOT IN VAULT")
+        words.append(NO_BACKUP)
     tips = {t.platform: t for t in line.platform_tips}
     if line.cross_platform == "xbox-behind" and "xbox" in tips:
         words.append(f"Xbox behind {play_time(tips['xbox'].behind_by)}")
@@ -148,7 +148,7 @@ def version_values(row: VersionRow, live_labels: dict, view=None, active: bool =
     words = []
     if row.durable_copies == 0 and "gone" not in row.flags:
         words.append("only outside the vault" if "outside-only" in row.flags
-                     else "NOT IN VAULT")
+                     else NO_BACKUP)
     if "fork" in row.flags:
         words.append("branch point")
     elif "tip" in row.flags and "live" not in row.flags:
@@ -298,7 +298,7 @@ def line_tip(line: Line) -> str:
     else:
         out.append("Not in any live slot: kept in the vault only.")
     if "at-risk" in line.flags:
-        out.append("NOT IN VAULT: a live save with no copy in the vault yet.")
+        out.append(f"{NO_BACKUP}: {NO_BACKUP_TIP}")
     state = state_words(line)
     if "behind" in state:
         out.append("The copy with less play time is behind; each platform's copy is its "
@@ -316,6 +316,9 @@ def version_tip(row: VersionRow) -> str:
                else "Comes from an earlier version (linked)")
     if row.label:
         out.append(f"Label: {row.label}")
+    if (row.durable_copies == 0 and "gone" not in row.flags
+            and "outside-only" not in row.flags):
+        out.append(f"{NO_BACKUP}: {NO_BACKUP_TIP}")
     return "\n".join(out)
 
 
@@ -381,6 +384,9 @@ class OrganizerTable(ttk.Frame):
             self.chip_vars[chip.name] = var
             self.chip_buttons[chip.name] = self._chip(
                 bar, chip.name, var, lambda n=chip.name: self._chip_toggled(n))
+            if chip.name == "risk":
+                self.risk_tip = Tooltip(self.chip_buttons["risk"], lambda _w, _k: NO_BACKUP_TIP,
+                                        lambda _e: "chip")
         ttk.Button(bar, text="Columns...", command=self.choose_columns).pack(side=tk.RIGHT)
         self.find_var = tk.StringVar(value="")
         self.find = ttk.Entry(bar, textvariable=self.find_var, width=22)

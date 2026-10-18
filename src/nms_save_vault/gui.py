@@ -426,6 +426,14 @@ class App(tk.Tk):
                 appstate.save(st, self.state_path)
             except OSError:
                 pass  # read-only location; carry on with the in-memory state
+        elif not any(s.role == appstate.ROLE_LIVE for s in st.sources):
+            # A config that lists no live folder (not even a disabled one) looks them up
+            # as a first run does, quietly: the Organizer would show nothing as live.
+            try:
+                if discover.merge_live_sources(st):
+                    appstate.save(st, self.state_path)
+            except OSError:
+                pass  # read-only location; the sources stay in memory
         return st
 
     def _live_paths(self) -> list[Path]:
@@ -2050,6 +2058,8 @@ class App(tk.Tk):
                 self.active_source_id = writable[0].id
                 self.live_dir = Path(writable[0].path)
         self.refresh()
+        self.organizer_view.sources_changed()
+        self.organizer_view.rescan()
         _showinfo(
             "Rescan",
             f"Added {added} new live source(s).\n"
@@ -2675,6 +2685,9 @@ BUTTONS
   dialog is the only place the real ids still appear. The names are stored in
   accounts.ini next to state.json; clearing a name shows the real id again.
 - Help: This dialog.
+- NO BACKUP YET (Organizer tab): this version exists only in the live save folder; no
+  backup in the vault holds it, so overwriting the slot would lose it. Back up, or let a
+  move keep it. The "No backup yet" chip lists such save files.
 
 MENUS
 Every button is also in the menu bar (File, Edit, View, Live, Tools, Help), so Alt and

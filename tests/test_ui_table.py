@@ -64,10 +64,10 @@ def test_the_world_has_the_lines_the_tests_need(world):
 def test_line_values(world):
     main = T.line_values(_line(world, "main"))
     assert main["live"] == "S9" and main["play"] == "2h10" and main["versions"] == "2"
-    assert main["state"] == "NOT IN VAULT; pinned"           # played on since the backup
+    assert main["state"] == "NO BACKUP YET; pinned"           # played on since the backup
     assert main["note"] == "Main run."
     other = T.line_values(_line(world, "other"))
-    assert other["state"].startswith("NOT IN VAULT")
+    assert other["state"].startswith("NO BACKUP YET")
     cross = T.line_values(_line(world, "cross"))
     assert cross["live"] == "S5 X1" and "Xbox behind 2h00" in cross["state"]
     old = T.line_values(_line(world, "old"))

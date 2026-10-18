@@ -31,6 +31,7 @@ from ..fmt import local_time, play_time
 from ..redact import ctext, shown
 from ..themeaware import ThemeRegistry
 from ..tooltip import Tooltip
+from .words import NO_BACKUP_TIP
 
 ONE, TWO = "one", "two"
 NEVER_EMPTIES = "The app never empties a slot; this one was emptied outside the app."
@@ -38,7 +39,7 @@ NEVER_EMPTIES = "The app never empties a slot; this one was emptied outside the 
 #: What each marker means, in the legend and in words wherever it is drawn.
 MARKERS = {
     "empty": "empty: Steam Cloud / Xbox sync may fill it again",
-    "risk": "not in vault",
+    "risk": "no backup yet",
     "pin": "pinned: never suggested",
     "pending": "waiting for the next game launch",
     "reverted": "reverted outside the app",
@@ -110,6 +111,8 @@ def slot_tip(slot: BoardSlot, source: LiveSource, labels: dict) -> str:
         out.append("Also live in another slot of this folder.")
     for marker in slot_markers(slot, source):
         out.append(MARKERS[marker].capitalize())
+        if marker == "risk":
+            out.append(NO_BACKUP_TIP)
     if slot.state == "partial":
         out.append("Only one of the slot's two saves is there.")
     return "\n".join(out)

@@ -50,7 +50,7 @@ def test_a_save_files_summary(world):
     assert title == "Main Save" and summary.startswith("Steam slot 9 - 2 versions")
     assert "pinned" in summary
     text = _plain(D.line_summary(world.model, PIDS["main"]))
-    assert "Steam slot 9  #2" in text and "NOT IN VAULT" in text
+    assert "Steam slot 9  #2" in text and "NO BACKUP YET" in text
     assert "Main run." in text and "never suggested" in text
 
 
@@ -71,7 +71,7 @@ def test_the_version_card_names_its_recorded_parent(world):
     text = _plain(card)
     assert "Comes from\t#1 (seen in the live slot)" in text
     assert ("#1", ("link", oldest)) in card
-    assert "Live: Steam slot 9" in text and "NOT IN VAULT" in text
+    assert "Live: Steam slot 9" in text and "NO BACKUP YET" in text
     first = _plain(D.version_card(world.model, PIDS["main"], oldest))
     assert "Led to\t#2" in first and "Vault: backup" in first
 

@@ -6,6 +6,12 @@ from __future__ import annotations
 
 from ...core.organizer.readmodel import Line, ReadModel, VersionRow
 
+#: The warning on a version only the live folder holds, and what it means (hover text).
+NO_BACKUP = "NO BACKUP YET"
+NO_BACKUP_TIP = ("This version exists only in the live save folder. No backup in the vault "
+                 "holds it yet. Back up (or let a move keep it) so it is not lost if the "
+                 "slot is overwritten.")
+
 #: How a drawn parent was seen (D1 EdgeMethod); nothing else draws a link.
 METHOD_WORDS = {
     "op": "put live by the app",

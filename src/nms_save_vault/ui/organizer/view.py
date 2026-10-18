@@ -56,7 +56,7 @@ def summary_text(model: ReadModel, organizer: Organizer | None) -> str:
                     and s.vault_copy != "durable")
         part = f"{source.label} {used}/{len(source.slots)} live"
         if risky:
-            part += f", {risky} not in vault"
+            part += f", {risky} no backup yet"
         if unreadable:
             part += f", {unreadable} unreadable"
         bits.append(part)
@@ -129,6 +129,7 @@ class OrganizerView(ttk.Frame):
         self._facts_refresh_at = 0.0
         self.banner: ttk.Frame | None = None
         self.organizer: Organizer | None = None
+        self._reopen_organizer = False
         self.model: ReadModel | None = None
         self.notes_window: NotesWindow | None = None
         self.histories = HistoryHooks(self)
@@ -283,6 +284,11 @@ class OrganizerView(ttk.Frame):
 
     # --- scanning ---------------------------------------------------------------------------
 
+    def sources_changed(self) -> None:
+        """The configured live folders changed: the next scan opens a new organizer over
+        them (the old one keeps the list it was made with)."""
+        self._reopen_organizer = True
+
     def rescan(self, *, record: bool = True) -> None:
         """Scan in the worker (``record``: journal the live slots, as Rescan and the
         start-up scan do); the old model stays until the new one is there."""
@@ -300,7 +306,8 @@ class OrganizerView(ttk.Frame):
 
     def _scan_job(self, record: bool):
         """In the worker: the organizer is opened there too (it reads the catalog)."""
-        if self.organizer is None:
+        if self.organizer is None or self._reopen_organizer:
+            self._reopen_organizer = False
             self.organizer = self.make_organizer()
         organizer = self.organizer
         model = organizer.refresh(record=record)
