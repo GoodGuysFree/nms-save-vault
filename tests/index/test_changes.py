@@ -229,3 +229,9 @@ def test_a_new_ship_of_unknown_class_leaves_the_class_out():
     p = facts(base=ctx())
     c = facts(base=ctx(ships=[ship(0, "", "0x1", cls=None)]))
     assert [x.text for x in diff(c, p).items] == ["new ship 'Fighter' (Fighter)"]
+
+
+def test_a_new_freighter_of_unknown_class_leaves_the_class_out():
+    p = facts(base=ctx())
+    c = facts(base=ctx(freighter={"has": True, "name": "Hauler", "cls": None}))
+    assert [x.text for x in diff(c, p).items] == ["freighter acquired 'Hauler'"]

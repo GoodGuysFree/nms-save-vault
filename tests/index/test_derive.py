@@ -117,3 +117,9 @@ def test_the_card_has_checklists_names_and_errors():
     assert c["errors"] == [{"extractor": "base.ships", "error": "ValueError at fleet.py:1"}]
     e = derive.card(VID, facts_for("base_and_expedition")).to_dict()["expedition"]
     assert e["milestones"][1] == {"value": 40.0, "amount": 150.0, "optional": False, "done": False}
+
+
+def test_a_freighter_of_unknown_class_leaves_the_class_out():
+    f = facts_for("rich_base")
+    f["contexts"]["base"]["freighter"] = {"has": True, "name": "Hauler", "cls": None}
+    assert derive.view(VID, f).freighter == "Hauler"

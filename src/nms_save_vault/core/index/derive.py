@@ -195,7 +195,8 @@ def view(vid: str, facts: Mapping) -> FactsView:
         current_galaxy=lookups.galaxy_name(ctx.get("galaxy")),
         journey_rank=lookups.journey_rank(stats.get("JM")),
         quicksilver=ctx.get("quicksilver"), nanites=ctx.get("nanites"), units=ctx.get("units"),
-        freighter=(f"{freighter.get('name') or freighter.get('model')} ({freighter.get('cls') or '?'})"
+        freighter=(f"{freighter.get('name') or freighter.get('model')}"
+                   + (f" ({freighter['cls']})" if freighter.get("cls") else "")
                    if freighter.get("has") else None),
         frigates=ctx.get("frigates", 0), words=sum(words.values()),
         deaths=_int(stats.get("DEATHS")), systems_discovered=_int(stats.get("DISC_SYSTEMS")),

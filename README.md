@@ -8,7 +8,7 @@ unlimited save slots beyond the game's 15. See [Platform support](#platform-supp
 
 **Just want to run it? No Python needed.** Download the ready-to-use Windows kit from the
 [**latest release**](https://github.com/GoodGuysFree/nms-save-vault/releases/latest) — grab
-`NMSSaveVault-Setup-v0.2.8.zip` under **Assets**.
+`NMSSaveVault-Setup-v0.3.0.zip` under **Assets**.
 
 Extract the zip, open the `NMSSaveVault` folder and run **`NMSSaveVault.exe`**. That is the
 whole thing — Python and Tkinter are bundled, nothing is installed, and because the app
@@ -17,6 +17,52 @@ starts through a signed copy of the official Python runtime rather than an unsig
 shortcuts? `install.bat` in the zip adds them. Full details under
 [Run it](#run-it-windows-no-python-needed); every version is on the
 [Releases](https://github.com/GoodGuysFree/nms-save-vault/releases) page.
+
+## The Organizer
+
+The **Organizer** tab (Ctrl+2) is the easy way to see and move your saves. It shows **every
+save file as one line** - live or only in the vault - and a `>` opens its **versions**. Live
+markers show which slot of your Steam and Xbox folders holds each one. Facts columns (story
+and Atlas progress, bases, ships, companions, play time and more) are read from the saves and
+shown for each version. Chips, Find, sorting and a column chooser narrow the list.
+
+* **Move to live / Replace with / Swap / Keep a copy / Undo.** Put a version into a live
+  slot, pick the version for a slot, exchange two slots, or keep a copy of a live slot in the
+  vault. **The save being replaced always goes to the vault first**, every move is checked
+  and rolled back exactly if it is wrong, and each one has an **Undo**. The app **never
+  empties a slot**: where a slot would end up empty it shows the steps to do it yourself.
+* **History, Compare, Notes and Pins.** **History** lists a save file's versions and what
+  changed between them; **Compare** puts two versions side by side; **Notes** keeps a note
+  per save file and a label, comment and lock per version (in the vault, never in the save);
+  a **Pin** stops the app suggesting that save's slot for another save.
+* **Corrections.** If the app linked two saves wrongly, say where a version **comes from**,
+  **Combine** two save files into one, or **Split** one apart. Each can be undone, and none
+  touches a save file.
+* **No backup yet** marks a version that exists only in a live folder; hover any chip, marker
+  or column title for a plain-words explanation.
+* **One-time vault upgrade.** Moves in the Organizer need the version store. **Tools > Vault
+  upgrade** (or `nmsvault store upgrade`) does it once: the vault is copied aside first, and
+  **Undo the vault upgrade** goes back. Older app versions cannot read an upgraded vault.
+  Details in [the vault format and the upgrade](#the-vault-format-and-the-upgrade).
+* **After a game update** run `nmsvault selftest`: it reads every live save and vault version
+  in memory, writes nothing and reports what it could not understand. A save written by a
+  newer game than the app knows is flagged `GAME_NEWER`, and the app refuses to move it
+  rather than guess.
+* **Steam <-> Xbox transfer is planned**, not available yet. Moves stay within one platform.
+
+On the command line the same features are: `saves`, `versions`, `board`, `history`,
+`lineage`, `place`, `swap`, `keep`, `undo`, `ops`, `recover`, `index`, `store` and
+`selftest`. Options go after the command:
+
+```pwsh
+nmsvault saves --vault D:\Vault                 # every save file, one line each
+nmsvault versions "Main Save" --vault D:\Vault  # its versions
+nmsvault history "Main Save" --vault D:\Vault   # what changed between them
+nmsvault swap steam:3 steam:9 --vault D:\Vault
+nmsvault selftest --vault D:\Vault
+```
+
+The full list is under [Usage](#usage).
 
 ## What it does
 
@@ -69,7 +115,7 @@ shortcuts? `install.bat` in the zip adds them. Full details under
 
 ## The vault format and the upgrade
 
-A new vault keeps each backup as a plain folder. **Vault > Upgrade the vault** (or
+A new vault keeps each backup as a plain folder. **Tools > Vault upgrade** (or
 `nmsvault store upgrade`) moves it to the version store: files are kept once by content, so a
 backup that changed one file costs only that file. It only runs when you ask, first makes a
 verified copy of the whole vault next to it (`<vault>.pre-store-<UTC>`, so you need that much
@@ -109,8 +155,8 @@ Both platforms have a portable kit on the
 
 | Platform | Asset |
 |---|---|
-| Linux / Steam Deck (x86_64) | `NMSSaveVault-v0.2.8-linux-x86_64.tar.gz` |
-| macOS (Apple Silicon) | `NMSSaveVault-v0.2.8-macos-arm64.tar.gz` |
+| Linux / Steam Deck (x86_64) | `NMSSaveVault-v0.3.0-linux-x86_64.tar.gz` |
+| macOS (Apple Silicon) | `NMSSaveVault-v0.3.0-macos-arm64.tar.gz` |
 
 ### Read this first: back up your saves by hand
 
@@ -142,7 +188,7 @@ saw last. It is not a substitute for the copy above.
 ### Then run it
 
 ```sh
-tar -xzf NMSSaveVault-v0.2.8-linux-x86_64.tar.gz
+tar -xzf NMSSaveVault-v0.3.0-linux-x86_64.tar.gz
 cd NMSSaveVault
 ./NMSSaveVault          # the app;  ./nmsvault status  for the command line
 ```
@@ -171,7 +217,7 @@ and can only draw ISO8859-1. Every string the app displays is therefore plain AS
 
 ## Run it (Windows, no Python needed)
 
-Download **`NMSSaveVault-Setup-v0.2.8.zip`** from the
+Download **`NMSSaveVault-Setup-v0.3.0.zip`** from the
 [**Releases**](https://github.com/GoodGuysFree/nms-save-vault/releases) page (under the
 release's **Assets**) and extract it. Open the `NMSSaveVault` folder and run
 **`NMSSaveVault.exe`** — that is all. Everything (Python + Tkinter) is bundled, nothing is
@@ -361,8 +407,8 @@ columns and a column chooser. On the right, your live slots as one or two lists 
 your Steam accounts and Xbox, chosen in the selectors); an empty slot warns that Steam Cloud
 or Xbox sync may fill it again (the app never empties a slot). Below them, the selection's
 details; **Notes...** keeps a note per save file (with every earlier revision) and a label,
-comment and lock per version, in the vault and never in the save files. Moving a version
-into a live slot from this tab comes with the next phase; until then use the classic tab.
+comment and lock per version, in the vault and never in the save files. Moving a
+version into a live slot is described in [The Organizer](#the-organizer).
 
 **Theme.** **View > Theme** offers **Light**, **Dark**, or **System**, which
 follows your Windows light/dark setting. Your choice is remembered in `state.json`. (Light
@@ -518,18 +564,19 @@ The vault lives outside `st_<id>`, so it is never scanned by the game or synced 
 ## Status
 
 Working. Core format/crypto and all operations are verified against the real save files and
-in a temp sandbox (2188 tests). Xbox / Game Pass saves are supported for reading **and**
+in a temp sandbox (2214 tests). Xbox / Game Pass saves are supported for reading **and**
 same-platform writing — verified against a real install (reads) and synthetic `wgs` fixtures
 (writes). A full file-copy safety backup of the live folder was made before development
-(`C:\Devel\NMS-SaveBackup-SAFETY-2026-06-24`). In progress for the save-file organizer: a
-read-only content index of every save version (story and Atlas progress, bases and legacy
-parts, ships, companions, expeditions, and what changed against the recorded parent), kept in
-a per-machine cache and available as `nmsvault index status | build | show | changes`.
+(`C:\Devel\NMS-SaveBackup-SAFETY-2026-06-24`). The Organizer is in (see above); a
+read-only content index of every save version (story and Atlas progress, bases, ships,
+companions, expeditions, and what changed against the recorded parent) is kept in a
+per-machine cache and available as `nmsvault index status | build | show | changes`.
 
 ## Version history
 
 | Version | Date | Highlights |
 |---|---|---|
+| **0.3.0** | 2026-10-18 | **The Organizer.** A new tab that shows every save file as one line with its versions, live markers and facts; Move to live, Replace with, Swap, Keep a copy and Undo (the replaced save always goes to the vault first); History, Compare, Notes, Pins and corrections; a one-time vault upgrade to the version store; `nmsvault selftest`; and the matching CLI commands. |
 | **0.2.8** | 2026-10-02 | **Xbox: keep the game's new `xgs` save copy in step.** The game now also keeps a plain copy of each Xbox save in `SystemAppData\xgs`, beside `wgs`. The vault only wrote `wgs`, so a promote, clear, repopulate, restore or undo left the game a stale `xgs` copy; every write now updates both. An account that has only `xgs` is shown read-only. |
 | **0.2.7** | 2026-09-26 | **Filter backups by save file.** A save's history was scattered: the same run sits in a different slot in one backup than in the next, and a rename makes its old copies look like somebody else's. The new **Save file** dropdown above the backups lists every save that has a backup, under its current name and the names it had before (here, *SHIPSTOGIVE-1400QS - was: ShipsToGive-2400qs*), with its platforms, play time and backup count. Pick one, or right-click any slot or save in either pane and choose **Show this save's history**, and the backups narrow to every copy of that run - renamed, moved, or carried to another platform by the NMS cloud - each opened to just the slot holding it, newest first. **All saves** clears it. It uses the same game-written save id as **Play time**, so it costs no extra decoding. |
 | **0.2.6** | 2026-09-19 | **Total play time.** How long have you actually played? Counting files cannot answer that: each playthrough exists twice in its slot (Auto-Save and Restore-Point), again in every dated backup in the vault, and - because an NMS cloud save carries a run to a linked account on another platform - once more under a second platform entirely. 821 save files here are 29 playthroughs. **Play time...** (toolbar) and `nmsvault playtime` fold every copy onto one row and count the highest play time of the copies, since play time only ever goes up. Identity is the game's own: the u64 the Steam meta carries at `OFF_SLOT_IDENTIFIER`, which is the same number the save data holds as `WmU` - it survives a rename, a move to another slot, and the trip through the cloud to another platform. Xbox metas leave that field 0, so an Xbox save is identified from its data blob instead, cached per file so the second run costs nothing. Saves older than the field are matched on their name and the report says how many those were. Also: `lz4_block` now reads the unframed container of pre-Waypoint Xbox saves - one bare LZ4 block with no chunk headers - which previously decoded to nothing. |

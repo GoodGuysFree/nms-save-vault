@@ -298,8 +298,8 @@ def _ships(out: _Collector, ctx: str, c: Mapping, p: Mapping) -> None:
                 magnitude=len(gone))
     cf, pf = c.get("freighter") or {}, p.get("freighter") or {}
     if cf.get("has") and not pf.get("has"):
-        out.add("freighter.new", ctx, 80, f"freighter acquired '{cf.get('name') or cf.get('model', '')}' "
-                f"({cf.get('cls') or '?'})")
+        cls = f" ({cf['cls']})" if cf.get("cls") else ""
+        out.add("freighter.new", ctx, 80, f"freighter acquired '{cf.get('name') or cf.get('model', '')}'{cls}")
 
 
 def _pet_key(pet: Mapping) -> tuple:
