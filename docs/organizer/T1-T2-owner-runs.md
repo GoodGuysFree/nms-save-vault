@@ -11,12 +11,11 @@ T1 = Steam to Xbox (the target slot is on Xbox). T2 = Xbox to Steam (the target 
 ## Before either run
 
 1. Close No Man's Sky, Steam's sync prompt and the Xbox app. Wait 60 seconds.
-2. Back up both live folders. List your Steam folders first and set `$steam` to the account
-   you play on (there may be more than one `st_` folder):
+2. Back up both live folders. `$steam` picks the `st_` folder that holds saves (there may be
+   more than one `st_` folder; an empty one is skipped):
    ```pwsh
    cd C:\Devel\NMSVault
-   Get-ChildItem "$env:APPDATA\HelloGames\NMS" -Directory -Filter "st_*" | Select-Object Name
-   $steam = "$env:APPDATA\HelloGames\NMS\st_<your Steam id>"
+   $steam = (Get-ChildItem "$env:APPDATA\HelloGames\NMS" -Directory -Filter "st_*" | Where-Object { Get-ChildItem $_.FullName -Filter "save*.hg" }).FullName
    $xbox = (Get-ChildItem "$env:LOCALAPPDATA\Packages\HelloGames.NoMansSky_bs190hzg1sesy\SystemAppData\wgs" -Directory -Filter "*_*" | Select-Object -First 1).FullName
    uv run nmsvault backup --vault D:\VaultCopy --live $steam --label "T1 before"
    uv run nmsvault backup --vault D:\VaultCopy --live $xbox --label "T1 before"
