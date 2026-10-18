@@ -36,7 +36,7 @@ from .ui.redact import RedactingTreeview
 from .ui.menubar import MenuStrip
 from .ui.menuhint import bind_menu_hints
 from .ui.tooltip import TOOLTIP_STYLE, Tooltip
-from .ui.organizer.words import PROMOTE_TIP, SLOT_MARKERS_TIP, VAULT_UPGRADE_TIP
+from .ui.organizer.words import FREE_OLD_TIP, PROMOTE_TIP, SLOT_MARKERS_TIP, VAULT_UPGRADE_TIP
 from .ui.organizer.ops import OpsLogWindow, PlanDialog, StepsWindow
 from .ui.organizer.panic import PanicDialog
 from .ui.organizer.vaultwin import VaultEnv, VaultWindow, needs_attention
@@ -209,6 +209,23 @@ def _undo_note(snapshot_id: str | None) -> str:
 
 def _with_warnings(message: str, warnings) -> str:
     return message + ("\n\nWarnings:\n - " + "\n - ".join(warnings) if warnings else "")
+
+
+def _free_text(plan, head: str) -> str:
+    """The dry-run of freeing old folders for a dialog: the headline, what stays as it is and
+    why, and where the pre-upgrade copy is."""
+    lines = [head]
+    if plan.skipped:
+        lines.append(f"\n{len(plan.skipped)} folders are left as they are:")
+        lines += [f" - {entry_id}: {why}" for entry_id, why in plan.skipped[:8]]
+        if len(plan.skipped) > 8:
+            lines.append(f" - and {len(plan.skipped) - 8} more")
+    aside = plan.copy_aside
+    if aside is not None:
+        lines.append(f"\nThe pre-upgrade copy {aside.name} "
+                     + ("is still next to the vault; it is not touched." if aside.found
+                        else "is no longer found."))
+    return "\n".join(lines)
 
 
 def _flow_rows(widths: list[int], available: int) -> list[int]:
@@ -560,10 +577,13 @@ class App(tk.Tk):
 
         tools = menu("Tools")
         tools.add_command(label="Vault upgrade...", command=self.open_vault_window, underline=0)
+        tools.add_command(label="Free old backup folders...", command=self.on_free_old_folders,
+                          underline=0)
         tools.add_command(label="Play time...", command=self.on_playtime, underline=0)
         tools.add_command(label="Check for updates...", command=self.on_check_updates,
                           underline=0)
-        bind_menu_hints(tools, {"Vault upgrade...": VAULT_UPGRADE_TIP}, self._menu_hint)
+        bind_menu_hints(tools, {"Vault upgrade...": VAULT_UPGRADE_TIP,
+                                "Free old backup folders...": FREE_OLD_TIP}, self._menu_hint)
 
         about = menu("Help")
         about.add_command(label="Help", command=self.on_help, accelerator="F1", underline=0)
@@ -605,6 +625,48 @@ class App(tk.Tk):
                        self.state, __version__)
         return VaultWindow(self, worker=self.worker, themed=self.themed, env=env,
                            on_changed=lambda: self.organizer_view.vault_changed())
+
+    def on_free_old_folders(self) -> None:
+        """Tools > Free old backup folders (D3 4.5): show what would be freed and what is left
+        as it is, ask, then delete behind the wait dialog. Nothing is deleted without the yes."""
+        from .core.store import classic as store_classic
+        from .core.store import free as freeing
+
+        title = "Free old backup folders"
+        try:
+            store = store_classic.store_of(self.vault, app_state=self.state)
+        except ops.OperationError as exc:
+            _showerror(title, str(exc))
+            return
+        if store is None:
+            _showinfo(title, "Upgrade the vault first (Tools > Vault upgrade...). Until then "
+                             "there are no old folders to free.")
+            return
+        holder = self._run_worker(
+            lambda _f: freeing.plan_free(Vault(self.vault.root).load(), store), False,
+            "Checking the old folders - please wait...")
+        if holder.get("error") is not None:
+            _showerror(title, str(holder["error"]) or repr(holder["error"]))
+            return
+        plan = holder["result"]
+        if not plan.entries:
+            _showinfo(title, _free_text(plan, "No old backup folder to free."))
+            return
+        if not _askyesno(title, _free_text(
+                plan, f"Free {_fmt_size(plan.bytes)}: delete the {len(plan.entries)} old backup "
+                      "folders that are now in the store?\nA full check of the store runs first. "
+                      "Every backup stays listed.")):
+            return
+        holder = self._run_worker(lambda _f: freeing.run_free(store, plan), False,
+                                  "Checking the store and deleting the old folders - "
+                                  "please wait...")
+        err = holder.get("error")
+        if err is not None:
+            _showerror(title, str(err) if isinstance(err, ops.OperationError) else repr(err))
+            return
+        self.refresh()
+        self.organizer_view.vault_changed()
+        _showinfo(title, holder["result"].message)
 
     def _offer_interrupted_undo(self) -> None:
         if needs_attention(self.vault.root):
@@ -2048,6 +2110,9 @@ class App(tk.Tk):
             return
         total, new, existing = pv["total"], pv["new"], pv["existing"]
         plural = "y" if total == 1 else "ies"
+        if pv.get("merge"):
+            self._merge_vault_dir(directory, total, new, existing)
+            return
         if not new:
             _showinfo(
                 "Import vault",
@@ -2071,6 +2136,26 @@ class App(tk.Tk):
             lambda _force: ops.import_vault(self.vault, directory, copy_into_vault=bool(ans)),
             success="Vault imported.",
             message="Importing vault - please wait...",
+        )
+
+    def _merge_vault_dir(self, directory: Path, total: int, new: list, existing: list) -> None:
+        """The other vault has a version store of its own: its files and backups are merged
+        into this vault's (copied in and checked; what is here already is skipped)."""
+        if not new:
+            _showinfo("Import vault", f"'{directory.name}' is a Save Vault with {total} "
+                                      "entries, all already in your vault. Nothing to import.")
+            return
+        if not _askyesno(
+                "Import vault",
+                f"'{directory.name}' is a Save Vault with {total} entries:\n"
+                f"  - {len(new)} new\n  - {len(existing)} already in your vault\n\n"
+                "Merge the new ones into your vault? Their files are copied in and checked; "
+                "the other vault is not changed."):
+            return
+        self._run(
+            lambda _force: ops.import_vault(self.vault, directory, copy_into_vault=True),
+            success="Vault merged.",
+            message="Merging vault - please wait...",
         )
 
     def on_rescan(self) -> None:
@@ -2696,6 +2781,11 @@ BUTTONS
   save) into the catalog -- either in place or copied into the vault. You can also point
   Import at a whole copied Save Vault folder: it compares that vault's entries with yours
   and offers to copy the new ones in or index them in place (re-importing is harmless).
+  A vault that has a version store of its own is merged into yours instead: its files
+  and backups are copied in and checked, so importing it again adds only what is new.
+- Tools > Free old backup folders: after the vault upgrade, deletes the old backup folders
+  that are now in the version store (after a full check; it shows what it will free and
+  asks first). Every backup stays listed.
 - Rescan: Re-detect live save folders (new Steam account, new Xbox account) and add them
   to the LIVE SAVES list. Your manual entries are left untouched.
 - Discover: Scan the NMS folder for existing backups and add any new ones found. A live

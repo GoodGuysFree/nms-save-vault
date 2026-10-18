@@ -26,6 +26,8 @@ PROMOTE_TIP = "Make the slot's other save the one the game loads."
 PIN_TIP = "A pinned save is never suggested as the one to replace when a move needs a slot."
 VAULT_UPGRADE_TIP = ("One-time conversion to the new storage. Your vault is copied aside "
                      "first, so it can be undone.")
+FREE_OLD_TIP = ("Delete the old backup folders that are now in the version store, after a full "
+                "check. Every backup stays listed. Asks first.")
 SLOT_MARKERS_TIP = ("* = the save the game loads. / moved = the file was moved here from "
                     "another slot.")
 
