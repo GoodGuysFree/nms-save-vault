@@ -204,3 +204,49 @@ def test_a_busy_rename_onto_the_same_bytes_is_a_dedupe(tmp_path, monkeypatch):
 
 def test_object_store_has_no_delete():
     assert not [name for name in dir(ObjectStore) if "delete" in name or "remove" in name]
+
+
+def _busy_opens(monkeypatch, n):
+    """Make the first n opens of the object file fail as a replace in flight does on Windows."""
+    real, calls = open, []
+
+    def flaky(file, *a, **k):
+        if Path(file).parent.parent.name == "objects" and len(calls) < n:
+            calls.append(file)
+            raise PermissionError(13, "The process cannot access the file", None, 32)
+        return real(file, *a, **k)
+
+    monkeypatch.setattr("builtins.open", flaky)
+    monkeypatch.setattr(Path, "read_bytes", lambda self: _read(flaky, self))
+    return calls
+
+
+def _read(opener, path):
+    with opener(path, "rb") as f:
+        return f.read()
+
+
+def test_a_busy_object_is_waited_for_by_put_and_get(tmp_path, monkeypatch):
+    objs = _objects(tmp_path)
+    digest = _sha(DATA)
+    assert objs.put(DATA, digest).written
+    calls = _busy_opens(monkeypatch, 3)
+    result = objs.put(DATA, digest)            # the dedupe re-hash waits it out, still verified
+    assert not result.written and not result.healed and len(calls) == 3
+    calls.clear()
+    calls_more = _busy_opens(monkeypatch, 2)
+    assert objs.get(digest, len(DATA)) == DATA and len(calls_more) == 2
+
+
+def test_an_object_that_stays_busy_fails_with_the_store_error(tmp_path, monkeypatch):
+    from nms_save_vault.core.store import objects as objmod
+
+    objs = _objects(tmp_path)
+    digest = _sha(DATA)
+    objs.put(DATA, digest)
+    monkeypatch.setattr(objmod, "BUSY_WAIT_SECONDS", 0.05)
+    _busy_opens(monkeypatch, 10**6)
+    with pytest.raises(vstore.StoreUnavailable):
+        objs.put(DATA, digest)
+    with pytest.raises(vstore.StoreUnavailable):
+        objs.get(digest)

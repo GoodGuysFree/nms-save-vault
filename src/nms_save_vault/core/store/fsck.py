@@ -31,7 +31,7 @@ from . import capture
 from .errors import ObjectCorrupt, ObjectMissing, StoreError
 from .listing import read_migration
 from .manifest import FileEntry, StoreEntry
-from .objects import sha256
+from .objects import read_when_free, sha256
 from .versionstore import STATE, TMP, read_format
 
 if TYPE_CHECKING:
@@ -163,7 +163,7 @@ def _check_members(store: "VersionStore", entries: Iterable[StoreEntry],
 
 def _raw(store: "VersionStore", fe: FileEntry) -> bytes:
     """A file's bytes already verified by this run: inline, or its object read as it is."""
-    return fe.inline if fe.inline is not None else store.objects.path_for(fe.sha256).read_bytes()
+    return fe.inline if fe.inline is not None else read_when_free(store.objects.path_for(fe.sha256).read_bytes)
 
 
 def _steam_valid(raw_meta: bytes, ordinal: int, data: bytes) -> bool:

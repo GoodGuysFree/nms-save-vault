@@ -10,7 +10,9 @@ import logging
 import os
 import re
 import secrets
+import time
 from collections.abc import Callable, Iterator
+from typing import TypeVar
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -21,6 +23,29 @@ log = logging.getLogger(__name__)
 
 _DIGEST = re.compile(r"[0-9a-f]{64}")
 _FANOUT = re.compile(r"[0-9a-f]{2}")
+
+#: How long a read waits out a sharing violation (Windows: another process is replacing the
+#: object this instant) before giving up, and the first pause between attempts.
+BUSY_WAIT_SECONDS = 2.0
+_BUSY_FIRST_PAUSE = 0.005
+_T = TypeVar("_T")
+
+
+def read_when_free(action: Callable[[], _T]) -> _T:
+    """Run a read of an object file, retrying with a short backoff while it fails with
+    PermissionError (a replace by another process in flight), for at most BUSY_WAIT_SECONDS.
+    Whatever it returns was read whole, never half; still busy at the end is StoreUnavailable."""
+    deadline = time.monotonic() + BUSY_WAIT_SECONDS
+    pause = _BUSY_FIRST_PAUSE
+    while True:
+        try:
+            return action()
+        except PermissionError as exc:
+            if time.monotonic() >= deadline:
+                raise StoreUnavailable(
+                    f"A vault object stayed busy ({exc.strerror or exc}). Try again.") from exc
+            time.sleep(pause)
+            pause = min(pause * 2, 0.2)
 
 
 def sha256(data: bytes) -> str:
@@ -96,7 +121,7 @@ class ObjectStore:
         or the sha256 is wrong. Reads never write: a bad object stays where it is."""
         path = self.path_for(digest)
         try:
-            data = path.read_bytes()
+            data = read_when_free(path.read_bytes)
         except FileNotFoundError as exc:
             raise ObjectMissing(digest) from exc
         except OSError as exc:
@@ -172,7 +197,7 @@ def _ensure_dir(folder: Path) -> None:
 
 def _hash_file(path: Path) -> str | None:
     try:
-        return safety.sha256_file(path)
+        return read_when_free(lambda: safety.sha256_file(path))
     except FileNotFoundError:
         return None
 

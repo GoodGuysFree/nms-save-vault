@@ -298,7 +298,8 @@ installed to build it.
 ```pwsh
 uv venv
 uv pip install -e ".[dev]"
-uv run pytest
+uv run pytest              # serial, about 6.5 minutes
+uv run --extra dev pytest -n 12   # parallel (pytest-xdist), about 1 minute; -n auto can flake on a busy machine
 uv run pytest -m slow      # the long ones: real-data read-only smoke, time budget
 ```
 
