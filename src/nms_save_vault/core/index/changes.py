@@ -287,7 +287,7 @@ def _ships(out: _Collector, ctx: str, c: Mapping, p: Mapping) -> None:
     gone = [s for key, left in by_key.items() for s in left]
     if len(new) == 1:
         s = new[0]
-        out.add("ship.new", ctx, 80, f"new ship '{ship_display(s)}' ({_kind(s)}, {s.get('cls') or '?'})")
+        out.add("ship.new", ctx, 80, f"new ship '{ship_display(s)}' ({', '.join(filter(None, (_kind(s), s.get('cls'))))})")
     elif new:
         out.add("ship.new", ctx, 80, f"{len(new)} new ships ({', '.join(_kind(s) for s in new)})", magnitude=len(new))
     if len(gone) == 1:

@@ -418,3 +418,44 @@ def test_the_dialog_opens_from_the_history_window_and_a_read_only_store_says_so(
     view.histories.correct = None
     view.organizer.store.read_only = True
     assert view.histories.open_correct(pid, win.head) is None and "correct" in view.alerts
+
+
+class _Facts:
+    def __init__(self, found):
+        self.found, self.asked = found, []
+
+    def changes(self, child, parent, *, edge_kind=None):
+        self.asked.append((child, parent, edge_kind))
+        return self.found
+
+
+def test_the_explanation_wraps_to_the_width_it_has(host, gui_app, forked):
+    w, _, _ = forked
+    win = H.HistoryWindow(host, model=w.refresh(), themed=gui_app.themed, pid=PID)
+    try:
+        win.geometry("700x500")
+        gui_app.update()
+        wide = int(str(win.explain.cget("wraplength")))
+        win.geometry("1400x500")
+        gui_app.update()
+        assert int(str(win.explain.cget("wraplength"))) > wide
+        assert int(str(win.explain.cget("wraplength"))) <= win.explain.winfo_width()
+    finally:
+        win.destroy()
+
+
+def test_what_changed_comes_from_the_content_index_for_the_drawn_parent(forked):
+    from types import SimpleNamespace
+
+    w, (a, b, c, d, e), _ = forked
+    model = w.refresh()
+    row = next(r for r in model.versions(PID) if r.head == d)
+    found = SimpleNamespace(lines=lambda: ["2 bases changed", "new ship 'X' (Fighter)"])
+    index = _Facts(found)
+    text = "".join(t for t, _ in H.panel_segments(model, PID, d, index))
+    assert index.asked == [(d, row.parent, row.parent_kind)]
+    assert "new ship 'X' (Fighter)" in text and "+3 min played" in text
+    pending = "".join(t for t, _ in H.panel_segments(model, PID, d, _Facts(None)))
+    assert H.PENDING in pending and "+3 min played" in pending
+    plain = "".join(t for t, _ in H.panel_segments(model, PID, d))
+    assert H.PENDING not in plain and "+3 min played" in plain

@@ -342,3 +342,24 @@ def test_the_machine_id_path_is_fixed_when_the_organizer_is_made(tmp_path, monke
     monkeypatch.setenv("HOME", str(second))
     machine_id(org.host)
     assert any(first.rglob("machine-id*")) and not any(second.rglob("machine-id*"))
+
+
+def test_the_steam_cloud_advice_is_said_once(view, gui_app):
+    d = _open(view, gui_app)
+    warning = SimpleNamespace(text="If Steam asks at the next launch, choose the copy on this PC.",
+                              code="STEAM_CLOUD_OTHER_DEVICE")
+    picker = SimpleNamespace(warnings=[warning], cloud=SimpleNamespace(
+        steam_cloud=True, xbox_sync_busy=False))
+    d._show_strip(picker)
+    text = d.plan_strip.cget("text")
+    assert text == ("Steam Cloud is on. If Steam asks at the next launch which copy to keep, "
+                    "choose the one on this PC.")
+
+
+def test_what_you_are_putting_in_uses_the_ui_font(view, gui_app):
+    import tkinter.font as tkfont
+
+    d = _open(view, gui_app)
+    assert tkfont.Font(font=d.putting.cget("font")).actual("family") == \
+        tkfont.nametofont("TkDefaultFont").actual("family")
+    assert "hang" in d.putting.tag_names()

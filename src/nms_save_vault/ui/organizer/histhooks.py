@@ -56,7 +56,8 @@ class HistoryHooks:
             return self.history
         self.history = HistoryWindow(
             view.winfo_toplevel(), model=view.model, themed=view.themed, pid=pid, head=head,
-            on_move=view.open_move_for, on_compare=self.open_compare, on_label=view.open_notes_for, on_lock=self.lock, on_correct=self.open_correct)
+            on_move=view.open_move_for, on_compare=self.open_compare, on_label=view.open_notes_for, on_lock=self.lock, on_correct=self.open_correct,
+            facts=lambda: view.facts)
         return self.history
 
     def lock(self, pid: str, head: str, locked: bool) -> None:

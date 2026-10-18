@@ -221,7 +221,8 @@ class MoveDialog(tk.Toplevel):
         right = ttk.LabelFrame(body, text="What you are putting in", padding=px(6))
         right.pack(side=tk.RIGHT, fill=tk.Y, padx=pxs(8, 0))
         self.putting = tk.Text(right, width=38, height=12, wrap="word", relief="flat",
-                               borderwidth=0, state="disabled")
+                               borderwidth=0, state="disabled", font="TkDefaultFont",
+                               tabs=(px(96),), spacing1=px(1), spacing3=px(1))
         self.putting.pack(fill=tk.BOTH, expand=True)
         left = ttk.Frame(body)
         left.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
@@ -300,6 +301,7 @@ class MoveDialog(tk.Toplevel):
                         ("k", {"foreground": p["muted"]}), ("warn", {"foreground": p["warn"]}),
                         ("small", {"foreground": p["muted"], "font": theme.SMALL_FONT})):
             self.putting.tag_configure(tag, **kw)
+        self.putting.tag_configure("hang", lmargin2=px(96))
         self.tree.tag_configure("chosen", background=p["out_bg"], foreground=p["out_fg"])
         self.tree.tag_configure("sugg", foreground=p["in_fg"])
         self.tree.tag_configure("muted", foreground=p["muted"])
@@ -488,7 +490,7 @@ class MoveDialog(tk.Toplevel):
               f"{'Xbox' if s.platform == 'xbox' else 'Steam'}\n\n", "k")
         for part, tags in self.card:
             tags = tuple(t for t in tags if t in ("h", "b", "k", "warn", "small"))
-            rtext(text, "end", part, *tags)
+            rtext(text, "end", part, *tags, "hang")
         text.configure(state="disabled")
 
     def _show_accounts(self, picker: EvictionPicker) -> None:
@@ -528,7 +530,8 @@ class MoveDialog(tk.Toplevel):
             self._load(ref)
 
     def _show_strip(self, picker: EvictionPicker) -> None:
-        lines = [w.text for w in picker.warnings]
+        lines = [w.text for w in picker.warnings
+                 if not (picker.cloud.steam_cloud and w.code == "STEAM_CLOUD_OTHER_DEVICE")]
         if picker.cloud.steam_cloud:
             lines.append("Steam Cloud is on. If Steam asks at the next launch which copy to "
                          "keep, choose the one on this PC.")

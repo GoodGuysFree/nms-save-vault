@@ -296,8 +296,13 @@ def branch_tips(model: ReadModel, pid: str) -> list[Tip]:
 # --- the version panel (pure) -----------------------------------------------------------
 
 
-def panel_segments(model: ReadModel, pid: str, head: str) -> list[Segment]:
-    """The right panel for one version: callouts, what changed, events, where, contents."""
+PENDING = "reading what changed..."
+
+
+def panel_segments(model: ReadModel, pid: str, head: str, facts=None) -> list[Segment]:
+    """The right panel for one version: callouts, what changed, events, where, contents.
+    ``facts`` (D4's index, memory reads only) adds the content index's change set against the
+    drawn parent; without it the play-time line stays."""
     row = next((r for r in model.versions(pid) if r.head == head), None)
     if row is None:
         return []
@@ -323,6 +328,10 @@ def panel_segments(model: ReadModel, pid: str, head: str) -> list[Segment]:
         delta = row.play_time - parent.play_time
         out.append((f"+{_played(delta)} played\n" if delta > 0
                     else "no play time since\n", ("item",)))
+        if facts is not None:
+            found = facts.changes(row.head, row.parent, edge_kind=row.parent_kind)
+            out += [(PENDING + "\n", ("k",))] if found is None else \
+                [(line + "\n", ("item",)) for line in found.lines()]
     events = [e for e in model.events(pid) if head in e.vids]
     if events:
         out.append(("EVENTS\n", ("h",)))
@@ -362,9 +371,12 @@ class HistoryWindow(tk.Toplevel):
     def __init__(self, master, *, model: ReadModel, themed: ThemeRegistry, pid: str,
                  head: str | None = None, on_move: Callable | None = None,
                  on_compare: Callable | None = None, on_label: Callable | None = None,
-                 on_lock: Callable | None = None, on_correct: Callable | None = None) -> None:
+                 on_lock: Callable | None = None, on_correct: Callable | None = None,
+                 facts: Callable[[], object | None] | None = None) -> None:
         super().__init__(master)
         self.model = model
+        self.facts = facts
+        self._pending_after: str | None = None
         self.pid = pid
         self.mode = "key"
         self.on_move, self.on_compare = on_move, on_compare
@@ -411,6 +423,8 @@ class HistoryWindow(tk.Toplevel):
         self.explain = ttk.Label(bar, text=EXPLAIN, style="Muted.TLabel", wraplength=px(720),
                                  justify="left")
         self.explain.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self.explain.bind("<Configure>", lambda e: self.explain.configure(
+            wraplength=max(px(100), e.width - px(4))))
 
         tips = ttk.Labelframe(left, text="Branch tips", padding=px(6))
         tips.pack(side=tk.BOTTOM, fill=tk.X, pady=pxs(6, 0))
@@ -721,9 +735,16 @@ class HistoryWindow(tk.Toplevel):
             bits.insert(0, line_name(line))
         set_label(self.panel_sub, " - ".join(bits))
         set_label(self.lock_button, "Unlock" if row.locked else "Lock")
-        for part, tags in panel_segments(self.model, self.pid, row.head):
+        parts = panel_segments(self.model, self.pid, row.head,
+                               self.facts() if self.facts is not None else None)
+        for part, tags in parts:
             rtext(p, "end", part, *tags)
         p.configure(state="disabled")
+        if self._pending_after is not None:
+            self.after_cancel(self._pending_after)
+            self._pending_after = None
+        if any(t.startswith(PENDING) for t, _ in parts):
+            self._pending_after = self.after(700, self._show_panel)
 
     def panel_text(self) -> str:
         return self.panel.get("1.0", "end")

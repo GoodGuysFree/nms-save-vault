@@ -223,3 +223,9 @@ def test_change_sets_are_json_safe():
     import json
     cs = diff(facts(base=ctx(glyphs=1)), facts())
     assert json.loads(json.dumps(cs.to_dict()))["items"][0]["kind"] == "glyphs"
+
+
+def test_a_new_ship_of_unknown_class_leaves_the_class_out():
+    p = facts(base=ctx())
+    c = facts(base=ctx(ships=[ship(0, "", "0x1", cls=None)]))
+    assert [x.text for x in diff(c, p).items] == ["new ship 'Fighter' (Fighter)"]
