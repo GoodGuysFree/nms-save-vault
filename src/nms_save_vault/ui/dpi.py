@@ -71,6 +71,14 @@ def first_start_size(area: tuple[int, int], minimum: tuple[int, int],
     return out[0], out[1]
 
 
+def first_start_origin(origin: tuple[int, int], area: tuple[int, int], size: tuple[int, int],
+                       chrome: tuple[int, int] = (0, 0)) -> tuple[int, int]:
+    """Where the first window goes: centred in the work area that starts at ``origin`` (the
+    taskbar may be on the left or at the top), never left of or above it."""
+    return tuple(start + max(0, (have - want - frame) // 2)
+                 for start, have, want, frame in zip(origin, area, size, chrome))
+
+
 def fit_to_content(win, min_width: float, min_height: float) -> None:
     """Size a dialog to what it holds at the current font size (R2 D6: fixed sizes clipped
     the buttons at a large zoom): at least the design minimum, at most 95 % x 90 % of the

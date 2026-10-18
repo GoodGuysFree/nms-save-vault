@@ -385,10 +385,15 @@ class App(tk.Tk):
         dpi.configure(self, zoom=theme.clamp_font_scale(self.state.font_scale))
         # The minimum is logical pixels at this DPI, not zoomed: a large font must not push
         # the first window off a small screen.
+        left, top, area_w, area_h = _work_area_rect(self)
+        chrome_w, chrome_h = _window_chrome(self)
         width, height = dpi.first_start_size(
-            _work_area(self), (dpi.screen_px(1000), dpi.screen_px(640)),
-            _window_chrome(self))
-        self.geometry(f"{width}x{height}")
+            (area_w, area_h), (dpi.screen_px(1000), dpi.screen_px(640)), (chrome_w, chrome_h))
+        # Centred in the work area: the system's default spot can push a window this wide
+        # past the right edge of the screen.
+        x, y = dpi.first_start_origin((left, top), (area_w, area_h), (width, height),
+                                      (chrome_w, chrome_h))
+        self.geometry(f"{width}x{height}+{x}+{y}")
         vault_root =Path(vault) if vault else (self.state.vault or locations.default_vault_dir())
         self.vault = Vault(vault_root)
         self.vault.ensure()
@@ -3056,6 +3061,12 @@ def _enable_dpi_awareness() -> bool:
 
 def _work_area(root) -> tuple[int, int]:
     """The usable desktop size in pixels: the screen without the taskbar on Windows."""
+    return _work_area_rect(root)[2:]
+
+
+def _work_area_rect(root) -> tuple[int, int, int, int]:
+    """The usable desktop as (left, top, width, height) in pixels: without the taskbar on
+    Windows, which may sit on the left or at the top."""
     if sys.platform == "win32":
         import ctypes
         from ctypes import wintypes
@@ -3065,10 +3076,10 @@ def _work_area(root) -> tuple[int, int]:
             if ctypes.windll.user32.SystemParametersInfoW(0x0030, 0, ctypes.byref(rect), 0):
                 width, height = rect.right - rect.left, rect.bottom - rect.top
                 if width > 0 and height > 0:
-                    return width, height
+                    return rect.left, rect.top, width, height
         except (AttributeError, OSError):
             pass
-    return int(root.winfo_screenwidth()), int(root.winfo_screenheight())
+    return 0, 0, int(root.winfo_screenwidth()), int(root.winfo_screenheight())
 
 
 def _window_chrome(root) -> tuple[int, int]:

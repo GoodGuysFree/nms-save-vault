@@ -241,3 +241,12 @@ def test_the_ui_package_does_not_branch_on_the_os(name):
     source = (SRC / name).read_text(encoding="utf-8")
     for needle in ("sys.platform", "os.name", "ctypes", "winreg", "platform.system"):
         assert needle not in source, f"{name} branches on the OS ({needle})"
+
+
+def test_the_first_window_is_centred_in_the_work_area():
+    """The system's default spot could push an 80 %-wide window past the right edge."""
+    assert dpi.first_start_origin((0, 0), (2000, 1000), (1600, 800)) == (200, 100)
+    # a taskbar on the left moves the work area; the chrome is part of the window
+    assert dpi.first_start_origin((60, 0), (1940, 1040), (1552, 800), (16, 90)) == (246, 75)
+    # a window as big as the area sits at its corner, never off it
+    assert dpi.first_start_origin((0, 40), (900, 600), (900, 600)) == (0, 40)
