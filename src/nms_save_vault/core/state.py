@@ -177,7 +177,8 @@ def load(path: str | Path | None = None) -> AppState | None:
     p = Path(path) if path else default_state_path()
     if not p.is_file():
         return None
-    return AppState.from_dict(json.loads(p.read_text("utf-8")))
+    # utf-8-sig: a state.json saved by an editor that adds a BOM still loads.
+    return AppState.from_dict(json.loads(p.read_text("utf-8-sig")))
 
 
 def save(state: AppState, path: str | Path | None = None) -> Path:
