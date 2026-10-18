@@ -180,6 +180,53 @@ def create_store(vault_root: str | Path, *, clock: Callable[[], datetime] = utc_
     return fmt
 
 
+#: The tests that build old-layout vaults with the real operations turn this off (conftest);
+#: the app never does.
+NEW_VAULTS_USE_STORE = True
+_MANAGED_DIRS = ("backups", "snapshots", "extracts")
+
+
+def is_new_vault(vault_root: str | Path) -> bool:
+    """A vault folder with nothing in it yet: no catalog, no op log, no store, and the managed
+    folders absent or empty. Reads only."""
+    root = Path(vault_root)
+    if vault_mode(root) != "legacy" or store_root(root).exists():
+        return False
+    if (root / "catalog.json").exists() or (root / "oplog.jsonl").exists():
+        return False
+    for name in _MANAGED_DIRS:
+        try:
+            if any((root / name).iterdir()):
+                return False
+        except FileNotFoundError:
+            continue
+        except OSError:
+            return False
+    return True
+
+
+def start_new_vault(vault_root: str | Path, *,
+                    clock: Callable[[], datetime] = utc_now) -> bool:
+    """D3 4.1: a vault created by this app starts in store mode - nothing exists yet, so no
+    copy-aside. Does nothing (False) for a vault that has anything in it (that one upgrades
+    on request) or is in store mode already. The vault folder must exist."""
+    root = Path(vault_root)
+    if not NEW_VAULTS_USE_STORE or not root.is_dir() or not is_new_vault(root):
+        return False
+    from ..organizer import store as organizer_store
+
+    lock = safety.exclusive_lock(organizer_store.store_root(root) / organizer_store.LOCK,
+                                 timeout=2.0)
+    try:
+        with lock:
+            if not is_new_vault(root):          # another window got here first
+                return False
+            create_store(root, clock=clock)
+    except (safety.LockTimeout, RuntimeError):
+        return False        # a writer holds the lock (or this thread does): not a first write
+    return True
+
+
 ReadOnlyReason = Literal["too-new", "medium", "no-lock", "asked"]
 
 
@@ -466,6 +513,7 @@ class VersionStore:
         if created_local is not None:
             _parse_local(created_local)
         self._require_writable()
+        folder = capture.long_path(folder)
         if not folder.is_dir():
             raise StoreError("The folder to keep is not reachable.")
         plan = capture.plan(folder, platform, kind=kind, scope=scope, live=live)

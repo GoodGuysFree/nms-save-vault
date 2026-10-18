@@ -171,6 +171,20 @@ def _no_configured_live_folders(monkeypatch):
     monkeypatch.setattr(recorder, "_configured_sources", lambda: [], raising=False)
 
 
+@pytest.fixture(autouse=True)
+def _new_vaults_start_old(monkeypatch):
+    """Most tests build old-layout vaults with the real operations and upgrade them; a test of
+    the new-vault behaviour asks for the ``new_vault_store`` fixture."""
+    from nms_save_vault.core.store import versionstore
+    monkeypatch.setattr(versionstore, "NEW_VAULTS_USE_STORE", False)
+
+
+@pytest.fixture
+def new_vault_store(monkeypatch):
+    from nms_save_vault.core.store import versionstore
+    monkeypatch.setattr(versionstore, "NEW_VAULTS_USE_STORE", True)
+
+
 def find_live_save_dir() -> Path | None:
     """The real Steam save folder, for read-only checks: found from the real %APPDATA%,
     whatever a test has pointed the environment at."""

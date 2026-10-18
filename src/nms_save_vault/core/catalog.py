@@ -202,6 +202,9 @@ class Vault:
             raise PermissionError(f"the vault at {self.root.name} is opened read-only")
         for d in (self.root, self.backups_dir, self.snapshots_dir, self.extracts_dir):
             d.mkdir(parents=True, exist_ok=True)
+        from .store.versionstore import start_new_vault
+
+        start_new_vault(self.root)      # a brand-new vault starts in store mode (D3 4.1)
 
     def load(self) -> "Vault":
         if not self.read_only:

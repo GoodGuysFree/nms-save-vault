@@ -98,25 +98,11 @@ def upgrade_needed(vault_root: str | Path) -> bool:
             and not is_pre_upgrade_copy(root))
 
 
-def _long_path(path: Path) -> Path:
-    """On Windows the extended-length form (``\\\\?\\``), so a vault holding a path over 260
-    characters can still be measured: the plan then refuses it with ``path-too-long`` instead
-    of the walk failing. Only reading uses it; the copy itself stays within MAX_PATH."""
-    if os.name != "nt":
-        return path
-    text = os.path.abspath(path)
-    if text.startswith("\\\\?\\"):
-        return Path(text)
-    if text.startswith("\\\\"):
-        return Path("\\\\?\\UNC\\" + text[2:])
-    return Path("\\\\?\\" + text)
-
-
 def tree(vault_root: Path) -> dict[str, tuple[int, int]]:
     """relpath -> (size, mtime_ns) of every file of the vault, ``store/`` and the organizer's
     lock files (no data, possibly held) excluded."""
     out = {}
-    root = _long_path(vault_root)
+    root = safety.long_path(vault_root)
     for dirpath, dirnames, filenames in os.walk(root):
         here = Path(dirpath)
         if here == root and STORE_DIR in dirnames:

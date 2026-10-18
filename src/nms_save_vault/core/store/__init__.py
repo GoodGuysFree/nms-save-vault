@@ -76,6 +76,8 @@ from .versionstore import (
     VaultMode,
     VersionStore,
     create_store,
+    is_new_vault,
+    start_new_vault,
     open_store,
     read_format,
     store_root,

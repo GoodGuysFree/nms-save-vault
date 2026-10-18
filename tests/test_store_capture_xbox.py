@@ -118,7 +118,7 @@ def test_a_whole_capture_catches_an_index_rewritten_meanwhile(tmp_path, make_wgs
 
     def xbox_app_rewrites_the_index(path):
         data = real(path)
-        if path == index and not done:      # after the capture read it: same size and time
+        if capture.plain_path(path) == index and not done:      # after the capture read it: same size and time
             st = index.stat()
             raw = bytearray(index.read_bytes())
             at = raw.find("synchex".encode("utf-16-le"))
@@ -141,7 +141,7 @@ def test_a_blob_missing_from_a_whole_capture_is_caught(tmp_path, make_wgs_accoun
     real_walk = capture.walk
     slot2 = next(m for m in msstore.scan(acct).slots[2].members if m.exists)
     blob = slot2.data_path.relative_to(acct).as_posix()
-    monkeypatch.setattr(capture, "walk", lambda folder: [r for r in real_walk(folder) if r != blob])
+    monkeypatch.setattr(capture, "walk", lambda folder, **kw: [r for r in real_walk(folder, **kw) if r != blob])
     with pytest.raises(vstore.SourceChanged, match=blob.split("/")[-1]):
         _xbox_add(open_vault_store(vault), acct)
 

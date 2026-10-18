@@ -86,6 +86,9 @@ def cmd_store_upgrade(args) -> int:
     cleaned = upgrade.cleanup_interrupted_upgrade(root)
     if cleaned is not None:
         print(cleaned.message)
+    if root.is_dir() and vstore.start_new_vault(root):
+        print("This vault is new: it now uses the version store. Nothing to upgrade.")
+        return 0
     plan = upgrade.plan_upgrade(root, dest_parent=Path(args.copy_to) if args.copy_to else None,
                                 live_roots=_live_paths(state))
     for _code, text in plan.problems:

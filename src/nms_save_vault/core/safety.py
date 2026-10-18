@@ -12,6 +12,7 @@ import logging
 import math
 import os
 import shutil
+import stat
 import subprocess
 import tempfile
 import threading
@@ -322,3 +323,54 @@ def _silent_unlink(path: str | Path) -> None:
         os.unlink(path)
     except OSError:
         pass
+
+
+# --- long paths and links ---------------------------------------------------------------------
+
+EXT_PREFIX = "\\\\?\\"
+
+
+def long_path(path: str | Path) -> Path:
+    """On Windows the extended-length form (the extended-length prefix), which lifts the 260 character
+    limit for stat and open; elsewhere the path as it is. For reading and measuring: callers
+    keep reporting the paths they were given."""
+    p = Path(path)
+    if os.name != "nt":
+        return p
+    text = os.path.abspath(p)
+    if text.startswith(EXT_PREFIX):
+        return Path(text)
+    if text.startswith("\\\\"):
+        return Path(EXT_PREFIX + "UNC\\" + text[2:])
+    return Path(EXT_PREFIX + text)
+
+
+def plain_path(path: str | Path) -> Path:
+    """The inverse of :func:`long_path`, for comparing paths."""
+    text = str(path)
+    if text.startswith(EXT_PREFIX + "UNC\\"):
+        return Path("\\\\" + text[len(EXT_PREFIX) + 4:])
+    if text.startswith(EXT_PREFIX):
+        return Path(text[len(EXT_PREFIX):])
+    return Path(path)
+
+
+def link_kind(path: str | Path) -> str:
+    """"" for a plain file or folder; "cloud" for a cloud placeholder (OneDrive Files On-Demand,
+    reparse tags 0x9000?01A); "link" for a symbolic link or any other reparse point (a
+    directory junction is no ``is_symlink`` but os.walk and the like follow it), or a path
+    that cannot be examined."""
+    try:
+        st = os.lstat(long_path(path))
+    except OSError:
+        return "link"
+    reparse = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    if not (stat.S_ISLNK(st.st_mode) or getattr(st, "st_file_attributes", 0) & reparse):
+        return ""
+    tag = getattr(st, "st_reparse_tag", 0)
+    return "cloud" if tag & 0xFFFF0FFF == 0x9000001A else "link"
+
+
+def is_link(path: str | Path) -> bool:
+    """A symlink or a junction (not a cloud placeholder) that exists; never followed."""
+    return os.path.lexists(long_path(path)) and link_kind(path) == "link"

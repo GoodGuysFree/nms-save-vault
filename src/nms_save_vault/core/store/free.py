@@ -267,19 +267,7 @@ CLOUD_FILES = ("it holds online-only / cloud files (OneDrive): make them availab
 LINKED = "it holds a link, a junction or a special file"
 
 
-def _link_kind(path: Path) -> str:
-    """"" for a plain file or folder; "cloud" for a cloud placeholder (OneDrive Files On-Demand
-    reparse tags 0x9000?01A); "link" for a symbolic link or any other reparse point - a directory
-    junction is no ``is_symlink`` but os.walk and the like follow it."""
-    try:
-        st = os.lstat(path)
-    except OSError:
-        return "link"
-    reparse = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
-    if not (stat.S_ISLNK(st.st_mode) or getattr(st, "st_file_attributes", 0) & reparse):
-        return ""
-    tag = getattr(st, "st_reparse_tag", 0)
-    return "cloud" if tag & 0xFFFF0FFF == 0x9000001A else "link"
+_link_kind = safety.link_kind
 
 
 def _is_link(path: Path) -> bool:

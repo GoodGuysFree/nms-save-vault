@@ -36,12 +36,20 @@ SLOT_KINDS = (catalog.KIND_EXTRACT, PRESERVE)     # restored into their slot, ne
 _opened: "WeakKeyDictionary[Vault, VersionStore]" = WeakKeyDictionary()
 
 
-def store_of(vault: Vault, *, app_state: AppState | None = None) -> VersionStore | None:
+def store_of(vault: Vault, *, app_state: AppState | None = None,
+             start_new: bool = True) -> VersionStore | None:
     """The vault's store in store mode, None in the old layout; refused (StoreNotUpgraded)
     while the vault is being upgraded. Opened once per :class:`Vault` object, so one operation
     (and one window) uses one store; its live folders include the configured live sources of
-    ``app_state`` (the app's own configuration when not given)."""
+    ``app_state`` (the app's own configuration when not given). ``start_new`` (the writing
+    operations): a vault with nothing in it yet is created now, in store mode (D3 4.1)."""
     mode = vault_mode(vault.root)
+    if mode == "legacy" and start_new and not vault.read_only:
+        try:
+            vault.ensure()              # creates the folders and, if nothing is in them, the store
+        except OSError as exc:
+            log.warning("could not create the vault folders: %s", exc)
+        mode = vault_mode(vault.root)
     if mode == "legacy":
         return None
     if mode == "upgrading":
@@ -87,7 +95,7 @@ def as_catalog_entry(entry: StoreEntry) -> CatalogEntry:
 
 def find_entry(vault: Vault, entry_id: str) -> CatalogEntry | None:
     """An entry by id, catalog or store (a store entry wins: fold and copy-in keep ids)."""
-    store = store_of(vault)
+    store = store_of(vault, start_new=False)
     if store is not None and store.has_entry(entry_id):
         return as_catalog_entry(store.entry(entry_id))
     return vault.get(entry_id)
@@ -96,7 +104,7 @@ def find_entry(vault: Vault, entry_id: str) -> CatalogEntry | None:
 def list_entries(vault: Vault, *, live_roots: Sequence[Path] | None = None
                  ) -> list[CatalogEntry]:
     """Every entry of the vault through the one listing (D3 2.9), catalog-shaped."""
-    store = store_of(vault)
+    store = store_of(vault, start_new=False)
     out = []
     for v in list_vault_entries(vault, store, live_roots=live_roots):
         found = vault.get(v.id) if v.origin == "catalog" else None
@@ -116,7 +124,7 @@ def entry_folder(vault: Vault, entry: CatalogEntry, *, slots: Iterable[int] | No
     if entry.path:
         yield Path(entry.path)
         return
-    store = store_of(vault)
+    store = store_of(vault, start_new=False)
     if store is None or not store.has_entry(entry.id):
         raise StoreError(f"The entry {entry.id} is not in the vault.")
     with store.materialized(entry.id, slots=slots, cache=cache) as folder:

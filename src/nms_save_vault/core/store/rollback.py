@@ -348,8 +348,9 @@ def _restore(root: Path, copy_vault: Vault, entry: CatalogEntry) -> bool:
         return False
     staging = root / STAGING / entry.id
     if staging.exists():
-        shutil.rmtree(staging)
-    shutil.copytree(src, staging, copy_function=shutil.copy2)
+        shutil.rmtree(capture.long_path(staging))
+    shutil.copytree(capture.long_path(src), capture.long_path(staging),
+                    copy_function=shutil.copy2)
     if not _same_tree(src, staging):
         raise RollbackError("copy-mismatch", f"The folder of {entry.id} could not be put back "
                                              "intact. Check the drive.")
@@ -378,18 +379,18 @@ def _entries_of(copy: Path) -> list[CatalogEntry]:
 
 
 def _tree(folder: Path) -> dict[str, tuple[int, str]]:
-    if not folder.is_dir():
+    if not capture.long_path(folder).is_dir():
         return {}
-    return {rel: ((folder / rel).stat().st_size, sha256((folder / rel).read_bytes()))
+    return {rel: (capture.file_size(folder / rel), sha256(capture.read_file(folder / rel)))
             for rel in capture.walk(folder)}
 
 
 def _same_tree(a: Path, b: Path) -> bool:
-    return b.is_dir() and _tree(a) == _tree(b)
+    return capture.long_path(b).is_dir() and _tree(a) == _tree(b)
 
 
 def _matches(folder: Path, entry: StoreEntry) -> bool:
-    return folder.is_dir() and _tree(folder) == {f.path: (f.size, f.sha256) for f in entry.files}
+    return capture.long_path(folder).is_dir() and _tree(folder) == {f.path: (f.size, f.sha256) for f in entry.files}
 
 
 def _tree_sha(copy: Path, cancel: threading.Event | None) -> str:
@@ -399,13 +400,13 @@ def _tree_sha(copy: Path, cancel: threading.Event | None) -> str:
         _check(cancel)
         if rel == catalog.PRE_UPGRADE_COPY:
             continue
-        p = copy / rel
+        p = capture.long_path(copy / rel)
         lines.append(f"{rel}|{p.stat().st_size}|{safety.sha256_file(p)}")
     return hashlib.sha256("\n".join(sorted(lines)).encode("utf-8")).hexdigest()
 
 
 def _tree_bytes(folder: Path) -> int:
-    return sum(p.stat().st_size for p in folder.rglob("*") if p.is_file()) if folder.is_dir() else 0
+    return sum(capture.file_size(folder / rel) for rel in capture.walk(folder))         if capture.long_path(folder).is_dir() else 0
 
 
 def _move_aside(root: Path, folder: Path, entry_id: str) -> None:

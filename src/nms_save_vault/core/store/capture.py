@@ -11,13 +11,14 @@ from __future__ import annotations
 
 import logging
 import os
+import stat
 import struct
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Literal
 
-from .. import lz4_block, msstore, savedir
+from .. import lz4_block, msstore, safety, savedir
 from ..formats import ACCOUNT_DATA_NAME, ACCOUNT_META_NAME, CACHE_DIR, MAX_SAVE_SLOTS, STEAM_AUTOCLOUD
 from ..meta import MetaInfo
 from ..organizer.model import Platform, pid_from_id
@@ -87,9 +88,10 @@ def plan(folder: Path, platform: Platform, *, kind: str, scope: CaptureScope,
         bad = [s for s in scope.slots if not 1 <= s <= MAX_SAVE_SLOTS]
         if bad or not scope.slots:
             raise StoreError(f"Not a slot: {bad or 'none given'}.")
+    folder = long_path(folder)
     if platform == "steam":
         return _plan_steam(folder, kind=kind, scope=scope, live=live)
-    return _plan_xbox(folder, scope=scope)
+    return _plan_xbox(folder, scope=scope, live=live)
 
 
 def _plan_steam(folder: Path, *, kind: str, scope: CaptureScope, live: bool) -> CapturePlan:
@@ -111,7 +113,7 @@ def _plan_steam(folder: Path, *, kind: str, scope: CaptureScope, live: bool) -> 
             rels = [r for r in rels if r not in account_names]
         record = {"slots": "all", "account_files": scope.account_files, "cache": "none"}
     else:
-        rels = walk(folder)
+        rels = walk(folder, strict=live)
         if scope.cache == "omit":
             rels = [r for r in rels if not r.startswith(CACHE_DIR + "/")]
         if not scope.account_files:
@@ -124,7 +126,7 @@ def _plan_steam(folder: Path, *, kind: str, scope: CaptureScope, live: bool) -> 
                        account=account)
 
 
-def _plan_xbox(folder: Path, *, scope: CaptureScope) -> CapturePlan:
+def _plan_xbox(folder: Path, *, scope: CaptureScope, live: bool) -> CapturePlan:
     """A wgs account folder (``containers.index`` + one folder per save), or an xgs account
     folder (one folder per identifier, no index). The whole folder is taken verbatim; a slot
     scope takes the slot's folders and, for wgs, an index rebuilt from just their records (as
@@ -136,7 +138,7 @@ def _plan_xbox(folder: Path, *, scope: CaptureScope) -> CapturePlan:
         index_bytes, index_stat = read_stable(index, INDEX_NAME)
         index_sha = sha256(index_bytes)
     if scope.slots is None:
-        rels = walk(folder)
+        rels = walk(folder, strict=live)
         files = [(rel, folder.joinpath(*rel.split("/"))) for rel in rels]
         xbox = {"index": INDEX_NAME, "index_kind": "verbatim"} if wgs else None
         record = {"slots": "all", "account_files": True, "cache": "none"}
@@ -159,7 +161,7 @@ def _plan_xbox(folder: Path, *, scope: CaptureScope) -> CapturePlan:
         xbox = None
     if not dirs:
         raise StoreError(f"Slot {_slots_text(scope.slots)} holds no saves to keep.")
-    rels = sorted(f"{d.name}/{rel}" for d in dirs for rel in walk(d))
+    rels = sorted(f"{d.name}/{rel}" for d in dirs for rel in walk(d, strict=live))
     files = [(rel, folder.joinpath(*rel.split("/"))) for rel in rels]
     record = {"slots": list(scope.slots), "account_files": False, "cache": "none"}
     return CapturePlan(folder, "xbox", files, _sizes(files), record, scope.slots, xbox=xbox,
@@ -185,33 +187,66 @@ def _xbox_account(folder: Path, wgs: bool) -> dict[str, str]:
     return {}
 
 
-def walk(folder: Path) -> list[str]:
-    """Every regular file under ``folder`` as a sorted posix path; links are skipped."""
+long_path = safety.long_path
+plain_path = safety.plain_path
+is_link = safety.is_link
+
+
+def walk(folder: Path, links: list[str] | None = None, *, strict: bool = False) -> list[str]:
+    """Every regular file under ``folder`` as a sorted posix path. A link (symlink or junction)
+    is never followed or read: it is skipped with a warning and its path appended to ``links``,
+    or with ``strict`` (a live folder, where a skipped save file is a lost one) the walk
+    refuses with a StoreError naming it. Paths over 260 characters are read as they are."""
     out = []
-    for dirpath, dirnames, filenames in os.walk(folder):
+    root = long_path(folder)
+    for dirpath, dirnames, filenames in os.walk(root):
         here = Path(dirpath)
         for name in list(dirnames):
-            if (here / name).is_symlink():
-                log.warning("skipped the linked folder %s while keeping a copy", name)
+            if is_link(here / name):
                 dirnames.remove(name)
+                _link_found((here / name).relative_to(root).as_posix(), links, strict)
         for name in filenames:
             p = here / name
-            if _is_regular(p):
-                out.append(p.relative_to(folder).as_posix())
+            rel = p.relative_to(root).as_posix()
+            if is_link(p):
+                _link_found(rel, links, strict)
+            elif _is_regular(p):
+                out.append(rel)
             else:
                 log.warning("skipped %s while keeping a copy: not a regular file", name)
     return sorted(out)
 
 
+def _link_found(rel: str, links: list[str] | None, strict: bool) -> None:
+    if strict:
+        raise StoreError(f"The save folder holds a link ({rel}); a copy of it would leave out "
+                         "what the link points to. Nothing was kept.")
+    log.warning("skipped the link %s while keeping a copy", rel)
+    if links is not None:
+        links.append(rel)
+
+
 def _is_regular(p: Path) -> bool:
-    return p.is_file() and not p.is_symlink()
+    try:
+        return stat.S_ISREG(os.lstat(long_path(p)).st_mode) and not is_link(p)
+    except OSError:
+        return False
+
+
+def file_size(path: Path) -> int:
+    return os.stat(long_path(path)).st_size
+
+
+def read_file(path: Path) -> bytes:
+    with open(long_path(path), "rb") as f:
+        return f.read()
 
 
 def _sizes(files: list[tuple[str, Path]]) -> dict[str, int]:
     sizes = {}
     for rel, path in files:
         try:
-            sizes[rel] = path.stat().st_size
+            sizes[rel] = file_size(path)
         except FileNotFoundError as exc:
             raise SourceChanged(rel, vanished=True) from exc
     return sizes
@@ -224,9 +259,7 @@ def _slots_text(slots: tuple[int, ...]) -> str:
 # --- reading ----------------------------------------------------------------------------------
 
 
-def _read_file(path: Path) -> bytes:
-    with open(path, "rb") as f:
-        return f.read()
+_read_file = read_file
 
 
 def read_stable(path: Path, rel: str) -> tuple[bytes, os.stat_result]:
@@ -234,9 +267,9 @@ def read_stable(path: Path, rel: str) -> tuple[bytes, os.stat_result]:
     then SourceChanged (the game or a sync was writing it)."""
     for _ in range(STABLE_TRIES):
         try:
-            before = os.stat(path)
+            before = os.stat(long_path(path))
             data = _read_file(path)
-            after = os.stat(path)
+            after = os.stat(long_path(path))
         except FileNotFoundError as exc:
             raise SourceChanged(rel, vanished=True) from exc
         except OSError as exc:
@@ -249,7 +282,7 @@ def read_stable(path: Path, rel: str) -> tuple[bytes, os.stat_result]:
 
 def require_unchanged(path: Path, rel: str, size: int, mtime_ns: int) -> None:
     try:
-        st = os.stat(path)
+        st = os.stat(long_path(path))
     except FileNotFoundError as exc:
         raise SourceChanged(rel, vanished=True) from exc
     if (st.st_size, st.st_mtime_ns) != (size, mtime_ns):

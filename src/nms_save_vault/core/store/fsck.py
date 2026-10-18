@@ -217,10 +217,11 @@ def _repair(store: "VersionStore", sizes: dict[str, int], bad: dict[str, tuple[s
     by_size: dict[int, list[Path]] = defaultdict(list)
     own = store.root.resolve()
     for root in candidate_folders(store, fallbacks):
-        for dirpath, dirs, names in os.walk(root):
-            if Path(dirpath).resolve() == own:
+        for dirpath, dirs, names in os.walk(capture.long_path(root)):
+            if capture.plain_path(dirpath).resolve() == own:
                 dirs[:] = []            # never the store's own objects or quarantine
                 continue
+            dirs[:] = [d for d in dirs if not capture.is_link(Path(dirpath) / d)]
             for name in names:
                 p = Path(dirpath) / name
                 try:

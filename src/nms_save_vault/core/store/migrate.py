@@ -135,6 +135,7 @@ def _fold_one(store: VersionStore, entry: CatalogEntry, folder: Path) -> dict:
     """Fold one entry: checked against its folder BEFORE the commit, so a folder that does
     not match is never hidden behind a store entry (it stays an entry of its own, D3 4.2)."""
     subdir = folder.parent.name
+    links = _links_in(folder)
     try:
         kept = store.add_from_folder(
             folder, kind=entry.kind, label=entry.label, entry_id=entry.id,  # type: ignore[arg-type]
@@ -147,22 +148,33 @@ def _fold_one(store: VersionStore, entry: CatalogEntry, folder: Path) -> dict:
     except FoldVerifyError as exc:
         return {"status": "failed", "reason": str(exc)}
     record: dict = {"status": "verified"}
+    if links:
+        record["skipped_links"] = links
     if kept.id != entry.id:
         record["store_id"] = kept.id
         record["note"] = f"its folder changed after an earlier fold; kept as {kept.id}"
     return record
 
 
+def _links_in(folder: Path) -> list[str]:
+    """The links (symlinks, junctions) of a legacy folder: a capture never follows them, so
+    what they point to is not in the store; recorded in migration.json."""
+    links: list[str] = []
+    capture.walk(folder, links)
+    return sorted(links)
+
+
 def check_folder(store: VersionStore, records: Mapping[str, FileEntry], folder: Path) -> None:
     """What was read is the folder, before anything is committed: every file of the folder
     (walked again) was read with the same size and sha256, none is missing, and every stored
     copy re-hashes. Raises FoldVerifyError."""
+    folder = capture.long_path(folder)
     on_disk = set(capture.walk(folder))
     if on_disk != set(records):
         differ = sorted(on_disk ^ set(records))[0]
         raise FoldVerifyError(f"the folder and the store differ ({differ})")
     for rel, fe in records.items():
-        data = (folder / rel).read_bytes()
+        data = capture.read_file(folder / rel)
         if len(data) != fe.size or sha256(data) != fe.sha256:
             raise FoldVerifyError(f"the folder and the store differ ({rel})")
         store.file_bytes(fe)                      # the stored copy re-hashes
@@ -268,6 +280,7 @@ def copy_in(store: VersionStore, entry_ids: Sequence[str], *,
         try:
             if not folder.is_dir():
                 raise StoreError("its folder is missing")
+            links = _links_in(folder)
             store.add_from_folder(
                 folder, kind="imported", label=entry.label, entry_id=entry.id,
                 created_local=entry.created, source={"type": "folder", "name": folder.name},
@@ -279,7 +292,7 @@ def copy_in(store: VersionStore, entry_ids: Sequence[str], *,
             records[entry_id] = {"status": "failed", "reason": str(exc)}
             continue
         copied.append(entry_id)
-        records[entry_id] = {"status": "copied"}
+        records[entry_id] = {"status": "copied", **({"skipped_links": links} if links else {})}
     if records:
         with store._lock():
             body = read_migration(store.vault_root)

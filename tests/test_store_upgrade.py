@@ -276,7 +276,7 @@ def test_the_cli_upgrades_only_when_asked(legacy, monkeypatch, capsys):
 @pytest.mark.skipif(os.name != "nt", reason="the 260 character limit is a Windows one")
 def test_a_vault_holding_a_path_over_260_characters_is_refused_not_a_crash(legacy):
     vault, live, _entries = legacy
-    deep = upgrade._long_path(vault.backups_dir)
+    deep = safety.long_path(vault.backups_dir)
     for _ in range(8):
         deep = deep / ("d" * 40)
     os.makedirs(deep)
