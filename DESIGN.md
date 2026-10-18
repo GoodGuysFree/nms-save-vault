@@ -103,6 +103,12 @@ src/nms_save_vault/
       classic.py  the adapters for today's names; guide.py: the steps to empty a slot
     safety.py     game-running check, atomic staged writes, auto-snapshot, op-log/undo, inter-process lock
     aliases.py    account-id -> display-name filter (accounts.ini); display only
+    store/        the version store: objects, manifests, upgrade, fold, copy-in, rollback, fsck
+                  (docs/organizer/designs/D3-storage-version-store.md)
+    index/        the content index: extractors, facts, "what changed", worker pool, sqlite
+                  cache in the per-machine folder (docs/organizer/designs/D4-content-index.md)
+    savejson.py, hashname.py  full save decode; the game's hashed key names
+    gameversion.py, selftest.py  the newest known save format (GAME_NEWER); read-only self-test
     organizer/    save-file organizer (docs/organizer/designs/D1-core-model.md)
       model.py    ids, value types and their JSON codecs (pure)
       store.py    <vault>/organizer/: header, documents, journal, store lock, read-only mode
