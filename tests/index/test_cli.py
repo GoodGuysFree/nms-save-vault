@@ -183,3 +183,23 @@ def test_the_bench_tool_runs_on_copies(tmp_path, capsys):
 def _chunk(body: bytes) -> bytes:
     block = bytes([0xF0]) + _length(len(body) - 15) + body
     return struct.pack("<4I", formats.SAVE_MAGIC, len(block), len(body), 0) + block
+
+
+def test_global_options_stand_before_or_after_the_subcommand(world, capsys):
+    """The kit's launcher is CPython, which rejects a first argument --vault, so the options
+    must also work after the subcommand."""
+    v, lv = str(world["vault"]), str(world["live"])
+    assert cli.main(["--vault", v, "--live", lv, "index", "status"]) == 0
+    before = [x for x in capsys.readouterr().out.splitlines() if x.startswith("Versions")]
+    assert before
+    assert cli.main(["index", "status", "--vault", v, "--live", lv]) == 0
+    assert [x for x in capsys.readouterr().out.splitlines() if x.startswith("Versions")] == before
+    assert cli.main(["index", "--live", lv, "status", f"--vault={v}"]) == 0
+    assert "Versions known" in capsys.readouterr().out
+
+
+def test_live_option_selects_the_board_and_saves(world, capsys):
+    """--live names the live folder for organizer commands; `board` prints its slots."""
+    assert cli.main(["board", "--vault", str(world["vault"]), "--live", str(world["live"])]) == 0
+    out = capsys.readouterr().out
+    assert "Synth Main" in out and "Slot" in out

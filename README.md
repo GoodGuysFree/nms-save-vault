@@ -402,7 +402,9 @@ offered, and **Open download page** is there instead.
 
 Both front-ends share the same safety-checked core. The live folder and a vault folder
 (default: a `_SaveVault` sibling of `st_<id>`) come from the config (or are auto-detected);
-override with `--live`/`--vault`.
+override with `--live`/`--vault`. Put them after the command
+(`nmsvault.exe saves --vault D:\Vault`): the packaged `nmsvault.exe` is Python's own launcher,
+which rejects an option placed before the command.
 
 GUI:
 
