@@ -83,6 +83,15 @@ class RollbackError(StoreError):
         self.code = code
 
 
+class FreeError(StoreError):
+    """Freeing the old folders did not run (D3 4.5); ``code`` says why: damaged (the check of
+    the store found damage: nothing was deleted), busy, not-upgraded."""
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
 class PreserveMismatch(StoreError, PreserveFailed):
     """A live slot no longer holds the version the caller planned to keep: re-plan."""
 

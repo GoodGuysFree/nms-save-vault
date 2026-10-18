@@ -629,8 +629,7 @@ def preview_vault_import(vault: Vault, source_dir: Path) -> dict:
     if (source_dir / PRE_UPGRADE_COPY).is_file():
         raise OperationError("This is the pre-upgrade copy of a vault; use Undo the vault upgrade.")
     if _store().is_store_vault(source_dir):
-        # Its entries live in a version store, not in folders: merging two stores is phase 5.
-        raise OperationError("Importing an upgraded vault comes with a later version.")
+        return _preview_store_merge(vault, source_dir)
     src_entries = Vault(source_dir).load().entries
     have = {e.id for e in vault.entries}
     return {
@@ -640,6 +639,29 @@ def preview_vault_import(vault: Vault, source_dir: Path) -> dict:
     }
 
 
+def _preview_store_merge(vault: Vault, source_dir: Path) -> dict:
+    """A source with a version store of its own is merged into this vault's store (D3 4.8):
+    only possible once this vault is upgraded too. ``merge`` is True in the result."""
+    classic = _store()
+    target = classic.store_of(vault)
+    if target is None:
+        raise OperationError("Upgrade the vault first (Tools > Vault upgrade...) to import a "
+                             "vault that has a version store.")
+    try:
+        source = classic.open_source(source_dir)
+    except classic.StoreError as exc:
+        raise OperationError(str(exc)) from exc
+    done = {((e.origin or {}).get("store_id"), (e.origin or {}).get("entry_id"))
+            for e in target.entries()}
+    src_entries = source.entries()
+    new, existing = [], []
+    for e in src_entries:
+        merged = ((source.store_id, e.id) in done
+                  or (target.has_entry(e.id) and target.entry(e.id).body_sha256 == e.body_sha256))
+        (existing if merged else new).append(classic.as_catalog_entry(e))
+    return {"total": len(src_entries), "new": new, "existing": existing, "merge": True}
+
+
 def import_vault(vault: Vault, source_dir: Path, copy_into_vault: bool) -> OpResult:
     """Import the entries of another vault at ``source_dir`` into ``vault``. With
     ``copy_into_vault`` each managed entry's files are copied into this vault (self-contained);
@@ -647,7 +669,10 @@ def import_vault(vault: Vault, source_dir: Path, copy_into_vault: bool) -> OpRes
     entry whose id this vault already has is skipped, and an existing target folder is never
     overwritten."""
     source_dir = Path(source_dir)
-    total = preview_vault_import(vault, source_dir)["total"]  # also validates source_dir
+    preview = preview_vault_import(vault, source_dir)         # also validates source_dir
+    if preview.get("merge"):
+        return _merge_vault(vault, source_dir, copy_into_vault)
+    total = preview["total"]
     store = _store().store_of(vault) if copy_into_vault else None
     if store is None:
         vault.ensure()
@@ -683,6 +708,38 @@ def import_vault(vault: Vault, source_dir: Path, copy_into_vault: bool) -> OpRes
     )
     _log_op(vault, _oplog("import_vault", detail=f"{source_dir} [{mode}] +{len(added)}"), warnings)
     return OpResult(True, "import_vault", detail, changed=added, warnings=warnings)
+
+
+def _merge_vault(vault: Vault, source_dir: Path, copy_into_vault: bool) -> OpResult:
+    """Import a vault that has a version store: merge it into this one's store, once (D3 4.8).
+    Never indexed in place: a second store is not referenced, it is copied in."""
+    classic = _store()
+    if not copy_into_vault:
+        raise OperationError("A vault with a version store cannot be indexed in place; "
+                             "copy it in instead.")
+    target = classic.store_of(vault)
+    source = classic.open_source(source_dir)
+    report = classic.merge_store(target, source)
+    warnings: list[str] = [f"{old} already exists here with other contents; imported as {new}"
+                           for old, new in report.renamed]
+    warnings += [f"{eid}: not imported ({why})" for eid, why in report.failed]
+    # Entries the source still keeps as plain folders (never folded there) come in as folded.
+    src = Vault(source_dir, read_only=True).load()
+    stored = {e.id for e in source.entries()}
+    have = {e.id for e in vault.entries} | {e.id for e in target.entries()}
+    added = list(report.added)
+    for e in src.entries:
+        if e.id in stored or e.id in have or not e.managed or e.kind == KIND_INPLACE:
+            continue
+        new_id = _fold_imported(vault, target, src, e, warnings)
+        if new_id is not None:
+            added.append(new_id)
+    detail = (f"imported {len(added)} new entr{'y' if len(added) == 1 else 'ies'} "
+              f"(merged into the version store); {len(report.same)} already present")
+    if report.cancelled:
+        detail += "; stopped before the end"
+    _log_op(vault, _oplog("import_vault", detail=f"{source_dir} [merged] +{len(added)}"), warnings)
+    return OpResult(not report.failed, "import_vault", detail, changed=added, warnings=warnings)
 
 
 def _fold_imported(vault: Vault, store, src: Vault, entry: CatalogEntry,

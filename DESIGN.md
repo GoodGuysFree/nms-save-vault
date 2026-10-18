@@ -161,6 +161,20 @@ src/nms_save_vault/
 * The **upgrade** first makes a verified copy of the whole vault next to it
   (`<vault>.pre-store-<UTC>`, re-hashed against a recorded tree hash), then creates `store/`;
   old backups are folded into the store on request and the old folders are never deleted by it.
+  **Free old folders** (`nmsvault store free-old-folders [--yes]`, Tools menu; `store/free.py`) is
+  the one thing that deletes them, on the owner's request only: a deep fsck of the whole store
+  first (damage stops the run before any deletion), then per folded entry the folder is re-read and
+  must equal its store entry (names, sizes, sha256, no extra file; else skipped and reported). Only
+  managed folders inside `backups/`, `snapshots/`, `extracts/` qualify - never in-place, live or the
+  copy-aside. `migration.json` records `free` (`freeing` before an entry's folder is touched,
+  `freed` after its folder and catalog entry are gone; a catalog entry with an owner note stays),
+  so a crash resumes (a part-deleted folder must be a subset of its store entry). The listing is
+  unchanged (the store entry has the same id) and undo of the upgrade restores freed folders from
+  the copy. **Importing a store-mode vault** merges it (`store/merge.py`): missing objects are read
+  verified from the source and put verified, then each manifest is committed with `origin`
+  `{store_id, entry_id}`; an id used for other contents becomes `<id>-m<n>`; an entry already
+  merged (by origin, or the same id and `body_sha256`) is skipped, so a second import adds
+  nothing. A pre-upgrade copy and an in-place import of a store vault are refused.
   **Undo the vault upgrade** (`nmsvault store rollback`) writes everything made since back out as
   plain folders, restores the old ones from the copy, and moves `store/` out of the vault; the
   copy is only read.

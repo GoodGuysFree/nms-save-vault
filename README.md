@@ -88,6 +88,7 @@ The full list is under [Usage](#usage).
 4. **Import** — register an existing manual backup folder into the catalog, or import an
    entire copied Save Vault folder: it compares that vault's entries with yours and offers
    to copy the new ones in or index them in place (idempotent — re-importing is harmless).
+   A vault that has a version store of its own is **merged** into yours (see below).
 5. **Account display names** — give each account a name of your choosing and the app shows
    that instead of the real id everywhere, so a screenshot or a screen-share never exposes
    your `st_<steamid64>` or Xbox `<xuid>_<titleid>`. See
@@ -127,6 +128,17 @@ free space), and never touches your live saves.
 * **Undo the vault upgrade** (`nmsvault store rollback`) goes back to plain folders with
   everything made since, and moves the store next to the vault; the copy is not changed.
 * Delete the copy and the moved store yourself, when you no longer need them.
+* **Free old backup folders** (Tools menu, or `nmsvault store free-old-folders`) deletes the
+  plain folders that were folded into the store, to give the disk space back. It only runs when
+  you ask: the command shows what it would free and deletes nothing until you add `--yes`. A full
+  check of the store runs first and any damage stops it before anything is deleted. A folder
+  that changed after the fold, your hand-made backup folders, the live folders and the
+  pre-upgrade copy are never touched. Every backup stays listed, and Undo the vault upgrade
+  still works while the copy exists. If it is interrupted, run it again.
+* **Importing a vault that has a version store** merges it: its stored files and backups are
+  copied in and checked, and what you already have is skipped, so importing the same vault again
+  (for example a copy on a USB drive) adds only what is new. A backup whose name you already use
+  for something else is imported as `<name>-m1`. The source is only read.
 
 See [DESIGN.md](DESIGN.md) for the architecture and the verified save-format details.
 
@@ -566,7 +578,7 @@ The vault lives outside `st_<id>`, so it is never scanned by the game or synced 
 ## Status
 
 Working. Core format/crypto and all operations are verified against the real save files and
-in a temp sandbox (2366 tests). Xbox / Game Pass saves are supported for reading **and**
+in a temp sandbox (2437 tests). Xbox / Game Pass saves are supported for reading **and**
 writing, including Steam ↔ Xbox moves (validated in the real game) — verified against a real install (reads) and synthetic `wgs` fixtures
 (writes). A full file-copy safety backup of the live folder was made before development
 (`C:\Devel\NMS-SaveBackup-SAFETY-2026-06-24`). The Organizer is in (see above); a

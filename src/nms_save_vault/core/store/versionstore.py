@@ -8,6 +8,7 @@ manifest commit runs under it, for milliseconds.
 """
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
 import os
@@ -507,6 +508,53 @@ class VersionStore:
                       account=capture.account_paths(plan, records), xbox=plan.xbox, notes=notes,
                       absent=absent)
         return self._commit(fields, entry_id=entry_id, created_local=created_local)
+
+    def add_merged(self, source: StoreEntry, *, source_store_id: str
+                   ) -> tuple[StoreEntry, Literal["new", "renamed", "same"]]:
+        """Commit another store's entry (D3 4.8). Its objects must already be here (the caller
+        copied them, verified). Under the lock: an entry already merged from that store, or the
+        same id with the same ``body_sha256``, is returned as it is ("same"); an id this vault
+        already uses for other contents is imported as ``<id>-m<n>`` ("renamed"). ``origin``
+        names the other store and entry."""
+        self._require_writable()
+        origin: dict[str, Any] = {"store_id": source_store_id, "entry_id": source.id}
+        if source.origin:
+            origin["source_origin"] = dict(source.origin)
+        try:
+            with self._lock():
+                self._require_store_mode()
+                self._refresh(force=True)
+                for existing in self._index.values():
+                    o = existing.origin or {}
+                    if o.get("store_id") == source_store_id and o.get("entry_id") == source.id:
+                        return existing, "same"
+                mine = self._index.get(source.id)
+                if mine is not None and mine.body_sha256 == source.body_sha256:
+                    return mine, "same"
+                came = source.origin or {}
+                if came.get("store_id") == self.store_id and came.get("entry_id") in self._index:
+                    return self._index[came["entry_id"]], "same"     # it came from here
+                catalog_ids = self._catalog_ids()
+                new_id, status = source.id, "new"
+                if (new_id in self._index or self._manifest_path(new_id).exists()
+                        or new_id in catalog_ids):
+                    n = 1
+                    while True:
+                        tail = f"-m{n}"
+                        new_id = source.id[:MAX_ENTRY_ID - len(tail)] + tail
+                        if not (new_id in self._index or self._manifest_path(new_id).exists()
+                                or new_id in catalog_ids):
+                            break
+                        n += 1
+                    status = "renamed"
+                fields = {f.name: getattr(source, f.name) for f in dataclasses.fields(source)
+                          if f.name != "body_sha256"}
+                entry = StoreEntry.new(**dict(fields, id=new_id, origin=origin))
+                self._write_manifest(entry)
+        except safety.LockTimeout as exc:
+            raise StoreBusy() from exc
+        self._check_present(entry)
+        return entry, status  # type: ignore[return-value]
 
     def _require_space(self, needed: int) -> None:
         try:

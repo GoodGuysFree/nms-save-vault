@@ -24,6 +24,7 @@ from .capture import CaptureScope
 from .errors import StoreBusy, StoreError, StoreNotUpgraded
 from .listing import list_vault_entries, store_slot_summaries
 from .manifest import StoreEntry
+from .merge import merge_store, open_source
 from .versionstore import TMP, VersionStore, open_store, read_format, vault_lock, vault_mode
 
 log = logging.getLogger(__name__)

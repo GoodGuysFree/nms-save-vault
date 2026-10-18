@@ -41,6 +41,13 @@ def add_commands(sub: argparse._SubParsersAction) -> None:
     c.add_argument("--all", action="store_true", help="every one not copied in yet")
     c.set_defaults(func=cmd_store_copy_in)
 
+    fr = store_sub.add_parser("free-old-folders",
+                              help="delete the old backup folders that are now in the store "
+                                   "(shows what it would free; nothing is deleted without --yes)")
+    fr.add_argument("--yes", action="store_true",
+                    help="really delete them, after a full check of the store")
+    fr.set_defaults(func=cmd_store_free)
+
     r = store_sub.add_parser("rollback", help="undo the vault upgrade: back to the old layout "
                                               "with everything made since")
     r.add_argument("--copy", metavar="FOLDER", help="where the pre-upgrade copy is, when it is "
@@ -127,6 +134,43 @@ def cmd_store_copy_in(args) -> int:
         print(f"  skipped {entry_id}: {why}")
     print(report.message)
     return 1 if report.failed else 0
+
+
+def cmd_store_free(args) -> int:
+    from .core import catalog
+    from .core.store import free
+
+    state = appstate.load()
+    root = _vault_root(args, state)
+    store = vstore.open_store(root, app_state=state)
+    plan = free.plan_free(catalog.Vault(root).load(), store)
+    for entry_id, why in plan.skipped:
+        print(f"  left as it is: {entry_id} ({why})")
+    aside = plan.copy_aside
+    if aside is None:
+        print("There is no pre-upgrade copy on record.")
+    elif aside.found:
+        print(f"The pre-upgrade copy {aside.name} is still next to the vault (Undo the vault "
+              "upgrade keeps working while it exists); it is not touched.")
+    else:
+        print(f"The pre-upgrade copy {aside.name} is no longer found.")
+    if not plan.entries:
+        print("No old backup folder to free.")
+        return 0
+    print(f"{len(plan.entries)} old backup folders ({plan.bytes / (1 << 30):.2f} GB) are in the "
+          "store and could be deleted. Every backup stays listed.")
+    if not args.yes:
+        print("Nothing was deleted. Run again with --yes to delete them "
+              "(a full check of the store runs first).")
+        return 0
+    try:
+        result = free.run_free(store, plan, progress=lambda p: print(
+            f"  deleting {p.current} ({p.entries_done + 1} of {p.entries_total})"))
+    except vstore.FreeError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    print(result.message)
+    return 1 if result.leftovers else 0
 
 
 def cmd_store_rollback(args) -> int:

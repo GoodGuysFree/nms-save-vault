@@ -135,10 +135,10 @@ def test_imports_in_store_mode(tmp_path):
     assert result.changed == [old.id] and store.entry(old.id).origin == {"imported_entry": old.id}
     assert store.entry(old.id).created_local == old.created
     assert operations.import_vault(vault, other.root, copy_into_vault=True).changed == []
-    with pytest.raises(operations.OperationError, match="later version"):
-        operations.import_vault(other, vault.root, copy_into_vault=True)
     vault.save()                        # make it look like a vault to the legacy side too
-    with pytest.raises(operations.OperationError, match="later version"):
+    with pytest.raises(operations.OperationError, match="Upgrade the vault first"):
+        operations.import_vault(other, vault.root, copy_into_vault=True)
+    with pytest.raises(operations.OperationError, match="Upgrade the vault first"):
         operations.import_vault(other, vault.root, copy_into_vault=False)
 
 

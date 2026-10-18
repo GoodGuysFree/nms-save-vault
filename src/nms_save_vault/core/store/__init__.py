@@ -4,6 +4,7 @@ from .errors import (
     Cancelled,
     EntryCorrupt,
     FoldVerifyError,
+    FreeError,
     InsufficientSpace,
     ObjectCorrupt,
     ObjectMissing,
@@ -28,6 +29,15 @@ from .listing import (
     open_entry_folder,
     store_status,
 )
+from .free import (
+    FreeCandidate,
+    FreePlan,
+    FreeProgress,
+    FreeResult,
+    free_pending,
+    plan_free,
+    run_free,
+)
 from .locator import StoreLocator
 from .migrate import (
     CopyInReport,
@@ -38,6 +48,7 @@ from .migrate import (
     not_copied_in,
     run_fold,
 )
+from .merge import MergeProgress, MergeReport, merge_store, open_source
 from .rollback import (
     RollbackPlan,
     RollbackResult,
