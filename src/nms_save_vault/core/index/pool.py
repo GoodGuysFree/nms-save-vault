@@ -301,6 +301,7 @@ class Dispatcher:
         self._seq = itertools.count()
         self._tokens = itertools.count(1)
         self._running: dict[int, _Running] = {}
+        self._opening = 0
         self._completions: deque = deque()
         self._held: _Held | None = None
         self._paused = False
@@ -373,7 +374,7 @@ class Dispatcher:
 
     def counts(self) -> DispatchStats:
         with self._lock:
-            self.stats.queued = len(self._pending) + (1 if self._held else 0)
+            self.stats.queued = len(self._pending) + (1 if self._held else 0) + self._opening
             self.stats.running = len(self._running)
             return DispatchStats(**vars(self.stats))
 
@@ -469,25 +470,31 @@ class Dispatcher:
             self._completions.clear()
         changed = False
         for token, result, exc in items:
+            # The job leaves ``_running`` and its result is handed on in one locked step (the
+            # lock is re-entrant, the callbacks only queue): otherwise the pool reads idle
+            # while the last result is not yet queued for the writer.
             with self._lock:
                 run = self._running.pop(token, None)
-            if run is None:
-                continue                                    # terminated before it reported
-            changed = True
-            if exc is not None:
-                self._retry_or_fail(run, "worker-died", f"worker crashed: {extract.describe(exc)}")
-                continue
-            if result.status == "error" and (result.error or "").startswith("MemoryError") \
-                    and run.vid not in self._retried:
-                self._retried.add(run.vid)
-                self._requeue(run.vid, run.tier, alone=True)
-                continue
-            self.stats.done += 1
-            self.stats.done_bytes += run.json_bytes
-            if result.status in ("error", "mismatch"):
-                self.stats.failed += 1
-            self.on_result(result)
+                if run is None:
+                    continue                                # terminated before it reported
+                changed = True
+                self._report(run, result, exc)
         return changed
+
+    def _report(self, run: _Running, result, exc) -> None:
+        if exc is not None:
+            self._retry_or_fail(run, "worker-died", f"worker crashed: {extract.describe(exc)}")
+            return
+        if result.status == "error" and (result.error or "").startswith("MemoryError") \
+                and run.vid not in self._retried:
+            self._retried.add(run.vid)
+            self._requeue(run.vid, run.tier, alone=True)
+            return
+        self.stats.done += 1
+        self.stats.done_bytes += run.json_bytes
+        if result.status in ("error", "mismatch"):
+            self.stats.failed += 1
+        self.on_result(result)
 
     def _reap_dead(self) -> bool:
         with self._lock:
@@ -544,16 +551,27 @@ class Dispatcher:
             if self._paused or self._stopped:
                 return False
             held = self._held
-            if held is None:
+            opening = held is None
+            if opening:
                 popped = self._pop(self._allowed)
                 if popped is None:
                     return False
                 vid, tier = popped
-        if held is None:
-            held = self._open(vid, tier)
+                self._opening += 1                          # still counts as queued while it opens
+        if opening:
+            try:
+                held = self._open(vid, tier)
+            except BaseException:
+                with self._lock:
+                    self._opening -= 1
+                raise
             if held is None:
+                with self._lock:
+                    self._opening -= 1
                 return True
         with self._lock:
+            if opening:
+                self._opening -= 1
             if self._stopped:
                 return False                                # opened while stopping: drop it
             if self._paused:

@@ -351,13 +351,18 @@ class IndexService:
 
     def _write_loop(self) -> None:
         self.cache.adopt_writer()
+        unfinished = False
         while True:
             op = self._writes.get()
             if op is None:
                 return
             self._apply_safely(op)
-            if self.dispatcher is not None and self.idle() and self._writes.empty() and op[0] == "result":
+            unfinished = unfinished or op[0] == "result"
+            # Any later op (a "touch" queued behind the last result) may be the one that finds
+            # the queue empty, so the check is not tied to the result op itself.
+            if unfinished and self.dispatcher is not None and self.idle() and self._writes.empty():
                 self._event("finished")
+                unfinished = False
 
     def _apply_safely(self, op: tuple) -> None:
         """Apply one write. A lock held by another instance is waited out with backoff; a
@@ -421,8 +426,8 @@ class IndexService:
                 self._event("failed", result.vid, "mismatch")
                 return
             stored = (result.facts or {}).get("extractor", EXTRACTOR_VERSION)
+            self._remember_view(result.vid)       # before the status flips: "ok" implies a view
             self._known[result.vid] = (result.status, stored)
-            self._remember_view(result.vid)
             self._strikes.pop(result.vid, None)
             self._event("indexed", result.vid, result.status)
         elif kind == "failure":

@@ -266,6 +266,40 @@ def test_while_the_game_runs_one_worker_and_no_backfill(state):
     assert r.ex.running() == ["back1", "back2"]
 
 
+def test_the_pool_is_not_seen_idle_before_the_last_result_is_handed_on():
+    r = Rig()
+    seen = []
+
+    def handed_on(res):
+        reader = threading.Thread(target=lambda: seen.append(r.d.counts().running), daemon=True)
+        reader.start()
+        reader.join(0.3)
+        seen.append(reader.is_alive())            # a reader on another thread waits for us
+        r.results.append(res)
+
+    r.d.on_result = handed_on
+    r.d.submit(["a"], Priority.LIVE)
+    r.settle()
+    r.ex.finish("a")
+    r.settle()
+    assert seen[0] is True and r.d.counts().running == 0 and [x.vid for x in r.results] == ["a"]
+
+
+def test_a_job_being_opened_still_counts_as_queued():
+    r = Rig()
+    seen = []
+
+    def opening(vid):
+        seen.append(r.d.counts())
+        return b"x" * 10, None
+
+    r.d.opener = opening
+    r.d.submit(["a"], Priority.LIVE)
+    r.settle()
+    assert (seen[0].queued, seen[0].running) == (1, 0)
+    assert (r.d.counts().queued, r.d.counts().running) == (0, 1)
+
+
 def test_an_unreadable_version_is_a_failure_not_a_crash():
     r = Rig(unavailable={"gone"})
     r.d.submit(["gone", "fine"], Priority.LIVE)
