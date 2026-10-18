@@ -271,3 +271,17 @@ def test_the_cli_upgrades_only_when_asked(legacy, monkeypatch, capsys):
     assert vstore.vault_mode(vault.root) == "store"
     assert cli.main(["--vault", str(vault.root), "store", "upgrade", "--yes"]) == 1
     assert "already upgraded" in capsys.readouterr().err
+
+
+@pytest.mark.skipif(os.name != "nt", reason="the 260 character limit is a Windows one")
+def test_a_vault_holding_a_path_over_260_characters_is_refused_not_a_crash(legacy):
+    vault, live, _entries = legacy
+    deep = upgrade._long_path(vault.backups_dir)
+    for _ in range(8):
+        deep = deep / ("d" * 40)
+    os.makedirs(deep)
+    (deep / "file.bin").write_bytes(b"x")
+    assert len(str(deep)) > 260
+    plan = vstore.plan_upgrade(vault.root, live_roots=[live])
+    assert "path-too-long" in [c for c, _t in plan.problems]
+    assert any(rel.endswith("file.bin") for rel in upgrade.tree(vault.root))

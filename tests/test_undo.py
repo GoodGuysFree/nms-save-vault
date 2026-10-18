@@ -159,7 +159,8 @@ def test_the_unrecorded_warning_points_at_the_caller(make_wgs_account, tmp_path,
     ):
         with pytest.warns(ops.OplogNotWrittenWarning) as caught:
             call()
-        assert caught[0].filename == __file__
+        ours = [w for w in caught if issubclass(w.category, ops.OplogNotWrittenWarning)]
+        assert ours and ours[0].filename == __file__      # a stray ResourceWarning may come first
 
 
 @pytest.mark.parametrize("make", [

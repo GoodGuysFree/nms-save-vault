@@ -578,7 +578,7 @@ The vault lives outside `st_<id>`, so it is never scanned by the game or synced 
 ## Status
 
 Working. Core format/crypto and all operations are verified against the real save files and
-in a temp sandbox (2442 tests). Xbox / Game Pass saves are supported for reading **and**
+in a temp sandbox (2467 tests). Xbox / Game Pass saves are supported for reading **and**
 writing, including Steam ↔ Xbox moves (validated in the real game) — verified against a real install (reads) and synthetic `wgs` fixtures
 (writes). A full file-copy safety backup of the live folder was made before development
 (`C:\Devel\NMS-SaveBackup-SAFETY-2026-06-24`). The Organizer is in (see above); a

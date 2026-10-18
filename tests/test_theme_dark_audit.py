@@ -449,3 +449,58 @@ def test_help_the_wait_window_and_the_tooltip(gui_app, mode):
         wait.destroy()
         for window in helps:
             window.destroy()
+
+
+def test_alt_f4_and_alt_space_stay_with_the_os_in_the_strip_mode(strip_app):
+    """Replacing Tk's <Alt-Key> must not swallow the close (Alt+F4) and system menu keys."""
+    tk_script = strip_app._tk_menu_keys["<Alt-Key>"]
+    for seq in ("<Alt-Key-F4>", "<Alt-Key-space>"):
+        assert strip_app.tk.call("bind", "all", seq) == tk_script
+    # The keys themselves are not generated: Tk's handler hands Alt+F4 to the OS, which would
+    # close the test's window. The binding is the more specific one, so it wins over <Alt-Key>.
+    strip_app._alt_down = 5.0
+    strip_app.deiconify()
+    strip_app.update()
+    strip_app.focus_force()
+    strip_app.update()
+    try:
+        strip_app.event_generate("<Alt-Key-x>")
+        assert strip_app._alt_down == 0.0         # any other Alt chord still reaches the strip
+    finally:
+        strip_app.withdraw()
+
+
+def test_the_native_bar_drops_those_two_bindings(gui_app, monkeypatch):
+    monkeypatch.setattr(theme, "dark_title_bar", lambda *a, **k: False)
+    monkeypatch.setattr(theme, "wants_menu_strip", lambda dark: dark)
+    original = gui_app.state.theme
+    try:
+        gui_app.state.theme = theme.DARK
+        gui_app._apply_theme()
+        gui_app.state.theme = theme.LIGHT
+        gui_app._apply_theme()
+        for seq in ("<Alt-Key-F4>", "<Alt-Key-space>"):
+            assert not gui_app.tk.call("bind", "all", seq)
+    finally:
+        gui_app.state.theme = original
+        gui_app._apply_theme()
+
+
+def test_an_alt_press_followed_by_a_focus_change_or_a_click_is_not_a_tap(strip_app, monkeypatch):
+    opened = []
+    monkeypatch.setattr(strip_app.menu_strip, "post", lambda b: opened.append(b.cget("text")))
+    strip_app.deiconify()
+    strip_app.update()
+    strip_app.focus_force()
+    strip_app.update()
+    try:
+        for between in ("<FocusOut>", "<ButtonPress-1>"):
+            strip_app.event_generate("<Key-Alt_L>")
+            strip_app.event_generate(between)
+            strip_app.event_generate("<KeyRelease-Alt_L>")
+        assert opened == []
+        strip_app.event_generate("<Key-Alt_L>")                   # a lone tap still works
+        strip_app.event_generate("<KeyRelease-Alt_L>")
+        assert opened == ["File"]
+    finally:
+        strip_app.withdraw()

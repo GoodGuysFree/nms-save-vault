@@ -577,6 +577,7 @@ class App(tk.Tk):
         bind_menu_hints(live, {"Promote": PROMOTE_TIP}, self._menu_hint)
 
         tools = menu("Tools")
+        self._tools_menu = tools
         tools.add_command(label="Vault upgrade...", command=self.open_vault_window, underline=0)
         free_label = self._free_menu_label()
         tools.add_command(label=free_label, command=self.on_free_old_folders, underline=0)
@@ -584,7 +585,8 @@ class App(tk.Tk):
         tools.add_command(label="Check for updates...", command=self.on_check_updates,
                           underline=0)
         bind_menu_hints(tools, {"Vault upgrade...": VAULT_UPGRADE_TIP,
-                                free_label: FREE_OLD_TIP}, self._menu_hint)
+                                FREE_LABEL: FREE_OLD_TIP,
+                                FINISH_FREE_LABEL: FREE_OLD_TIP}, self._menu_hint)
 
         about = menu("Help")
         about.add_command(label="Help", command=self.on_help, accelerator="F1", underline=0)
@@ -600,6 +602,9 @@ class App(tk.Tk):
         self._strip_active = False
         self.configure(menu=bar)
         self._alt_down = 0.0
+        # An Alt press only counts as a tap when nothing else happens before its release.
+        self.bind_all("<FocusOut>", self._shortcut(self._alt_other), add="+")
+        self.bind_all("<ButtonPress>", self._shortcut(self._alt_other), add="+")
         # Tk's own Alt / F10 bindings, kept to be put back when the native bar returns.
         self._tk_menu_keys = {seq: self.tk.call("bind", "all", seq) for seq in _MENU_KEYS}
         self.bind_all("<F1>", self._shortcut(self.on_help))
@@ -625,6 +630,10 @@ class App(tk.Tk):
                 for key in (letter.lower(), letter.upper()):
                     self.bind_all(f"<Alt-Key-{key}>", self._shortcut(lambda b=button: self.menu_strip.post(b), main_only=True))
             self.bind_all("<Alt-Key>", self._shortcut(self._alt_other, main_only=True))
+            # Alt+F4 and Alt+Space belong to the OS (close, system menu): they stay with Tk's
+            # own handler, which hands them on.
+            for seq in _OS_ALT_KEYS:
+                self.tk.call("bind", "all", seq, self._tk_menu_keys["<Alt-Key>"])
             self.bind_all("<Key-Alt_L>", self._shortcut(self._alt_pressed, main_only=True))
             self.bind_all("<Key-Alt_R>", self._shortcut(self._alt_pressed, main_only=True))
             self.bind_all("<KeyRelease-Alt_L>", self._shortcut(self._alt_released, main_only=True))
@@ -639,6 +648,8 @@ class App(tk.Tk):
             for letter in self.menu_strip.mnemonics:
                 for key in (letter.lower(), letter.upper()):
                     self.tk.call("bind", "all", f"<Alt-Key-{key}>", "")
+            for seq in _OS_ALT_KEYS:
+                self.tk.call("bind", "all", seq, "")
             for seq, script in self._tk_menu_keys.items():
                 self.tk.call("bind", "all", seq, script)
 
@@ -686,7 +697,19 @@ class App(tk.Tk):
             pending = freeing.free_pending(self.vault.root)
         except OSError:
             pending = False
-        return "Finish freeing old backup folders..." if pending else "Free old backup folders..."
+        return FINISH_FREE_LABEL if pending else FREE_LABEL
+
+    def _refresh_free_label(self) -> None:
+        """The item reads "Finish..." only while an interrupted run is pending: the model menu
+        and the copy the in-window bar posts are both brought up to date."""
+        label = self._free_menu_label()
+        menus = [self._tools_menu] + [self.menu_strip.dropdown(b) for b in self.menu_strip.buttons
+                                      if b.cget("text") == "Tools"]
+        for menu in menus:
+            for i in range(menu.index("end") + 1):
+                if (menu.type(i) != "separator"
+                        and menu.entrycget(i, "label") in (FREE_LABEL, FINISH_FREE_LABEL)):
+                    menu.entryconfigure(i, label=label)
 
     def on_free_old_folders(self) -> None:
         """Tools > Free old backup folders (D3 4.5): show what would be freed and what is left
@@ -712,6 +735,11 @@ class App(tk.Tk):
             return
         plan = holder["result"]
         if not plan.entries:
+            try:
+                freeing.close_pending(store, plan)
+            except ops.OperationError as exc:
+                log.warning("could not close the earlier freeing: %s", exc)
+            self._refresh_free_label()
             _showinfo(title, _free_text(plan, "No old backup folder to free."))
             return
         if not _askyesno(title, _free_text(
@@ -722,6 +750,7 @@ class App(tk.Tk):
         holder = self._run_worker(lambda _f: freeing.run_free(store, plan), False,
                                   "Checking the store and deleting the old folders - "
                                   "please wait...")
+        self._refresh_free_label()
         err = holder.get("error")
         if err is not None:
             _showerror(title, str(err) if isinstance(err, ops.OperationError) else repr(err))
@@ -2770,6 +2799,9 @@ class CopySlotDialog(tk.Toplevel):
 
 
 #: The bindings Tk puts on every window for its native menu bar (Alt, Alt+letter, F10).
+_OS_ALT_KEYS = ("<Alt-Key-F4>", "<Alt-Key-space>")
+FREE_LABEL = "Free old backup folders..."
+FINISH_FREE_LABEL = "Finish freeing old backup folders..."
 _MENU_KEYS = ("<Alt-Key>", "<Alt-KeyRelease>", "<Key-Alt_L>", "<Key-Alt_R>",
               "<KeyRelease-Alt_L>", "<KeyRelease-Alt_R>", "<Key-F10>", "<KeyRelease-F10>")
 

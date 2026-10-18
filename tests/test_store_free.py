@@ -359,3 +359,75 @@ def test_the_cli_says_a_run_is_pending(folded, monkeypatch, capsys):
         vstore.run_free(w.store, plan, live_roots=[w.live], faults=crash)
     assert _cli(monkeypatch, w) == 0
     assert "stopped before its end" in capsys.readouterr().out
+
+
+def test_a_cloud_placeholder_is_reported_as_such_and_other_links_are_not(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    def lstat(tag):
+        return lambda p: SimpleNamespace(st_mode=0o100644, st_file_attributes=0x400,
+                                         st_reparse_tag=tag)
+
+    monkeypatch.setattr(free.os, "lstat", lstat(0x9000701A))        # OneDrive Files On-Demand
+    assert free._link_kind(tmp_path) == "cloud"
+    monkeypatch.setattr(free.os, "lstat", lstat(0xA0000003))        # a junction
+    assert free._link_kind(tmp_path) == "link"
+    monkeypatch.undo()
+    assert free._link_kind(tmp_path) == ""
+
+
+def test_a_folder_with_cloud_files_is_skipped_with_that_reason(folded, monkeypatch):
+    w = folded
+    cloud = next(p for p in sorted(_folder(w, "full").rglob("*")) if p.is_file())
+    real = free._link_kind
+    monkeypatch.setattr(free, "_link_kind", lambda p: "cloud" if p == cloud else real(p))
+    plan = vstore.plan_free(Vault(w.vault.root).load(), w.store, live_roots=[w.live])
+    assert "available offline" in dict(plan.skipped)[w.ids["full"]]
+    assert cloud.exists() and w.ids["full"] not in {c.id for c in plan.entries}
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
+def test_a_leftover_folder_keeps_its_execute_bit(folded):
+    w = folded
+    plan = vstore.plan_free(Vault(w.vault.root).load(), w.store, live_roots=[w.live])
+    target = plan.entries[0].folder
+    sub = next(d for d in sorted(target.rglob("*")) if d.is_dir())
+
+    def late_file(point):
+        if point == "free.before_delete" and not (sub / "late.txt").exists():
+            (sub / "late.txt").write_bytes(b"late")
+
+    vstore.run_free(w.store, plan, live_roots=[w.live], faults=late_file)
+    for d in (sub, target):
+        assert os.stat(d).st_mode & 0o700 == 0o700                  # still enterable
+    assert (sub / "late.txt").read_bytes() == b"late"
+
+
+def test_the_copy_aside_is_walked_once_per_run(folded, monkeypatch):
+    w = folded
+    plan = vstore.plan_free(Vault(w.vault.root).load(), w.store, live_roots=[w.live])
+    calls = []
+    real = free._copy_aside
+    monkeypatch.setattr(free, "_copy_aside", lambda *a: calls.append(1) or real(*a))
+    vstore.run_free(w.store, plan, live_roots=[w.live])
+    assert len(calls) == 1
+
+
+def test_a_pending_run_with_nothing_left_is_closed(folded, monkeypatch, capsys):
+    w = folded
+    plan = vstore.plan_free(Vault(w.vault.root).load(), w.store, live_roots=[w.live])
+    target = plan.entries[0].folder
+
+    def late_file(point):
+        if point == "free.before_delete" and not (target / "late.txt").exists():
+            (target / "late.txt").write_bytes(b"late")
+
+    vstore.run_free(w.store, plan, live_roots=[w.live], faults=late_file)
+    assert vstore.free_pending(w.vault.root)
+    empty = vstore.plan_free(Vault(w.vault.root).load(), w.store, live_roots=[w.live])
+    assert empty.entries == () and (target / "late.txt").exists()
+    assert free.close_pending(w.store, empty) and not vstore.free_pending(w.vault.root)
+    assert not free.close_pending(w.store, empty)                    # nothing pending any more
+    free._save(w.store, free._free_statuses(w.vault.root), "freeing")   # pending again
+    assert _cli(monkeypatch, w, "--yes") == 0
+    assert "closed" in capsys.readouterr().out and not vstore.free_pending(w.vault.root)

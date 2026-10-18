@@ -144,6 +144,7 @@ def _run_free(store, plan, live_roots, progress, cancel, faults) -> FreeResult:
                                    "nothing was deleted. Run 'nmsvault store fsck --deep "
                                    "--repair' first.")
     live = discover.live_folders(live_roots) if live_roots is not None else store.live_folders()
+    aside = _copy_aside(root, read_migration(root))       # walks the whole copy: once per run
     statuses = _free_statuses(root)
     _save(store, statuses, "freeing")
     freed: list[str] = []
@@ -158,8 +159,7 @@ def _run_free(store, plan, live_roots, progress, cancel, faults) -> FreeResult:
             progress(FreeProgress(n, len(plan.entries), wanted.id))
         vault = Vault(root).load()
         entry = vault.get(wanted.id)
-        migration = read_migration(root)
-        verdict = (_judge(vault, store, entry, migration, live, _copy_aside(root, migration))
+        verdict = (_judge(vault, store, entry, read_migration(root), live, aside)
                    if entry is not None else _Verdict(reason="it is no longer in the catalog"))
         if verdict.candidate is None:
             skipped.append((wanted.id, verdict.reason or "it is no longer a folder to free"))
@@ -220,8 +220,8 @@ def _judge(vault: Vault, store: VersionStore, entry: CatalogEntry, migration: di
     if aside is not None and aside.found and _inside(folder, vault.root.parent / aside.name):
         return _Verdict(reason="inside the pre-upgrade copy")
     inventory = _inventory(folder)
-    if inventory is None:
-        return _Verdict(reason="it holds a link, a junction or a special file")
+    if isinstance(inventory, str):
+        return _Verdict(reason=inventory)
     files, dirs = inventory
     held = {fe.path: fe for fe in stored.files}
     if resuming:
@@ -262,21 +262,34 @@ def _managed_folder(vault: Vault, entry: CatalogEntry, folder: Path) -> bool:
         return False
 
 
-def _is_link(path: Path) -> bool:
-    """A symbolic link or, on Windows, any reparse point: a directory junction is no
-    ``is_symlink`` but os.walk and the like follow it."""
+CLOUD_FILES = ("it holds online-only / cloud files (OneDrive): make them available offline "
+               "first")
+LINKED = "it holds a link, a junction or a special file"
+
+
+def _link_kind(path: Path) -> str:
+    """"" for a plain file or folder; "cloud" for a cloud placeholder (OneDrive Files On-Demand
+    reparse tags 0x9000?01A); "link" for a symbolic link or any other reparse point - a directory
+    junction is no ``is_symlink`` but os.walk and the like follow it."""
     try:
         st = os.lstat(path)
     except OSError:
-        return True
+        return "link"
     reparse = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
-    return stat.S_ISLNK(st.st_mode) or bool(getattr(st, "st_file_attributes", 0) & reparse)
+    if not (stat.S_ISLNK(st.st_mode) or getattr(st, "st_file_attributes", 0) & reparse):
+        return ""
+    tag = getattr(st, "st_reparse_tag", 0)
+    return "cloud" if tag & 0xFFFF0FFF == 0x9000001A else "link"
 
 
-def _inventory(folder: Path) -> tuple[dict[str, Path], tuple[Path, ...]] | None:
+def _is_link(path: Path) -> bool:
+    return bool(_link_kind(path))
+
+
+def _inventory(folder: Path) -> tuple[dict[str, Path], tuple[Path, ...]] | str:
     """The plain files of the folder by relative posix path, and its sub-folders deepest first;
-    None when it holds anything else (a link, a junction, a special file). Never descends into
-    a link."""
+    the reason (text) when it holds anything else: a link, a junction, a cloud placeholder, a
+    special file. Never descends into a link."""
     files: dict[str, Path] = {}
     dirs: list[Path] = []
     stack = [folder]
@@ -286,18 +299,19 @@ def _inventory(folder: Path) -> tuple[dict[str, Path], tuple[Path, ...]] | None:
             with os.scandir(here) as it:
                 items = list(it)
         except OSError:
-            return None
+            return LINKED
         for item in items:
             p = Path(item.path)
-            if _is_link(p):
-                return None
+            kind = _link_kind(p)
+            if kind:
+                return CLOUD_FILES if kind == "cloud" else LINKED
             if item.is_dir(follow_symlinks=False):
                 dirs.append(p)
                 stack.append(p)
             elif item.is_file(follow_symlinks=False):
                 files[p.relative_to(folder).as_posix()] = p
             else:
-                return None
+                return LINKED
     return files, tuple(sorted(dirs, key=lambda d: len(d.parts), reverse=True))
 
 
@@ -333,13 +347,31 @@ def _retry(path: Path, remove: Callable[[Path], None], left: list[str]) -> None:
     except OSError:
         pass
     try:
-        os.chmod(path, stat.S_IWRITE | stat.S_IREAD)
+        _make_writable(path)
         remove(path)
     except FileNotFoundError:
         pass
     except OSError as exc:
         log.warning("could not delete %s: %s", path.name, exc)
         left.append(f"{path.name} ({exc.strerror or exc})")
+
+
+def _make_writable(path: Path) -> None:
+    """Clear a read-only attribute. A folder only gains the owner's rwx bits and keeps every
+    other: on POSIX a folder stripped of x could not be entered again."""
+    if path.is_dir() and not path.is_symlink():
+        os.chmod(path, (os.lstat(path).st_mode & 0o7777) | stat.S_IRWXU)
+    else:
+        os.chmod(path, stat.S_IWRITE | stat.S_IREAD)
+
+
+def close_pending(store: VersionStore, plan: FreePlan) -> bool:
+    """A pending run whose plan is empty has nothing left it could finish (a folder that grew
+    stays and was reported): close the record, so it is not offered again. True when it was."""
+    if plan.entries or not free_pending(store.vault_root):
+        return False
+    _save(store, _free_statuses(store.vault_root), "done")
+    return True
 
 
 def _drop_catalog_entry(store: VersionStore, entry_id: str) -> None:

@@ -157,6 +157,8 @@ def cmd_store_free(args) -> int:
     else:
         print(f"The pre-upgrade copy {aside.name} is no longer found.")
     if not plan.entries:
+        if args.yes and free.close_pending(store, plan):
+            print("The earlier run had nothing left to finish; it is closed.")
         print("No old backup folder to free.")
         return 0
     print(f"{len(plan.entries)} old backup folders ({plan.bytes / (1 << 30):.2f} GB) are in the "

@@ -112,3 +112,36 @@ def test_an_interrupted_freeing_is_offered_again(app, folded, dialogs):
     assert app._free_menu_label() == "Finish freeing old backup folders..."
     app._offer_interrupted_undo()
     assert "stopped before its end" in app.status.get()
+
+
+def _tools_labels(app):
+    bar = app.menubar
+    for i in range(bar.index("end") + 1):
+        if bar.type(i) == "cascade" and bar.entrycget(i, "label") == "Tools":
+            menu = app.nametowidget(bar.entrycget(i, "menu"))
+            return [menu.entrycget(j, "label") for j in range(menu.index("end") + 1)
+                    if menu.type(j) != "separator"]
+    raise AssertionError("no Tools menu")
+
+
+def test_the_tools_item_reads_normally_again_after_the_run_finishes(app, folded, dialogs,
+                                                                    monkeypatch):
+    from nms_save_vault.core import store as vstore
+
+    dialogs.expect()
+    plan = vstore.plan_free(Vault(folded.vault.root).load(), folded.store,
+                            live_roots=[folded.live])
+
+    def crash(point):
+        if point == "free.after_delete":
+            raise KeyboardInterrupt("stopped")
+
+    with pytest.raises(KeyboardInterrupt):
+        vstore.run_free(folded.store, plan, live_roots=[folded.live], faults=crash)
+    app._refresh_free_label()
+    assert "Finish freeing old backup folders..." in _tools_labels(app)
+    monkeypatch.setattr(gui, "_askyesno", lambda title, message, **k: True)
+    _invoke_tools(app, "Finish freeing old backup folders...")
+    assert "Free old backup folders..." in _tools_labels(app)
+    assert "Finish freeing old backup folders..." not in _tools_labels(app)
+    dialogs.take()
