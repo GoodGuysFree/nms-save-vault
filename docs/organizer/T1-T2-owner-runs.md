@@ -1,65 +1,73 @@
 # T1 / T2 - owner validation runs (Steam <-> Xbox)
 
-Experimental. The transfer is off unless you start the app with the gate (step 3). Use a
-THROWAWAY save only. Background: D5 3.5.3, R9.
+Experimental. The transfer is off unless you start the app with the gate (step 4). Background:
+D5 3.5.3, R9.
 
-What the app does: copies the save data unchanged and converts only the small meta file. It
-goes into an EMPTY slot only (no file of that slot at all), and only if the destination folder
-has a full backup younger than 30 minutes. The app never empties a slot, so a fill has no Undo
-button.
+What the app does: copies the save data unchanged, converts only the small meta file, and puts
+the result into an EMPTY slot (no file of that slot at all) of a folder that has a full backup
+younger than 30 minutes. The source is only read: use a small, unimportant existing save.
+T1 = Steam to Xbox (the target slot is on Xbox). T2 = Xbox to Steam (the target slot is on Steam).
 
 ## Before either run
 
-1. Close No Man's Sky, Steam's sync prompt, and the Xbox app. Wait 60 seconds.
-2. Full backup of BOTH live folders (the vault is the copy `D:\VaultCopy`). Run each, then look
-   for "created full backup":
+1. Close No Man's Sky, Steam's sync prompt and the Xbox app. Wait 60 seconds.
+2. Free a slot IN THE GAME on the TARGET platform (Xbox for T1, Steam for T2): in the game's
+   own load menu delete one save you do not need. Close the game.
+3. Back up both live folders and keep the save you deleted:
    ```pwsh
    cd C:\Devel\NMSVault
    uv run nmsvault backup --vault D:\VaultCopy --live "<Steam account folder>" --label "T1 before"
    uv run nmsvault backup --vault D:\VaultCopy --live "<Xbox wgs account folder>" --label "T1 before"
    ```
-   Redo the backup of the destination folder if more than 30 minutes pass before step 5.
-3. Start the app with the gate, in its own shell, and close that shell afterwards so the gate
-   does not stay on:
+   Do step 2's delete AFTER you have the vault copy of that save: in the app, open the save you
+   will delete and use "Keep a copy in the vault now" (do it on each platform you delete from).
+   Then delete it in the game (step 2), and redo the backup of the target folder (the backup
+   must be under 30 minutes old when you move).
+4. Start the app with the gate, in its own shell (close the shell afterwards so the gate does
+   not stay on):
    ```pwsh
    cd C:\Devel\NMSVault
    $env:NMSVAULT_CROSS_PLATFORM=1
    uv run nmsvault-gui --vault D:\VaultCopy
    ```
-4. Make the throwaway save in the SOURCE platform's game: new game, play about 5 minutes, build a
-   base computer and 3 parts (more than one base if you can), discover one planet, save at a
-   beacon, quit. Note the name, play time and how many bases and discoveries it has.
+5. Click Rescan and confirm the target slot shows as empty.
 
 ## T1 - Steam to Xbox
 
-5. In the app: Organizer, pick the throwaway save's latest version, "Move to live...".
-6. Under "Into", choose the Xbox account (marked "experimental"). Pick an EMPTY Xbox slot (the
-   dialog suggests one). Tick the "Experimental - for validation runs" box and the "another
-   account" box. If "Move to live" stays grey, read the red line: usually the backup is older
-   than 30 minutes, or the slot is not empty.
-7. Move. Wait for "Put ... into Xbox slot N". Do not start the game yet.
-8. Start NMS (Game Pass). Check:
-   - (a) the slot shows the right name and play time (the date reads "now" by design: the game
-     lists the save as just saved; the original date stays in the vault record);
+6. In the app: Organizer, pick the small source save's latest version, "Move to live...".
+7. Under "Into", choose the Xbox account (marked "experimental"). Pick the EMPTY slot. Tick the
+   "Experimental - for validation runs" box and the "another account" box. If "Move to live"
+   stays grey, read the red line: usually the backup is older than 30 minutes, or the slot
+   is not empty.
+8. Move. Wait for "Put ... into Xbox slot N". Do not start the game yet.
+9. Start NMS (Game Pass). Check:
+   - (a) the slot shows the right name and play time (the date reads "now" by design; the
+     original date stays in the vault record);
    - (b) it loads;
-   - (c) a base is editable (move a part) and the discovery is listed. Check EVERY base, not
-     one: one 2025 Xbox copy kept 2 of 4 bases on the other owner (R9);
+   - (c) a base is editable (move a part) and a discovery is listed. Check EVERY base, not one:
+     one 2025 Xbox copy kept 2 of 4 bases on the other owner (R9);
    - (d) save at a beacon, quit.
-9. Quit the game, then in the app rescan. Tell me (GGF) the slot; I check read-only that the
-   base owner, the local id and the platform token on bases and discoveries switched to the
-   Xbox identity.
-10. Wait for the Xbox app to show the save as synced. Start NMS again: (e) no conflict dialog,
+10. Rescan in the app. Tell me (GGF) the slot; I check read-only that the base owner, the local
+    id and the platform token on bases and discoveries switched to the Xbox identity.
+11. Wait for the Xbox app to show the save as synced. Start NMS again: (e) no conflict dialog,
     the save is intact.
 
 Pass = (a) to (e), all bases editable.
 
 ## T2 - Xbox to Steam (mirror)
 
-Same, with Steam Cloud ON. Source: a throwaway save made on Xbox. Destination: an EMPTY Steam
-slot; back up the Steam folder first. In step 8 start the game through Steam, and add:
-(f) quit, relaunch through Steam: the placed save is still there (Steam Cloud accepted it). If
-Steam asks which copy to keep, choose the one on this PC and note that it asked.
+Same steps with Steam as the target and Steam Cloud ON; the source is a small save on Xbox. In
+step 9 start the game through Steam, and add: (f) quit, relaunch through Steam: the placed save
+is still there (Steam Cloud accepted it). If Steam asks which copy to keep, choose the one on
+this PC and note that it asked.
 
 ## If something looks wrong
 
 Stop. Do not play on. Note which check failed and what the game said.
+
+## Undo
+
+The app never empties a slot, so a transfer has no Undo button. To undo it: close the app's
+game session, then in the game's own load menu on the target platform delete the transferred
+save, exactly as in step 2. The vault keeps the copy you made in step 3 and the backups; the
+source save was never touched.
