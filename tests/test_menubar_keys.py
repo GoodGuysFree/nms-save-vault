@@ -81,6 +81,21 @@ def test_post_installs_the_hook_around_the_post_only_and_moves_on(strip):
     assert seen[-1] is strip.buttons[0]
 
 
+def test_the_hook_is_removed_first_even_when_the_post_fails(strip):
+    hook = strip._hook
+    order = []
+    hook.remove = lambda: order.append("remove") or 0
+    strip.tk.eval("proc tk::MbPost {args} {error boom}")
+    with pytest.raises(tk.TclError):
+        strip.post(strip.buttons[0])
+    assert order == ["remove"] and hook.installed == 1
+    strip.tk.eval("set ::mbposts {}; proc tk::MbPost {args} {lappend ::mbposts $args}")
+    hook.install = lambda: (_ for _ in ()).throw(RuntimeError("no hook"))
+    with pytest.raises(RuntimeError):                    # install itself failing
+        strip.post(strip.buttons[0])
+    assert order == ["remove", "remove"]
+
+
 def test_select_events_tell_the_hook_what_is_open(strip):
     hook = strip._hook
     top = strip.dropdown(strip.buttons[0])
@@ -142,6 +157,9 @@ class TestMenuKeyHook:
         hook.on_cascade = False                     # Right on a plain item inside moves on
         assert self._feed(hook, theme._WM_KEYDOWN, theme._VK_RIGHT)
         assert hook.remove() == 1
+
+    def test_the_msg_struct_is_built_once(self):
+        assert theme._msg_struct() is theme._msg_struct()
 
     def test_installed_only_between_install_and_remove(self, hook):
         hook.install()

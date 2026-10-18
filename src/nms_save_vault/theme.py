@@ -23,6 +23,7 @@ field. Every interactive widget below therefore gets a ``map`` as well as a ``co
 """
 from __future__ import annotations
 
+import functools
 import logging
 import sys
 import tkinter as tk
@@ -628,6 +629,7 @@ class MenuKeyHook:
         return step
 
 
+@functools.lru_cache(maxsize=1)
 def _msg_struct():
     import ctypes
     from ctypes import wintypes

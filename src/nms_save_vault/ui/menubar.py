@@ -87,17 +87,19 @@ class MenuStrip(tk.Frame):
         self._posted = button
         hook = self._hook
         step = 0
-        if hook is not None:
-            hook.install()
-        # Tk refuses to post the menu it believes is still posted, and a popup ended by the OS
-        # (Escape, EndMenu) never tells it.
-        self.tk.eval("set ::tk::Priv(postedMb) {}")
         try:
+            if hook is not None:
+                hook.install()
+            # Tk refuses to post the menu it believes is still posted, and a popup ended by the
+            # OS (Escape, EndMenu) never tells it.
+            self.tk.eval("set ::tk::Priv(postedMb) {}")
             self.tk.call("tk::MbPost", str(button))
         finally:
-            self.tk.eval("set ::tk::Priv(postedMb) {}")
-            if hook is not None:
-                step = hook.remove()
+            try:
+                if hook is not None:
+                    step = hook.remove()    # first: a failure below must not leave it on
+            finally:
+                self.tk.eval("set ::tk::Priv(postedMb) {}")
         if step:
             i = (self.buttons.index(button) + step) % len(self.buttons)
             self.after(1, lambda: self.post(self.buttons[i]))
