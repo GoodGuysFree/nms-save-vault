@@ -208,8 +208,8 @@ def test_other_platforms_and_xgs_only_folders_are_listed_with_why(world, make_wg
     ctx = world.refresh()
     picker = eviction_picker(ctx, world.polestar(), LIVE)
     blocked = {c.account.account_key: c.blocked for c in picker.other_accounts}
-    assert blocked[XBOX_ACCOUNT] == "CROSS_PLATFORM_GATED"
-    assert blocked[xgs_only.name] == "CROSS_PLATFORM_GATED"
+    assert blocked[XBOX_ACCOUNT] == ""
+    assert blocked[xgs_only.name] == "XGS_READ_ONLY"
     with pytest.raises(SourceUnreadable):
         eviction_picker(ctx, PairSource(None, None))
 

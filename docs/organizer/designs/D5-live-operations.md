@@ -1382,6 +1382,14 @@ the owner's own oplog, R8 E1; R7 2.6 row 7).
 
 ### 3.5 F6 - Steam <-> Xbox transfer: (a), last phase, after the owner's runs T1/T2
 
+**Status (2026-10-18): T1 and T2 passed; the gate is lifted; G1 is a built-in record.** Both
+directions are open (record in `liveops/transfer.py`: runs T1/T2, meta format 2004, Steam 432 B
+<-> Xbox 360 B, BaseVersion 4228). A transfer is now an ordinary Place: it may replace an
+occupied slot (the evicted pair is preserved into the vault first), needs no env switch and no
+fresh backup, and Undo of a replace puts the evicted version back (a same-platform place). A
+transfer into an empty slot has no Undo (F8). The text below is the original plan, kept as the
+record.
+
 Verbatim data (same `0xFEEDA1E5` stream; PLATFORM token "Win|Final" on both PC builds, R8 D5)
 plus a field-by-field meta conversion (3.5.2); the game re-owns the save on first play (VERIFIED
 for cross-save deliveries; UNTESTED for a copy that did not pass Hello Games' servers, hence the
@@ -1397,7 +1405,7 @@ gates); everything else is an ordinary Place.
 
 | Gate | Rule | Code |
 |---|---|---|
-| G1 validated | `policies.cross_platform == "validated"` and `organizer/transfer-validation.json` holds a passing run for this direction (3.5.3). For the owner's own runs only: env `NMSVAULT_ALLOW_UNVALIDATED_TRANSFER=1`, target slot empty, and a full backup of the target folder younger than 30 minutes | `CROSS_PLATFORM_GATED` |
+| G1 validated | the direction has a passing record, built into `liveops/transfer.py` (`VALIDATED`: T1 Steam -> Xbox, T2 Xbox -> Steam, 2026-10-18, format 2004, BaseVersion 4228). A direction or format without a record stays shut. No per-vault file, no env switch | `CROSS_PLATFORM_GATED` |
 | G2 stream data | first 4 bytes `E5 A1 ED FE` and a clean chunk walk whose total equals the meta size; refuses single-LZ4 (Xbox before 4.52), HGSAVEV2 (4.52-5.00) and plain JSON (Steam before 3.60) | `SOURCE_OLD_FORMAT`: "This save uses an older format. Load and save it once in the game first." |
 | G3 meta format | Steam 432 B / format 2004 <-> Xbox 360 B / 2004. Worlds I (Steam 384 / Xbox 296, format 2003) refused until a run T2b covers it: no Steam 384-B meta exists in the owner's data to test against (VERIFIED 9.1) | `UNSUPPORTED_META` |
 | G4 identity | meta id != 0 and equals the id in the data's first chunk | `SOURCE_NO_ID` |
@@ -1476,11 +1484,10 @@ relaunching through Steam, the placed save is still there (Steam Cloud accepted 
 **T2b Worlds I** - T2 with a 296-B Xbox source, only if such a save is still wanted (8 live
 Xbox metas are 296 B today, R8 A5); opens G3 for 296 <-> 384.
 
-Recording: `nmsvault transfer-validated --direction steam-to-xbox --run T1 --result pass
---notes "..."` writes `{direction, run, result, date, app version, game build (from the save's
-BaseVersion), notes}` into `organizer/transfer-validation.json`. A failed run is recorded too
-and keeps the gate shut. The gate re-closes by itself if the game introduces a new meta length
-or format (G3 refuses unknown values), which asks for a new run.
+Recording (decided 2026-10-18): the passing runs are a built-in record in code, not a per-vault
+file and not a CLI command; other users' vaults would never hold the owner's runs. A new
+direction or meta format needs a new record. The transfer re-closes by itself if the game
+introduces a new meta length or format (G3 refuses unknown values).
 
 ## 4. Migration of today's operations
 

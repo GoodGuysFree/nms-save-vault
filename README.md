@@ -48,7 +48,9 @@ shown for each version. Chips, Find, sorting and a column chooser narrow the lis
   in memory, writes nothing and reports what it could not understand. A save written by a
   newer game than the app knows is flagged `GAME_NEWER`, and the app refuses to move it
   rather than guess.
-* **Steam <-> Xbox transfer is planned**, not available yet. Moves stay within one platform.
+* **Steam <-> Xbox moves** work in Move to live: the data is copied unchanged, only the small
+  info file is converted, the game takes ownership at your first save there, and you confirm once
+  because it is another account. Into an occupied slot, the old save goes to the vault first.
 
 On the command line the same features are: `saves`, `versions`, `board`, `history`,
 `lineage`, `place`, `swap`, `keep`, `undo`, `ops`, `recover`, `index`, `store` and
@@ -564,7 +566,7 @@ The vault lives outside `st_<id>`, so it is never scanned by the game or synced 
 ## Status
 
 Working. Core format/crypto and all operations are verified against the real save files and
-in a temp sandbox (2354 tests). Xbox / Game Pass saves are supported for reading **and**
+in a temp sandbox (2365 tests). Xbox / Game Pass saves are supported for reading **and**
 same-platform writing — verified against a real install (reads) and synthetic `wgs` fixtures
 (writes). A full file-copy safety backup of the live folder was made before development
 (`C:\Devel\NMS-SaveBackup-SAFETY-2026-06-24`). The Organizer is in (see above); a

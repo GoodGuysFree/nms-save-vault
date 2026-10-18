@@ -1,5 +1,7 @@
 # T1 / T2 - owner validation runs (Steam <-> Xbox)
 
+Both runs passed on 2026-10-18 and the gate was lifted; this file is the record. The steps below describe the old experimental mode (env gate, empty slot only, fresh backup).
+
 Experimental. The transfer is off unless you start the app with the gate (step 4). Background:
 D5 3.5.3, R9.
 

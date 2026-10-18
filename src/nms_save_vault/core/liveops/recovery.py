@@ -444,7 +444,7 @@ def _rederive(ctx: OpContext, wt: OpTarget) -> None:
         src = load_source(ctx, PairSource(source.vid_a, source.vid_b, source.load, None))
     now = int(wt.writes[0].write.disk_time)
     # A transfer (F6) wrote the source's metas converted for this platform: derive them the
-    # same way, whatever the gate says now (the op already started).
+    # same way, even if the record changes later (the op already started).
     try:
         written = transfer.adapt(src, wt.rt.target.platform)
     except convert.ConvertUnsupported as exc:

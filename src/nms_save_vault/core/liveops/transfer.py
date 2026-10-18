@@ -1,26 +1,38 @@
-"""The gated Steam <-> Xbox transfer (D5 3.5, F6): when it is allowed, and the source pair
-converted for the other platform.
+"""The Steam <-> Xbox transfer (D5 3.5, F6): which directions are validated, and the source
+pair converted for the other platform.
 
-OFF by default. The owner's validation runs (T1/T2) switch it on with the environment
-variable ``NMSVAULT_CROSS_PLATFORM=1``; it is read from the context's host (D7), never from
-``os.environ`` here. While on, a transfer goes only into an empty slot of a folder that has a
-full backup younger than 30 minutes. The data is never touched: only the metas are converted
-(``convert``), so a transfer is an ordinary Place of the converted pair.
+A direction is open when it has a passing validation record (G1, built in below). The data
+is never touched: only the metas are converted (``convert``), so a transfer is an ordinary
+Place of the converted pair, into an empty or an occupied slot.
 """
 from __future__ import annotations
 
 import dataclasses
-from datetime import datetime, timezone
-from pathlib import Path
 
-from .. import lz4_block, meta, msstore, playtime, slotmap
+from .. import lz4_block, meta, msstore, playtime
 from . import convert
-from .context import OpContext
 from .pairmeta import SourceMember, SourcePair, facts
 from .source import LoadedSource
 
-ENV_GATE = "NMSVAULT_CROSS_PLATFORM"
-BACKUP_MAX_AGE = 30 * 60
+
+
+@dataclasses.dataclass(frozen=True)
+class ValidationRecord:
+    """A direction that passed the owner's run in the real game (D5 3.5.3)."""
+    runs: str
+    date: str
+    meta_format: int
+    steam_meta_len: int
+    xbox_meta_len: int
+    base_version: int
+
+
+_RUN_2026_10_18 = dict(date="2026-10-18", meta_format=2004, steam_meta_len=432,
+                       xbox_meta_len=360, base_version=4228)
+#: G1: (source platform, target platform) -> its passing record. Any other source meta format
+#: or length is refused by G3 (``convert``) whatever the record says.
+VALIDATED = {("steam", "xbox"): ValidationRecord(runs="T1", **_RUN_2026_10_18),
+             ("xbox", "steam"): ValidationRecord(runs="T2", **_RUN_2026_10_18)}
 
 #: ConvertUnsupported.reason -> the warning code the user sees (D5 3.5.1 G2, G3).
 _CODES = {"data_format": "SOURCE_OLD_FORMAT", "data_walk": "SOURCE_OLD_FORMAT",
@@ -28,8 +40,8 @@ _CODES = {"data_format": "SOURCE_OLD_FORMAT", "data_walk": "SOURCE_OLD_FORMAT",
           "meta_header": "UNSUPPORTED_META", "GAME_NEWER": "GAME_NEWER"}
 
 
-def gate_on(ctx: OpContext) -> bool:
-    return ctx.host.env.get(ENV_GATE) == "1"
+def validated(source_platform: str, target_platform: str) -> bool:
+    return (source_platform, target_platform) in VALIDATED
 
 
 def code_of(exc: convert.ConvertUnsupported) -> str:
@@ -84,38 +96,3 @@ def _identity(platform: str, plain: bytes) -> tuple[int, int]:
         return info.slot_identifier, info.size_decompressed
     fields = msstore.parse_ms_meta(plain)
     return fields["slot_id"], fields["size_field"]
-
-
-def slot_has_files(folder: Path, platform: str, slot: int) -> bool:
-    """Is anything of this slot on disk at all? Empty means NO file: Steam ``saveN.hg`` and
-    ``mf_saveN.hg`` of either member, or an Xbox index record of either member (with or
-    without blobs). A partial slot is not empty."""
-    if platform == "steam":
-        names = [n for pos in (0, 1) for n in (slotmap.data_filename(slotmap.file_no(slot, pos)),
-                                                slotmap.meta_filename(slotmap.file_no(slot, pos)))]
-        return any((folder / n).exists() for n in names)
-    wanted = {f"Slot{slot}Auto", f"Slot{slot}Manual"}
-    _info, containers = msstore.parse_containers_index(folder)
-    return any(c.identifier in wanted for c in containers)
-
-
-def fresh_backup(ctx: OpContext, platform: str, account_key: str) -> bool:
-    """A full backup of this account's folder younger than 30 minutes is in the vault."""
-    if ctx.versions is None:
-        return False
-    now = ctx.clock()
-    try:
-        entries = ctx.versions.entries()           # type: ignore[attr-defined]
-    except (OSError, AttributeError):
-        return False
-    for e in entries:
-        if e.kind != "full" or e.platform != platform or e.account_key != account_key:
-            continue
-        try:
-            made = datetime.strptime(e.created_utc, "%Y-%m-%dT%H:%M:%SZ").replace(
-                tzinfo=timezone.utc).timestamp()
-        except ValueError:
-            continue
-        if 0 <= now - made <= BACKUP_MAX_AGE:
-            return True
-    return False

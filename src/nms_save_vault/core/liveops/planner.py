@@ -85,14 +85,8 @@ TEXTS = {
     "ALREADY_LIVE": ("block", "This version is already in {slot}."),
     "ALREADY_LOADS": ("block", "That save already loads in {slot}."),
     "NOTHING_TO_PROMOTE": ("block", "{slot} has no readable save in that position."),
-    "CROSS_PLATFORM_GATED": ("block", "Moving saves between Steam and Xbox is not available yet."),
-    "CROSS_PLATFORM_EXPERIMENTAL": ("confirm", "Experimental - for validation runs. Moving a save "
-                                    "between Steam and Xbox has not been proven yet. Use a "
-                                    "throwaway save and keep your backups."),
-    "CROSS_TARGET_NOT_EMPTY": ("block", "{slot} is not empty. For now a save goes to the other "
-                               "platform only into an empty slot."),
-    "CROSS_NEEDS_BACKUP": ("block", "Make a full backup of the destination folder first (it must "
-                           "be less than 30 minutes old)."),
+    "CROSS_PLATFORM_GATED": ("block", "Moving a save in this direction between Steam and Xbox "
+                             "is not available yet."),
     "CONVERT_UNSUPPORTED": ("block", "This save cannot be converted for the other platform "
                             "with certainty, so it was not touched. Nothing was changed."),
     "UNSUPPORTED_META": ("block", "This save's file layout is not supported for the other "
@@ -251,15 +245,14 @@ def _default_account(ctx: OpContext, src: LoadedSource) -> LiveRef:
 def _account_choice(ctx: OpContext, src: LoadedSource, ref: LiveRef) -> AccountChoice:
     label = account_label(ctx, ref)
     cross = ref.platform != src.platform
-    if cross and not transfer.gate_on(ctx):
+    if cross and not transfer.validated(src.platform, ref.platform):
         return AccountChoice(ref, label, "CROSS_PLATFORM_GATED", ())
     try:
         resolve_account(ctx, ref)
     except TargetError as exc:
         return AccountChoice(ref, label, exc.code, ())
     other = _other_account(src, ref)
-    notes = ((warning("CROSS_PLATFORM_EXPERIMENTAL"),) if cross else ()) +         ((other,) if other else ())
-    return AccountChoice(ref, label, "", notes)
+    return AccountChoice(ref, label, "", (other,) if other else ())
 
 
 def _blocked_candidate(target: LiveTarget, code: str) -> SlotCandidate:
@@ -339,10 +332,6 @@ def _slot_warnings(ctx: OpContext, src: LoadedSource, now: AccountNow, slot: Slo
     if newer_slot(slot):
         out.append(warning("GAME_NEWER"))
     head = slot.head
-    if slot.target.platform != src.platform and transfer.gate_on(ctx) and (
-            slot.present or transfer.slot_has_files(now.account.folder, slot.target.platform,
-                                                    slot.target.slot)):
-        out.append(warning("CROSS_TARGET_NOT_EMPTY", slot=label))
     if kind == "noop":
         out.append(warning("ALREADY_LIVE", slot=label))
     if any(not d for d in kept.values()):
@@ -396,7 +385,7 @@ def _plan_warnings(ctx: OpContext, src: LoadedSource, account: LiveRef,
     if vault:
         out.append(vault)
     if account.platform != src.platform:
-        out += _cross_platform_warnings(ctx, src, account)
+        out += _cross_platform_warnings(src, account)
     if now is None:
         out.append(warning("XGS_READ_ONLY"))
     game = game_warning(ctx)
@@ -428,16 +417,12 @@ def _plan_warnings(ctx: OpContext, src: LoadedSource, account: LiveRef,
     return out
 
 
-def _cross_platform_warnings(ctx: OpContext, src: LoadedSource, account: LiveRef) -> list[Warning]:
-    """D5 3.5.1: the gate (G1) and the checks of the source (G2-G4). G5-G7 are the ordinary
-    OTHER_ACCOUNT, XBOX_QUOTA and CROSS_SAVE_ON warnings of the plan."""
-    if not transfer.gate_on(ctx):
+def _cross_platform_warnings(src: LoadedSource, account: LiveRef) -> list[Warning]:
+    """D5 3.5.1: the validation record (G1) and the checks of the source (G2-G4). G5-G7 are
+    the ordinary OTHER_ACCOUNT, XBOX_QUOTA and CROSS_SAVE_ON warnings of the plan."""
+    if not transfer.validated(src.platform, account.platform):
         return [warning("CROSS_PLATFORM_GATED")]
-    out = [warning("CROSS_PLATFORM_EXPERIMENTAL")]
-    out += [warning(code) for code in transfer.source_problems(src)]
-    if not transfer.fresh_backup(ctx, account.platform, account.account_key):
-        out.append(warning("CROSS_NEEDS_BACKUP"))
-    return out
+    return [warning(code) for code in transfer.source_problems(src)]
 
 
 def vault_problem(ctx: OpContext) -> Warning | None:
@@ -635,7 +620,8 @@ def _plan(ctx: OpContext, kind: str, parts, warnings: list[Warning], outcome: st
     targets, members, write_bytes, folders = [], [], 0, []
     for rt, now, slot, src, pair_source in parts:
         writes = ()
-        if src.platform == rt.target.platform or transfer.gate_on(ctx):
+        if src.platform == rt.target.platform or transfer.validated(
+                src.platform, rt.target.platform):
             try:
                 written = transfer.adapt(src, rt.target.platform)
                 planned = pairmeta.compute(written.pair, rt, stamp,

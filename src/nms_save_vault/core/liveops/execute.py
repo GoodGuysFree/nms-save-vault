@@ -311,7 +311,7 @@ def _prepare(ctx: OpContext, plan: PlacePlan, rts: list[ResolvedTarget], op_id: 
         now = (scanned or {}).get(rt.target.ref) or             read_account(ctx, resolve_account(ctx, rt.target.ref))
         before = now.slots[rt.target.slot]       # a change since is caught by the pre-image checks
         if src.platform != rt.target.platform:   # D5 3.5.1: re-checked, the plan may be old
-            src = _cross_source(ctx, src, rt, before)
+            src = _cross_source(src, rt)
         wts.append(OpTarget(tp, rt, src, before, stamped=plan.kind != "panic_restore"))
     progress(Progress("preserving", 0, len(wts)))
     for wt in wts:
@@ -332,15 +332,9 @@ def _prepare(ctx: OpContext, plan: PlacePlan, rts: list[ResolvedTarget], op_id: 
     return wts
 
 
-def _cross_source(ctx: OpContext, src: LoadedSource, rt: ResolvedTarget,
-                  before: SlotNow) -> LoadedSource:
-    if not transfer.gate_on(ctx):
+def _cross_source(src: LoadedSource, rt: ResolvedTarget) -> LoadedSource:
+    if not transfer.validated(src.platform, rt.target.platform):
         raise _Abandon("not_started", "CROSS_PLATFORM_GATED", warning_text("CROSS_PLATFORM_GATED"))
-    if before.present or transfer.slot_has_files(rt.folder, rt.target.platform, rt.target.slot):
-        raise _Abandon("not_started", "CROSS_TARGET_NOT_EMPTY",
-                       warning_text("CROSS_TARGET_NOT_EMPTY").format(slot=rt.label))
-    if not transfer.fresh_backup(ctx, rt.target.platform, rt.target.account_key):
-        raise _Abandon("not_started", "CROSS_NEEDS_BACKUP", warning_text("CROSS_NEEDS_BACKUP"))
     problems = transfer.source_problems(src)
     if problems:
         raise _Abandon("not_started", problems[0], warning_text(problems[0]))

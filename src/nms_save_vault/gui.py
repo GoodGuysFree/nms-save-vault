@@ -2601,7 +2601,10 @@ The window is split into two panes. Drag the divider to give either one more roo
      Xbox / Game Pass account. The ACTIVE one (green, bold) is the target of write
      actions; pick it from the "Active live" dropdown or right-click a folder to set it.
      Xbox folders are writable for same-platform actions (backup, restore, repopulate,
-     promote within Xbox). Transferring a save between Steam and Xbox is not yet supported.
+     promote within Xbox). In Move to live you can also move a save between Steam and
+     Xbox. Its data is copied unchanged and the game takes ownership of the bases at your
+     first save there. You confirm once, because it is another account. Hello Games
+     cross-save is the alternative.
   # BACKUPS (bottom)  -- every backup in the catalog (full snapshots, extracts, imported
      and auto-discovered copy-paste backups). Click any column heading to sort by it --
      Saved, Type, Slots, Name -- and click the same heading again to reverse the order.
