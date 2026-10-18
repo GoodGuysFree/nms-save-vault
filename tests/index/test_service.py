@@ -119,6 +119,7 @@ def test_requests_index_once_and_events_tell_the_ui(make):
     settle(svc)
     assert {svc.status(v) for v in vids} == {"ok"}
     assert svc.request(vids, Priority.LIVE) == 0                      # indexed: never queued again
+    wait_for(lambda: svc.events_since(0)[-1].kind == "finished")      # idle() turns true just before it is posted
     events = svc.events_since(0)
     assert [e.kind for e in events if e.kind == "indexed"] == ["indexed"] * 3
     assert [e.seq for e in events] == sorted(e.seq for e in events)

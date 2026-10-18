@@ -55,6 +55,7 @@ def test_a_rescan_reaches_the_organizer_without_a_restart(gui_app, world, monkey
 
     view = gui_app.organizer_view
     old_sources = gui_app.state.sources
+    old_active, old_live_dir = gui_app.active_source_id, gui_app.live_dir
     calls = []
     found = discover.discover_live_sources(world, ms_dirs=[])
     monkeypatch.setattr(gui.appstate, "save", lambda *a, **k: None)
@@ -76,6 +77,7 @@ def test_a_rescan_reaches_the_organizer_without_a_restart(gui_app, world, monkey
         assert model.live_board().sources
     finally:
         gui_app.state.sources = old_sources
+        gui_app.active_source_id, gui_app.live_dir = old_active, old_live_dir   # on_rescan adopted one
         monkeypatch.undo()
         gui_app.refresh()                       # leave the classic lists as they were
 

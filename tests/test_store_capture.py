@@ -381,7 +381,15 @@ def test_a_busy_lock_fails_only_that_write(tmp_path):
         holder.kill()
         holder.wait()
     assert not store.read_only
-    assert _live_add(store, live, kind="snapshot", scope=SNAP).id
+    for _ in range(100):                        # the OS frees a killed holder's lock a moment later
+        try:
+            entry = _live_add(store, live, kind="snapshot", scope=SNAP)
+            break
+        except vstore.StoreBusy:
+            time.sleep(0.05)
+    else:
+        raise AssertionError("the lock was never released")
+    assert entry.id
 
 
 def test_space_cancel_and_mode_are_checked_before_anything_is_committed(tmp_path, monkeypatch):
