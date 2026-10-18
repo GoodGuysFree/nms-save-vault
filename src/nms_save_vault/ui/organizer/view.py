@@ -323,7 +323,10 @@ class OrganizerView(ttk.Frame):
             self._reopen_organizer = False
             old, self.organizer = self.organizer, self.make_organizer()
             if old is not None and old is not self.organizer and old.facts is not None:
-                old.facts.close()               # its pool and writer would otherwise run on
+                try:
+                    old.facts.close()           # its pool and writer would otherwise run on
+                except Exception:  # noqa: BLE001 - a stuck old index must not fail the scan
+                    log.exception("the old content index did not close cleanly")
         organizer = self.organizer
         model = organizer.refresh(record=record)
         return organizer, model, self._extras(organizer, record)

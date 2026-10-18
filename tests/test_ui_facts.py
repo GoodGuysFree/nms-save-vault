@@ -402,3 +402,19 @@ def test_reopening_the_organizer_closes_the_old_index_service(view, index, world
     view.rescan()
     _wait(view.winfo_toplevel(), lambda: not view.scanning)
     assert closed == [True] and view.organizer is fresh
+
+
+def test_an_index_that_will_not_close_does_not_fail_the_scan(view, index, world):
+    import copy
+
+    def broken():
+        raise RuntimeError("stuck")
+
+    index.close = broken
+    fresh = copy.copy(world.organizer)
+    fresh.facts = FakeIndex()
+    view.make_organizer = lambda: fresh
+    view.sources_changed()
+    view.rescan()
+    _wait(view.winfo_toplevel(), lambda: not view.scanning)
+    assert view.organizer is fresh and "scan-failed" not in view.alerts

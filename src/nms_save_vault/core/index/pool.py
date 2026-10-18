@@ -43,6 +43,11 @@ DEAD_WORKER_GRACE_S = 3.0         # a worker gone this long without its job's re
 log = logging.getLogger(__name__)
 
 
+class NotReady(Exception):
+    """An opener's answer for "cannot be opened yet" (the organizer has not scanned): the job is
+    dropped quietly - not a failure, not a strike - and asked for again later."""
+
+
 class Priority(IntEnum):
     INTERACTIVE = 0   # a version card or compare view is open
     LIVE = 1          # current live members
@@ -301,7 +306,7 @@ class Dispatcher:
         self._seq = itertools.count()
         self._tokens = itertools.count(1)
         self._running: dict[int, _Running] = {}
-        self._opening: set[str] = set()                 # keys being opened: still queued
+        self._opening: dict[str, Priority] = {}         # keys being opened (still queued) -> tier
         self._completions: deque = deque()
         self._held: _Held | None = None
         self._paused = False
@@ -320,10 +325,19 @@ class Dispatcher:
         job is queued under its own key (:func:`job_key`), so it never merges with facts."""
         added = 0
         with self._lock:
-            running = {r.vid for r in self._running.values()} | self._opening
-            running |= {self._held.vid} if self._held else set()
+            running = {r.vid for r in self._running.values()}
             for vid in (job_key(v, kind) for v in vids):
                 if vid in running:
+                    continue
+                if vid in self._opening or (self._held is not None and self._held.vid == vid):
+                    # Already read or being read: a better tier is applied to that job itself
+                    # (the reserved worker looks at it), the same tier or a worse one is a no-op.
+                    if vid in self._opening and priority < self._opening[vid]:
+                        self._opening[vid] = Priority(priority)
+                        added += 1
+                    elif vid not in self._opening and priority < self._held.tier:
+                        self._held.tier = Priority(priority)
+                        added += 1
                     continue
                 current = self._pending.get(vid)
                 if current is not None and current[0] <= priority:
@@ -409,11 +423,10 @@ class Dispatcher:
                 self._held = None
             self._running.clear()
             self._completions.clear()
-        self.executor.terminate()
-        with self._lock:
-            for vid, tier in back:
+            for vid, tier in back:                          # re-queued in the same step: never idle
                 if vid not in self._pending:
                     self._push(vid, tier)
+        self.executor.terminate()
 
     def clear(self) -> None:
         """Forget every queued job (a rebuild re-queues from scratch)."""
@@ -560,21 +573,21 @@ class Dispatcher:
                 if popped is None:
                     return False
                 vid, tier = popped
-                self._opening.add(vid)                      # still counts as queued while it opens
+                self._opening[vid] = tier                   # still counts as queued while it opens
         if opening:
             try:
                 held = self._open(vid, tier)
             except BaseException:
                 with self._lock:
-                    self._opening.discard(vid)
+                    self._opening.pop(vid, None)
                 raise
             if held is None:
                 with self._lock:
-                    self._opening.discard(vid)
+                    self._opening.pop(vid, None)
                 return True
         with self._lock:
             if opening:
-                self._opening.discard(vid)
+                held.tier = min(held.tier, self._opening.pop(vid, held.tier))
             if self._stopped:
                 return False                                # opened while stopping: drop it
             if self._paused:
@@ -615,6 +628,8 @@ class Dispatcher:
         kind, vid = split_key(key)
         try:
             data, hint = self.opener(vid)
+        except NotReady:
+            return None                                     # not scanned yet: ask again later
         except Exception as exc:  # noqa: BLE001 - VersionUnavailable and friends: a failure row
             self.stats.failed += 1
             self.on_failure(key, "unavailable", extract.describe(exc))
@@ -687,6 +702,7 @@ class Dispatcher:
             self._stopped = True
             self._lock.notify_all()
         if self._thread is not None:
-            self._thread.join(timeout=10)
+            # An inline job (POSIX thread mode) cannot be interrupted: let it end in the background.
+            self._thread.join(timeout=0.5 if self.executor.inline else 10)
             self._thread = None
         self.executor.close()

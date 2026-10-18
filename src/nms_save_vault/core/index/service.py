@@ -32,6 +32,7 @@ from .worker import IndexResult
 EVENT_RING = 2000
 BUSY_BACKOFF_S = (0.05, 0.1, 0.2, 0.5, 1.0, 2.0, 4.0)   # waiting out another instance's lock
 DEEP_LRU = 5                      # deep detail of the last few opened cards, in memory only
+WRITER_JOIN_S = 30                # how long close() waits for the writer thread
 MAX_STRIKES = 3                   # transient failures before a version stops being retried
 
 log = logging.getLogger(__name__)
@@ -86,6 +87,8 @@ class IndexService:
         self._seq = 0
         self._requested: dict[str, Priority] = {}
         self._error: str | None = None
+        self._closed = False
+        self._abandon = False             # close() gave up waiting: the writer stops and closes the cache
         self._started_at: float | None = None
         self.cache: IndexCache | None = None
         self.dispatcher: Dispatcher | None = None
@@ -124,7 +127,7 @@ class IndexService:
         """Queue the stale and retryable versions at REFRESH. A service whose locator cannot
         open anything yet (the organizer has not scanned) is built with ``defer_refresh`` and
         refreshed after the scan, so a "not scanned yet" job never becomes a failed attempt."""
-        if self.dispatcher is None:
+        if self.dispatcher is None or self._closed:
             return 0
         refresh = self.cache.stale_vids() + self.cache.retry_vids()
         return self.dispatcher.submit(refresh, Priority.REFRESH) if refresh else 0
@@ -134,7 +137,7 @@ class IndexService:
     @property
     def active(self) -> bool:
         """False when the index is off: requests are dropped, so nothing should be marked as asked."""
-        return self.dispatcher is not None
+        return self.dispatcher is not None and not self._closed
 
     def view(self, vid: str) -> derive.FactsView | None:
         """The version's facts view from memory: never a database read, never a wait. None
@@ -147,6 +150,8 @@ class IndexService:
         never a database read. None means "not ready": the missing versions are queued at
         NEW, or the comparison is worked out on the writer thread (a ``changes`` event says
         when it is ready)."""
+        if self._closed:
+            return None
         key = (child, parent, edge_kind)
         with self._lock:
             if key in self._changes:
@@ -167,6 +172,8 @@ class IndexService:
         far. An unknown answer is None and is worked out on the writer thread (never on the
         caller's); a ``milestone`` event says when it is ready."""
         key = (child, parent)
+        if self._closed:
+            return None
         with self._lock:
             if key in self._milestones:
                 return self._milestones[key]
@@ -178,7 +185,7 @@ class IndexService:
 
     def request(self, vids: Iterable[str], priority: Priority) -> int:
         """Queue versions that need (re)indexing; returns how many were newly queued."""
-        if self.dispatcher is None:
+        if self.dispatcher is None or self._closed:
             return 0
         vids = list(dict.fromkeys(vids))
         with self._lock:
@@ -201,7 +208,7 @@ class IndexService:
     # --- facts and cards ---------------------------------------------------------------------
 
     def facts(self, vid: str) -> dict | None:
-        return None if self.cache is None else self.cache.facts(vid)
+        return None if self.cache is None or self._closed else self.cache.facts(vid)
 
     def views(self, vids: Iterable[str]) -> dict[str, derive.FactsView]:
         out = {}
@@ -221,7 +228,7 @@ class IndexService:
     def request_deep(self, vid: str) -> None:
         """A card opened: its facts if missing, and its deep detail, on the reserved worker.
         ``deep-ready`` is announced through :meth:`events_since`."""
-        if self.dispatcher is None:
+        if self.dispatcher is None or self._closed:
             return
         if self.status(vid) == "not-indexed":
             self.request([vid], Priority.INTERACTIVE)
@@ -236,7 +243,7 @@ class IndexService:
             return found
 
     def status(self, vid: str) -> Status:
-        if self.dispatcher is None:
+        if self.dispatcher is None or self._closed:
             return "off"
         if self.dispatcher.is_running(vid):
             return "running"
@@ -256,7 +263,7 @@ class IndexService:
 
     def rebuild(self) -> None:
         """Delete every row and index again everything requested this session."""
-        if self.dispatcher is None:
+        if self.dispatcher is None or self._closed:
             return
         self.dispatcher.clear()
         done = threading.Event()
@@ -295,19 +302,29 @@ class IndexService:
         return c.queued == 0 and c.running == 0
 
     def close(self) -> None:
+        """Stop for good. Afterwards every call is a no-op or an "off" answer (a worker job may
+        still hold this service). A writer that outlives the wait stops before its next write
+        and closes the cache itself."""
+        if self._closed:
+            return
+        self._closed = True
         if self.dispatcher is not None:
             self.dispatcher.stop()
-        if self._writer is not None:
+        writer, self._writer = self._writer, None
+        if writer is not None:
             self._writes.put(None)
-            self._writer.join(30)
-            self._writer = None
+            writer.join(WRITER_JOIN_S)
+            if writer.is_alive():
+                self._abandon = True
+                if writer.is_alive():
+                    return                        # the writer closes the cache when it gets out
         if self.cache is not None:
             self.cache.close()
 
     # --- progress and events -----------------------------------------------------------------
 
     def progress(self) -> IndexProgress:
-        if self.dispatcher is None:
+        if self.dispatcher is None or self._closed:
             return IndexProgress("off", 0, 0, 0, 0, 0, 0, None, "Content index off")
         c = self.dispatcher.counts()
         total = c.done + c.running + c.queued
@@ -354,6 +371,9 @@ class IndexService:
         unfinished = False
         while True:
             op = self._writes.get()
+            if self._abandon:                     # close() stopped waiting: no further writes
+                self.cache.close()
+                return
             if op is None:
                 return
             self._apply_safely(op)

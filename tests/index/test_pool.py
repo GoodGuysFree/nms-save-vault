@@ -511,3 +511,56 @@ def test_a_timed_out_job_is_never_seen_between_running_and_requeued():
     r.d._retry_or_fail = spy
     r.d.step()
     assert states == [True] and r.ex.terminated
+
+
+def test_a_better_request_reaches_a_job_that_is_being_opened_or_held():
+    r = Rig(workers=1)
+    seen = {}
+
+    def opener(vid):
+        if vid == "a" and not seen:
+            seen["opening"] = r.d.submit(["a"], Priority.INTERACTIVE)
+        return b"x" * 10, None
+
+    r.d.opener = opener
+    r.d.submit(["a"], Priority.BACKFILL)
+    r.settle()
+    assert seen == {"opening": 1} and [x.tier for x in r.d._running.values()] == [Priority.INTERACTIVE]
+    r.d.submit(["b"], Priority.BACKFILL)                    # waits for the one worker
+    r.settle()
+    assert r.d._held is not None and r.d._held.tier == Priority.BACKFILL
+    assert r.d.submit(["b"], Priority.INTERACTIVE) == 1 and r.d._held.tier == Priority.INTERACTIVE
+    assert r.d.submit(["b"], Priority.INTERACTIVE) == 0
+
+
+def test_cancel_never_shows_the_pool_idle_while_it_requeues():
+    r = Rig()
+    r.d.submit(["a"], Priority.LIVE)
+    r.settle()
+    states = []
+    orig = r.ex.terminate
+
+    def terminate():
+        reader = threading.Thread(target=lambda: states.append(r.d.counts()), daemon=True)
+        reader.start()
+        reader.join(0.3)
+        states.append(reader.is_alive())
+        orig()
+
+    r.ex.terminate = terminate
+    r.d.cancel()
+    counts = r.d.counts()
+    assert states[1] is False and (states[0].queued, states[0].running) == (1, 0)
+    assert r.d.queued() == [("a", Priority.LIVE)] and counts.queued == 1
+
+
+def test_not_ready_drops_the_job_without_a_failure():
+    r = Rig()
+
+    def opener(vid):
+        raise pool.NotReady(vid)
+
+    r.d.opener = opener
+    r.d.submit(["a"], Priority.LIVE)
+    r.settle()
+    assert r.failures == [] and r.d.queued() == [] and r.d.counts().failed == 0

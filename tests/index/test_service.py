@@ -236,3 +236,82 @@ def test_thread_and_process_modes_store_the_same_facts(make, tmp_path):
     svc.request([vid], Priority.LIVE)
     settle(svc)
     assert svc.facts(vid) == run_job(IndexJob(vid, "facts", loc.versions[vid].data)).facts
+
+
+def test_a_version_not_reachable_yet_is_no_failure_and_no_strike(make):
+    organizer = SimpleNamespace(locator=None)               # the reopened organizer, mid-scan
+    from nms_save_vault.core.index.vaultlink import OrganizerLocator
+
+    spy = SpyLocator()
+    parent, child = spy.add(save_bytes(1, 3600, 0b1)), spy.add(save_bytes(2, 9000, 0b111))
+    svc = make(OrganizerLocator(organizer), defer_refresh=True)
+    assert svc.changes(child, parent, edge_kind="play") is None
+    settle(svc)
+    assert svc.status(child) == "not-indexed" and svc.status(parent) == "not-indexed"
+    assert svc.cache.failure(child) is None and not svc._strikes
+    assert [e for e in svc.events_since(0) if e.kind == "failed"] == []
+    organizer.locator = spy                                  # the scan ends
+    svc.request([child, parent], Priority.LIVE)
+    settle(svc)
+    assert {svc.status(child), svc.status(parent)} == {"ok"}
+
+
+def test_a_closed_service_answers_off_and_touches_nothing(make):
+    loc = SpyLocator()
+    a, b = loc.add(save_bytes(1)), loc.add(save_bytes(2))
+    svc = make(loc)
+    svc.request([a, b], Priority.LIVE)
+    settle(svc)
+    svc.close()
+    svc.cache._lru.clear()
+    connections = len(svc.cache._connections)
+    assert svc.card(a) is None and svc.facts(a) is None and svc.changes(b, a) is None
+    assert svc.request([a], Priority.INTERACTIVE) == 0 and svc.status(a) == "off"
+    assert not svc.active and svc.progress().state == "off"
+    assert len(svc.cache._connections) == connections
+    svc.close()                                              # twice is fine
+
+
+def test_a_writer_that_outlives_close_stops_writing_and_closes_the_cache(make, monkeypatch):
+    from nms_save_vault.core.index import service as service_mod
+
+    gate = threading.Event()
+    orig = IndexService._apply
+
+    def slow_apply(self, op):
+        if op[0] == "touch" and not gate.is_set():
+            gate.wait(20)
+        return orig(self, op)
+
+    monkeypatch.setattr(IndexService, "_apply", slow_apply)
+    monkeypatch.setattr(service_mod, "WRITER_JOIN_S", 0.3)
+    loc = SpyLocator()
+    a = loc.add(save_bytes(1))
+    svc = make(loc)
+    svc.request([a], Priority.LIVE)                          # "touch" blocks; the result waits behind it
+    time.sleep(0.3)
+    writer = svc._writer
+    svc.close()
+    assert writer.is_alive()
+    gate.set()
+    writer.join(10)
+    assert not writer.is_alive() and not svc.cache._connections and svc.view(a) is None
+
+
+def test_closing_does_not_wait_for_an_inline_job(make):
+    gate = threading.Event()
+
+    def blocked(job):
+        gate.wait(20)
+        return run_job(job)
+
+    loc = SpyLocator()
+    a = loc.add(save_bytes(1))
+    svc = make(loc, executor=ThreadExecutor(blocked))
+    svc.request([a], Priority.LIVE)
+    wait_for(lambda: svc.status(a) == "running")
+    start = time.monotonic()
+    svc.close()
+    took = time.monotonic() - start
+    gate.set()
+    assert took < 5

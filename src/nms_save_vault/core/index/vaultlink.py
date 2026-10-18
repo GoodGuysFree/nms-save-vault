@@ -19,7 +19,7 @@ from ..organizer.locator import OpenedVersion, VersionUnavailable
 from ..organizer.model import Vid
 from ..state import Source
 from .cache import cache_file
-from .pool import ExecutionPolicy
+from .pool import ExecutionPolicy, NotReady
 from .service import IndexService
 
 
@@ -33,7 +33,7 @@ class OrganizerLocator:
     def open(self, vid: Vid, prefer=None) -> OpenedVersion:
         locator = self.organizer.locator
         if locator is None:
-            raise VersionUnavailable("the vault has not been scanned yet")
+            raise NotReady("the vault has not been scanned yet")
         return locator.open(vid, prefer)
 
 
