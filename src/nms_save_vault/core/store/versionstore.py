@@ -509,6 +509,23 @@ class VersionStore:
                       absent=absent)
         return self._commit(fields, entry_id=entry_id, created_local=created_local)
 
+    def merged_copy(self, source: StoreEntry, source_store_id: str) -> StoreEntry | None:
+        """The entry here that already is ``source`` (D3 4.8): merged from that store, or
+        through another one (the chain in ``origin``), or from this very store, or with the same
+        id and contents. None when this vault does not have it."""
+        self._refresh()
+        return self._merged_copy(source, source_store_id)
+
+    def _merged_copy(self, source: StoreEntry, source_store_id: str) -> StoreEntry | None:
+        wanted = {(source_store_id, source.id)} | _lineage(source.origin)
+        mine = self._index.get(source.id)
+        if mine is not None and mine.body_sha256 == source.body_sha256:
+            return mine
+        for existing in self._index.values():
+            if wanted & (_lineage(existing.origin) | {(self.store_id, existing.id)}):
+                return existing
+        return None
+
     def add_merged(self, source: StoreEntry, *, source_store_id: str
                    ) -> tuple[StoreEntry, Literal["new", "renamed", "same"]]:
         """Commit another store's entry (D3 4.8). Its objects must already be here (the caller
@@ -524,16 +541,9 @@ class VersionStore:
             with self._lock():
                 self._require_store_mode()
                 self._refresh(force=True)
-                for existing in self._index.values():
-                    o = existing.origin or {}
-                    if o.get("store_id") == source_store_id and o.get("entry_id") == source.id:
-                        return existing, "same"
-                mine = self._index.get(source.id)
-                if mine is not None and mine.body_sha256 == source.body_sha256:
-                    return mine, "same"
-                came = source.origin or {}
-                if came.get("store_id") == self.store_id and came.get("entry_id") in self._index:
-                    return self._index[came["entry_id"]], "same"     # it came from here
+                have = self._merged_copy(source, source_store_id)
+                if have is not None:
+                    return have, "same"
                 catalog_ids = self._catalog_ids()
                 new_id, status = source.id, "new"
                 if (new_id in self._index or self._manifest_path(new_id).exists()
@@ -549,6 +559,10 @@ class VersionStore:
                     status = "renamed"
                 fields = {f.name: getattr(source, f.name) for f in dataclasses.fields(source)
                           if f.name != "body_sha256"}
+                # What names the other machine's live folder or operation means nothing here: the
+                # Undo of a live folder must never pick a merged snapshot (liveops/panic.py).
+                fields["source"] = {k: v for k, v in source.source.items() if k != "folder"}
+                fields["op_id"] = None
                 entry = StoreEntry.new(**dict(fields, id=new_id, origin=origin))
                 self._write_manifest(entry)
         except safety.LockTimeout as exc:
@@ -788,6 +802,17 @@ def _unlink_quietly(path: Path) -> None:
         pass
     except OSError as exc:      # Windows: another process opened it meanwhile; harmless
         log.info("could not remove the lock file %s: %s", path.name, exc)
+
+
+def _lineage(origin: Mapping[str, Any] | None) -> set[tuple[str, str]]:
+    """Every (store id, entry id) an entry came through, following ``source_origin``."""
+    out: set[tuple[str, str]] = set()
+    while isinstance(origin, Mapping):
+        store_id, entry_id = origin.get("store_id"), origin.get("entry_id")
+        if isinstance(store_id, str) and isinstance(entry_id, str):
+            out.add((store_id, entry_id))
+        origin = origin.get("source_origin")
+    return out
 
 
 def _same_files(a: Sequence[FileEntry], b: Sequence[FileEntry]) -> bool:

@@ -196,19 +196,18 @@ def test_a_crash_between_deletions_resumes(folded):
 def test_a_half_deleted_folder_is_finished_but_not_if_it_grew(folded, monkeypatch):
     w = folded
     plan = vstore.plan_free(Vault(w.vault.root).load(), w.store, live_roots=[w.live])
-    real = free._delete_tree
+    real = free._delete_listed
     touched = []
 
-    def delete_one_file_then_crash(folder):
+    def delete_one_file_then_crash(folder, files, dirs):
         touched.append(folder)
-        victim = next(p for p in sorted(folder.rglob("*")) if p.is_file())
-        victim.unlink()
+        files[0].unlink()
         raise KeyboardInterrupt("the process is stopped")
 
-    monkeypatch.setattr(free, "_delete_tree", delete_one_file_then_crash)
+    monkeypatch.setattr(free, "_delete_listed", delete_one_file_then_crash)
     with pytest.raises(KeyboardInterrupt):
         vstore.run_free(w.store, plan, live_roots=[w.live])
-    monkeypatch.setattr(free, "_delete_tree", real)
+    monkeypatch.setattr(free, "_delete_listed", real)
     half = touched[0]
     started = next(k for k in MANAGED if _folder(w, k) == half)
     (half / "grown.txt").write_bytes(b"added after the crash")
@@ -281,3 +280,82 @@ def test_the_cli_stops_on_damage(folded, monkeypatch, capsys):
     assert _cli(monkeypatch, w, "--yes") == 1
     assert "nothing was deleted" in capsys.readouterr().err
     assert all(_folder(w, k).is_dir() for k in MANAGED)
+
+
+def test_a_file_written_into_a_later_folder_is_checked_before_that_folder_goes(folded):
+    w = folded
+    plan = vstore.plan_free(Vault(w.vault.root).load(), w.store, live_roots=[w.live])
+    second = plan.entries[1].folder
+
+    def write_while_the_first_is_deleted(p):
+        if p.entries_done == 0:
+            (second / "written-meanwhile.txt").write_bytes(b"not in the store")
+
+    result = vstore.run_free(w.store, plan, live_roots=[w.live],
+                             progress=write_while_the_first_is_deleted)
+    assert plan.entries[1].id not in result.freed
+    assert (second / "written-meanwhile.txt").read_bytes() == b"not in the store"
+    assert plan.entries[1].id in dict(result.skipped)
+    assert len(result.freed) == 3
+
+
+def test_a_file_that_appears_after_the_check_is_never_deleted(folded):
+    w = folded
+    plan = vstore.plan_free(Vault(w.vault.root).load(), w.store, live_roots=[w.live])
+    target = plan.entries[0].folder
+
+    def appears_after_the_check(point):
+        if point == "free.before_delete" and not (target / "late.txt").exists():
+            (target / "late.txt").write_bytes(b"late")
+
+    result = vstore.run_free(w.store, plan, live_roots=[w.live], faults=appears_after_the_check)
+    assert (target / "late.txt").read_bytes() == b"late"
+    assert [k for k, _what in result.leftovers] == [plan.entries[0].id]
+    assert plan.entries[0].id not in result.freed
+    assert w.vault.load().get(plan.entries[0].id) is not None       # still in the catalog
+    assert vstore.free_pending(w.vault.root)
+
+
+def _make_junction(link, target):
+    import subprocess
+
+    if os.name == "nt":
+        done = subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(target)],
+                              capture_output=True)
+        if done.returncode:
+            pytest.skip("this machine does not permit creating junctions")
+    else:
+        try:
+            os.symlink(target, link, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            pytest.skip("this machine does not permit creating symlinks")
+
+
+def test_a_folder_holding_a_junction_is_skipped_and_nothing_outside_is_touched(
+        folded, tmp_path):
+    w = folded
+    outside = tmp_path / "outside the vault"
+    outside.mkdir()
+    (outside / "precious.bin").write_bytes(b"keep me" * 100)
+    _make_junction(_folder(w, "full") / "linked", outside)
+    plan = vstore.plan_free(Vault(w.vault.root).load(), w.store, live_roots=[w.live])
+    assert w.ids["full"] not in {c.id for c in plan.entries}
+    assert "link" in dict(plan.skipped)[w.ids["full"]]
+    result = vstore.run_free(w.store, plan, live_roots=[w.live])
+    assert w.ids["full"] not in result.freed
+    assert (outside / "precious.bin").read_bytes() == b"keep me" * 100
+    assert (_folder(w, "full") / "linked").exists()
+
+
+def test_the_cli_says_a_run_is_pending(folded, monkeypatch, capsys):
+    w = folded
+    plan = vstore.plan_free(Vault(w.vault.root).load(), w.store, live_roots=[w.live])
+
+    def crash(point):
+        if point == "free.after_delete":
+            raise KeyboardInterrupt("stopped")
+
+    with pytest.raises(KeyboardInterrupt):
+        vstore.run_free(w.store, plan, live_roots=[w.live], faults=crash)
+    assert _cli(monkeypatch, w) == 0
+    assert "stopped before its end" in capsys.readouterr().out

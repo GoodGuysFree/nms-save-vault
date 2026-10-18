@@ -4,9 +4,11 @@ file is durably in the store are deleted.
 
 Nothing is deleted unless: a deep check of the whole store passes first; the folder is a managed
 entry folder strictly inside ``backups/``, ``snapshots/`` or ``extracts/`` of this vault (never an
-in-place folder, a live folder or the pre-upgrade copy); and the folder, read again now, holds
-exactly the files the store entry holds, with the same sizes and sha256. A folder that changed
-or was extended after the fold is skipped and reported.
+in-place folder, a live folder or the pre-upgrade copy); and the folder, read again immediately
+before it is deleted, holds exactly the files the store entry holds, with the same sizes and
+sha256. Only those checked files are removed: anything that appears in the folder after the check
+stays and is reported. A folder that changed or was extended after the fold, or that holds a link
+or a junction anywhere, is skipped and reported.
 
 ``store/state/migration.json`` records the run (``free``): an entry is ``freeing`` before its
 folder is touched and ``freed`` when its folder and catalog entry are gone, so an interrupted
@@ -26,7 +28,7 @@ from pathlib import Path
 from .. import catalog, discover, safety
 from ..catalog import CatalogEntry, Vault
 from .errors import FreeError, StoreBusy, StoreNotUpgraded
-from .listing import CopyAsideInfo, _copy_aside, entry_folder, read_migration
+from .listing import CopyAsideInfo, _copy_aside, read_migration
 from .migrate import MANAGED_SUBDIRS, write_migration
 from .objects import sha256
 from .upgrade import upgrade_lock_path
@@ -71,6 +73,14 @@ class FreeResult:
     message: str
 
 
+@dataclass(frozen=True)
+class _Verdict:
+    candidate: FreeCandidate | None = None       # the folder may go ...
+    files: tuple[Path, ...] = ()                 # ... and these are exactly the files checked
+    dirs: tuple[Path, ...] = ()                  # the folders in it, deepest first
+    reason: str = ""                             # else: why it is left as it is ("" = not ours)
+
+
 def free_pending(vault_root: str | Path) -> bool:
     """For the front ends: a run of freeing stopped before its end. Reads only."""
     free = read_migration(Path(vault_root)).get("free")
@@ -82,36 +92,21 @@ def plan_free(vault: Vault, store: VersionStore, *,
               cancel: threading.Event | None = None) -> FreePlan:
     """What freeing would delete now, and what it leaves with the reason. Reads only (it reads
     every candidate folder once, to check it against the store)."""
-    root = vault.root
-    migration = read_migration(root)
-    fold = _records(migration.get("fold"))
-    freed = _records(migration.get("free"))
+    migration = read_migration(vault.root)
     live = discover.live_folders(live_roots) if live_roots is not None else store.live_folders()
-    aside = _copy_aside(root, migration)
+    aside = _copy_aside(vault.root, migration)
     candidates: list[FreeCandidate] = []
     skipped: list[tuple[str, str]] = []
     for entry in sorted(vault.entries, key=lambda e: (e.created, e.id)):
         if cancel is not None and cancel.is_set():
             break
-        record = fold.get(entry.id)
-        if record is None or entry.kind == catalog.KIND_INPLACE or not entry.managed:
-            continue
-        resuming = freed.get(entry.id, {}).get("status") == "freeing"
-        if freed.get(entry.id, {}).get("status") == "freed" and not entry_folder(
-                vault, entry).is_dir():
-            continue                            # done earlier; its catalog entry was kept (a note)
-        if record.get("status") == "failed":
-            skipped.append((entry.id, f"it is not in the store ({record.get('reason', '')})"))
-            continue
-        if record.get("status") != "verified":
-            continue
-        why, size = _assess(vault, store, entry, record, live, aside, resuming)
-        if why:
-            skipped.append((entry.id, why))
-        else:
-            candidates.append(FreeCandidate(entry.id, _folder_of(vault, entry), size, resuming))
-    return FreePlan(root, tuple(candidates), tuple(skipped), sum(c.bytes for c in candidates),
-                    aside)
+        verdict = _judge(vault, store, entry, migration, live, aside)
+        if verdict.candidate is not None:
+            candidates.append(verdict.candidate)
+        elif verdict.reason:
+            skipped.append((entry.id, verdict.reason))
+    return FreePlan(vault.root, tuple(candidates), tuple(skipped),
+                    sum(c.bytes for c in candidates), aside)
 
 
 def run_free(store: VersionStore, plan: FreePlan, *,
@@ -119,10 +114,11 @@ def run_free(store: VersionStore, plan: FreePlan, *,
              progress: Callable[[FreeProgress], None] | None = None,
              cancel: threading.Event | None = None,
              faults: FreeFault | None = None) -> FreeResult:
-    """Delete the folders of ``plan`` (and only those) that still check out. A deep check of the
-    store runs first and any damage stops the run before anything is deleted (FreeError
-    ``damaged``). Every folder is checked again just before it goes. Safe to stop at any
-    point: run it again to finish."""
+    """Delete the folders of ``plan`` (and only those). A deep check of the store runs first and
+    any damage stops the run before anything is deleted (FreeError ``damaged``). Each folder is
+    checked against the store again immediately before it is deleted, and only the files that
+    check covered are removed: anything else found in it stays and is reported. Safe to stop at
+    any point: run it again to finish."""
     store._require_writable()
     root = store.vault_root
     try:
@@ -147,36 +143,40 @@ def _run_free(store, plan, live_roots, progress, cancel, faults) -> FreeResult:
         raise FreeError("damaged", f"The check of the version store found {left} problem(s); "
                                    "nothing was deleted. Run 'nmsvault store fsck --deep "
                                    "--repair' first.")
-    wanted = {c.id for c in plan.entries}
-    fresh = plan_free(Vault(root).load(), store, live_roots=live_roots, cancel=cancel)
-    todo = [c for c in fresh.entries if c.id in wanted]
-    skipped = [(k, why) for k, why in fresh.skipped if k in wanted]
-    skipped += [(k, "it is no longer a folder to free") for k in sorted(wanted)
-                if k not in {c.id for c in fresh.entries} | {k for k, _ in fresh.skipped}]
+    live = discover.live_folders(live_roots) if live_roots is not None else store.live_folders()
     statuses = _free_statuses(root)
     _save(store, statuses, "freeing")
     freed: list[str] = []
+    skipped: list[tuple[str, str]] = []
     leftovers: list[tuple[str, str]] = []
     freed_bytes, cancelled = 0, False
-    for n, cand in enumerate(todo):
+    for n, wanted in enumerate(plan.entries):
         if cancel is not None and cancel.is_set():
             cancelled = True
             break
         if progress is not None:
-            progress(FreeProgress(n, len(todo), cand.id))
-        statuses[cand.id] = {"status": "freeing"}
+            progress(FreeProgress(n, len(plan.entries), wanted.id))
+        vault = Vault(root).load()
+        entry = vault.get(wanted.id)
+        migration = read_migration(root)
+        verdict = (_judge(vault, store, entry, migration, live, _copy_aside(root, migration))
+                   if entry is not None else _Verdict(reason="it is no longer in the catalog"))
+        if verdict.candidate is None:
+            skipped.append((wanted.id, verdict.reason or "it is no longer a folder to free"))
+            continue
+        statuses[wanted.id] = {"status": "freeing"}
         _save(store, statuses, "freeing")
         _fault(faults, "free.before_delete")
-        left = _delete_tree(cand.folder)
+        left = _delete_listed(verdict.candidate.folder, verdict.files, verdict.dirs)
         _fault(faults, "free.after_delete")
         if left:
-            leftovers.append((cand.id, left[0]))
+            leftovers.append((wanted.id, left[0]))
             continue                            # stays 'freeing'; a rerun finishes it
-        _drop_catalog_entry(store, cand.id)
-        statuses[cand.id] = {"status": "freed"}
+        _drop_catalog_entry(store, wanted.id)
+        statuses[wanted.id] = {"status": "freed"}
         _save(store, statuses, "freeing")
-        freed.append(cand.id)
-        freed_bytes += cand.bytes
+        freed.append(wanted.id)
+        freed_bytes += verdict.candidate.bytes
     done = not cancelled and not leftovers
     _save(store, statuses, "done" if done else "freeing")
     return FreeResult(tuple(freed), freed_bytes, tuple(skipped), tuple(leftovers), cancelled,
@@ -186,50 +186,62 @@ def _run_free(store, plan, live_roots, progress, cancel, faults) -> FreeResult:
 # --- checking a folder against the store -------------------------------------------------------
 
 
-def _assess(vault: Vault, store: VersionStore, entry: CatalogEntry, record: dict,
-            live, aside: CopyAsideInfo | None, resuming: bool) -> tuple[str, int]:
-    """("", bytes it would free) when the folder may go, else (why not, 0)."""
+def _judge(vault: Vault, store: VersionStore, entry: CatalogEntry, migration: dict, live,
+           aside: CopyAsideInfo | None) -> _Verdict:
+    """Whether this catalog entry's folder may be freed now. No candidate and no reason: not
+    something freeing is about (in-place, not folded, done earlier)."""
+    record = _records(migration.get("fold")).get(entry.id)
+    if record is None or entry.kind == catalog.KIND_INPLACE or not entry.managed:
+        return _Verdict()
+    status = _records(migration.get("free")).get(entry.id, {}).get("status")
+    resuming = status == "freeing"
+    folder = _folder_of(vault, entry)
+    if status == "freed" and not folder.exists():
+        return _Verdict()                       # done earlier; its catalog entry was kept (a note)
+    if record.get("status") == "failed":
+        return _Verdict(reason=f"it is not in the store ({record.get('reason', '')})")
+    if record.get("status") != "verified":
+        return _Verdict()
     if "store_id" in record:
-        return "its folder changed after an earlier fold", 0
+        return _Verdict(reason="its folder changed after an earlier fold")
     if not store.has_entry(entry.id):
-        return "the store holds no copy of it", 0
+        return _Verdict(reason="the store holds no copy of it")
     stored = store.entry(entry.id)
     if (stored.origin or {}).get("legacy_entry") != entry.id:
-        return "the store entry of that name is not its folded copy", 0
-    folder = _folder_of(vault, entry)
+        return _Verdict(reason="the store entry of that name is not its folded copy")
     if not folder.is_dir():
         if resuming:
-            return "", 0
-        return "its folder is already gone", 0
+            return _Verdict(FreeCandidate(entry.id, folder, 0, True))
+        return _Verdict(reason="its folder is already gone")
     if not _managed_folder(vault, entry, folder):
-        return "its folder is not a backup folder of this vault", 0
+        return _Verdict(reason="its folder is not a backup folder of this vault")
     if discover.is_inside(folder, live):
-        return "a live save folder, not a backup", 0
-    if aside is not None and aside.found and _inside(
-            folder, vault.root.parent / aside.name):
-        return "inside the pre-upgrade copy", 0
-    files = _folder_files(folder)
-    if files is None:
-        return "it holds a link or a special file", 0
+        return _Verdict(reason="a live save folder, not a backup")
+    if aside is not None and aside.found and _inside(folder, vault.root.parent / aside.name):
+        return _Verdict(reason="inside the pre-upgrade copy")
+    inventory = _inventory(folder)
+    if inventory is None:
+        return _Verdict(reason="it holds a link, a junction or a special file")
+    files, dirs = inventory
     held = {fe.path: fe for fe in stored.files}
     if resuming:
         if not set(files) <= set(held):
-            return "it holds a file the store lacks", 0
+            return _Verdict(reason="it holds a file the store lacks")
     elif set(files) != set(held):
-        return "it was changed or extended after the fold", 0
+        return _Verdict(reason="it was changed or extended after the fold")
     total = 0
     for rel, path in files.items():
         fe = held[rel]
         try:
             data = path.read_bytes()
         except OSError as exc:
-            return f"it cannot be read ({exc.strerror or exc})", 0
+            return _Verdict(reason=f"it cannot be read ({exc.strerror or exc})")
         if len(data) != fe.size or sha256(data) != fe.sha256:
-            return "it was changed or extended after the fold", 0
+            return _Verdict(reason="it was changed or extended after the fold")
         if fe.inline is None and store.objects.size_of(fe.sha256) != fe.size:
-            return "its stored copy is missing", 0
+            return _Verdict(reason="its stored copy is missing")
         total += len(data)
-    return "", total
+    return _Verdict(FreeCandidate(entry.id, folder, total, resuming), tuple(files.values()), dirs)
 
 
 def _folder_of(vault: Vault, entry: CatalogEntry) -> Path:
@@ -241,7 +253,7 @@ def _folder_of(vault: Vault, entry: CatalogEntry) -> Path:
 
 
 def _managed_folder(vault: Vault, entry: CatalogEntry, folder: Path) -> bool:
-    if folder.is_symlink() or folder.name != entry.id or folder.parent.name not in MANAGED_SUBDIRS:
+    if _is_link(folder) or folder.name != entry.id or folder.parent.name not in MANAGED_SUBDIRS:
         return False
     try:
         return (folder.parent.resolve().parent == vault.root.resolve()
@@ -250,20 +262,43 @@ def _managed_folder(vault: Vault, entry: CatalogEntry, folder: Path) -> bool:
         return False
 
 
-def _folder_files(folder: Path) -> dict[str, Path] | None:
-    """Every file of the folder by relative posix path; None when it holds anything but plain
-    files and folders (a link, a special file): that is not a folder this app made."""
-    out: dict[str, Path] = {}
-    for dirpath, dirnames, filenames in os.walk(folder):
-        here = Path(dirpath)
-        if any((here / d).is_symlink() for d in dirnames):
+def _is_link(path: Path) -> bool:
+    """A symbolic link or, on Windows, any reparse point: a directory junction is no
+    ``is_symlink`` but os.walk and the like follow it."""
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return True
+    reparse = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    return stat.S_ISLNK(st.st_mode) or bool(getattr(st, "st_file_attributes", 0) & reparse)
+
+
+def _inventory(folder: Path) -> tuple[dict[str, Path], tuple[Path, ...]] | None:
+    """The plain files of the folder by relative posix path, and its sub-folders deepest first;
+    None when it holds anything else (a link, a junction, a special file). Never descends into
+    a link."""
+    files: dict[str, Path] = {}
+    dirs: list[Path] = []
+    stack = [folder]
+    while stack:
+        here = stack.pop()
+        try:
+            with os.scandir(here) as it:
+                items = list(it)
+        except OSError:
             return None
-        for name in filenames:
-            p = here / name
-            if p.is_symlink() or not p.is_file():
+        for item in items:
+            p = Path(item.path)
+            if _is_link(p):
                 return None
-            out[p.relative_to(folder).as_posix()] = p
-    return out
+            if item.is_dir(follow_symlinks=False):
+                dirs.append(p)
+                stack.append(p)
+            elif item.is_file(follow_symlinks=False):
+                files[p.relative_to(folder).as_posix()] = p
+            else:
+                return None
+    return files, tuple(sorted(dirs, key=lambda d: len(d.parts), reverse=True))
 
 
 def _inside(path: Path, root: Path) -> bool:
@@ -277,19 +312,15 @@ def _inside(path: Path, root: Path) -> bool:
 # --- deleting ----------------------------------------------------------------------------------
 
 
-def _delete_tree(folder: Path) -> list[str]:
-    """Delete the folder bottom-up. A read-only file gets its attribute cleared and one more try.
+def _delete_listed(folder: Path, files: Sequence[Path], dirs: Sequence[Path]) -> list[str]:
+    """Delete exactly the files that were checked, then the folders they leave empty, then the
+    folder. Anything else found in it is not touched: it keeps its folder and is reported.
     Returns what could not be deleted (empty when the folder is gone); never raises on a file."""
     left: list[str] = []
-    if not folder.exists():
-        return left
-    for dirpath, dirnames, filenames in os.walk(folder, topdown=False):
-        here = Path(dirpath)
-        for name in filenames:
-            _retry(here / name, os.unlink, left)
-        for name in dirnames:
-            _retry(here / name, os.rmdir, left)
-    _retry(folder, os.rmdir, left)
+    for path in files:
+        _retry(path, os.unlink, left)
+    for path in (*dirs, folder):
+        _retry(path, os.rmdir, left)
     return left
 
 

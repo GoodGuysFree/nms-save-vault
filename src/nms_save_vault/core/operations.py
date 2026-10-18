@@ -651,13 +651,10 @@ def _preview_store_merge(vault: Vault, source_dir: Path) -> dict:
         source = classic.open_source(source_dir)
     except classic.StoreError as exc:
         raise OperationError(str(exc)) from exc
-    done = {((e.origin or {}).get("store_id"), (e.origin or {}).get("entry_id"))
-            for e in target.entries()}
     src_entries = source.entries()
     new, existing = [], []
     for e in src_entries:
-        merged = ((source.store_id, e.id) in done
-                  or (target.has_entry(e.id) and target.entry(e.id).body_sha256 == e.body_sha256))
+        merged = target.merged_copy(e, source.store_id) is not None
         (existing if merged else new).append(classic.as_catalog_entry(e))
     return {"total": len(src_entries), "new": new, "existing": existing, "merge": True}
 

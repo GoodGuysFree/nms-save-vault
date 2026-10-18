@@ -196,3 +196,57 @@ def test_the_cli_imports_a_store_vault(two, monkeypatch, capsys):
     assert "imported 2 new entries" in capsys.readouterr().out
     assert cli.main(["--vault", str(dst.root), "import", str(src.root), "--copy"]) == 0
     assert "imported 0 new entries" in capsys.readouterr().out
+
+
+def test_a_merged_snapshot_is_never_the_undo_target_of_a_live_folder(tmp_path):
+    import time
+
+    live = steam_live(tmp_path / "NMS")                      # the same live path on both "PCs"
+    here, _l1 = _vault(tmp_path, "here")
+    other, _l2 = _vault(tmp_path, "other")
+    mine = operations.snapshot_live(here, live, "mine").id
+    time.sleep(1.1)
+    theirs = operations.snapshot_live(other, live, "taken elsewhere").id
+    assert operations.plan_undo(here, live).snapshot_id == mine
+    operations.import_vault(here, other.root, copy_into_vault=True)
+    merged = classic.store_of(here).entry(theirs)
+    assert merged.op_id is None and "folder" not in merged.source and merged.origin["store_id"]
+    assert operations.plan_undo(here, live).snapshot_id == mine
+
+
+def test_an_object_already_here_is_re_hashed_and_healed_by_a_merge(two):
+    src, dst, ids, own = two
+    source = classic.store_of(src)
+    target = classic.store_of(dst)
+    shared = sorted({f.sha256 for f in source.entry(ids[0]).files if f.inline is None}
+                    & set(target.objects.digests()))
+    assert shared
+    path = target.objects.path_for(shared[0])
+    bad = bytearray(path.read_bytes())
+    bad[0] ^= 0xFF                                           # same size, wrong bytes
+    path.write_bytes(bytes(bad))
+    result = operations.import_vault(dst, src.root, copy_into_vault=True)
+    assert result.ok and sorted(result.changed) == sorted(ids)
+    assert target.fsck(deep=True).ok                         # healed from the source's good copy
+
+
+def test_a_chain_of_merges_adds_nothing_the_second_time(tmp_path):
+    a, a_live = _vault(tmp_path, "a")
+    b, _l = _vault(tmp_path, "b-usb")
+    c, _l2 = _vault(tmp_path, "c")
+    x = operations.create_full_backup(a, a_live, warnings=[]).id
+    assert operations.import_vault(b, a.root, copy_into_vault=True).changed == [x]
+    assert operations.import_vault(c, b.root, copy_into_vault=True).changed == [x]
+    preview = operations.preview_vault_import(c, a.root)
+    assert preview["new"] == [] and len(preview["existing"]) == 1
+    again = operations.import_vault(c, a.root, copy_into_vault=True)
+    assert again.changed == [] and again.warnings == []
+    assert sorted(e.id for e in classic.store_of(c).entries()) == [x]
+
+
+def test_the_preview_after_a_round_trip_counts_only_what_is_new(two):
+    src, dst, ids, own = two
+    operations.import_vault(dst, src.root, copy_into_vault=True)
+    operations.import_vault(src, dst.root, copy_into_vault=True)
+    preview = operations.preview_vault_import(src, dst.root)
+    assert preview["new"] == []

@@ -81,23 +81,13 @@ def merge_store(target: VersionStore, source: VersionStore, *,
 
 def _merge_one(target: VersionStore, source: VersionStore, entry: StoreEntry):
     """Objects first (read verified from the source, written verified here), manifest last."""
-    if _already_here(target, source, entry):
+    if target.merged_copy(entry, source.store_id) is not None:
         return target.add_merged(entry, source_store_id=source.store_id)   # "same"
-    missing = {fe.sha256: fe.size for fe in entry.files
-               if fe.inline is None and target.objects.size_of(fe.sha256) != fe.size}
-    target._require_space(sum(missing.values()))
-    for digest, size in missing.items():
+    wanted = {fe.sha256: fe.size for fe in entry.files if fe.inline is None}
+    target._require_space(sum(size for digest, size in wanted.items()
+                              if target.objects.size_of(digest) != size))
+    for digest, size in wanted.items():
+        # Also the ones already here: put re-hashes an existing object and heals a bad one
+        # from the good copy read (verified) from the source.
         target.objects.put(source.objects.get(digest, size), digest)
     return target.add_merged(entry, source_store_id=source.store_id)
-
-
-def _already_here(target: VersionStore, source: VersionStore, entry: StoreEntry) -> bool:
-    """Cheap pre-check, so a repeated import copies nothing (add_merged decides for real)."""
-    for mine in target.entries():
-        o = mine.origin or {}
-        if o.get("store_id") == source.store_id and o.get("entry_id") == entry.id:
-            return True
-    came = entry.origin or {}
-    if came.get("store_id") == target.store_id and target.has_entry(came.get("entry_id", "")):
-        return True                                  # it was merged from this very vault
-    return target.has_entry(entry.id) and target.entry(entry.id).body_sha256 == entry.body_sha256

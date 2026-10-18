@@ -57,6 +57,8 @@ def candidates(ctx: OpContext, account: LiveRef,
     for e in listing.list_vault_entries(ctx.vault, store, live_roots=[]):
         if e.kind not in kinds or e.platform != account.platform or e.id in skip or (e.op_id and e.op_id in skip):
             continue
+        if _merged_in(store, e.id):
+            continue                              # taken elsewhere and merged in: not an Undo target
         theirs = _folder_of(store, e.id)
         if theirs is not None and theirs != here:
             continue                              # another folder of the same name
@@ -64,6 +66,13 @@ def candidates(ctx: OpContext, account: LiveRef,
             continue                              # taken before folders were identified
         out.append(Candidate(e.id, e.kind, e.label, e.created))
     return list(reversed(out))
+
+
+def _merged_in(store, entry_id: str) -> bool:
+    try:
+        return bool((store.entry(entry_id).origin or {}).get("store_id")) if store is not None else False
+    except (KeyError, ValueError, OSError):
+        return False
 
 
 def _folder_of(store, entry_id: str) -> str | None:

@@ -143,6 +143,8 @@ def cmd_store_free(args) -> int:
     state = appstate.load()
     root = _vault_root(args, state)
     store = vstore.open_store(root, app_state=state)
+    if free.free_pending(root):
+        print("An earlier run of freeing stopped before its end; this run finishes it.")
     plan = free.plan_free(catalog.Vault(root).load(), store)
     for entry_id, why in plan.skipped:
         print(f"  left as it is: {entry_id} ({why})")
