@@ -230,7 +230,8 @@ def test_a_write_that_does_not_check_out_is_rolled_back_exactly(tmp_path, victim
 
     def corrupt():
         path = world.live / victim
-        path.write_bytes(path.read_bytes()[:-1] + b"\x00")
+        raw = path.read_bytes()      # flip the byte, never set it to 0: a meta file's last
+        path.write_bytes(raw[:-1] + bytes([raw[-1] ^ 0xFF]))   # byte is random, 1 in 256 is 0x00
 
     world.ctx.faults = FaultInjector(actions={"swapped:4": corrupt})
     outcome = execute(world.ctx, plan, plan.confirmations)
