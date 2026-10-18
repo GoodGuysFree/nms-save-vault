@@ -38,7 +38,7 @@ def _inside(widget, ancestor) -> bool:
 
 def test_two_tabs_under_the_menu_bar(app):
     assert _tabs(app) == ["Live saves and backups", "Organizer"]
-    assert app.cget("menu") == str(app.menubar)
+    assert not app.cget("menu")                           # the in-window bar, not a native one
     for widget in (app.toolbar, app.live_tree, app.backup_tree, app.active_combo):
         assert _inside(widget, app.classic_view)          # today's content, in its tab
     assert not _inside(app.banner, app.notebook)          # the update bar stays above the tabs

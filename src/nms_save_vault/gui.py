@@ -33,6 +33,7 @@ from .core.organizer import Organizer
 from .ui.fmt import local_time as _fmt_ts
 from .ui.fmt import play_time as _fmt_play
 from .ui.redact import RedactingTreeview
+from .ui.menubar import MenuStrip
 from .ui.menuhint import bind_menu_hints
 from .ui.tooltip import TOOLTIP_STYLE, Tooltip
 from .ui.organizer.words import PROMOTE_TIP, SLOT_MARKERS_TIP, VAULT_UPGRADE_TIP
@@ -400,6 +401,7 @@ class App(tk.Tk):
         self._history_key: str | None = None  # the save file the backups are narrowed to
         self._history_choices: dict[str, str] = {}  # dropdown label -> playthrough key
         self._dark = False
+        self._palette: dict | None = None
         # The organizer's slow work runs here, one job at a time (D6 3.9); classic widgets
         # and images drawn in code take each new palette from the registry (D6 3.12).
         self.worker = UiWorker(self)
@@ -503,7 +505,7 @@ class App(tk.Tk):
     # --- layout --------------------------------------------------------------
 
     def _build_menubar(self) -> None:
-        """The native menu bar (D6 2.2): every action has a keyboard path (Alt, then the
+        """The menu bar (D6 2.2): every action has a keyboard path (Alt, then the
         underlined letter) whatever the window width or zoom, and the preferences that
         are not actions (theme, zoom) live here instead of in the toolbar row."""
         bar = tk.Menu(self, tearoff=False)
@@ -566,7 +568,16 @@ class App(tk.Tk):
         about = menu("Help")
         about.add_command(label="Help", command=self.on_help, accelerator="F1", underline=0)
         about.add_command(label="About NMS Save Vault", command=self.on_about, underline=0)
-        self.configure(menu=bar)
+        # Not attached with configure(menu=): the OS would draw its own light strip. The
+        # model menu feeds an in-window bar that follows the theme.
+        self.menu_strip = MenuStrip(self, bar)
+        self.menu_strip.pack(side=tk.TOP, fill=tk.X)
+        ttk.Separator(self).pack(side=tk.TOP, fill=tk.X)
+        self.themed.register(self.menu_strip)
+        for letter, button in self.menu_strip.mnemonics.items():
+            for key in (letter.lower(), letter.upper()):
+                self.bind_all(f"<Alt-Key-{key}>", self._shortcut(lambda b=button: self.menu_strip.post(b)))
+        self.bind_all("<F10>", self._shortcut(self.menu_strip.open_first))
         self.bind_all("<F1>", self._shortcut(self.on_help))
         self.bind_all("<F5>", self._shortcut(self.refresh))
         self.bind_all("<Control-Key-0>", self._shortcut(self._zoom_reset))
@@ -805,6 +816,7 @@ class App(tk.Tk):
             background=p["tip_bg"], foreground=p["tip_fg"], border=p["tip_border"]
         )
         self._dark = name == theme.DARK
+        self._palette = p
         for window in self._windows():
             theme.dark_title_bar(window, self._dark)
         self.themed.apply(p)
@@ -845,7 +857,11 @@ class App(tk.Tk):
         return out
 
     def _on_window_mapped(self, event) -> None:
-        if self._dark and isinstance(event.widget, (tk.Tk, tk.Toplevel)):
+        if not isinstance(event.widget, (tk.Tk, tk.Toplevel)):
+            return
+        if self._palette is not None:       # a window opened since the last theme change
+            theme.retint(event.widget, self._palette)
+        if self._dark:
             theme.dark_title_bar(event.widget, True)
 
     def _rezoom_pixels(self, zoom: float) -> None:

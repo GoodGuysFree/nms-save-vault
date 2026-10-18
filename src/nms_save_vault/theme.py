@@ -462,12 +462,24 @@ def apply(root: tk.Misc, choice: str, native_ttk_theme: str) -> str:
         arrowcolor=[("disabled", p["disabled_fg"])],
     )
 
+    # clam draws the indicator from indicatorbackground / indicatorforeground (the mark) and
+    # two border colours, all white-on-grey by default: a white box in dark mode. The right
+    # margin is the gap between the box and its text.
     for widget in ("TCheckbutton", "TRadiobutton"):
-        style.configure(widget, background=p["bg"], foreground=p["fg"], focuscolor=p["accent"])
+        style.configure(
+            widget, background=p["bg"], foreground=p["fg"], focuscolor=p["accent"],
+            indicatorbackground=p["field"], indicatorforeground=p["fg"],
+            upperbordercolor=p["muted"], lowerbordercolor=p["muted"],
+            indicatormargin=pxs(1, 1, 6, 1), padding=px(2))
         style.map(
             widget,
             background=[("active", p["bg"])],
             foreground=[("disabled", p["disabled_fg"])],
+            indicatorbackground=[("disabled", p["disabled_bg"]), ("pressed", p["hover_bg"]),
+                                 ("!disabled", p["field"])],
+            indicatorforeground=[("disabled", p["disabled_fg"]), ("!disabled", p["fg"])],
+            upperbordercolor=[("disabled", p["border"]), ("focus", p["accent"])],
+            lowerbordercolor=[("disabled", p["border"]), ("focus", p["accent"])],
             indicatorcolor=[("selected", p["accent"]), ("!selected", p["field"])],
         )
 
@@ -485,18 +497,144 @@ def apply(root: tk.Misc, choice: str, native_ttk_theme: str) -> str:
     root.option_add("*TCombobox*Listbox.foreground", p["fg"])
     root.option_add("*TCombobox*Listbox.selectBackground", p["sel_bg"])
     root.option_add("*TCombobox*Listbox.selectForeground", p["sel_fg"])
-    # Context menus and the Help window's Text are classic widgets too.
-    root.option_add("*Menu.background", p["bg"])
+    # Classic widgets keep the system colours unless told otherwise. Widgets made from now
+    # on take these defaults; the ones that exist are re-tinted by retint().
+    root.option_add("*Menu.background", p["btn_bg"])
     root.option_add("*Menu.foreground", p["fg"])
     root.option_add("*Menu.activeBackground", p["sel_bg"])
     root.option_add("*Menu.activeForeground", p["sel_fg"])
     root.option_add("*Menu.disabledForeground", p["disabled_fg"])
+    for cls in ("Toplevel", "Frame", "Labelframe", "Panedwindow", "Label", "Message",
+                "Checkbutton", "Radiobutton"):
+        root.option_add(f"*{cls}.background", p["bg"])
+        root.option_add(f"*{cls}.highlightBackground", p["bg"])
+    for cls in ("Label", "Message", "Checkbutton", "Radiobutton"):
+        root.option_add(f"*{cls}.foreground", p["fg"])
+    for cls in ("Checkbutton", "Radiobutton"):
+        root.option_add(f"*{cls}.activeBackground", p["bg"])
+        root.option_add(f"*{cls}.activeForeground", p["fg"])
+    for cls in ("Text", "Listbox", "Entry", "Spinbox", "Canvas"):
+        root.option_add(f"*{cls}.background", p["field"])
+        root.option_add(f"*{cls}.highlightBackground", p["bg"])
+        root.option_add(f"*{cls}.highlightColor", p["accent"])
+    for cls in ("Text", "Listbox", "Entry", "Spinbox"):
+        root.option_add(f"*{cls}.foreground", p["fg"])
+        root.option_add(f"*{cls}.insertBackground", p["fg"])
+        root.option_add(f"*{cls}.selectBackground", p["sel_bg"])
+        root.option_add(f"*{cls}.selectForeground", p["sel_fg"])
 
     try:
         root.configure(background=p["bg"])
     except tk.TclError:
         pass
+    retint(root, p)
     return name
+
+
+def style_menu(menu: tk.Menu, p: dict) -> None:
+    """Colour a dropdown or context menu; Tk draws its items itself on Windows."""
+    menu.configure(
+        background=p["btn_bg"], foreground=p["fg"], activebackground=p["sel_bg"],
+        activeforeground=p["sel_fg"], disabledforeground=p["disabled_fg"],
+        selectcolor=p["fg"], borderwidth=1, activeborderwidth=0)
+
+
+# Tk's own defaults, in case a colour name is unknown on this windowing system.
+_SYSTEM_COLOURS = ("SystemButtonFace", "SystemWindow", "SystemWindowText", "white", "black",
+                   "#d9d9d9", "#ffffff", "#000000", "#f0f0f0")
+
+
+def _hex(widget: tk.Misc, colour: str) -> str | None:
+    try:
+        r, g, b = widget.winfo_rgb(colour)
+    except tk.TclError:
+        return None
+    return f"#{r >> 8:02x}{g >> 8:02x}{b >> 8:02x}"
+
+
+def retint(widget: tk.Misc, p: dict) -> None:
+    """Give every classic Tk widget under ``widget`` the colours of palette ``p``.
+
+    Only colours that are stale are replaced: the system default, or a surface colour of
+    either palette (the previous theme). A colour a widget was given on purpose - the green
+    and amber outcome boxes, a lane colour - is none of those and is left alone, as are the
+    widgets that recolour themselves (indicator-less chip buttons).
+    """
+    known: dict[str, str] = {}
+    for palette in PALETTES.values():
+        for key in ("bg", "field", "card"):
+            known.setdefault(palette[key], key)
+    known_fg = {palette["fg"] for palette in PALETTES.values()}
+    known_fg |= {h for c in ("SystemWindowText", "black", "#000000") if (h := _hex(widget, c))}
+    defaults = {h for c in _SYSTEM_COLOURS if (h := _hex(widget, c))}
+
+    def stale(w: tk.Misc, option: str) -> str | None:
+        """The palette key to use for ``option`` if its value is stale, else None."""
+        try:
+            current = _hex(w, str(w.cget(option)))
+        except tk.TclError:
+            return None
+        if current is None:
+            return None
+        if current in known:
+            return known[current]
+        return "default" if current in defaults else None
+
+    def put(w: tk.Misc, option: str, fallback: str, *, fg: bool = False) -> None:
+        if fg:
+            try:
+                current = _hex(w, str(w.cget(option)))
+            except tk.TclError:
+                return
+            if current not in known_fg:
+                return
+            key = fallback
+        else:
+            key = stale(w, option)
+            if key is None:
+                return
+            if key == "default":
+                key = fallback
+        try:
+            w.configure(**{option: p[key]})
+        except tk.TclError:
+            pass
+
+    stack = [widget]
+    while stack:
+        w = stack.pop()
+        stack.extend(w.winfo_children())
+        cls = w.winfo_class()
+        if cls in ("Tk", "Toplevel"):
+            try:
+                w.configure(background=p["bg"])
+            except tk.TclError:
+                pass
+        elif cls == "Menu":
+            style_menu(w, p)
+        elif cls in ("Frame", "Labelframe", "Panedwindow", "Label", "Message"):
+            put(w, "background", "bg")
+            put(w, "foreground", "fg", fg=True)
+            put(w, "highlightbackground", "bg")
+        elif cls in ("Checkbutton", "Radiobutton"):
+            if str(w.cget("indicatoron")) in ("0", "false"):
+                continue                          # a chip: it colours itself
+            put(w, "background", "bg")
+            put(w, "foreground", "fg", fg=True)
+            put(w, "highlightbackground", "bg")
+            put(w, "activebackground", "bg")
+            put(w, "activeforeground", "fg", fg=True)
+            w.configure(selectcolor=p["field"])
+        elif cls in ("Text", "Listbox", "Entry", "Spinbox", "Canvas"):
+            put(w, "background", "field")
+            put(w, "highlightbackground", "bg")
+            if cls != "Canvas":
+                put(w, "foreground", "fg", fg=True)
+                try:
+                    w.configure(insertbackground=p["fg"], selectbackground=p["sel_bg"],
+                                selectforeground=p["sel_fg"])
+                except tk.TclError:
+                    pass
 
 
 def _style_containers(style: ttk.Style, p: dict) -> None:
@@ -545,8 +683,7 @@ _DWM_DARK_MODE = 20
 
 def dark_title_bar(window: tk.Misc, dark: bool) -> bool:
     """Ask Windows 11 to draw ``window``'s title bar dark (or light again). Best effort: an
-    older Windows, another OS or a window not yet mapped simply keeps its title bar.
-    The native menu bar stays light in dark mode; Tk 8.6 cannot theme it (D6 3.12)."""
+    older Windows, another OS or a window not yet mapped simply keeps its title bar."""
     if sys.platform != "win32":
         return False
     import ctypes

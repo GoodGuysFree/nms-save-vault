@@ -814,7 +814,8 @@ def _invoke(menu: tk.Menu, label: str) -> None:
 def test_the_menu_bar_reaches_every_toolbar_action(app):
     menus = _menus(app)
     assert list(menus) == ["File", "Edit", "View", "Live", "Tools", "Help"]
-    assert app.cget("menu") == str(app.menubar)
+    assert not app.cget("menu")                  # no native strip: the in-window bar shows them
+    assert [b.cget("text") for b in app.menu_strip.buttons] == list(menus)
     offered = {label for menu in menus.values() for label in _entries(menu)}
     in_menus = {
         "Backup live": "Back up live folder now",

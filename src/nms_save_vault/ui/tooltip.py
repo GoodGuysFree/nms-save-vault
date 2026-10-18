@@ -52,6 +52,7 @@ class Tooltip:
             return
         self.window = tk.Toplevel(self.widget)
         self.window.wm_overrideredirect(True)  # no title bar / border
+        self.window.configure(background=TOOLTIP_STYLE["border"])
         tk.Label(
             self.window,
             text=shown(self.widget, text),
