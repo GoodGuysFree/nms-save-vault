@@ -92,13 +92,15 @@ class OplogNotWrittenWarning(UserWarning):
 
 
 class FeatureNotYetAvailableError(OperationError):
-    """A deliberately-gated capability the UI should present as 'coming soon',
-    not as an error/failure."""
+    """A capability this path deliberately does not offer; the UI shows the message as
+    information, not as an error/failure."""
 
 
 # Shown when a write would transfer a save between Steam and Xbox (either direction).
-# Same-platform writes (Steam->Steam, Xbox->Xbox) are supported; cross-platform is gated.
-CROSS_PLATFORM_MSG = "Transferring saves between Steam and Xbox / Game Pass is coming soon."
+# Same-platform writes (Steam->Steam, Xbox->Xbox) run here; a cross-platform move goes through
+# the Organizer's plan, which has the checks and the confirmation the classic path lacks.
+CROSS_PLATFORM_MSG = ("To move a save between Steam and Xbox, use the Organizer tab "
+                      "(Move to live).")
 
 
 @dataclass
@@ -149,7 +151,7 @@ def _steam_cloud_on(folder: Path) -> bool:
 
 
 def _guard_same_platform(src: Path, dst: Path) -> None:
-    """Cross-platform (Steam<->Xbox) transfer is gated; same-platform is supported."""
+    """Cross-platform (Steam<->Xbox) is not done here (use the Organizer); same-platform is."""
     if savedir.platform_of(src) != savedir.platform_of(dst):
         raise FeatureNotYetAvailableError(CROSS_PLATFORM_MSG)
 

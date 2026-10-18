@@ -260,10 +260,21 @@ def test_pick_groups_split_vault_only_older_and_live_elsewhere(view):
     from nms_save_vault.ui.organizer.pick import ELSEWHERE, OLDER, VAULT, pick_groups
 
     main = next(line.pid for line in view.model.lines() if line.name == "Main")
-    groups = pick_groups(view.model, main, "steam")
+    groups = pick_groups(view.model, main)
     assert [line.name for line in groups[OLDER]] == ["Main"]
     assert all(line.live for line in groups[ELSEWHERE]) and not any(l.live for l in groups[VAULT])
-    assert pick_groups(view.model, main, "steam", "zzz") == {VAULT: [], OLDER: [], ELSEWHERE: []}
+    assert pick_groups(view.model, main, "zzz") == {VAULT: [], OLDER: [], ELSEWHERE: []}
+
+
+def test_pick_groups_list_the_other_platforms_saves_too():
+    from types import SimpleNamespace as NS
+
+    from nms_save_vault.ui.organizer.pick import VAULT, pick_groups
+
+    lines = [NS(pid="s", name="Steamy", platforms=("steam",), live=()),
+             NS(pid="x", name="Xboxy", platforms=("xbox",), live=())]
+    model = NS(lines=lambda: lines)
+    assert [l.name for l in pick_groups(model, None)[VAULT]] == ["Steamy", "Xboxy"]
 
 
 def test_replace_with_picks_a_version_then_plans_the_fixed_slot(view, gui_app):

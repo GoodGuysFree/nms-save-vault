@@ -1103,7 +1103,7 @@ def main(argv=None) -> int:
     try:
         return args.func(args)
     except ops.FeatureNotYetAvailableError as e:
-        print(f"coming soon: {e}", file=sys.stderr)
+        print(str(e), file=sys.stderr)
         return 3
     except ops.GameRunningError as e:
         print(f"refused: {e}\n(use --force to override at your own risk)", file=sys.stderr)

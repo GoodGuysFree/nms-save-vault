@@ -1697,7 +1697,7 @@ class App(tk.Tk):
 
         err = holder.get("error")
         if isinstance(err, ops.FeatureNotYetAvailableError):
-            _showinfo("Coming soon", str(err))
+            _showinfo("Use the Organizer", str(err))
             return
         if isinstance(err, ops.WrittenButInvalidError):
             self.refresh()                         # the live folder WAS changed

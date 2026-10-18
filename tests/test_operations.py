@@ -156,11 +156,11 @@ def _xbox_dir(tmp_path: Path) -> Path:
 
 
 def test_repopulate_from_xbox_source_is_gated(sandbox, tmp_path):
-    """Xbox->Steam repopulate is refused as 'coming soon' before touching the live folder
+    """Xbox->Steam repopulate is refused (use the Organizer) before touching the live folder
     (and before the XXTEA path that would crash on Xbox plaintext meta)."""
     live, vault = sandbox
     xbox = _xbox_dir(tmp_path)
-    with pytest.raises(ops.FeatureNotYetAvailableError):
+    with pytest.raises(ops.FeatureNotYetAvailableError, match="Organizer tab"):
         ops.repopulate_slot(vault, xbox, 1, live, 1, allow_game_running=True)
 
 

@@ -18,16 +18,13 @@ VAULT, OLDER, ELSEWHERE = "vault", "older", "elsewhere"
 GROUP_TITLES = {VAULT: "VAULT ONLY", OLDER: "OLDER VERSIONS OF", ELSEWHERE: "LIVE ELSEWHERE"}
 
 
-def pick_groups(model: ReadModel, slot_pid: str | None, platform: str,
-                text: str = "") -> dict[str, list[Line]]:
-    """The save files the picker offers for a slot of ``platform``: the ones in no live slot,
-    the slot's own save file (its older versions), and the ones live in another slot. Other
-    platforms' saves are not listed (moving between Steam and Xbox comes later)."""
+def pick_groups(model: ReadModel, slot_pid: str | None, text: str = "") -> dict[str, list[Line]]:
+    """The save files the picker offers for a slot: the ones in no live slot, the slot's own
+    save file (its older versions), and the ones live in another slot. Saves of the other
+    platform are listed too; the plan applies the cross-platform checks and confirmation."""
     needle = text.strip().lower()
     groups: dict[str, list[Line]] = {VAULT: [], OLDER: [], ELSEWHERE: []}
     for line in model.lines():
-        if platform not in line.platforms:
-            continue
         if needle and needle not in line_name(line).lower():
             continue
         if line.pid == slot_pid:
@@ -89,11 +86,11 @@ class VersionPicker(ttk.Frame):
                            activebackground=p["hover_bg"], relief="groove", borderwidth=1)
 
     def counts(self) -> dict[str, int]:
-        groups = pick_groups(self.model, self.slot_pid, self.platform)
+        groups = pick_groups(self.model, self.slot_pid)
         return {key: len(lines) for key, lines in groups.items()}
 
     def refresh(self) -> None:
-        groups = pick_groups(self.model, self.slot_pid, self.platform, self.find_var.get())
+        groups = pick_groups(self.model, self.slot_pid, self.find_var.get())
         totals = self.counts()
         names = {VAULT: "Vault only", OLDER: f"Older versions of {self.slot_name}",
                  ELSEWHERE: "Live elsewhere"}
