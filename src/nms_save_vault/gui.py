@@ -578,13 +578,13 @@ class App(tk.Tk):
 
         tools = menu("Tools")
         tools.add_command(label="Vault upgrade...", command=self.open_vault_window, underline=0)
-        tools.add_command(label="Free old backup folders...", command=self.on_free_old_folders,
-                          underline=0)
+        free_label = self._free_menu_label()
+        tools.add_command(label=free_label, command=self.on_free_old_folders, underline=0)
         tools.add_command(label="Play time...", command=self.on_playtime, underline=0)
         tools.add_command(label="Check for updates...", command=self.on_check_updates,
                           underline=0)
         bind_menu_hints(tools, {"Vault upgrade...": VAULT_UPGRADE_TIP,
-                                "Free old backup folders...": FREE_OLD_TIP}, self._menu_hint)
+                                free_label: FREE_OLD_TIP}, self._menu_hint)
 
         about = menu("Help")
         about.add_command(label="Help", command=self.on_help, accelerator="F1", underline=0)
@@ -678,6 +678,16 @@ class App(tk.Tk):
         return VaultWindow(self, worker=self.worker, themed=self.themed, env=env,
                            on_changed=lambda: self.organizer_view.vault_changed())
 
+    def _free_menu_label(self) -> str:
+        """An interrupted freeing of old folders is resumed by the same item (D3 4.5 step 4)."""
+        from .core.store import free as freeing
+
+        try:
+            pending = freeing.free_pending(self.vault.root)
+        except OSError:
+            pending = False
+        return "Finish freeing old backup folders..." if pending else "Free old backup folders..."
+
     def on_free_old_folders(self) -> None:
         """Tools > Free old backup folders (D3 4.5): show what would be freed and what is left
         as it is, ask, then delete behind the wait dialog. Nothing is deleted without the yes."""
@@ -721,6 +731,9 @@ class App(tk.Tk):
         _showinfo(title, holder["result"].message)
 
     def _offer_interrupted_undo(self) -> None:
+        if self._free_menu_label().startswith("Finish"):
+            self.status.set("Freeing old backup folders stopped before its end: "
+                            "Tools > Finish freeing old backup folders...")
         if needs_attention(self.vault.root):
             self.open_vault_window()
 

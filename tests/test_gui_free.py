@@ -95,3 +95,20 @@ def test_the_gui_import_of_a_store_vault_merges(app, tmp_path, dialogs, monkeypa
     assert "Merge the new ones" in asked[0] and "1 new" in asked[0]
     assert made.id in {e.id for e in vstore.open_store(app.vault.root).entries()}
     assert dialogs.take()[-1][0] == "showinfo"
+
+
+def test_an_interrupted_freeing_is_offered_again(app, folded, dialogs):
+    from nms_save_vault.core import store as vstore
+
+    assert app._free_menu_label() == "Free old backup folders..."
+    plan = vstore.plan_free(Vault(folded.vault.root).load(), folded.store, live_roots=[folded.live])
+
+    def crash(point):
+        if point == "free.after_delete":
+            raise KeyboardInterrupt("stopped")
+
+    with pytest.raises(KeyboardInterrupt):
+        vstore.run_free(folded.store, plan, live_roots=[folded.live], faults=crash)
+    assert app._free_menu_label() == "Finish freeing old backup folders..."
+    app._offer_interrupted_undo()
+    assert "stopped before its end" in app.status.get()
