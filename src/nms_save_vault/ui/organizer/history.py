@@ -25,7 +25,8 @@ from ..fmt import local_time, play_time
 from ..redact import RedactingTreeview, rtext, rtitle, set_label
 from ..themeaware import ThemeRegistry
 from .lanes import LaneCell, lane_cells, lane_width
-from .words import line_name, version_numbers
+from ..tooltip import Tooltip
+from .words import NOT_LINKED_TIP, line_name, version_numbers
 
 STYLE = "Organizer.Treeview"
 MODES = ("key", "all")
@@ -439,6 +440,8 @@ class HistoryWindow(tk.Toplevel):
         vsb.pack(side=tk.RIGHT, fill=tk.Y)
         self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         self.tree.bind("<<TreeviewSelect>>", self._selected)
+        self.dated_tip = Tooltip(self.tree, lambda _w, iid: NOT_LINKED_TIP if (
+            self.rows.get(iid) is not None and self.rows[iid].key == ("sec", "dated")) else "")
         self.tree.bind("<Button-1>", self._clicked, add="+")
 
         self.panel_title = ttk.Label(right, text="", style="Head.TLabel", anchor="w",

@@ -26,6 +26,7 @@ from ...core.liveops import (
 from ...core.organizer import Organizer
 from ...core.organizer.readmodel import BoardSlot, LiveSource, ReadModel
 from ..dpi import px, pxs
+from ..menuhint import bind_menu_hints
 from ..redact import set_label
 from ..themeaware import ThemeRegistry
 from ..worker import UiWorker
@@ -37,6 +38,7 @@ from .notes import NotesWindow, toggle_pin
 from . import factsui
 from .ops import DoneBar, OpsLogWindow, PlanDialog, RecoveryDialog, StepsWindow
 from .table import OrganizerTable
+from .words import PROMOTE_TIP
 
 #: Coming back to the tab rescans when the last look is older than this (seconds).
 STALE_AFTER = 5.0
@@ -112,7 +114,8 @@ class OrganizerView(ttk.Frame):
                  prefs: MutableMapping, save_prefs: Callable[[], None],
                  make_organizer: Callable[[], Organizer],
                  make_context: Callable[[Organizer], OpContext] | None = None,
-                 on_last_change: Callable[[str], None] | None = None) -> None:
+                 on_last_change: Callable[[str], None] | None = None,
+                 on_hint: Callable[[str], None] | None = None) -> None:
         super().__init__(master)
         self.worker = worker
         self.themed = themed
@@ -121,6 +124,7 @@ class OrganizerView(ttk.Frame):
         self.make_organizer = make_organizer
         self.make_context = make_context or default_context
         self.on_last_change = on_last_change
+        self.on_hint = on_hint
         self.move_dialog: MoveDialog | None = None
         self.plan_dialog: PlanDialog | None = None
         self.log_window: OpsLogWindow | None = None
@@ -716,6 +720,9 @@ class OrganizerView(ttk.Frame):
             menu.add_command(label="Keep a copy in the vault now",
                              command=lambda: self.run_plan("Keep a copy in the vault",
                                                            plan_keep, target))
+        bind_menu_hints(menu, {f"Make the {w} load": PROMOTE_TIP
+                               for w in ("auto-save", "restore point")},
+                        lambda text: self.on_hint(text) if self.on_hint else None)
         menu.add_separator()
         menu.add_command(label="History of this slot...",
                          command=lambda: self.open_log(targets=[target]))

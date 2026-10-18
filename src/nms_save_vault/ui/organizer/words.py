@@ -12,6 +12,19 @@ NO_BACKUP_TIP = ("This version exists only in the live save folder. No backup in
                  "holds it yet. Back up (or let a move keep it) so it is not lost if the "
                  "slot is overwritten.")
 
+#: Owner-approved hover and status-bar texts for words that are not obvious. Static, so
+#: no names can be in them (they still pass the redaction filter when shown).
+NOT_LINKED_TIP = ("No recorded move or backup links these versions, so they are listed by "
+                  "date. Running the organizer bootstrap links versions that backups saw.")
+OUTSIDE_ONLY_TIP = ("Kept only in a folder you made yourself that the app catalogues in "
+                    "place - not copied into the vault.")
+PROMOTE_TIP = "Make the slot's other save the one the game loads."
+PIN_TIP = "A pinned save is never suggested as the one to replace when a move needs a slot."
+VAULT_UPGRADE_TIP = ("One-time conversion to the new storage. Your vault is copied aside "
+                     "first, so it can be undone.")
+SLOT_MARKERS_TIP = ("* = the save the game loads. / moved = the file was moved here from "
+                    "another slot.")
+
 #: How a drawn parent was seen (D1 EdgeMethod); nothing else draws a link.
 METHOD_WORDS = {
     "op": "put live by the app",

@@ -24,7 +24,8 @@ from ..redact import rtext, set_label
 from ..themeaware import ThemeRegistry
 from ..tooltip import Tooltip
 from .live import NEVER_EMPTIES, refill_text
-from .words import METHOD_WORDS, NO_BACKUP, NO_BACKUP_TIP, find_row, line_name, slot_words, version_numbers
+from .words import (METHOD_WORDS, NO_BACKUP, NO_BACKUP_TIP, OUTSIDE_ONLY_TIP, PIN_TIP, find_row,
+                    line_name, slot_words, version_numbers)
 
 #: A segment of a page: its text and its tags. ``("link", head)`` makes a link to a version
 #: of the shown save file, ``("link", head, pid)`` to one of another.
@@ -159,7 +160,9 @@ def version_card(model: ReadModel, pid: str, head: str) -> list[Segment]:
         out += _row("Led to", *parts)
     words = _version_state(row)
     if words:
-        out += _row("State", (words, ("warn", "nobackup") if NO_BACKUP in words else ()))
+        tags = (("warn", "nobackup") if NO_BACKUP in words
+                else ("outside",) if "only outside the vault" in words else ())
+        out += _row("State", (words, tags))
     if row.label:
         out += _row("Label", (row.label, ("note",)))
     if row.comment:
@@ -301,6 +304,7 @@ class DetailPane(ttk.Frame):
         self.actions.pack(side=tk.TOP, fill=tk.X, pady=pxs(6, 6))
         self.notes_button = ttk.Button(self.actions, text="Notes...", command=self._notes)
         self.pin_button = ttk.Button(self.actions, text="Pin", command=self._pin)
+        self.pin_tip = Tooltip(self.pin_button, lambda _w, _k: PIN_TIP, lambda _e: "pin")
         self.move_button = ttk.Button(self.actions, text="Move to live...", command=self._move)
         self.history_button = ttk.Button(self.actions, text="History...", command=self._history)
         self.pages = ttk.Notebook(self)
@@ -333,9 +337,13 @@ class DetailPane(ttk.Frame):
         text.configure(yscrollcommand=bar.set, state="disabled")
         bar.pack(side=tk.RIGHT, fill=tk.Y)
         text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        text.nobackup_tip = Tooltip(text, lambda _w, key: NO_BACKUP_TIP if key else "",
-                                    lambda e: "tip" if "nobackup" in text.tag_names(
-                                        f"@{e.x},{e.y}") else None)
+        def key_at(e):
+            names = text.tag_names(f"@{e.x},{e.y}")
+            return "tip" if "nobackup" in names else "outside" if "outside" in names else None
+
+        text.nobackup_tip = Tooltip(
+            text, lambda _w, key: {"tip": NO_BACKUP_TIP, "outside": OUTSIDE_ONLY_TIP}.get(key, ""),
+            key_at)
         return text
 
     # --- theme ---------------------------------------------------------------------------

@@ -33,7 +33,9 @@ from .core.organizer import Organizer
 from .ui.fmt import local_time as _fmt_ts
 from .ui.fmt import play_time as _fmt_play
 from .ui.redact import RedactingTreeview
+from .ui.menuhint import bind_menu_hints
 from .ui.tooltip import TOOLTIP_STYLE, Tooltip
+from .ui.organizer.words import PROMOTE_TIP, SLOT_MARKERS_TIP, VAULT_UPGRADE_TIP
 from .ui.organizer.ops import OpsLogWindow, PlanDialog, StepsWindow
 from .ui.organizer.panic import PanicDialog
 from .ui.organizer.vaultwin import VaultEnv, VaultWindow, needs_attention
@@ -552,11 +554,14 @@ class App(tk.Tk):
                          underline=5)
         live.add_command(label="Promote", command=self.on_promote, underline=0)
 
+        bind_menu_hints(live, {"Promote": PROMOTE_TIP}, self._menu_hint)
+
         tools = menu("Tools")
         tools.add_command(label="Vault upgrade...", command=self.open_vault_window, underline=0)
         tools.add_command(label="Play time...", command=self.on_playtime, underline=0)
         tools.add_command(label="Check for updates...", command=self.on_check_updates,
                           underline=0)
+        bind_menu_hints(tools, {"Vault upgrade...": VAULT_UPGRADE_TIP}, self._menu_hint)
 
         about = menu("Help")
         about.add_command(label="Help", command=self.on_help, accelerator="F1", underline=0)
@@ -639,7 +644,7 @@ class App(tk.Tk):
         self.organizer_view = OrganizerView(
             self.notebook, worker=self.worker, themed=self.themed, prefs=self.state.ui,
             save_prefs=self._save_state_quietly, make_organizer=self._make_organizer,
-            on_last_change=self.last_change.set)
+            on_last_change=self.last_change.set, on_hint=self._menu_hint)
         self.notebook.add(self.classic_view, text=VIEW_TITLES[CLASSIC])
         self.notebook.add(self.organizer_view, text=VIEW_TITLES[ORGANIZER])
         self._build_classic_view(self.classic_view)
@@ -696,6 +701,10 @@ class App(tk.Tk):
                 logging.getLogger(__name__).exception("the content index could not start")
         return organizer
 
+    def _menu_hint(self, text: str) -> None:
+        """A menu entry's explanation goes to the status bar while it is highlighted."""
+        self.status.set(aliases.scrub(text))
+
     def _build_classic_view(self, parent: ttk.Frame) -> None:
         self.toolbar = FlowBar(parent)
         self.toolbar.pack(side=tk.TOP, fill=tk.X, padx=px(6), pady=px(4))
@@ -715,7 +724,9 @@ class App(tk.Tk):
             ("Accounts...", self.on_accounts),
             ("Help", self.on_help),
         ]:
-            self.toolbar.add(text, cmd)
+            button = self.toolbar.add(text, cmd)
+            if text == "Promote":
+                self.promote_tip = Tooltip(button, lambda _w, _k: PROMOTE_TIP, lambda _e: "promote")
 
         controls = ttk.Frame(parent)
         controls.pack(side=tk.TOP, fill=tk.X, padx=px(6), pady=pxs(0, 4))
@@ -1450,6 +1461,7 @@ class App(tk.Tk):
                 continue
             mark = "  <- the game loads this one" if newest and m.label == newest.label else ""
             lines.append(f"{m.save_type_label:<14} {_fmt_ts(m.effective_timestamp)}{mark}")
+        lines += ["", SLOT_MARKERS_TIP]
         return "\n".join(lines)
 
     def _member_tip(self, m, sv) -> str:
@@ -1473,6 +1485,7 @@ class App(tk.Tk):
             lines.append(f"Cloud:      {m.cloud_status}")
         if m.note:
             lines.append(f"Note:       {m.note}")
+        lines += ["", SLOT_MARKERS_TIP]
         return "\n".join(lines)
 
     def _entry_tip(self, entry) -> str:
@@ -2700,6 +2713,15 @@ KEYBOARD
 - F1 opens this help, F5 refreshes.
 - Ctrl+1 shows the Organizer tab, Ctrl+2 the Live saves and backups tab. The app opens
   on the tab you used last.
+
+MARKERS AND WORDS
+- Not linked, by date: no recorded move or backup links those versions, so they are
+  listed by date. Running the organizer bootstrap links versions that backups saw.
+- Only outside the vault: kept only in a folder you made yourself that the app
+  catalogues in place - not copied into the vault.
+- Pin: a pinned save is never suggested as the one to replace when a move needs a slot.
+- * and moved (Live saves and backups tab): * = the save the game loads; moved = the file
+  was moved here from another slot.
 
 RIGHT-CLICK
 Every row offers exactly what makes sense for it:

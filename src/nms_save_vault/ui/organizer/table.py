@@ -36,7 +36,8 @@ from ..themeaware import ThemeRegistry
 from ..tooltip import Tooltip
 from . import factsui
 from .lanes import lane_cells, lane_width
-from .words import NO_BACKUP, NO_BACKUP_TIP, line_name, version_numbers
+from .words import (NO_BACKUP, NO_BACKUP_TIP, NOT_LINKED_TIP, OUTSIDE_ONLY_TIP, line_name,
+                    version_numbers)
 
 STYLE = "Organizer.Treeview"
 FIND_DELAY_MS = 150
@@ -319,6 +320,8 @@ def version_tip(row: VersionRow) -> str:
     if (row.durable_copies == 0 and "gone" not in row.flags
             and "outside-only" not in row.flags):
         out.append(f"{NO_BACKUP}: {NO_BACKUP_TIP}")
+    if row.durable_copies == 0 and "gone" not in row.flags and "outside-only" in row.flags:
+        out.append(f"Only outside the vault: {OUTSIDE_ONLY_TIP}")
     return "\n".join(out)
 
 
@@ -807,6 +810,9 @@ class OrganizerTable(ttk.Frame):
             pid, head = self._version_of[iid]
             row = next((r for r in self.model.versions(pid) if r.head == head), None)
             return version_tip(row) if row is not None else ""
+        spec = self._values.get(iid)
+        if isinstance(spec, RowSpec) and spec.key == ("sep",):
+            return NOT_LINKED_TIP
         return ""
 
 
