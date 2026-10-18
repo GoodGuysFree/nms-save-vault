@@ -34,7 +34,7 @@ from ..themeaware import ThemeRegistry
 from ..worker import UiWorker, finisher, release_tk_variables, weak
 from .detail import Segment
 from .pick import VersionPicker
-from .words import find_row, line_name
+from .words import find_row, line_name, plain
 
 SEVERITY_ORDER = {"block": 0, "confirm": 1, "warn": 2, "info": 3}
 MARKS = {"info": "i", "warn": "!", "confirm": "?", "block": "X"}
@@ -74,7 +74,7 @@ def _prefer(row) -> Location | None:
                     raw.managed)
 
 
-def candidate_values(c: SlotCandidate) -> tuple[str, ...]:
+def candidate_values(c: SlotCandidate, *, in_banner: bool = False) -> tuple[str, ...]:
     """The columns of a slot row: Slot, In it now, Play time, Last played, In the vault, note."""
     now = "empty (emptied outside the app)" if c.state == "empty" else (
         c.line_name or ("(unreadable)" if c.state == "unreadable" else "(unnamed)"))
@@ -89,10 +89,16 @@ def candidate_values(c: SlotCandidate) -> tuple[str, ...]:
         notes.append("copied to the vault first")
     if c.pinned:
         notes.append("pinned - not suggested")
-    if c.blocked:
-        notes.append(f"not possible: {c.blocked}")
+    if c.blocked and not in_banner:
+        notes.append(f"not possible: {plain(c.blocked)}")
     return (f"S{c.target.slot}", now, play_time(c.play_time), local_time(c.last_played),
             "-" if c.state == "empty" else VAULT_WORDS[c.vault_copy], "; ".join(notes))
+
+
+def _common_block(picker: EvictionPicker) -> str:
+    """The block that every slot has, said once in the banner instead of on every row."""
+    codes = {c.blocked for c in picker.candidates}
+    return codes.pop() if len(codes) == 1 and picker.candidates else ""
 
 
 def outcome_paragraph(plan: PlacePlan) -> str:
@@ -512,7 +518,7 @@ class MoveDialog(tk.Toplevel):
             if blocked:
                 notes.append(f"{label}: " + (
                     "moving saves between Steam and Xbox comes in a later version."
-                    if blocked == "CROSS_PLATFORM_GATED" else f"not available ({blocked})."))
+                    if blocked == "CROSS_PLATFORM_GATED" else f"not available: {plain(blocked)}"))
         set_label(self.account_note, " ".join(notes))
         if len(self.accounts) == 1:
             self.account_bar.pack_configure(padx=px(2))
@@ -532,6 +538,9 @@ class MoveDialog(tk.Toplevel):
     def _show_strip(self, picker: EvictionPicker) -> None:
         lines = [w.text for w in picker.warnings
                  if not (picker.cloud.steam_cloud and w.code == "STEAM_CLOUD_OTHER_DEVICE")]
+        common = _common_block(picker)
+        if common and plain(common) not in lines:
+            lines.insert(0, plain(common))
         if picker.cloud.steam_cloud:
             lines.append("Steam Cloud is on. If Steam asks at the next launch which copy to "
                          "keep, choose the one on this PC.")
@@ -546,11 +555,12 @@ class MoveDialog(tk.Toplevel):
     def _show_slots(self, picker: EvictionPicker) -> None:
         self.tree.delete(*self.tree.get_children())
         self._rows.clear()
+        common = _common_block(picker)
         for c in picker.candidates:
             iid = f"s{c.target.slot}"
             tags = ["sugg"] if c.suggested else ["muted"] if c.blocked or c.pinned else (
                 ["risk"] if c.state not in ("empty",) and c.vault_copy != "durable" else [])
-            self.tree.insert("", "end", iid=iid, text="( )", values=candidate_values(c),
+            self.tree.insert("", "end", iid=iid, text="( )", values=candidate_values(c, in_banner=bool(common)),
                              tags=tags)
             self._rows[iid] = c
 

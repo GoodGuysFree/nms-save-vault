@@ -831,7 +831,7 @@ verifies anyway (2.7).
 |---|---|---|
 | `StoreUnavailable` | vault folder gone (USB unplugged), `FORMAT` unreadable | `VAULT_UNAVAILABLE` / "The vault is not reachable." |
 | `StoreBusy` | lock timeout on a commit | "The vault is busy. Try again." |
-| `StoreNotUpgraded` | organizer live op or store write in a legacy or upgrading vault | `VAULT_UPGRADE_NEEDED` / "Upgrade the vault first (Vault > Upgrade the vault)." / "The vault is being upgraded." |
+| `StoreNotUpgraded` | organizer live op or store write in a legacy or upgrading vault | `VAULT_UPGRADE_NEEDED` / "Upgrade the vault first (Tools > Vault upgrade...)." / "The vault is being upgraded." |
 | `StoreTooNew` | `FORMAT` compat newer than this app | "This vault was upgraded by a newer NMS Save Vault. Update the app." Opens read-only when only `write_compat` is newer |
 | `InsufficientSpace` | free space < worst case + 64 MiB | `VAULT_SPACE` / "Not enough free space in the vault drive (needs N MB)." |
 | `SourceChanged` | a live file changed three times while read | "A save changed while it was being copied. Is the game running?" |

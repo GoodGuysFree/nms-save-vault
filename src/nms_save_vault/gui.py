@@ -593,7 +593,7 @@ class App(tk.Tk):
         env = VaultEnv(self.vault.root, [Path(s.path) for s in self.state.live_sources],
                        self.state, __version__)
         return VaultWindow(self, worker=self.worker, themed=self.themed, env=env,
-                           on_changed=lambda: self.organizer_view.rescan())
+                           on_changed=lambda: self.organizer_view.vault_changed())
 
     def _offer_interrupted_undo(self) -> None:
         if needs_attention(self.vault.root):

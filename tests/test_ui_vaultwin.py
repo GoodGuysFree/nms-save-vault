@@ -7,6 +7,7 @@ import shutil
 import threading
 import time
 import tkinter as tk
+from tkinter import ttk
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -222,3 +223,79 @@ def test_the_tools_menu_opens_it_and_nothing_else_does(gui_app):
             labels += [sub.entrycget(j, "label") for j in range(sub.index("end") + 1)
                        if sub.type(j) == "command"]
     assert "Vault upgrade..." in labels and "Undo the last change to the active live folder" in labels
+
+
+def test_select_all_and_unselect_all_and_a_label_that_names_the_parent_folder(gui_app, legacy):
+    win = _upgrade(gui_app, legacy)
+    win.refresh()
+    _wait(gui_app, lambda: not win.busy and win.copy_vars)
+    texts = [w.cget("text") for w in win.body.winfo_children()[-1].winfo_children()
+             if isinstance(w, ttk.Checkbutton)] or _checkbutton_texts(win.body)
+    assert any(f"{legacy.hand.parent.name}\\{legacy.hand.name}" in t for t in texts)
+    assert win.copy_button.instate(["disabled"])
+    _button(win.body, "Select all").invoke()
+    assert all(v.get() for v in win.copy_vars.values()) and win.copy_button.instate(["!disabled"])
+    _button(win.body, "Unselect all").invoke()
+    assert not any(v.get() for v in win.copy_vars.values()) and win.copy_button.instate(["disabled"])
+    win.destroy()
+
+
+def _walk(widget):
+    for child in widget.winfo_children():
+        yield child
+        yield from _walk(child)
+
+
+def _checkbutton_texts(root) -> list[str]:
+    return [w.cget("text") for w in _walk(root) if isinstance(w, ttk.Checkbutton)]
+
+
+def _button(root, text):
+    return next(w for w in _walk(root) if isinstance(w, ttk.Button) and w.cget("text") == text)
+
+
+def test_the_organizer_in_the_same_app_is_rebuilt_after_the_upgrade(gui_app, legacy, tmp_path):
+    from nms_save_vault.core import liveops, platform
+    from nms_save_vault.core.liveops import PairSource
+    from nms_save_vault.core.liveops.planner import plan_place
+    from nms_save_vault.core.organizer import Organizer
+    from nms_save_vault.core.organizer.locator import Location
+    from nms_save_vault.core.organizer.model import LiveRef, StoreRef
+    from nms_save_vault.ui.organizer import view as V
+
+    from .liveops_support import host_in, live_source
+
+    host = host_in(tmp_path)
+    sources = [live_source(legacy.live)]
+    top = tk.Toplevel(gui_app)
+    top.withdraw()
+    view = V.OrganizerView(
+        top, worker=gui_app.worker, themed=gui_app.themed, prefs={}, save_prefs=lambda: None,
+        make_organizer=lambda: Organizer(legacy.vault.root, sources, host=host,
+                                         game_running=lambda: False),
+        make_context=lambda org: liveops.context_for(
+            org, host=host, machine_id="m-00000000000a", app_version="test",
+            game_probe=lambda: False))
+    view.pack()
+    view.rescan()
+    _wait(gui_app, lambda: not view.scanning and view.model is not None)
+    first = view.organizer
+    win = W.VaultWindow(top, worker=gui_app.worker, themed=gui_app.themed, env=legacy.env,
+                        on_changed=view.vault_changed)
+    _wait(gui_app, lambda: not win.busy and win.state is not None)
+    win.confirm_var.set(True)
+    win._update_buttons()
+    win.upgrade()
+    _wait(gui_app, lambda: not win.busy and win.state.mode == "store")
+    _wait(gui_app, lambda: not view.scanning and view.organizer is not first)
+    ctx = view.make_context(view.organizer)
+    entry = ctx.versions.entries()[0]
+    a, b = entry.member(1, "A"), entry.member(1, "B")
+    source = PairSource(a.vid, b.vid, None,
+                        Location(a.vid, "store", StoreRef(entry.id), 1, "A", "steam", True))
+    live = LiveRef("steam", legacy.live.name)
+    for slot in (2, 15):                                  # a full slot and an empty one
+        plan = plan_place(ctx, source, live.target(slot))
+        assert "VAULT_UPGRADE_NEEDED" not in {w.code for w in plan.blocked + plan.warnings}
+    win.destroy()
+    top.destroy()

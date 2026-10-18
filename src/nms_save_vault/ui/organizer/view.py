@@ -293,6 +293,12 @@ class OrganizerView(ttk.Frame):
         them (the old one keeps the list it was made with)."""
         self._reopen_organizer = True
 
+    def vault_changed(self) -> None:
+        """The vault changed mode (upgrade, fold, undo of the upgrade): the organizer and its
+        context were made for the old mode, so the rescan opens new ones."""
+        self.sources_changed()
+        self.rescan()
+
     def rescan(self, *, record: bool = True) -> None:
         """Scan in the worker (``record``: journal the live slots, as Rescan and the
         start-up scan do); the old model stays until the new one is there."""

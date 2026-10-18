@@ -19,6 +19,7 @@ from tkinter import filedialog, ttk
 from types import SimpleNamespace
 from typing import Any, Callable
 
+from ...core import aliases
 from ...core.store import (
     VersionStore, copy_in, not_copied_in, plan_upgrade, run_fold, run_upgrade, store_status,
     vault_lock, vault_mode)
@@ -65,6 +66,11 @@ def needs_attention(vault_root: Path) -> bool:
 # --- the jobs (worker; plain data in, plain data out) --------------------------------------------
 
 
+def _folder_label(path: Path) -> str:
+    """``<parent>\\<folder>``: two folders of one name in different parents must not look alike."""
+    return str(aliases.scrub(f"{path.parent.name}\\{path.name}" if path.parent.name else path.name))
+
+
 def read_state(env: VaultEnv, dest_parent: Path | None = None) -> SimpleNamespace:
     root = env.vault_root
     mode = vault_mode(root)
@@ -79,7 +85,7 @@ def read_state(env: VaultEnv, dest_parent: Path | None = None) -> SimpleNamespac
         out.status = store_status(root, store, live_roots=list(env.live_roots),
                                   app_state=env.app_state)
         out.fold_pending = fold_pending(root)
-        out.not_copied = [(e.id, e.label or e.id, Path(e.path).name)
+        out.not_copied = [(e.id, e.label or e.id, _folder_label(Path(e.path)))
                           for e in not_copied_in(store, live_roots=list(env.live_roots))]
     return out
 
@@ -273,6 +279,12 @@ class VaultWindow(_Dialog):
             ttk.Label(box, text="These folders are kept where you put them. Tick the ones to "
                       "copy into the vault; the folders themselves are never changed.",
                       wraplength=px(560), justify="left").pack(anchor="w")
+            pick = ttk.Frame(box)
+            pick.pack(anchor="w", pady=pxs(2, 2))
+            ttk.Button(pick, text="Select all", command=lambda: self._select_all(True)
+                       ).pack(side=tk.LEFT)
+            ttk.Button(pick, text="Unselect all", command=lambda: self._select_all(False)
+                       ).pack(side=tk.LEFT, padx=px(6))
             for eid, label, folder in s.not_copied:
                 var = tk.BooleanVar(value=False)                  # default OFF (owner decision)
                 self.copy_vars[eid] = var
@@ -315,6 +327,11 @@ class VaultWindow(_Dialog):
         if plan.problems:
             self.rollback_button.state(["disabled"])
         ttk.Button(self.body, text="Back", command=self._back).pack(anchor="w")
+
+    def _select_all(self, on: bool) -> None:
+        for var in self.copy_vars.values():
+            var.set(on)
+        self._update_buttons()
 
     def _update_buttons(self) -> None:
         if getattr(self, "upgrade_button", None) is not None:

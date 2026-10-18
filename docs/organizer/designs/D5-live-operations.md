@@ -455,7 +455,7 @@ unless the caller echoes it; `block` means `execute` refuses.
 | `STEAM_CLOUD_OTHER_DEVICE` | info | plan | cloud mode steam-cloud | "If Steam asks at the next launch, choose the copy on this PC." |
 | `XBOX_SYNC_BUSY` | block (soft) | plan | `containers.index` mtime < 60 s ago | "Xbox is still syncing. Try again in a minute." |
 | `XBOX_QUOTA` | warn / block | plan | wgs total after the op > 200 MB / > 256 MB | "Xbox cloud space would be nearly full / over the 256 MB limit." |
-| `VAULT_UPGRADE_NEEDED` | block | plan | `core.store.vault_mode(vault_root) != "store"` (D3 upgrade not done, running or failed) | "Upgrade the vault first: Vault > Upgrade. Nothing was changed." |
+| `VAULT_UPGRADE_NEEDED` | block | plan | `core.store.vault_mode(vault_root) != "store"` (D3 upgrade not done, running or failed) | "Upgrade the vault first: Tools > Vault upgrade... Nothing was changed." |
 | `VAULT_UNAVAILABLE` | block | plan | vault root missing or not writable; D3 `StoreUnavailable` | "The vault is not reachable. Nothing was changed." |
 | `VAULT_SPACE` | block | plan | vault free space < (`StoreLocator.space_needed_for_preserve` + `VersionStore.space_needed` of the snapshot) x 1.5 + 64 MB, or live drive free space < 2 x write bytes; D3 `InsufficientSpace` | "Not enough free disk space." |
 | `SOURCE_UNREADABLE` | block | plan | locator cannot open/verify the source | "That version cannot be read from the vault." |
@@ -1246,7 +1246,7 @@ exceptions subclass `operations.OperationError`, so today's front-end handlers
 | game running (True) at either check | `refused`, code `GAME_RUNNING` | none | "No Man's Sky is running. Close it first." |
 | open op on the account | `refused`, `RECOVERY_PENDING` | none | "An earlier move was interrupted. Resolve it first." |
 | another live write running (lock timeout) | `refused`, `BUSY` | none | "Another operation is still running. Try again in a moment." |
-| vault not upgraded to the version store | `refused`, `VAULT_UPGRADE_NEEDED` | none | "Upgrade the vault first: Vault > Upgrade. Nothing was changed." |
+| vault not upgraded to the version store | `refused`, `VAULT_UPGRADE_NEEDED` | none | "Upgrade the vault first: Tools > Vault upgrade... Nothing was changed." |
 | vault missing / full | `refused`, `VAULT_UNAVAILABLE` / `VAULT_SPACE` | none | "The vault is not reachable. Nothing was changed." / "Not enough free disk space. Nothing was changed." |
 | preserve failed otherwise | `refused`, `PRESERVE_FAILED:<class>` | none | "The current save could not be copied to the vault (<reason>). Nothing was changed." |
 | snapshot failed | `refused`, `SNAPSHOT_FAILED` | none | "The safety snapshot failed. Nothing was changed." |

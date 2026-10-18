@@ -348,7 +348,7 @@ def test_the_steam_cloud_advice_is_said_once(view, gui_app):
     d = _open(view, gui_app)
     warning = SimpleNamespace(text="If Steam asks at the next launch, choose the copy on this PC.",
                               code="STEAM_CLOUD_OTHER_DEVICE")
-    picker = SimpleNamespace(warnings=[warning], cloud=SimpleNamespace(
+    picker = SimpleNamespace(warnings=[warning], candidates=[], cloud=SimpleNamespace(
         steam_cloud=True, xbox_sync_busy=False))
     d._show_strip(picker)
     text = d.plan_strip.cget("text")

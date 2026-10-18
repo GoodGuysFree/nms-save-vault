@@ -317,3 +317,36 @@ def test_a_stale_result_shows_the_replan(view, gui_app, monkeypatch):
     assert d.winfo_exists() and "changed" in d.error.cget("text")
     assert d.apply_button.cget("text") == fresh.outcome
     d.cancel()
+
+
+def test_a_vault_wide_block_is_said_once_in_the_banner_in_plain_words(view, gui_app):
+    d = _open(view, gui_app)
+    picker = d.picker
+    blocked = dataclasses.replace(picker, candidates=tuple(
+        dataclasses.replace(c, blocked="VAULT_UPGRADE_NEEDED") for c in picker.candidates))
+    d._show_slots(blocked)
+    d._show_strip(blocked)
+    rows = [" ".join(d.tree.item(i, "values")) for i in d.tree.get_children()]
+    assert not any("VAULT_UPGRADE_NEEDED" in r or "not possible" in r for r in rows)
+    banner = d.plan_strip.cget("text")
+    assert "Tools > Vault upgrade..." in banner and "Vault > Upgrade" not in banner
+    assert "VAULT_UPGRADE_NEEDED" not in banner
+    d.cancel()
+
+
+def test_a_block_that_is_only_some_slots_shows_in_plain_words_on_their_rows(view, gui_app):
+    d = _open(view, gui_app)
+    c = dataclasses.replace(d.picker.candidates[0], blocked="PLAY_TIME_AHEAD")
+    text = M.candidate_values(c)[-1]
+    assert "not possible" in text and "PLAY_TIME_AHEAD" not in text
+    d.cancel()
+
+
+def test_every_code_has_plain_words_and_none_shows_a_raw_code():
+    import re
+    from nms_save_vault.core.liveops.planner import TEXTS
+    from nms_save_vault.ui.organizer.words import plain
+    for code in TEXTS:
+        text = plain(code)
+        assert text and code not in text and "{" not in text and not re.search(r"[A-Z]{3,}_[A-Z_]+", text)
+    assert "_" not in plain("NO_SUCH_CODE")

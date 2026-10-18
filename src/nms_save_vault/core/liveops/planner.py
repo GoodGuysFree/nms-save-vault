@@ -99,7 +99,7 @@ TEXTS = {
     "XBOX_SYNC_BUSY": ("block", "Xbox is still syncing. Try again in a minute."),
     "XBOX_QUOTA_NEAR": ("warn", "Xbox cloud space would be nearly full."),
     "XBOX_QUOTA": ("block", "Xbox cloud space would be over the 256 MB limit."),
-    "VAULT_UPGRADE_NEEDED": ("block", "Upgrade the vault first: Vault > Upgrade. "
+    "VAULT_UPGRADE_NEEDED": ("block", "Upgrade the vault first: Tools > Vault upgrade... "
                              "Nothing was changed."),
     "VAULT_UNAVAILABLE": ("block", "The vault is not reachable. Nothing was changed."),
     "VAULT_SPACE": ("block", "Not enough free disk space."),

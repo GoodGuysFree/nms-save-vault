@@ -4,6 +4,10 @@ Pure functions of the read model; every string is ASCII apart from the game's an
 owner's own text."""
 from __future__ import annotations
 
+from collections import defaultdict
+
+from ...core import aliases
+from ...core.liveops.planner import TEXTS
 from ...core.organizer.readmodel import Line, ReadModel, VersionRow
 
 #: The warning on a version only the live folder holds, and what it means (hover text).
@@ -68,3 +72,18 @@ def slot_words(label: str) -> str:
         folder, slot = rest.split(".", 1)
         return f"{word} {folder} slot {slot}"
     return f"{word} slot {rest}"
+
+
+#: What a placeholder reads as when a code is shown without the slot or save it was made for.
+GENERAL = {"slot": "the slot", "name": "the save", "was": "the save", "twin": "another slot",
+           "where": "another slot", "ahead": "more", "played": "more", "slots": "some slots"}
+
+
+def plain(code: str) -> str:
+    """The plain words for a planner block or warning code (the planner's own table, ``TEXTS``):
+    the screen never shows a raw code, and an unknown one reads as a general sentence."""
+    entry = TEXTS.get(code)
+    if entry is None:
+        return "This is not possible right now."
+    text = entry[1].format_map(defaultdict(str, GENERAL)).strip()
+    return str(aliases.redact(text or "This slot may fill again after the move."))

@@ -752,7 +752,7 @@ def _require_store_mode(vault_root: Path) -> None:
     if mode == "upgrading":
         raise StoreNotUpgraded("The vault is being upgraded.")
     if mode != "store":
-        raise StoreNotUpgraded("Upgrade the vault first (Vault > Upgrade the vault).")
+        raise StoreNotUpgraded("Upgrade the vault first (Tools > Vault upgrade...).")
 
 
 def vault_lock(vault_root: str | Path) -> Callable[[], AbstractContextManager]:
