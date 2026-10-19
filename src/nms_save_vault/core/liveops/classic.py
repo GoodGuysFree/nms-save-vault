@@ -167,7 +167,10 @@ def restore_full(vault: Vault, entry, live_dir: Path, mirror: bool = True,
     result = _run(ctx, plan, op, allow_game_running, f"restored {entry.id}")
     result.warnings += notes
     if ref.platform == "xbox" and not restore_accountdata:
-        _give_missing_xbox_account_data(ctx, entry.id, live_dir)
+        with jr.liveop_lock(ctx, timeout=LIVEOP_TIMEOUT):
+            kept = _give_missing_xbox_account_data(ctx, entry.id, live_dir)
+        if kept:
+            result.warnings.append(kept)
     if restore_accountdata:
         panic._restore_accountdata(ctx, plan, ref, entry.id)
     elif ref.platform == "steam":
@@ -400,16 +403,21 @@ def _repair_files(vault, live_dir: Path, index: Path, raw: bytes, why: str,
             "(damaged-index)."]
 
 
-def _give_missing_xbox_account_data(ctx: OpContext, entry_id: str, live_dir: Path) -> None:
+def _give_missing_xbox_account_data(ctx: OpContext, entry_id: str, live_dir: Path) -> str:
     """A live Xbox account with no AccountData record gets the backup's (it has none of its
-    own to keep)."""
+    own to keep), unless the game's second copy (xgs) holds one: those bytes exist nowhere else
+    and the mirror write would replace them, so they are left alone and a note is returned."""
     from ..store import listing
 
     try:
         _info, live = msstore.parse_containers_index(live_dir)
         if any(c.identifier == "AccountData" and c.data_file is not None and c.data_file.is_file()
                for c in live):
-            return
+            return ""
+        twin = msstore.xgs_twin(live_dir)
+        if twin is not None and (twin / "AccountData" / "data").is_file():
+            return ("This Xbox account's own account data was kept as it is; the backup's was "
+                    "not copied over it.")
         entry = listing.get_vault_entry(ctx.vault, ctx.versions, entry_id, live_roots=[])
         with listing.open_entry_folder(ctx.vault, ctx.versions, entry, slots=[]) as folder:
             _i, theirs = msstore.parse_containers_index(Path(folder))
@@ -421,6 +429,7 @@ def _give_missing_xbox_account_data(ctx: OpContext, entry_id: str, live_dir: Pat
                                    create_if_missing=True)
     except (OSError, ValueError) as exc:
         ops.log.warning("the backup's account data was not copied: %s", exc)
+    return ""
 
 
 def undo_plan(vault: Vault, live_dir: Path) -> ops.UndoPlan:

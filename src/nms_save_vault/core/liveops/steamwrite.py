@@ -15,7 +15,7 @@ import hashlib
 import logging
 import os
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -150,11 +150,15 @@ def swap(plan: SteamWritePlan, faults: FaultInjector | None = None) -> None:
     safety.fsync_dir(plan.folder)          # the renames are durable before the next event
 
 
-def rollback(plan: SteamWritePlan, pre_bytes: Mapping[str, bytes]) -> None:
+def rollback(plan: SteamWritePlan, pre_bytes: Mapping[str, bytes],
+             keep: Callable[[str, bytes], None] | None = None) -> None:
     """Put every name of the plan back as ``pre`` says: its pre-op bytes and ``mtime_ns``,
     or no file when there was none (a file this op created). ``pre_bytes`` needs only the
     names whose content changed; each is checked against its recorded sha256 before any
-    file is touched, and when one is missing or wrong nothing is changed. The op's
+    file is touched, and when one is missing or wrong nothing is changed. A file that is neither
+    its pre-op state nor the op's own write may be a save the game or a sync wrote after the
+    swap (a damaged write looks the same): ``keep(name, bytes)`` is given its bytes before it
+    is replaced or removed, and when ``keep`` fails nothing is changed. The op's
     temporary files are removed. Raises :class:`RollbackError` if any name is not exactly
     as before afterwards."""
     problems: dict[str, str] = {}
@@ -170,6 +174,17 @@ def rollback(plan: SteamWritePlan, pre_bytes: Mapping[str, bytes]) -> None:
     if problems:
         raise RollbackError("nothing was changed, the slot cannot be put back: "
                             + "; ".join(f"{n}: {why}" for n, why in problems.items()))
+    if keep is not None:
+        wrote = {f.name: f.sha256 for f in plan.files}
+        for name, pre in plan.pre.items():
+            now = file_state(plan.folder / name)
+            if now is None or (pre is not None and now.sha256 == pre.sha256)                     or now.sha256 == wrote.get(name):
+                continue
+            try:
+                keep(name, (plan.folder / name).read_bytes())
+            except OSError as exc:
+                raise RollbackError(f"nothing was changed, {name} could not be kept first: "
+                                    f"{exc.strerror or exc}") from exc
     for name, pre in plan.pre.items():
         try:
             _restore(plan.folder / name, pre, pre_bytes.get(name), plan.op_tag)

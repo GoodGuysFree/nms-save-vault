@@ -47,13 +47,15 @@ def is_game_running() -> bool | None:
         result = subprocess.run(
             ["tasklist", "/FI", f"IMAGENAME eq {NMS_PROCESS_NAME}", "/NH"],
             capture_output=True,
-            text=True,
             timeout=10,
             creationflags=_NO_WINDOW,
         )
     except (OSError, subprocess.SubprocessError):
         return None
-    return NMS_PROCESS_NAME.lower() in (result.stdout or "").lower()
+    if result.returncode != 0:
+        return None                      # a failing tasklist says nothing about the game
+    out = (result.stdout or b"").decode("utf-8", errors="replace").lower()
+    return NMS_PROCESS_NAME.lower() in out
 
 
 def sha256_file(path: str | Path, chunk: int = 1 << 20) -> str:

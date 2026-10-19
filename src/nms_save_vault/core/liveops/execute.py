@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .. import formats, lz4_block, meta, msstore, savedir
+from .. import formats, lz4_block, meta, msstore, safety, savedir
 from ..organizer.journal import Journal
 from ..organizer.locator import LiveMember, Location, PreserveFailed
 from ..organizer.model import LiveRef, LiveTarget, new_op_id, pid_kind
@@ -639,6 +639,16 @@ def settled_files(wts: list[OpTarget]) -> dict:
     return out
 
 
+def _keep_foreign(ctx: OpContext, wt: OpTarget, name: str, data: bytes) -> None:
+    """A file that is not the op's own write is about to be put back: its bytes go to the
+    vault first, so a save the game wrote in the meantime is never lost."""
+    digest = hashlib.sha256(data).hexdigest()[:12]
+    safety.atomic_write_bytes(Path(ctx.vault.root) / "rollback-kept"
+                              / f"{wt.steam.op_tag}-{digest}-{name}", data)
+    log.warning("rollback: %s was not the op's own write; its bytes are in the vault "
+                "(rollback-kept)", name)
+
+
 def rollback_target(ctx: OpContext, wt: OpTarget) -> None:
     if wt.steam is not None:
         pre = {}
@@ -648,7 +658,7 @@ def rollback_target(ctx: OpContext, wt: OpTarget) -> None:
             now = steamwrite.file_state(wt.folder / name)
             if now is None or (now.sha256, now.size) != (state.sha256, state.size):
                 pre[name] = ctx.versions.read_file(wt.snapshot_id, name)
-        steamwrite.rollback(wt.steam, pre)
+        steamwrite.rollback(wt.steam, pre, keep=lambda name, data: _keep_foreign(ctx, wt, name, data))
     else:
         msstore.rollback_pair(wt.xbox)
 

@@ -216,6 +216,22 @@ def _strict_migration(root: Path) -> dict | None:
     return body if isinstance(body, dict) and "copy_aside" in body else None
 
 
+def open_live_ops(root: Path) -> bool:
+    """Is a live operation of any window or machine still open in this vault's journal (an
+    interrupted one waits for its recovery, which reads the store this undo moves away)?"""
+    from ..liveops import opjournal
+    from ..organizer.store import store_root as organizer_root
+
+    path = organizer_root(root) / opjournal.OPS
+    try:
+        raw = path.read_bytes()
+    except FileNotFoundError:
+        return False
+    events = [e for n, line in enumerate(raw.splitlines(), 1)
+              if (e := opjournal._parse_line(line, n)) is not None]
+    return any(rec.open for rec in opjournal.fold(events).values())
+
+
 def run_rollback(plan: RollbackPlan, store: VersionStore, *,
                  vault_lock_factory: Callable[[], AbstractContextManager] | None = None,
                  cancel: threading.Event | None = None,
@@ -230,6 +246,30 @@ def run_rollback(plan: RollbackPlan, store: VersionStore, *,
     if not root.is_dir():
         raise RollbackError("not-upgraded", "The vault folder was not found.")
     lock = vault_lock_factory or vault_lock(root)
+    from ..organizer.store import liveop_lock_path
+
+    live_lock_file = liveop_lock_path(root)
+    live_lock = safety.exclusive_lock(live_lock_file, timeout=0)
+    if live_lock_file.parent.is_dir():       # before the store lock, like every live write
+        try:
+            live_lock.__enter__()
+        except (safety.LockTimeout, RuntimeError) as exc:
+            raise RollbackError("live-op-busy", "A move of live saves is running in another "
+                                                "window. Try again when it has finished.") from exc
+    else:
+        live_lock = None
+    try:
+        if open_live_ops(root):
+            raise RollbackError("recovery-pending", "An earlier move of live saves was "
+                                "interrupted. Resolve it first (it needs the current vault "
+                                "layout); nothing was changed.")
+        return _run_rollback_locked(plan, store, root, lock, cancel, now, faults)
+    finally:
+        if live_lock is not None:
+            live_lock.__exit__(None, None, None)
+
+
+def _run_rollback_locked(plan, store, root, lock, cancel, now, faults) -> RollbackResult:
     state_dir = store_root(root) / STATE
     staging = root / STAGING
     upgrade_lock = safety.exclusive_lock(upgrade_lock_path(root), timeout=0)
