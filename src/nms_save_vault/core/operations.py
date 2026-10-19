@@ -628,7 +628,7 @@ def preview_vault_import(vault: Vault, source_dir: Path) -> dict:
     if source_dir.resolve() == vault.root.resolve():
         raise OperationError("that is the current vault; nothing to import")
     if (source_dir / PRE_UPGRADE_COPY).is_file():
-        raise OperationError("This is the pre-upgrade copy of a vault; use Undo the vault upgrade.")
+        raise OperationError("This is the pre-upgrade copy of a vault; use Undo the vault upgrade (Vault menu, or nmsvault store rollback).")
     if _store().is_store_vault(source_dir):
         return _preview_store_merge(vault, source_dir)
     src_entries = Vault(source_dir).load().entries
@@ -646,7 +646,7 @@ def _preview_store_merge(vault: Vault, source_dir: Path) -> dict:
     classic = _store()
     target = classic.store_of(vault)
     if target is None:
-        raise OperationError("Upgrade the vault first (Tools > Vault upgrade...) to import a "
+        raise OperationError("Upgrade the vault first (Tools > Vault upgrade, or nmsvault store upgrade) to import a "
                              "vault that has a version store.")
     try:
         source = classic.open_source(source_dir)
@@ -731,7 +731,12 @@ def _merge_vault(vault: Vault, source_dir: Path, copy_into_vault: bool) -> OpRes
     stored = {e.id for e in source.entries()}
     have = {e.id for e in vault.entries} | {e.id for e in target.entries()}
     added = list(report.added)
+    from .store.manifest import is_entry_id
+
     for e in src.entries:
+        if not is_entry_id(e.id):       # the id names a folder of the source: never a path
+            warnings.append(f"{e.id!r}: not a valid backup id, skipped")
+            continue
         if e.id in stored or e.id in have or not e.managed or e.kind == KIND_INPLACE:
             continue
         new_id = _fold_imported(vault, target, src, e, warnings)
@@ -790,7 +795,14 @@ def _relocate_entry(
     if copy_into_vault:
         dst_folder = _entry_folder(vault, entry)
         if not dst_folder.exists():  # idempotent: never re-copy over an existing folder
-            shutil.copytree(src_folder, dst_folder)
+            copier = _Copier()
+            try:
+                shutil.copytree(src_folder, dst_folder, copy_function=copier)
+                _verify_copy(src_folder, dst_folder, _all_files(src_folder), copier, False)
+                safety.fsync_tree(dst_folder)       # on disk before the catalog lists it
+            except BaseException:
+                _remove_partial(dst_folder)
+                raise
         return replace(entry, path=str(dst_folder), managed=True)
     # In place: reference the source vault's folder, but do NOT manage it -- the files
     # belong to the other vault.

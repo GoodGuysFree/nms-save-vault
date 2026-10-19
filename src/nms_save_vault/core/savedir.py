@@ -7,6 +7,7 @@ back to auto-detection and flags the mismatch).
 from __future__ import annotations
 
 import hashlib
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -19,6 +20,8 @@ from .formats import (
 )
 from .meta import MetaInfo
 from .slotmap import SaveFileRef, slot_file_numbers
+
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -192,7 +195,8 @@ def _load_member(folder: Path, file_no: int) -> MemberView:
         if ordinal != ref.storage_ordinal:
             mv.note = f"meta keyed for ordinal {ordinal} (moved without re-key)"
     except Exception as exc:  # noqa: BLE001 - report, never raise during a scan
-        mv.note = f"meta unreadable: {exc}"
+        log.info("meta of %s could not be read: %s: %s", mv.meta_path.name, type(exc).__name__, exc)
+        mv.note = "meta unreadable (the file is damaged or is not a save's meta)"
     return mv
 
 

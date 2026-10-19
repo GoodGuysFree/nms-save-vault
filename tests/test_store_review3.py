@@ -64,7 +64,7 @@ def test_a_store_folder_without_format_is_not_an_old_layout(legacy):
     (vault.root / "store" / "objects" / "ab" / "something").write_bytes(b"not ours")
     plan = _plan(vault, live)
     assert plan.problems == (("damaged", upgrade.DAMAGED_STORE_TEXT),)
-    assert "nmsvault store fsck" in upgrade.DAMAGED_STORE_TEXT
+    assert "store/FORMAT" in upgrade.DAMAGED_STORE_TEXT and "fsck" not in upgrade.DAMAGED_STORE_TEXT
     with pytest.raises(vstore.UpgradeError):
         vstore.run_upgrade(plan)
     (vault.root / "store" / "state").mkdir()

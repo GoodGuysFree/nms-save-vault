@@ -24,6 +24,7 @@ from pathlib import Path
 from .. import catalog, discover, safety
 from .errors import UpgradeError
 from .versionstore import (
+    DAMAGED_STORE_TEXT,
     FORMAT_NAME,
     INLINE_MAX,
     SPACE_MARGIN,
@@ -47,9 +48,6 @@ COPY_INFIX = ".pre-store-"
 GIB = 1 << 30
 BLOCK = 1 << 20
 MAX_ROUNDS = 3
-DAMAGED_STORE_TEXT = ("The vault's store is damaged (its FORMAT file is missing or unreadable), "
-                      "so it is not a vault that waits for an upgrade. Run nmsvault store fsck "
-                      "to see what is wrong.")
 MAX_PATH = 260              # Windows' limit; the copy must fit it wherever the vault moves
 MANAGED_DIRS = ("backups", "snapshots", "extracts")
 VAULT_CHANGING = ("The upgrade stopped: the vault kept changing while it was copied. Close other "
@@ -523,8 +521,8 @@ def _note_text(vault_name: str, info: dict) -> str:
 def _done_text(info: dict, waiting: int) -> str:
     text = (f"Vault upgraded. A copy of the vault as it was is in {info['name']} next to it "
             f"({_gb(info['bytes'])}). Keep it until you are happy with the new version and "
-            "delete it yourself when you no longer need it; Vault > Undo the vault upgrade "
-            "uses it.")
+            "delete it yourself when you no longer need it; Undo the vault upgrade "
+            "(Vault menu, or nmsvault store rollback) uses it.")
     if waiting:
         text += (f" Your old backups were not read into the store yet: it needs {_gb(waiting)} "
                  "more free space on the vault drive.")

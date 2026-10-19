@@ -316,3 +316,19 @@ def _xmeta(name: str, play: int, ts: float) -> bytes:
 
 def _contents(root: Path) -> dict:
     return {p.relative_to(root).as_posix(): _sha(p) for p in sorted(root.rglob("*")) if p.is_file()}
+
+
+def test_a_newer_file_found_at_rollback_is_kept_and_the_outcome_says_where(tmp_path):
+    world = steam_world(tmp_path)
+    plan = plan_place(world.ctx, world.polestar(), LIVE.target(1))
+
+    def the_game_wrote_meanwhile():
+        (world.live / "save.hg").write_bytes(b"newer bytes the game wrote after the swap")
+
+    world.ctx.faults = FaultInjector(actions={"swapped:4": the_game_wrote_meanwhile})
+    outcome = execute(world.ctx, plan, plan.confirmations)
+    assert (outcome.status, outcome.code) == ("rolled_back", "ROLLED_BACK")
+    kept = list((Path(world.ctx.vault.root) / "rollback-kept").iterdir())
+    assert len(kept) == 1 and kept[0].read_bytes() == b"newer bytes the game wrote after the swap"
+    assert f"{Path(world.ctx.vault.root).name}/rollback-kept/{kept[0].name}" in outcome.outcome
+    assert "your newer file was kept" in outcome.outcome

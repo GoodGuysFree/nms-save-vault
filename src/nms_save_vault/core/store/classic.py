@@ -21,11 +21,12 @@ from .. import catalog, safety, savedir
 from ..catalog import CatalogEntry, Vault
 from ..state import AppState
 from .capture import CaptureScope
-from .errors import StoreBusy, StoreError, StoreNotUpgraded
+from .errors import StoreBusy, StoreError, StoreNotUpgraded, StoreUnavailable
 from .listing import list_vault_entries, store_slot_summaries
 from .manifest import StoreEntry
 from .merge import merge_store, open_source
-from .versionstore import TMP, VersionStore, open_store, read_format, vault_lock, vault_mode
+from .versionstore import (DAMAGED_STORE_TEXT, TMP, VersionStore, open_store, read_format,
+                           store_root, vault_lock, vault_mode)
 
 log = logging.getLogger(__name__)
 
@@ -51,6 +52,8 @@ def store_of(vault: Vault, *, app_state: AppState | None = None,
         except OSError as exc:
             log.warning("could not create the vault folders: %s", exc)
         mode = vault_mode(vault.root)
+    if mode == "legacy" and start_new and store_root(vault.root).exists():
+        raise StoreUnavailable(DAMAGED_STORE_TEXT)   # never an old-layout folder beside a store
     if mode == "legacy":
         return None
     if mode == "upgrading":

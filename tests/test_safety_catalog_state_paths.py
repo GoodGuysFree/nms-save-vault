@@ -198,3 +198,143 @@ def test_a_legacy_copy_is_synced_file_by_file_and_the_put_back_folder_too(tmp_pa
     (tmp_path / "t" / "sub").mkdir(parents=True)
     safety.fsync_tree(tmp_path / "t")
     assert tmp_path / "t" in folders and tmp_path / "t" / "sub" in folders and tmp_path in folders
+
+
+# --- round 2: state.json bytes, merge ids, busy catalog, damaged FORMAT, failed creation -------
+
+
+def test_a_state_json_that_is_not_utf8_is_put_aside_like_any_damage(tmp_path):
+    p = tmp_path / "state.json"
+    p.write_bytes(b'{"vault": "caf\xe9"}')
+    appstate.take_notices()
+    assert appstate.load(p) is None
+    assert len(list(tmp_path.glob("state.json.corrupt-*"))) == 1 and not p.exists()
+    assert len(appstate.take_notices()) == 1
+
+
+def test_when_the_damaged_state_cannot_be_moved_aside_nothing_is_saved_over_it(tmp_path,
+                                                                                 monkeypatch):
+    p = tmp_path / "state.json"
+    p.write_text("{oops", "utf-8")
+    appstate.take_notices()
+    real = os.replace
+
+    def refuse(src, dst, *a, **k):
+        if str(src).endswith("state.json"):
+            raise PermissionError(13, "in use")
+        return real(src, dst, *a, **k)
+
+    monkeypatch.setattr(os, "replace", refuse)
+    assert appstate.load(p) is None
+    appstate.save(appstate.AppState(), p)                 # a later settings change
+    assert p.read_text("utf-8") == "{oops"
+    assert "will not save" in appstate.take_notices()[0]
+
+
+def test_a_merge_of_a_store_vault_skips_a_crafted_catalog_id(tmp_path):
+    live = steam_live(tmp_path / "NMS")
+    src = tmp_path / "src" / "vault"
+    src.mkdir(parents=True)
+    vstore.create_store(src)
+    good = operations.create_full_backup(Vault(src), live, warnings=[])
+    shutil.copytree(live, tmp_path / "src" / "outside")
+    bad = {"id": "..\..\outside", "kind": "full", "label": "x", "path": "",
+           "created": "2026-10-01T10:00:00", "source": live.name, "managed": True,
+           "slots": [], "note": ""}
+    (src / "catalog.json").write_text(json.dumps({"version": 1, "entries": [bad]}), "utf-8")
+    dst = tmp_path / "dst" / "vault"
+    dst.mkdir(parents=True)
+    vstore.create_store(dst)
+    result = operations.import_vault(Vault(dst), src, copy_into_vault=True)
+    assert any("not a valid backup id" in w for w in result.warnings)
+    assert good.id in [e.id for e in versionstore.open_store(dst, live_roots=[live]).entries()]
+
+
+def test_a_catalog_written_while_others_read_it_never_fails(tmp_path):
+    import threading
+
+    root = tmp_path / "vault"
+    Vault(root).ensure()
+    stop = threading.Event()
+    errors = []
+
+    def reader():
+        v = Vault(root).load()
+        while not stop.is_set():
+            try:
+                v.entries
+            except Exception as exc:  # noqa: BLE001
+                errors.append(repr(exc))
+
+    def writer(tag):
+        v = Vault(root).load()
+        for i in range(60):
+            try:
+                v.upsert(catalog.CatalogEntry(id=f"full-steam-20260101-{tag}{i:03d}", kind="full",
+                                              label="", path="", created="2026-01-01T00:00:00"))
+            except Exception as exc:  # noqa: BLE001
+                errors.append(repr(exc))
+
+    readers = [threading.Thread(target=reader) for _ in range(2)]
+    writers = [threading.Thread(target=writer, args=(t,)) for t in "ab"]
+    for t in readers + writers:
+        t.start()
+    for t in writers:
+        t.join()
+    stop.set()
+    for t in readers:
+        t.join()
+    assert errors == []
+    assert len(Vault(root).load().entries) == 120
+
+
+def test_a_store_folder_without_a_readable_format_is_never_written_beside(tmp_path):
+    from nms_save_vault.core.store import classic
+
+    live = steam_live(tmp_path / "NMS")
+    for how in ("missing", "garbage"):
+        root = tmp_path / how
+        vstore.create_store(root)
+        if how == "missing":
+            (root / "store" / "FORMAT").unlink()
+        else:
+            (root / "store" / "FORMAT").write_text("not json", "ascii")
+        with pytest.raises(vstore.StoreUnavailable, match="store/FORMAT") as caught:
+            versionstore.open_store(root, live_roots=[live])
+        assert "Expecting" not in str(caught.value) and "fsck" not in str(caught.value)
+        if how == "missing":
+            with pytest.raises(vstore.StoreUnavailable, match="store/FORMAT"):
+                classic.store_of(Vault(root))
+            with pytest.raises(vstore.StoreUnavailable):
+                operations.create_full_backup(Vault(root), live, warnings=[])
+            assert not (root / "backups").exists() or not list((root / "backups").iterdir())
+
+
+def test_a_failed_creation_leaves_nothing_behind(tmp_path, monkeypatch):
+    def refuse(*a, **k):
+        raise PermissionError(13, "Access is denied")
+
+    monkeypatch.setattr(versionstore, "NEW_VAULTS_USE_STORE", True)
+    monkeypatch.setattr(versionstore, "create_store", refuse)
+    root = tmp_path / "newvault"
+    with pytest.raises(OperationError, match="cannot be reached or created"):
+        Vault(root).ensure()
+    assert not root.exists()
+    existing = tmp_path / "emptyfolder"
+    existing.mkdir()
+    with pytest.raises(OperationError):
+        Vault(existing).ensure()
+    assert existing.is_dir() and list(existing.iterdir()) == []
+
+
+def test_a_legacy_copy_import_is_verified_and_synced(tmp_path, monkeypatch):
+    live = steam_live(tmp_path / "NMS")
+    src_vault = Vault(tmp_path / "src" / "vault")
+    entry = operations.snapshot_live(src_vault, live, "x")
+    target = Vault(tmp_path / "dst" / "vault")
+    operations.create_full_backup(target, live, warnings=[])
+    trees = []
+    real = safety.fsync_tree
+    monkeypatch.setattr(safety, "fsync_tree", lambda p: (trees.append(Path(p)), real(p))[1])
+    result = operations.import_vault(target, src_vault.root, copy_into_vault=True)
+    assert entry.id in result.changed and any(t.name == entry.id for t in trees)

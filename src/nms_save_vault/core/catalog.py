@@ -9,6 +9,8 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shutil
+import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -184,6 +186,24 @@ class OplogRead(list):
 CATALOG_LOCK = ".catalog.lock"      # held while the catalog is read, changed and written (not copied by the upgrade)
 
 
+BUSY_SECONDS = 1.5      # how long a catalog read or write waits for another process's open handle
+
+
+def _when_free(action):
+    """Run ``action``, retrying briefly on a Windows sharing violation (another process has
+    catalog.json open for a moment, as a reader or while swapping it in); then the error."""
+    deadline = time.monotonic() + BUSY_SECONDS
+    pause = 0.01
+    while True:
+        try:
+            return action()
+        except PermissionError:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(pause)
+            pause = min(pause * 2, 0.1)
+
+
 class OperationError(Exception):
     """A plain-text reason an operation or the vault cannot go on; shown to the owner as is."""
 
@@ -214,19 +234,36 @@ class Vault:
             raise PermissionError(f"the vault at {self.root.name} is opened read-only")
         # A vault the app CREATES (the folder missing or completely empty) starts in store mode
         # (D3 4.1); one that has anything in it is never converted by being opened or written.
-        created = not self.root.exists() or (self.root.is_dir() and not any(self.root.iterdir()))
+        existed = self.root.exists()
+        created = not existed or (self.root.is_dir() and not any(self.root.iterdir()))
         try:
             for d in (self.root, self.backups_dir, self.snapshots_dir, self.extracts_dir):
                 d.mkdir(parents=True, exist_ok=True)
+            if created:
+                from .store.versionstore import start_new_vault
+
+                start_new_vault(self.root)
         except OSError as exc:
+            if created:
+                self._undo_creation(existed)
             raise OperationError(
                 f"The vault folder ({self.root.name}) cannot be reached or created "
                 f"({exc.strerror or type(exc).__name__}). Is its drive connected, and is the "
                 f"name a folder? {HOW_TO_CHANGE_VAULT}") from exc
-        if created:
-            from .store.versionstore import start_new_vault
 
-            start_new_vault(self.root)
+    def _undo_creation(self, root_existed: bool) -> None:
+        """A vault this call was creating failed half way: the folder was missing or empty, so
+        everything in it is this call's own; remove it, so a retry finds an empty folder."""
+        try:
+            for child in self.root.iterdir():
+                if child.is_dir() and not child.is_symlink():
+                    shutil.rmtree(child)
+                else:
+                    child.unlink()
+            if not root_existed:
+                self.root.rmdir()
+        except OSError as exc:
+            log.warning("could not remove what a failed vault creation left: %s", exc)
 
     def load(self) -> "Vault":
         if not self.read_only:
@@ -250,7 +287,7 @@ class Vault:
         stamp = self._stamp()
         if stamp is not None:
             try:
-                data = json.loads(self.catalog_path.read_text("utf-8"))
+                data = json.loads(_when_free(lambda: self.catalog_path.read_text("utf-8")))
                 self._entries = [_entry_from_dict(e) for e in data.get("entries", [])]
             except (ValueError, KeyError, TypeError, AttributeError) as exc:
                 raise OperationError(
@@ -266,9 +303,9 @@ class Vault:
         self.ensure()
         data = {"version": CATALOG_VERSION, "entries": [asdict(e) for e in self._entries]}
         # Temp file, fsync, os.replace: a crash leaves the old catalog or the new one, whole.
-        safety.atomic_write_bytes(
-            self.catalog_path, json.dumps(data, indent=2).encode("utf-8"), temp_prefix=CATALOG_TEMP_PREFIX
-        )
+        raw = json.dumps(data, indent=2).encode("utf-8")
+        _when_free(lambda: safety.atomic_write_bytes(self.catalog_path, raw,
+                                                     temp_prefix=CATALOG_TEMP_PREFIX))
         self._seen = self._stamp()
 
     def _remove_stale_temp_files(self) -> None:

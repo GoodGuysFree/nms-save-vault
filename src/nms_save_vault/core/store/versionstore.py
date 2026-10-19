@@ -78,6 +78,12 @@ UPGRADE_JSON = "upgrade.json"
 _STORE_ID = re.compile(r"[0-9a-f]{32}")
 
 
+DAMAGED_STORE_TEXT = ("The vault's store is damaged: its store/FORMAT file is missing or cannot be read, so "
+                      "the vault cannot be opened. Nothing was changed. Put store/FORMAT back from "
+                      "a copy of this vault, or restore the vault from a backup; the saves under "
+                      "store/objects are untouched.")
+
+
 def store_root(vault_root: str | Path) -> Path:
     return Path(vault_root) / STORE_DIR
 
@@ -138,7 +144,7 @@ def read_format(root: Path) -> StoreFormat:
     try:
         d = json.loads((safety.long_path(root) / FORMAT_NAME).read_bytes().decode("ascii"))
     except (OSError, ValueError) as exc:
-        raise StoreUnavailable(f"The vault is not reachable (store FORMAT unreadable: {exc}).") from exc
+        raise StoreUnavailable(DAMAGED_STORE_TEXT) from exc
     try:
         if not isinstance(d, dict) or d.get("format") != STORE_FORMAT:
             raise ValueError("not a store FORMAT file")
@@ -150,7 +156,7 @@ def read_format(root: Path) -> StoreFormat:
         if not isinstance(d["hash"], str) or not isinstance(d["created_utc"], str):
             raise ValueError("bad hash or created_utc")
     except (KeyError, ValueError) as exc:
-        raise StoreUnavailable(f"The vault is not reachable (store FORMAT malformed: {exc}).") from exc
+        raise StoreUnavailable(DAMAGED_STORE_TEXT) from exc
     fmt = StoreFormat(d["version"], d["read_compat"], d["write_compat"], d["store_id"], d["hash"],
                       d["fanout"], d["inline_max"], d["created_utc"])
     if fmt.read_compat > STORE_VERSION:
@@ -882,8 +888,10 @@ def _require_store_mode(vault_root: Path) -> None:
     mode = vault_mode(vault_root)
     if mode == "upgrading":
         raise StoreNotUpgraded("The vault is being upgraded.")
+    if mode == "legacy" and store_root(vault_root).exists():
+        raise StoreUnavailable(DAMAGED_STORE_TEXT)       # a store/ folder whose FORMAT is gone
     if mode != "store":
-        raise StoreNotUpgraded("Upgrade the vault first (Tools > Vault upgrade...).")
+        raise StoreNotUpgraded("Upgrade the vault first (Tools > Vault upgrade, or nmsvault store upgrade).")
 
 
 def vault_lock(vault_root: str | Path) -> Callable[[], AbstractContextManager]:

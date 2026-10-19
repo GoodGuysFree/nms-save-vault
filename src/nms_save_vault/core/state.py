@@ -194,16 +194,16 @@ def load(path: str | Path | None = None) -> AppState | None:
     if not p.is_file():
         return None
     try:
-        # utf-8-sig: a state.json saved by an editor that adds a BOM still loads.
-        text = p.read_text("utf-8-sig")
+        raw = p.read_bytes()
     except OSError as exc:
         from .catalog import OperationError
 
         raise OperationError(f"The settings file ({p.name}) cannot be read "
                              f"({exc.strerror or type(exc).__name__}); it was not changed.") from exc
     try:
-        return AppState.from_dict(json.loads(text))
-    except (ValueError, KeyError, TypeError, AttributeError) as exc:
+        # utf-8-sig: a state.json saved by an editor that adds a BOM still loads.
+        return AppState.from_dict(json.loads(raw.decode("utf-8-sig")))
+    except (ValueError, KeyError, TypeError, AttributeError) as exc:    # incl. bad UTF-8
         aside = p.with_name(f"{p.name}.corrupt-{time.strftime('%Y%m%d-%H%M%S')}")
         n = 2
         while aside.exists():
@@ -215,6 +215,10 @@ def load(path: str | Path | None = None) -> AppState | None:
             os.replace(p, aside)
         except OSError as move_error:
             log.warning("could not put the damaged state.json aside: %s", move_error)
+            _blocked.add(_key(p))       # the defaults must never be saved over it
+            _notices.append("Your settings file (state.json) could not be read, and it could not "
+                            "be moved aside either, so the app started with its defaults and "
+                            "will not save any settings this session. The file was not changed.")
             return None
         _notices.append(f"Your settings file (state.json) could not be read. It was kept as "
                         f"{aside.name} next to it, and the app started with its defaults and "
@@ -222,11 +226,21 @@ def load(path: str | Path | None = None) -> AppState | None:
         return None
 
 
+_blocked: set[str] = set()      # state files that must not be written this session
+
+
+def _key(p: Path) -> str:
+    return os.path.normcase(os.path.abspath(p))
+
+
 def save(state: AppState, path: str | Path | None = None) -> Path:
     """Write state atomically: temp file, fsync, replace, creating the folder if needed."""
     from . import safety
 
     p = Path(path) if path else default_state_path()
+    if _key(p) in _blocked:
+        log.warning("not saving %s: the damaged file could not be put aside", p.name)
+        return p
     safety.atomic_write_bytes(p, json.dumps(state.to_dict(), indent=2).encode("utf-8"),
                               temp_prefix=p.name + ".tmp_")
     return p

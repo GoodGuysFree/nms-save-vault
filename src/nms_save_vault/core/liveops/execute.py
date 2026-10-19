@@ -599,9 +599,10 @@ def rollback_and_report(ctx: OpContext, op_id: str, plan: PlacePlan, applied: li
     rolled back, or failed when a slot could not be put back (the op stays open)."""
     labels = ", ".join(wt.rt.label for wt in applied)
     problems = []
+    kept: list[str] = []
     for wt in reversed(applied):
         try:
-            rollback_target(ctx, wt)
+            rollback_target(ctx, wt, kept)
         except Exception as rollback_exc:  # noqa: BLE001 - reported, the op stays open
             log.error("op %s: %s could not be put back: %s", op_id, wt.rt.label, rollback_exc)
             problems.append(f"{wt.rt.label}: {rollback_exc}")
@@ -622,9 +623,13 @@ def rollback_and_report(ctx: OpContext, op_id: str, plan: PlacePlan, applied: li
     except Exception as rec_exc:  # noqa: BLE001 - history only
         log.warning("op %s: the rollback was not recorded: %s", op_id, rec_exc)
     opjournal.remove_marker(ctx, op_id)
+    saved = ("" if not kept else
+             " A file newer than the move's own was found there; your newer file was kept in "
+             + ", ".join(f"{Path(ctx.vault.root).name}/rollback-kept/{name}" for name in kept)
+             + ".")
     return OpOutcome(op_id, "rolled_back",
-                     f"Nothing changed in {labels}. The move failed: {exc}", (), None, "n/a",
-                     str(exc), "ROLLED_BACK")
+                     f"Nothing changed in {labels}. The move failed: {exc}{saved}", (), None,
+                     "n/a", str(exc), "ROLLED_BACK")
 
 
 def settled_files(wts: list[OpTarget]) -> dict:
@@ -639,17 +644,20 @@ def settled_files(wts: list[OpTarget]) -> dict:
     return out
 
 
-def _keep_foreign(ctx: OpContext, wt: OpTarget, name: str, data: bytes) -> None:
+def _keep_foreign(ctx: OpContext, wt: OpTarget, name: str, data: bytes,
+                  kept: list[str] | None = None) -> None:
     """A file that is not the op's own write is about to be put back: its bytes go to the
     vault first, so a save the game wrote in the meantime is never lost."""
     digest = hashlib.sha256(data).hexdigest()[:12]
-    safety.atomic_write_bytes(Path(ctx.vault.root) / "rollback-kept"
-                              / f"{wt.steam.op_tag}-{digest}-{name}", data)
+    kept_name = f"{wt.steam.op_tag}-{digest}-{name}"
+    safety.atomic_write_bytes(Path(ctx.vault.root) / "rollback-kept" / kept_name, data)
+    if kept is not None:
+        kept.append(kept_name)
     log.warning("rollback: %s was not the op's own write; its bytes are in the vault "
                 "(rollback-kept)", name)
 
 
-def rollback_target(ctx: OpContext, wt: OpTarget) -> None:
+def rollback_target(ctx: OpContext, wt: OpTarget, kept: list[str] | None = None) -> None:
     if wt.steam is not None:
         pre = {}
         for name, state in wt.steam.pre.items():       # only what was actually changed
@@ -658,7 +666,7 @@ def rollback_target(ctx: OpContext, wt: OpTarget) -> None:
             now = steamwrite.file_state(wt.folder / name)
             if now is None or (now.sha256, now.size) != (state.sha256, state.size):
                 pre[name] = ctx.versions.read_file(wt.snapshot_id, name)
-        steamwrite.rollback(wt.steam, pre, keep=lambda name, data: _keep_foreign(ctx, wt, name, data))
+        steamwrite.rollback(wt.steam, pre, keep=lambda name, data: _keep_foreign(ctx, wt, name, data, kept))
     else:
         msstore.rollback_pair(wt.xbox)
 
