@@ -403,7 +403,7 @@ src/nms_save_vault/webui/
 ```
 
 The package imports `core` (D1 `core.organizer`, D4 `core.index`, D5 `core.liveops`) and
-`state`; `core` never imports it. `gui.py` imports only the facade. `cli.py` gets `nmsvault ui`.
+`state`; `core` never imports it. `gui.py` imports only the facade. `cli.py` gets `nmsvault-cli ui`.
 Python string literals stay ASCII (`tests/test_ui_text.py` scans the new `.py` files too).
 
 ### 3.2 Server and threads
@@ -501,7 +501,7 @@ event: bye        data: {"reason": "app-closing"}
 
 On reconnect the page sends `?since=<seq>`; the bus replays from its ring (500 events) or sends
 `model` with the current generation when the gap is too big. The open streams are the presence
-signal (host status "1 tab connected"; `nmsvault ui` shutdown). Fallback when a local security
+signal (host status "1 tab connected"; `nmsvault-cli ui` shutdown). Fallback when a local security
 product buffers streams: the page switches to polling `GET /api/events?since=&poll=1` every
 second (same payloads).
 
@@ -548,13 +548,13 @@ address showed no Windows Firewall prompt in R3 (INFERRED there).
 | Host quit | refused while D5 `execute` / recovery runs; else `bye` event, page overlay, server down, redirect files and `webui.json` removed |
 | Crash | no server survives the process (daemon threads); an open tab shows the overlay after 3 reconnect tries |
 | Sleep / resume | the stream reconnects with `since`; one refresh |
-| `nmsvault ui` (no Tk) | console process: prints "Organizer opened in your browser. Press Ctrl+C to stop."; exits 10 s after the last stream closes, or after 2 min if no tab ever connects (R3 measured the same rule at 6.3 s with a 4-s grace) |
+| `nmsvault-cli ui` (no Tk) | console process: prints "Organizer opened in your browser. Press Ctrl+C to stop."; exits 10 s after the last stream closes, or after 2 min if no tab ever connects (R3 measured the same rule at 6.3 s with a 4-s grace) |
 
 ### 3.6 pythonw and logging
 
 Under the GUI launcher (`pythonw`), `sys.stdout` and `sys.stderr` are `None`, and the default
 `BaseHTTPRequestHandler.log_message` makes every response fail (R3 K6, VERIFIED). The handler
-overrides `log_message` and `log_error` to send records to `logging.getLogger("nmsvault.webui")`,
+overrides `log_message` and `log_error` to send records to `logging.getLogger("nmsvault-cli.webui")`,
 and the app configures a rotating file handler in the per-machine data dir (1 MB x 3) for all
 loggers at start. Every caught exception is logged with its context (project rule); the client
 gets the generic text.
@@ -657,7 +657,7 @@ headless Chrome stays a test tool only (CI, throwaway profile, deleted).
 | Variant | What | Use |
 |---|---|---|
 | (a) Server thread in the Tk app (recommended) | `webui.start()` from the host window; one process shares the core, caches, D4 workers and D5's lock | Windows default; the GUI launcher |
-| (b) `nmsvault ui` subcommand (recommended as well) | console process without Tk; same `webui.start()`; stops after the last tab | Linux / macOS users, development, tests |
+| (b) `nmsvault-cli ui` subcommand (recommended as well) | console process without Tk; same `webui.start()`; stops after the last tab | Linux / macOS users, development, tests |
 | (c) Web-first launcher with a tiny Tk status window | (a) with the compact host of 10 as the start window | phase 2+ shell of (a) (section 5) |
 
 ## 5. Today's Tk flows and the host window
@@ -699,7 +699,7 @@ about 200-300 lines. The DPI fix (R3 K5) should land with the host (the 10 captu
 | Security | R3's 13 cases plus: per-session header required (constant header refused), token single use and expiry, redirect file permissions and deletion, cookie name per port, body size and content type, unknown JSON fields, path traversal on `/static/`, no `Access-Control-*` header on any response, CSP and other headers on every response including errors, host endpoints refuse `Origin` and a wrong host secret, no secret or query string in log records | pytest + `http.client`, no display |
 | API | golden JSON per endpoint on a synthetic vault (D1 `org_vault` fixture) with fake D4 / D5 seams: shapes, `generation`, 404 / 409 / 423 mapping, `NOTE_CONFLICT`, plan cache expiry, `execute` -> job -> `OpOutcome`, `stale` -> replan, D5 `BUSY` while a fake Tk write holds the live-op lock | pytest |
 | Events | ordering, `since` replay, gap -> `model`, ping, presence counts, `bye` on stop, poll fallback | pytest |
-| Lifecycle | start/stop from a fake host; quit refused during execute; `nmsvault ui` exits after the grace; single-instance handshake and stale `webui.json` | pytest (subprocess for `ui`) |
+| Lifecycle | start/stop from a fake host; quit refused during execute; `nmsvault-cli ui` exits after the grace; single-instance handshake and stale `webui.json` | pytest (subprocess for `ui`) |
 | pythonw | server with `sys.stderr = None` (monkeypatched) answers 200 (regression for R3 K6) | pytest |
 | Static | whitelist matches the files; POSIX `app_sources()` includes `webui/static/**`; JS lint scan: forbidden sinks (3.4 #13) and any `http://` / `https://` URL other than none | pytest |
 | Theme | CSS accent / live tokens equal `theme.PALETTES`; contrast of text tokens >= 4.5:1 in both themes | pytest |
@@ -725,7 +725,7 @@ green. Phases per 01-consolidation section 5.
 | 5 | `webui/api.py` read endpoints (session, lines, board, line, versions, version detail, scan job) on D1 | M | 1 |
 | 6 | Front end: modules, router, board, lines treegrid with lane gutter, detail pane, chips, search, keyboard | L | 1 |
 | 7 | Notes: endpoints, editor, labels / comment / lock, pin, snapshot diff | M | 1 |
-| 8 | Host integration in `gui.py` (Organizer button, status, close guard, bridge, P10 menu) + `nmsvault ui` | M | 1 |
+| 8 | Host integration in `gui.py` (Organizer button, status, close guard, bridge, P10 menu) + `nmsvault-cli ui` | M | 1 |
 | 9 | Packaging: POSIX static glob + test, Windows kit check; README sentence | S | 1 |
 | 10 | CI: JS lint, headless-Chrome smoke, screenshot artifacts | S | 1 |
 | 11 | Move API: picker, plan cache, execute jobs with progress, ops, verification, recovery | M | 2 |

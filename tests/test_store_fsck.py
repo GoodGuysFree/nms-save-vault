@@ -1,4 +1,4 @@
-"""Version store B-11: fsck quick / deep / repair and ``nmsvault store fsck`` (D3 T24)."""
+"""Version store B-11: fsck quick / deep / repair and ``nmsvault-cli store fsck`` (D3 T24)."""
 from __future__ import annotations
 
 import dataclasses

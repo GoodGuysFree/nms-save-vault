@@ -327,4 +327,4 @@ def test_menu_names_in_core_texts_become_commands():
 
     text = cli_live.cli_words("Upgrade the vault first (Tools > Vault upgrade...).")
 
-    assert text == "Upgrade the vault first ('nmsvault store upgrade')."
+    assert text == "Upgrade the vault first ('nmsvault-cli store upgrade')."

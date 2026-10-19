@@ -34,7 +34,7 @@ WHERE_KEPT = ("In the vault itself (organizer/notes.json), so notes travel with 
               "comments and locks are kept per version. Notes never go into the save files, "
               "so the game never sees them.")
 CANNOT_SHOW = ("This note contains characters this build cannot show. Edit it on Windows or "
-               "with `nmsvault note`.")
+               "with `nmsvault-cli note`.")
 
 
 def cannot_show(widget: tk.Misc, text: str) -> bool:

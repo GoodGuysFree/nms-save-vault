@@ -1,4 +1,4 @@
-"""``nmsvault selftest``: read-only, counts only, exit 1 when an app update is needed.
+"""``nmsvault-cli selftest``: read-only, counts only, exit 1 when an app update is needed.
 Synthetic data in tmp folders; nothing real is read."""
 from __future__ import annotations
 

@@ -11,7 +11,7 @@ Method and safety:
 - Sources: the code; libNOM.io source (master `652aabb`, 2025-10-28); the NomNom CHANGELOG
   (its public repo now holds only CHANGELOG and README, latest 7.00.2 of 2026-09-28); web
   sources (cited inline); and read-only probes of the live folders and the vault.
-- The probes open files for reading only. No nmsvault command and no core write function was
+- The probes open files for reading only. No nmsvault-cli command and no core write function was
   run, and nothing was written outside the R8 scratch folder. The vault's index files hash the
   same as at R1's baseline (catalog.json `a3a58014...a045b9`, oplog.jsonl `29b3ece9...598aaa`).
 - Scripts and outputs are in `<scratchpad>\R8\scripts\*.py` and `<scratchpad>\R8\*.out.txt`,

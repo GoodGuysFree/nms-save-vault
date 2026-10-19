@@ -19,7 +19,7 @@ import sys
 from pathlib import Path
 
 #: Launcher file name -> which front-end it starts.
-ENTRY_POINTS = {"nmssavevault.exe": "gui", "nmsvault.exe": "cli"}
+ENTRY_POINTS = {"nmssavevault.exe": "gui", "nmsvault-cli.exe": "cli"}
 
 #: Set to "1" to get a plain interpreter for debugging the packaged runtime.
 BYPASS_ENV = "NMSVAULT_NO_BOOTSTRAP"
@@ -143,7 +143,7 @@ def _bootstrap() -> None:
         return
 
     # Leave the interpreter alone when it is being driven as one, so the packaged
-    # runtime stays inspectable: NMSSaveVault.exe -c "..." / nmsvault.exe -m pytest.
+    # runtime stays inspectable: NMSSaveVault.exe -c "..." / nmsvault-cli.exe -m pytest.
     command_line = _command_line()
     app_arguments = _app_arguments(command_line)
     if app_arguments is None:

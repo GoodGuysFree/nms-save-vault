@@ -1,9 +1,9 @@
-"""``nmsvault index ...``: the content index from the command line (D4 2.12).
+"""``nmsvault-cli index ...``: the content index from the command line (D4 2.12).
 
-    nmsvault index status                       counts by status, stale rows, cache size, policy
-    nmsvault index build [--workers N] [--rebuild] [--live-only]
-    nmsvault index show <vid-prefix> [--json] [--card]
-    nmsvault index changes <child> [<parent>]   parent defaults to the recorded one
+    nmsvault-cli index status                       counts by status, stale rows, cache size, policy
+    nmsvault-cli index build [--workers N] [--rebuild] [--live-only]
+    nmsvault-cli index show <vid-prefix> [--json] [--card]
+    nmsvault-cli index changes <child> [<parent>]   parent defaults to the recorded one
 
 Read-only towards the vault and the save folders: the organizer is opened read-only, so the
 only files written are the per-machine index cache and scan cache. Versions are named as

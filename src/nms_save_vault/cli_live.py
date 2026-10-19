@@ -1,4 +1,4 @@
-"""``nmsvault place | swap | keep | undo | ops | recover | clear | panic-restore``: the live
+"""``nmsvault-cli place | swap | keep | undo | ops | recover | clear | panic-restore``: the live
 operations (D5 4.5). Kept apart from ``cli.py`` like ``cli_store.py``. Every command prints the
 plan's warnings and the outcome text from core; a non-interactive run needs ``--yes`` plus
 ``--confirm CODE`` for each confirmation the plan asks.
@@ -90,9 +90,9 @@ def explain(exc: BaseException) -> str:
     return str(exc)
 
 
-_MENU_WORDS = (("Tools > Vault upgrade...", "'nmsvault store upgrade'"),
-               ("Tools > Vault upgrade", "'nmsvault store upgrade'"),
-               ("Undo the vault upgrade", "'nmsvault store rollback'"))
+_MENU_WORDS = (("Tools > Vault upgrade...", "'nmsvault-cli store upgrade'"),
+               ("Tools > Vault upgrade", "'nmsvault-cli store upgrade'"),
+               ("Undo the vault upgrade", "'nmsvault-cli store rollback'"))
 
 
 def cli_words(text: str) -> str:
@@ -349,7 +349,7 @@ def _run(ctx, plan: PlacePlan, args) -> int:
     if outcome.status == "stale" and outcome.replan is not None:
         print("  It changed since the plan; run the command again to see the new plan.")
     if outcome.undo is not None and outcome.op_id:
-        print(f"  ({outcome.undo.label}: nmsvault undo --op {outcome.op_id})")
+        print(f"  ({outcome.undo.label}: nmsvault-cli undo --op {outcome.op_id})")
     return 0 if outcome.status == "done" else 1
 
 
@@ -389,7 +389,7 @@ def cmd_undo(args) -> int:
         return _panic(ctx, args, None)
     if args.op:
         if args.op not in opjournal.read_ops(ctx):
-            _die(f"error: there is no move with the id {args.op} (see: nmsvault ops <slot>)")
+            _die(f"error: there is no move with the id {args.op} (see: nmsvault-cli ops <slot>)")
         return _run(ctx, plan_undo(ctx, args.op), args)
     target = parse_target(ctx, args.to) if args.to else _only_moved(ctx)
     rows = [r for r in op_history(ctx, target) if r.status == "done" and r.kind != "keep"
@@ -399,7 +399,7 @@ def cmd_undo(args) -> int:
     if rows[0].kind == "panic_restore":
         _die(f"error: the newest move of slot {target.slot} put a whole snapshot back, so "
              "undoing it changes several slots. If that is what you want, run: "
-             "nmsvault undo --whole-folder")
+             "nmsvault-cli undo --whole-folder")
     return _run(ctx, plan_undo(ctx, rows[0].op_id), args)
 
 
@@ -465,7 +465,7 @@ def cmd_clear(args) -> int:
         print("  it is already empty.")
         return 0
     if not guide.durable:
-        print(f"  First keep a copy in the vault:  nmsvault keep {text or target.platform + ':' + str(target.slot)}")
+        print(f"  First keep a copy in the vault:  nmsvault-cli keep {text or target.platform + ':' + str(target.slot)}")
     if guide.refill is not None:
         print(f"  Note: {guide.refill.text}")
     for n, step in enumerate(guide.steps, 1):

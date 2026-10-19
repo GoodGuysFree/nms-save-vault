@@ -48,7 +48,7 @@ Tags: **VERIFIED** = tested/measured here; **SOURCED** = cited; **INFERRED** = r
 11. Robustness gaps before an indexer feeds every file to the core decoder: Xbox `HGSAVEV2` blobs are not
     decodable (constant defined, never used), no cap on claimed chunk size (u32 -> up to 4 GB
     allocation), invalid UTF-8 in procedural ids needs `surrogateescape`. VERIFIED.
-12. Side issue: `packaging/sitecustomize.py:125-126` `-c`/`-m` bypass never fires, so `nmsvault.exe -c`
+12. Side issue: `packaging/sitecustomize.py:125-126` `-c`/`-m` bypass never fires, so `nmsvault-cli.exe -c`
     runs the CLI parser; the multiprocessing bypass does work. VERIFIED.
 
 ---
@@ -383,7 +383,7 @@ tagged otherwise.
 
 - `packaging/sitecustomize.py:125-126`: the `-c`/`-m` bypass never fires. At that point `sys.argv` is
   `['-c']` or `['-m', '--help']` (the flag is `argv[0]`; logged in the kit copy, `R5WD\kit-argv.log`), so
-  `nmsvault.exe -c "..."` runs the CLI parser on the code string (observed: `invalid choice`, exit 2, no
+  `nmsvault-cli.exe -c "..."` runs the CLI parser on the code string (observed: `invalid choice`, exit 2, no
   side effects; `state.json` mtime unchanged). The `--multiprocessing-fork` check works. Fix: test
   `sys.argv[:1]`, or use `sys.orig_argv`.
 - `msstore.py:22-24` and `DESIGN.md:118` say HGSAVEV2 is handled; it is not (F8).

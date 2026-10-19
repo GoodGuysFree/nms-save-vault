@@ -319,7 +319,7 @@ def test_a_store_made_by_a_newer_app_is_an_alert_not_an_empty_vault(world):  # n
 def test_a_damaged_format_says_to_run_fsck(world):  # noqa: F811
     (world.vault_root / "store" / "FORMAT").write_bytes(b"{ not json")
     organizer = _organizer(world)
-    assert "nmsvault store fsck" in organizer.store_error and "damaged" in organizer.store_error
+    assert "nmsvault-cli store fsck" in organizer.store_error and "damaged" in organizer.store_error
     assert V.scan_alerts(organizer)["store:open"] == organizer.store_error
 
 
@@ -344,7 +344,7 @@ def test_the_vault_window_names_a_store_it_cannot_open(gui_app, world):  # noqa:
     (world.vault_root / "store" / "FORMAT").write_bytes(b"{ not json")
     env = W.VaultEnv(world.vault_root, [world.live], None, "test")
     state = W.read_state(env)
-    assert state.unopenable and "nmsvault store fsck" in state.unopenable
+    assert state.unopenable and "nmsvault-cli store fsck" in state.unopenable
 
 
 def test_a_long_result_is_shown_whole_and_wraps(gui_app, world):  # noqa: F811

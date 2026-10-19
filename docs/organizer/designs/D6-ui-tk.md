@@ -717,7 +717,7 @@ Windows (04c). The Linux kit's Tk has no Xft and draws non-Latin-1 as garbage (R
 Design: on `tk windowingsystem == "x11"` a display filter replaces characters outside Latin-1 with
 `?` in every displayed data string (table, board, cards, titles), and the notes editor refuses to
 edit a note that contains such characters ("This note contains characters this build cannot show.
-Edit it on Windows or with `nmsvault note`.") so saving never destroys text it could not show.
+Edit it on Windows or with `nmsvault-cli note`.") so saving never destroys text it could not show.
 
 ### 3.15 State and preferences
 

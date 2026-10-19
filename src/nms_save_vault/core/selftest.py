@@ -1,4 +1,4 @@
-"""``nmsvault selftest``: does this app still understand the saves it is looking at?
+"""``nmsvault-cli selftest``: does this app still understand the saves it is looking at?
 
 Read-only. Every live save (Steam and Xbox) and every vault version is read and decoded, and the
 content index's extractors run on the decoded tree in memory - no cache, no organizer store, no

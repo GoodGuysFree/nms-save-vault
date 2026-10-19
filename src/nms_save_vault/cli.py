@@ -1,44 +1,44 @@
 """Command-line front end for NMS Save Vault.
 
 Examples:
-    nmsvault status
-    nmsvault list
-    nmsvault show <entry-id>          # or: show live
-    nmsvault backup --label "before X"
-    nmsvault restore <entry-id>
-    nmsvault extract 9 --label "main"
-    nmsvault clear steam:9                    # the steps to empty a slot yourself
-    nmsvault repopulate --from <entry-id|path> --src-slot 9 --to-slot 3 [--yes]
-    nmsvault promote --slot 9 --member A
-    nmsvault import "D:\\some\\st_backup" [--copy]
-    nmsvault import "E:\\Backup\\_SaveVault" [--copy]   # a whole copied vault
-    nmsvault discover [--add]
-    nmsvault accounts --set 7656119...=Main    # hide the real account ids
-    nmsvault undo [--to steam:7 | --op OP_ID | --whole-folder]
-    nmsvault verify [live|<entry-id>|<path>]
+    nmsvault-cli status
+    nmsvault-cli list
+    nmsvault-cli show <entry-id>          # or: show live
+    nmsvault-cli backup --label "before X"
+    nmsvault-cli restore <entry-id>
+    nmsvault-cli extract 9 --label "main"
+    nmsvault-cli clear steam:9                    # the steps to empty a slot yourself
+    nmsvault-cli repopulate --from <entry-id|path> --src-slot 9 --to-slot 3 [--yes]
+    nmsvault-cli promote --slot 9 --member A
+    nmsvault-cli import "D:\\some\\st_backup" [--copy]
+    nmsvault-cli import "E:\\Backup\\_SaveVault" [--copy]   # a whole copied vault
+    nmsvault-cli discover [--add]
+    nmsvault-cli accounts --set 7656119...=Main    # hide the real account ids
+    nmsvault-cli undo [--to steam:7 | --op OP_ID | --whole-folder]
+    nmsvault-cli verify [live|<entry-id>|<path>]
 
   Live operations (what a slot is replaced by is kept in the vault first):
-    nmsvault place steam:7 --from <entry-id> --src-slot 3 [--member A|B] [--yes]
-    nmsvault swap steam:3 steam:7
-    nmsvault keep steam:7
-    nmsvault ops steam:7                      # the moves made to a slot
-    nmsvault recover [--op OP_ID --choice forward|back|leave]
-    nmsvault panic-restore [<entry-id>]       # a whole snapshot back, slot by slot
+    nmsvault-cli place steam:7 --from <entry-id> --src-slot 3 [--member A|B] [--yes]
+    nmsvault-cli swap steam:3 steam:7
+    nmsvault-cli keep steam:7
+    nmsvault-cli ops steam:7                      # the moves made to a slot
+    nmsvault-cli recover [--op OP_ID --choice forward|back|leave]
+    nmsvault-cli panic-restore [<entry-id>]       # a whole snapshot back, slot by slot
 
   The organizer (every save file, its versions and history):
-    nmsvault saves [--sort play_time] [--live-only] [--find TEXT] [--json]
-    nmsvault versions "Main Save" [--all]     # or a live slot: S9, X4
-    nmsvault board
-    nmsvault note "Main Save" --set "Next: Atlas path"
-    nmsvault note S9 --label "before the Atlas" --lock
-    nmsvault pin S9 [--off]
-    nmsvault history "Main Save" [--key | --all] [--json]   # the recorded tree, in lanes
-    nmsvault lineage comes-from <version> <parent> | --none  # your word over the record
-    nmsvault lineage unrelated <version> <version>
-    nmsvault lineage combine <save> <into-save> | split <version> [--name N]
-    nmsvault scan                             # record what the live slots hold now
-    nmsvault organizer bootstrap [--dry-run]  # read in the history of an existing vault
-    nmsvault index status | build | show <version> | changes <version>
+    nmsvault-cli saves [--sort play_time] [--live-only] [--find TEXT] [--json]
+    nmsvault-cli versions "Main Save" [--all]     # or a live slot: S9, X4
+    nmsvault-cli board
+    nmsvault-cli note "Main Save" --set "Next: Atlas path"
+    nmsvault-cli note S9 --label "before the Atlas" --lock
+    nmsvault-cli pin S9 [--off]
+    nmsvault-cli history "Main Save" [--key | --all] [--json]   # the recorded tree, in lanes
+    nmsvault-cli lineage comes-from <version> <parent> | --none  # your word over the record
+    nmsvault-cli lineage unrelated <version> <version>
+    nmsvault-cli lineage combine <save> <into-save> | split <version> [--name N]
+    nmsvault-cli scan                             # record what the live slots hold now
+    nmsvault-cli organizer bootstrap [--dry-run]  # read in the history of an existing vault
+    nmsvault-cli index status | build | show <version> | changes <version>
 """
 from __future__ import annotations
 
@@ -180,7 +180,7 @@ def _resolve_vault(args) -> Vault:
         root = Path(st.vault) if (st and st.vault) else locations.default_vault_dir()
     if (root / catalog.PRE_UPGRADE_COPY).is_file():
         _die("error: this is the pre-upgrade copy of a vault, not a vault to use; to go back "
-             "to it run: nmsvault store rollback")
+             "to it run: nmsvault-cli store rollback")
     _upgrade_notice(root)
     return Vault(root).load()
 
@@ -201,7 +201,7 @@ def _resolve_source(vault: Vault, value: str) -> Path:
     p = Path(value)
     if p.is_dir():
         return p
-    _die(f"error: '{value}' is neither a backup id nor a folder (see: nmsvault list)")
+    _die(f"error: '{value}' is neither a backup id nor a folder (see: nmsvault-cli list)")
 
 
 @contextmanager
@@ -510,9 +510,9 @@ def _report(res: ops.OpResult) -> None:
         print(f"  changed: {', '.join(res.changed)}")
     _print_warnings(res.warnings)
     if res.op_id:
-        print(f"  (undo available: nmsvault undo --op {res.op_id})")
+        print(f"  (undo available: nmsvault-cli undo --op {res.op_id})")
     elif res.snapshot_id:
-        print(f"  (undo available: nmsvault undo  -> restores snapshot {res.snapshot_id})")
+        print(f"  (undo available: nmsvault-cli undo  -> restores snapshot {res.snapshot_id})")
 
 
 def cmd_sources(args) -> int:
@@ -573,7 +573,7 @@ def cmd_accounts(args) -> int:
 
     _print(f"Config: {path}" + ("" if path.is_file() else "   (not created yet)"))
     if not known:
-        _print("(no accounts known yet -- run 'nmsvault sources' first)")
+        _print("(no accounts known yet -- run 'nmsvault-cli sources' first)")
         return 0
     _print("")
     _print(f"{'Platform':<9}{'Account id':<52}Shows as")
@@ -581,8 +581,8 @@ def cmd_accounts(args) -> int:
     for platform, account in known:
         _print(f"{platform:<9}{account:<52}{amap.alias_for(account) or '(not set)'}")
     _print("")
-    _print('Set:   nmsvault accounts --set <account-id>="Display name"')
-    _print("Clear: nmsvault accounts --clear <account-id>")
+    _print('Set:   nmsvault-cli accounts --set <account-id>="Display name"')
+    _print("Clear: nmsvault-cli accounts --clear <account-id>")
     return 0
 
 
@@ -850,7 +850,7 @@ def cmd_lineage(args) -> int:
             into = _resolve(resolve_save, model, args.into)
             cor.combine([pid], into, names={pid: model.line(pid).name})
             print(f"{model.line(pid).name} is now part of {model.line(into).name} "
-                  f"(to separate them: nmsvault lineage uncombine {pid[:8]})")
+                  f"(to separate them: nmsvault-cli lineage uncombine {pid[:8]})")
         elif action == "uncombine":
             joined = [a["pid"] for a in cor.state().aliases if isinstance(a.get("pid"), str)]
             ref = args.save.strip().upper()
@@ -878,7 +878,7 @@ def cmd_lineage(args) -> int:
                              if v and model.graph.descends_from(v, vid)})
             new = cor.split(model.raw_pid_of(vid), branch, args.name or "")
             print(f"{len(branch)} version(s) are now the save file {new}")
-            print(f"  to take it back: nmsvault lineage unsplit {new}")
+            print(f"  to take it back: nmsvault-cli lineage unsplit {new}")
         elif action == "unsplit":
             try:
                 pid = _resolve(resolve_save, model, args.save)
@@ -944,7 +944,7 @@ def cmd_organizer_bootstrap(args) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        prog="nmsvault", description="NMS Save Vault",
+        prog="nmsvault-cli", description="NMS Save Vault",
         epilog="A live slot is written steam:7 or S7, xbox:4 or X4 (S2.7 for the second "
                "account's slot 7); every command that takes a slot accepts both forms.")
     p.add_argument("--live", help="path to the live st_<id> save folder")
@@ -974,7 +974,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.set_defaults(func=cmd_backup)
 
     s = sub.add_parser("restore", help="restore a backup into the live folder")
-    s.add_argument("entry_id", help="the backup to put back (see: nmsvault list)")
+    s.add_argument("entry_id", help="the backup to put back (see: nmsvault-cli list)")
     s.add_argument("--no-mirror", action="store_true", help="kept for old scripts: slots the backup does not hold are always left alone")
     s.add_argument("--force", action="store_true", help="go on when it cannot be checked whether the game is running "
                                           "(a running game always refuses)")
@@ -1186,9 +1186,9 @@ def _absolutize(args) -> None:
 
 def parse_args(argv=None):
     """Parse the command line. ``--live`` and ``--vault`` may stand before or after the
-    subcommand: the packaged ``nmsvault.exe`` is CPython's own launcher, which rejects an
+    subcommand: the packaged ``nmsvault-cli.exe`` is CPython's own launcher, which rejects an
     unknown first option ("unknown option --vault") before the app runs, so the kit's users
-    write ``nmsvault.exe index build --vault V``."""
+    write ``nmsvault-cli.exe index build --vault V``."""
     argv = sys.argv[1:] if argv is None else list(argv)
     globals_ = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
     globals_.add_argument("--live")
@@ -1227,7 +1227,7 @@ def _check_paths(args) -> None:
                 _die(f"error: --vault {p}: its parent folder does not exist; is the drive "
                      "connected?")
             if getattr(args, "command", None) not in _MAY_START_VAULT:
-                _die(f"error: there is no vault at {p}; 'nmsvault backup --vault ...' starts one")
+                _die(f"error: there is no vault at {p}; 'nmsvault-cli backup --vault ...' starts one")
 
 
 def main(argv=None) -> int:

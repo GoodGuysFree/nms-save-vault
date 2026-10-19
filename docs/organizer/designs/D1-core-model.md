@@ -565,7 +565,7 @@ class Journal:
 
 | Caller | `src` | `skip` |
 |---|---|---|
-| GUI start and refresh, `nmsvault scan` (through the `Organizer` facade) | `scan` | `busy_targets()`: the facade's hook, D5's `liveops.busy_targets(ctx)` from phase 2, empty before |
+| GUI start and refresh, `nmsvault-cli scan` (through the `Organizer` facade) | `scan` | `busy_targets()`: the facade's hook, D5's `liveops.busy_targets(ctx)` from phase 2, empty before |
 | D5 pre-flight (journals the state about to be evicted; the op is not open yet) | `scan` | `busy_targets(ctx)` |
 | D5 post-write check, while its own op is still open (last event `validated`) | `verify` | `busy_targets(ctx)` minus the targets of its own op |
 | Classic-operation hook (2.6.7) | `scan` | `busy_targets()` (empty in phase 1) |
@@ -1306,7 +1306,7 @@ Composition by phase: phase 1 `VaultLocator([FolderLocator], None)`; from phase 
 ### 2.12 Bootstrap of an existing vault
 
 Runs once, automatically, the first time the organizer opens a writable vault (or by
-`nmsvault organizer bootstrap`), in a worker thread, with progress.
+`nmsvault-cli organizer bootstrap`), in a worker thread, with progress.
 
 1. `scan(..., deep=True)` - hashes every copy.
 2. Map app-made whole-folder entries (`full`, `snapshot`; managed catalog entries, and store
@@ -1378,16 +1378,16 @@ date. 8 live saves have no copy in the vault."
 
 | Command | Writes | Output |
 |---|---|---|
-| `nmsvault saves [--sort KEY] [--live] [--platform steam\|xbox] [--find TEXT] [--json] [--no-cache]` | per-machine cache only | one row per line: name, live badges, versions, play time, last played, difficulty, note preview |
-| `nmsvault versions <save> [--all] [--json]` | cache only | version rows with flags and where |
-| `nmsvault board [--json]` | cache only | 15 + 15 slots |
-| `nmsvault history <save> [--key \| --all] [--json]` (phase 4) | cache only | ASCII lanes as in 2.10.5 |
-| `nmsvault note <save> [--set TEXT \| --append TEXT \| --history]` | `notes.json` | save-file note |
-| `nmsvault note <version> [--label L] [--comment C] [--lock \| --unlock]` | `notes.json` | version note |
-| `nmsvault pin <save> [--off]` | `notes.json` | |
-| `nmsvault scan` | `journal.jsonl` | events since the last record |
-| `nmsvault lineage set-parent <version> (<version> \| --root)`, `lineage unrelated <v> <v>`, `lineage combine <save> <save>`, `lineage split <version>` (phase 4) | `lineage.json` | |
-| `nmsvault organizer bootstrap [--dry-run]` | journal, lineage (not with `--dry-run`) | the report |
+| `nmsvault-cli saves [--sort KEY] [--live] [--platform steam\|xbox] [--find TEXT] [--json] [--no-cache]` | per-machine cache only | one row per line: name, live badges, versions, play time, last played, difficulty, note preview |
+| `nmsvault-cli versions <save> [--all] [--json]` | cache only | version rows with flags and where |
+| `nmsvault-cli board [--json]` | cache only | 15 + 15 slots |
+| `nmsvault-cli history <save> [--key \| --all] [--json]` (phase 4) | cache only | ASCII lanes as in 2.10.5 |
+| `nmsvault-cli note <save> [--set TEXT \| --append TEXT \| --history]` | `notes.json` | save-file note |
+| `nmsvault-cli note <version> [--label L] [--comment C] [--lock \| --unlock]` | `notes.json` | version note |
+| `nmsvault-cli pin <save> [--off]` | `notes.json` | |
+| `nmsvault-cli scan` | `journal.jsonl` | events since the last record |
+| `nmsvault-cli lineage set-parent <version> (<version> \| --root)`, `lineage unrelated <v> <v>`, `lineage combine <save> <save>`, `lineage split <version>` (phase 4) | `lineage.json` | |
+| `nmsvault-cli organizer bootstrap [--dry-run]` | journal, lineage (not with `--dry-run`) | the report |
 
 References: `<save>` = pid prefix (>= 6 hex), a unique case-insensitive name, or a live badge
 (`S9`, `X4`); `<version>` = vid prefix (>= 8 hex), a live badge (its head), or
@@ -1454,8 +1454,8 @@ the owner rejected it.
 
 ### O-D1-3 - Recording from read-only CLI commands (implementation choice, decided)
 
-`nmsvault saves` and friends do not write the journal (decided: "showing never writes the
-vault", the R1 C3 complaint). A CLI-only user records with `nmsvault scan`; every D5 operation
+`nmsvault-cli saves` and friends do not write the journal (decided: "showing never writes the
+vault", the R1 C3 complaint). A CLI-only user records with `nmsvault-cli scan`; every D5 operation
 records anyway. Alternative rejected: record on every CLI listing (more history, surprising
 writes, fails on read-only vaults).
 

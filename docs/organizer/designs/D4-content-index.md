@@ -102,7 +102,7 @@ Phase 3; deep on-demand detail is Phase 3b.
 | `core/index/pool.py` | new | `ExecutionPolicy`, dispatcher, process / thread executors, budget, watchdog | `multiprocessing` | no |
 | `core/index/cache.py` | new | `IndexCache` (sqlite3, WAL, writer thread, read LRU, recovery) | `sqlite3` | no |
 | `core/index/service.py` | new | `IndexService` facade (implements D1's `FactsProvider`) | all above | no |
-| `cli.py` | +subcommand | `nmsvault index status / build / show / changes` | `core.index` | (front-end) |
+| `cli.py` | +subcommand | `nmsvault-cli index status / build / show / changes` | `core.index` | (front-end) |
 | `tools/gen_lookups.py` | new, dev-only | regenerates `core/index/lookups/*.py` from an unpacked game dump | anything (DESIGN.md D6) | n/a |
 | `tools/bench_index.py` | new, dev-only | reproduces the performance numbers in 2.14 | - | n/a |
 
@@ -1307,10 +1307,10 @@ class IndexService:
 CLI (`cli.py`, read-only towards the vault, D1 decision 7):
 
 ```text
-nmsvault index status                       counts by status, stale rows, cache size, policy
-nmsvault index build [--workers N] [--rebuild] [--live-only]   foreground, progress lines
-nmsvault index show <ref> [--json] [--card]                    facts of a version (ref via D1 ReadModel.resolve)
-nmsvault index changes <child-ref> [<parent-ref>]              parent defaults to D1's drawn parent;
+nmsvault-cli index status                       counts by status, stale rows, cache size, policy
+nmsvault-cli index build [--workers N] [--rebuild] [--live-only]   foreground, progress lines
+nmsvault-cli index show <ref> [--json] [--card]                    facts of a version (ref via D1 ReadModel.resolve)
+nmsvault-cli index changes <child-ref> [<parent-ref>]              parent defaults to D1's drawn parent;
                                                                none -> prints "no recorded parent"
 ```
 
@@ -1569,7 +1569,7 @@ Sizes: S < 150 lines including tests, M 150-500, L > 500. Every step is one comm
 | 13 | `pool.py` (policy, dispatcher, process and thread executors, budget, watchdog) + `platform.index_execution_policy` | L | 3 |
 | 14 | `service.py` (`IndexService`, events, D1 `FactsProvider` conformance 2.6) | M | 3 |
 | 15 | `changes.py` (rules N1-N16, templates, `is_milestone`) | M | 3 |
-| 16 | CLI `nmsvault index ...` + `tools/bench_index.py`; README facts (test count, capability) | S | 3 |
+| 16 | CLI `nmsvault-cli index ...` + `tools/bench_index.py`; README facts (test count, capability) | S | 3 |
 | 17 | UI hook: the Tk poller (D6) consumes `progress` / `events_since` | S (D4 part) | 3 |
 | 18 | Kit checks: Windows kit spawn smoke; POSIX kit spawn on the ladder, then flip `SPAWN_VERIFIED_POSIX_KIT` | S | 3 |
 | 19 | Deep decode on demand (`request_deep` / `deep`) + card integration | M | 3b |

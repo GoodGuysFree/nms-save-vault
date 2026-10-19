@@ -5,7 +5,7 @@ no live write may read from it or replace it (Place, Swap, Promote, Undo, restor
 not know what changed in the format, so it could silently damage a save. The block carries the
 code ``GAME_NEWER`` and the plain text below; the Organizer shows a notice on such saves.
 
-Maintenance after a game update: run ``nmsvault selftest`` and ``tools/check_upstream.py``,
+Maintenance after a game update: run ``nmsvault-cli selftest`` and ``tools/check_upstream.py``,
 regenerate the pins (``tools/gen_lookups.py``), then raise the numbers below (DESIGN.md,
 "Maintenance after a game update").
 """

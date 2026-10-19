@@ -3,7 +3,7 @@ next to it first, and only then is the store created.
 
 Nothing in the vault changes before the copy is verified, except ``store/state/`` (the upgrade's
 lock and its ``upgrade.json``). A failure removes the upgrade's own unfinished copy (the
-``.partial`` folder) and ``store/``. Nothing here runs by itself: the GUI or ``nmsvault store
+``.partial`` folder) and ``store/``. Nothing here runs by itself: the GUI or ``nmsvault-cli store
 upgrade`` starts it, and only for the vault the owner chose.
 """
 from __future__ import annotations
@@ -529,7 +529,7 @@ def _done_text(info: dict, waiting: int) -> str:
     text = (f"Vault upgraded. A copy of the vault as it was is in {info['name']} next to it "
             f"({_gb(info['bytes'])}). Keep it until you are happy with the new version and "
             "delete it yourself when you no longer need it; Undo the vault upgrade "
-            "(Tools > Vault upgrade... > Undo the vault upgrade, or nmsvault store rollback) uses it.")
+            "(Tools > Vault upgrade... > Undo the vault upgrade, or nmsvault-cli store rollback) uses it.")
     if waiting:
         text += (f" Your old backups were not read into the store yet: it needs {_gb(waiting)} "
                  "more free space on the vault drive.")

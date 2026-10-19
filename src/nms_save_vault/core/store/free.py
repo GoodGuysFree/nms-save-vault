@@ -141,7 +141,7 @@ def _run_free(store, plan, live_roots, progress, cancel, faults) -> FreeResult:
     if not report.ok:
         left = len(report.problems) - report.repaired
         raise FreeError("damaged", f"The check of the version store found {left} problem(s); "
-                                   "nothing was deleted. Run 'nmsvault store fsck --deep "
+                                   "nothing was deleted. Run 'nmsvault-cli store fsck --deep "
                                    "--repair' first.")
     live = discover.live_folders(live_roots) if live_roots is not None else store.live_folders()
     aside = _copy_aside(root, read_migration(root))       # walks the whole copy: once per run

@@ -13,7 +13,8 @@ dependencies = []
 dev = ["pytest>=8", "pytest-xdist>=3.5"]
 
 [project.scripts]
-nmsvault = "nms_save_vault.cli:main"
+nmsvault-cli = "nms_save_vault.cli:main"
+nmsvault = "nms_save_vault.cli:main"   # older name, kept for existing habits
 nmsvault-gui = "nms_save_vault.gui:main"
 
 [build-system]

@@ -58,7 +58,7 @@ def test_it_prints_what_is_new_and_what_to_do_next(record, capsys):
     out = capsys.readouterr().out
     assert f"{LIB}: nothing new" in out and f"{MBIN}: 1 new" in out
     assert "v7.08.0  2026-11-05  (pre-release)  https://example.test/v7.08.0" in out
-    assert "nmsvault selftest" in out and "Maintenance after a game update" in out
+    assert "nmsvault-cli selftest" in out and "Maintenance after a game update" in out
     assert all("api.github.com/repos/" in u for u in net.urls)
 
 

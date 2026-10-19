@@ -1001,7 +1001,7 @@ recovery, which restores the whole folder including accountdata (R8 B4, R1 E11).
 
 ### 2.10 Recovery of an interrupted operation (next start)
 
-`pending_recovery(ctx)` runs at app start (CLI: `nmsvault recover`), before any new live op, and
+`pending_recovery(ctx)` runs at app start (CLI: `nmsvault-cli recover`), before any new live op, and
 whenever the UI asks. It only reads, except for the automatic cases below.
 
 ```python
@@ -1463,7 +1463,7 @@ folders; the app never runs them by itself.
    discover one planet; save at a beacon; quit. Close Steam's sync prompt if any.
 2. Close the Xbox app; wait 60 s (sync settles, R8 E2).
 3. (As run in 2026-10, with the then experimental env gate; no longer needed.) Run
-   `nmsvault place --from live:steam:<slot> --to xbox:<empty slot>`.
+   `nmsvault-cli place --from live:steam:<slot> --to xbox:<empty slot>`.
 4. Start NMS (Game Pass). Check: (a) the slot shows the right name, play time and date;
    (b) it loads; (c) the base is editable (move a part) and the discovery is listed; (d) save at
    a beacon; quit.

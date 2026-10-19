@@ -277,7 +277,7 @@ def store_open_error_text(exc: Exception, vault_root: Path) -> str:
     if not Path(vault_root).is_dir():
         return ("The vault folder cannot be reached (is its drive connected?). "
                 "Its backups are not shown until it is.")
-    return ("The vault's store is damaged or cannot be read - run `nmsvault store fsck` "
+    return ("The vault's store is damaged or cannot be read - run `nmsvault-cli store fsck` "
             f"to see what is wrong. Its backups are not shown until then. ({exc})")
 
 

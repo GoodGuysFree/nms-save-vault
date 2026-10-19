@@ -186,7 +186,7 @@ INFO_PLIST = """\
 BACKUP_COMMAND = {
     "linux": """\
     # If the game is on a second drive or an SD card this path differs. Run
-    #     ./nmsvault status
+    #     ./nmsvault-cli status
     # first -- it prints the folder it found -- and copy that one instead.
     cp -a ~/.local/share/Steam/steamapps/compatdata/275850/pfx/drive_c/users/steamuser/\\
 AppData/Roaming/HelloGames/NMS  ~/nms-save-backup-$(date +%F)
@@ -267,7 +267,7 @@ Getting started
 ---------------
 {start}
   NMSSaveVault   the graphical app
-  nmsvault       the command line (./nmsvault status, ./nmsvault --help)
+  nmsvault-cli   the command line (./nmsvault-cli status, ./nmsvault-cli --help)
 
 Where your saves are expected to be
 -----------------------------------
@@ -277,7 +277,7 @@ Where your saves are expected to be
     ~/Library/Application Support/HelloGames/NMS
 
 The app finds these itself. If it does not, point it at the folder by hand:
-    ./nmsvault status --live /path/to/st_<your steam id>
+    ./nmsvault-cli status --live /path/to/st_<your steam id>
 
 If the graphical app does not start
 -----------------------------------
@@ -350,7 +350,7 @@ def build(target: Target) -> Path:
         for arcname, path in app_sources():
             add_bytes(tar, f"{KIT_NAME}/_runtime/app/{arcname}", path.read_bytes())
 
-        for name, module in (("NMSSaveVault", "gui"), ("nmsvault", "cli")):
+        for name, module in (("NMSSaveVault", "gui"), ("nmsvault-cli", "cli")):
             script = LAUNCHER.format(module=module, up="")
             add_bytes(tar, f"{KIT_NAME}/{name}", script.encode("utf-8"), mode=0o755)
 

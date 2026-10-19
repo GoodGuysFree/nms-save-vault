@@ -65,8 +65,8 @@ are blocked while the game is running.
 
 Command line
 ------------
-nmsvault.exe, in the same folder, is the command-line version of the same tool
-(nmsvault.exe status, nmsvault.exe list, and so on).
+nmsvault-cli.exe, in the same folder, is the command-line version of the same tool
+(nmsvault-cli.exe status, nmsvault-cli.exe list, and so on).
 
 Source & license
 ----------------

@@ -773,7 +773,7 @@ through the listing. No line is written for older app versions.
 
 When: quick at open when the vault is on removable or network media and after any crash
 recovery; deep after the fold, **before freeing old folders (required, 4.5)**, on demand
-(`nmsvault store fsck [--deep] [--repair]`, a GUI item) and suggested monthly. Every read
+(`nmsvault-cli store fsck [--deep] [--repair]`, a GUI item) and suggested monthly. Every read
 verifies anyway (2.7).
 
 ### 2.12 Concurrency and locking
@@ -923,7 +923,7 @@ progress per file and cancel between files (copy-aside) or entries (fold).
 
 **When.** The first time a phase-2 app opens a writable vault whose `vault_mode` is `"legacy"`:
 the GUI shows the upgrade dialog (default button "Upgrade"); the CLI prints one line and
-`nmsvault store upgrade [--copy-to FOLDER]` runs it. "Not now" keeps the vault exactly as in
+`nmsvault-cli store upgrade [--copy-to FOLDER]` runs it. "Not now" keeps the vault exactly as in
 phase 1 (classic operations and the organizer view work; organizer live operations stay
 disabled with "Upgrade the vault first", because their preserve provider is the store); the dialog
 returns at the next start. A vault created by a phase-2 app starts in store mode; a vault with no
@@ -1066,7 +1066,7 @@ Until copied in, a hand-made folder stays listed in place, shown "outside the va
 
 ### 4.4 Rollback: "Undo the vault upgrade"
 
-Offered from the vault menu and `nmsvault store rollback [--copy FOLDER]` while the copy-aside
+Offered from the vault menu and `nmsvault-cli store rollback [--copy FOLDER]` while the copy-aside
 exists. It returns the vault to the old layout with everything it held before the upgrade plus
 everything made since, as plain folders; the copy-aside is only read.
 
@@ -1290,14 +1290,14 @@ with `uv run pytest` green and one commit.
 | B-8 | 2 | `preserve()` | M | T10 |
 | B-9 | 2 | listing: `VaultEntry`, `list_vault_entries`, `open_entry_folder`, `store_status` | M | T11 |
 | B-10 | 2 | classic ops in store mode; mode check + lock on every vault write; `import_vault` legacy-source fold, store source refused | M | T12, T22 (phase-2 part) |
-| B-11 | 2 | `fsck` quick / deep / repair + `nmsvault store fsck` | M | T24 |
-| B-12 | 2 | upgrade: plan, copy-aside, verify, commit, interrupted cleanup, `PRE-UPGRADE-COPY.txt`, discovery and open/import refusals; GUI dialog hook + `nmsvault store upgrade` | M | T13-T16, T28 |
+| B-11 | 2 | `fsck` quick / deep / repair + `nmsvault-cli store fsck` | M | T24 |
+| B-12 | 2 | upgrade: plan, copy-aside, verify, commit, interrupted cleanup, `PRE-UPGRADE-COPY.txt`, discovery and open/import refusals; GUI dialog hook + `nmsvault-cli store upgrade` | M | T13-T16, T28 |
 | B-13 | 2 | fold: automatic after the upgrade, `migration.json`, progress / cancel / resume, waiting for space | M | T9, T17 |
-| B-14 | 2 | copy-in of hand-made in-place folders + `nmsvault store copy-in` | S | T18 |
-| B-15 | 2 | rollback + `nmsvault store rollback` | M | T19, T20 |
+| B-14 | 2 | copy-in of hand-made in-place folders + `nmsvault-cli store copy-in` | S | T18 |
+| B-15 | 2 | rollback + `nmsvault-cli store rollback` | M | T19, T20 |
 | B-16 | 2 | DESIGN.md (storage model, invariants, upgrade) and README (vault format, upgrade, older versions unsupported after it) | S | - |
 | - | | **end of phase 2**: no code deletes a vault file except the app's own temp files and its own unfinished copy | | |
-| B-17 | 5 | free old folders after a deep fsck + `nmsvault store free-old-folders` | M | T21, T19 (free part) |
+| B-17 | 5 | free old folders after a deep fsck + `nmsvault-cli store free-old-folders` | M | T21, T19 (free part) |
 | B-18 | 5 | `import_vault` merge of a store-mode source | S | T22 (merge part) |
 | B-19 | 5 | DESIGN.md / README: freeing old folders, merge | S | - |
 

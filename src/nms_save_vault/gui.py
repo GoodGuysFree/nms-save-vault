@@ -233,7 +233,7 @@ def _refuse_pre_upgrade_copy(root: Path) -> None:
     """The copy an upgrade keeps aside is not a vault to use (the CLI refuses it as well)."""
     if (Path(root) / catalog.PRE_UPGRADE_COPY).is_file():
         raise OperationError("This folder is the pre-upgrade copy of a vault, not a vault to "
-                             "use. To go back to it, run: nmsvault store rollback")
+                             "use. To go back to it, run: nmsvault-cli store rollback")
 
 
 def _gui_text(message) -> str:
@@ -3328,7 +3328,7 @@ more) are read from the saves. Chips, Find, sorting and a column chooser narrow 
   an upgraded vault.
 - Tools > Free old backup folders: gives back the disk space of the old backup folders
   once they are in the version store.
-- Selftest (command line: nmsvault selftest): reads every live save and vault version in
+- Selftest (command line: nmsvault-cli selftest): reads every live save and vault version in
   memory, writes nothing and reports what it could not understand. A save written by a
   newer game than the app knows is flagged and never moved.
 

@@ -170,7 +170,7 @@ Found by R1, R2, R5, R7, R8; all VERIFIED unless noted. They block or distort or
 | P8 | Decoder: no cap on a chunk's claimed size; HGSAVEV2 claimed but not implemented; per-byte match copy (3-5x slower) | 4 GB allocation on a corrupt file; docs wrong; slow index |
 | P9 | `discover --add` catalogues the live Xbox folder as an in-place backup | every Xbox save shows a fake extra backup |
 | P10 | Toolbar needs 1,410 px in a 1,000 px window; Copy dialog clips its buttons at zoom 1.2 | Undo and other buttons unreachable at the owner's settings |
-| P11 | `packaging/sitecustomize.py:125-126` `-c`/`-m` bypass never fires | `nmsvault.exe -c` runs the CLI parser |
+| P11 | `packaging/sitecustomize.py:125-126` `-c`/`-m` bypass never fires | `nmsvault-cli.exe -c` runs the CLI parser |
 | P12 | Rewriting `containers.index` changes the timestamps of records that were not touched (0 of 7 real indexes survive a parse + rebuild unchanged; D5 P-X1) | every Xbox write today can re-order other slots' members and trigger needless sync |
 | P13 | Old app versions (v0.0.9-v0.2.8) treat an unknown catalog entry `kind` so that Restore wipes every other slot plus accountdata (D2, verified on old releases) | moot: users do not go back to older app versions (4a Q2), and new entries live in the store, not the catalog; not fixed |
 

@@ -11,7 +11,7 @@ trigger: always_on
 NMS Save Vault (`nms-save-vault`) is a Python 3.10+ desktop utility that safely
 backs up, catalogs, and manages No Man's Sky save files (Steam and Xbox / Game Pass), giving
 effectively unlimited save slots. It ships two front-ends over one safety-checked core: an
-`nmsvault` argparse CLI and a Tkinter GUI. The runtime is **standard-library only** (no
+`nmsvault-cli` argparse CLI and a Tkinter GUI. The runtime is **standard-library only** (no
 third-party runtime dependencies); `pytest` is dev-only, and the distributable has no build
 dependency at all — it is the official signed CPython runtime with the app laid out beside it.
 Environment and builds are managed with `uv`. The code is GPL-3.0 (parts are a Python port

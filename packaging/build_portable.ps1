@@ -104,7 +104,7 @@ New-Item -ItemType Directory -Force `
 # The launchers. Renaming a PE does not touch the bytes the signature covers, so
 # both stay validly signed -- and pythonw.exe is what keeps the GUI console-free.
 Copy-Item (Join-Path $emb "pythonw.exe") (Join-Path $OutDir "NMSSaveVault.exe")
-Copy-Item (Join-Path $emb "python.exe")  (Join-Path $OutDir "nmsvault.exe")
+Copy-Item (Join-Path $emb "python.exe")  (Join-Path $OutDir "nmsvault-cli.exe")
 foreach ($f in @("$tag.dll", "python3.dll", "vcruntime140.dll", "vcruntime140_1.dll")) {
     Copy-Item (Join-Path $emb $f) (Join-Path $OutDir $f)
 }
@@ -151,7 +151,7 @@ Copy-Item (Join-Path $pkgDir "sitecustomize.py") (Join-Path $runtime "sitecustom
 
 # --- verify ------------------------------------------------------------------
 Write-Host "==> Verifying the packaged launchers"
-foreach ($f in @("NMSSaveVault.exe", "nmsvault.exe")) {
+foreach ($f in @("NMSSaveVault.exe", "nmsvault-cli.exe")) {
     Assert-PsfSigned (Join-Path $OutDir $f)
     Write-Host "    $f  signed by the Python Software Foundation"
 }

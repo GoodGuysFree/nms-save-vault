@@ -73,7 +73,7 @@ def report(found: dict[str, list[dict]]) -> list[str]:
         lines += [f"  {r['tag']}  {r['published']}{'  (pre-release)' if r['prerelease'] else ''}  {r['url']}"
                   for r in releases]
     if any(found.values()):
-        lines.append("Next: nmsvault selftest, tools/gen_lookups.py, then bump the guard "
+        lines.append("Next: nmsvault-cli selftest, tools/gen_lookups.py, then bump the guard "
                      "(core/gameversion.py) - DESIGN.md, Maintenance after a game update.")
     return lines
 

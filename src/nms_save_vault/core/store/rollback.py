@@ -138,7 +138,7 @@ def plan_rollback(vault_root: str | Path, store: VersionStore, *, copy: str | Pa
                                                   "is missing or unreadable, so the copy made "
                                                   "before it cannot be found. Choose the folder "
                                                   "the copy is in (the Choose button, or "
-                                                  "nmsvault store rollback --copy <folder>)."))
+                                                  "nmsvault-cli store rollback --copy <folder>)."))
         elif not (folder.is_dir() and catalog.looks_like_vault_dir(folder)
                   and is_pre_upgrade_copy(folder)):
             problems.append(("copy-mismatch", "That folder is not the copy of the vault made "
@@ -151,7 +151,7 @@ def plan_rollback(vault_root: str | Path, store: VersionStore, *, copy: str | Pa
         if folder is None or not folder.is_dir():
             problems.append(("copy-missing", "The copy of the vault made before the upgrade was "
                                              "not found. Choose the folder it is in (the Choose "
-                                             "button, or nmsvault store rollback --copy "
+                                             "button, or nmsvault-cli store rollback --copy "
                                              "<folder>)."))
         elif _tree_sha(folder, cancel) != recorded.get("tree_sha256"):
             problems.append(("copy-mismatch", "That folder is not the copy of the vault made "
@@ -165,8 +165,8 @@ def plan_rollback(vault_root: str | Path, store: VersionStore, *, copy: str | Pa
         problems.append(("corrupt-manifests", f"{len(corrupt)} backups in the store cannot be "
                                               f"read ({', '.join(corrupt[:5])}); undoing the "
                                               "upgrade would leave them behind. Check the "
-                                              "store first (nmsvault store fsck), or undo "
-                                              "anyway (nmsvault store rollback --force)."))
+                                              "store first (nmsvault-cli store fsck), or undo "
+                                              "anyway (nmsvault-cli store rollback --force)."))
     needed = sum(f.size for sid, _fid, _kind in work.export for f in store.entry(sid).files)
     needed += sum(_tree_bytes(entry_folder(Vault(use_copy, read_only=True), e))
                   for e in work.copy_entries if e.id in work.restore)

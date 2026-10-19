@@ -1,4 +1,4 @@
-"""``nmsvault index ...`` on a synthetic vault and live folder (no real data, temp cache)."""
+"""``nmsvault-cli index ...`` on a synthetic vault and live folder (no real data, temp cache)."""
 from __future__ import annotations
 
 import hashlib

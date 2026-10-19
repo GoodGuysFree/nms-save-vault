@@ -503,7 +503,7 @@ ACCOUNT_NAMES = {"steam": "Main PC", "xbox": "Living room"}
 
 def _name_accounts(state) -> None:
     """Display names for the demo accounts, through the app's own alias file (what
-    ``nmsvault accounts --set`` writes), so no account id shows in the window."""
+    ``nmsvault-cli accounts --set`` writes), so no account id shows in the window."""
     from nms_save_vault.core import aliases
 
     amap = aliases.load()
@@ -687,7 +687,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"\nDemo world ready in {demo.target}")
     print("Run the app against it (PowerShell):\n")
     print(powershell_env(demo.env))
-    print(f"uv run python -m nms_save_vault.gui --vault '{demo.vault}'   # or: nmsvault ...")
+    print(f"uv run python -m nms_save_vault.gui --vault '{demo.vault}'   # or: nmsvault-cli ...")
     return 0
 
 

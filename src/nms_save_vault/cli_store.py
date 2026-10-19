@@ -1,6 +1,6 @@
-"""``nmsvault store ...``: the version store's commands (D3 2.11, 4.1). Kept apart from
+"""``nmsvault-cli store ...``: the version store's commands (D3 2.11, 4.1). Kept apart from
 ``cli.py`` so the store's commands grow without touching the classic ones. Nothing here runs
-unless asked: the upgrade only by ``nmsvault store upgrade``, after the owner confirms."""
+unless asked: the upgrade only by ``nmsvault-cli store upgrade``, after the owner confirms."""
 from __future__ import annotations
 
 import argparse
@@ -82,7 +82,7 @@ def _no_format(root: Path) -> bool:
 
 FORMAT_HELP = ("error: the vault's store cannot be opened: its FORMAT file (store/FORMAT) is "
                "missing or damaged. The command line cannot rebuild it; put back a copy of that "
-               "one file from a copy of the vault, then run: nmsvault store fsck --deep")
+               "one file from a copy of the vault, then run: nmsvault-cli store fsck --deep")
 
 
 def _vault_root(args, state) -> Path:
@@ -154,7 +154,7 @@ def cmd_store_copy_in(args) -> int:
             print("Every backup folder you made by hand is in the vault already.")
             return 0
         print("Backup folders you made by hand, outside the vault (copy them in with "
-              "'nmsvault store copy-in ID ...' or '--all'):")
+              "'nmsvault-cli store copy-in ID ...' or '--all'):")
         for e in waiting:
             print(f"  {e.id:<34}{aliases.redact(e.label)}")
         return 0
@@ -254,7 +254,7 @@ def _fold(root: Path, state) -> int:
         f"  reading {p.current} ({p.entries_done + 1} of {p.entries_total})"))
     print(report.message)
     if report.fsck_ok is False:
-        print("warning: the check after the fold found damage: run nmsvault store fsck",
+        print("warning: the check after the fold found damage: run nmsvault-cli store fsck",
               file=sys.stderr)
     return 0 if not report.failed and report.fsck_ok is not False else 1
 
@@ -291,5 +291,5 @@ def cmd_store_fsck(args) -> int:
         return 0
     left = len(report.problems) - report.repaired
     print(f"{left} problem(s) remain; they are listed in the vault's damage list."
-          + ("" if args.repair else " Try: nmsvault store fsck --repair"))
+          + ("" if args.repair else " Try: nmsvault-cli store fsck --repair"))
     return 1

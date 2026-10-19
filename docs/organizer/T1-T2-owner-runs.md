@@ -19,8 +19,8 @@ T1 = Steam to Xbox (the target slot is on Xbox). T2 = Xbox to Steam (the target 
    cd C:\Devel\NMSVault
    $steam = (Get-ChildItem "$env:APPDATA\HelloGames\NMS" -Directory -Filter "st_*" | Where-Object { Get-ChildItem $_.FullName -Filter "save*.hg" }).FullName
    $xbox = (Get-ChildItem "$env:LOCALAPPDATA\Packages\HelloGames.NoMansSky_bs190hzg1sesy\SystemAppData\wgs" -Directory -Filter "*_*" | Select-Object -First 1).FullName
-   uv run nmsvault backup --vault D:\VaultCopy --live $steam --label "T1 before"
-   uv run nmsvault backup --vault D:\VaultCopy --live $xbox --label "T1 before"
+   uv run nmsvault-cli backup --vault D:\VaultCopy --live $steam --label "T1 before"
+   uv run nmsvault-cli backup --vault D:\VaultCopy --live $xbox --label "T1 before"
    ```
    Then start the app normally (`uv run nmsvault-gui --vault D:\VaultCopy`), open the save you
    will delete on the TARGET platform and use "Keep a copy in the vault now". Close the app.

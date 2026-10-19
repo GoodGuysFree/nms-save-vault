@@ -47,7 +47,7 @@ def test_place_prints_the_plan_and_asks_for_the_confirmations_it_names(world, ca
     assert "--confirm OTHER_ACCOUNT" in str(stop.value)
     assert tree_hash(world.live) == before                 # nothing written without the answer
     code, out = run(capsys, *args, "--confirm", "OTHER_ACCOUNT")
-    assert code == 0 and "done:" in out and "nmsvault undo --op" in out
+    assert code == 0 and "done:" in out and "nmsvault-cli undo --op" in out
     assert savedir.scan_slot(world.live, 1).newest.label in ("A", "B")
 
 
@@ -92,7 +92,7 @@ def test_clear_prints_the_steps_and_deletes_nothing(world, capsys):
     code, out = run(capsys, "clear", f"{ONE}:1")
 
     assert code == 0 and "never empties a slot" in out and "1. " in out
-    assert "nmsvault keep" in out                          # the slot is not in the vault yet
+    assert "nmsvault-cli keep" in out                          # the slot is not in the vault yet
     assert tree_hash(world.live) == before
 
 

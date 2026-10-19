@@ -172,7 +172,7 @@ src/nms_save_vault/
 * The **upgrade** first makes a verified copy of the whole vault next to it
   (`<vault>.pre-store-<UTC>`, re-hashed against a recorded tree hash), then creates `store/`;
   old backups are folded into the store right after the upgrade (`store fold` resumes a fold that stopped) and the old folders are never deleted by it.
-  **Free old folders** (`nmsvault store free-old-folders [--yes]`, Tools menu; `store/free.py`) is
+  **Free old folders** (`nmsvault-cli store free-old-folders [--yes]`, Tools menu; `store/free.py`) is
   the one thing that deletes them, on the owner's request only: a deep fsck of the whole store
   first (damage stops the run before any deletion), then per folded entry the folder is re-read and
   must equal its store entry (names, sizes, sha256, no extra file; else skipped and reported). Only
@@ -186,7 +186,7 @@ src/nms_save_vault/
   `{store_id, entry_id}`; an id used for other contents becomes `<id>-m<n>`; an entry already
   merged (by origin, or the same id and `body_sha256`) is skipped, so a second import adds
   nothing. A pre-upgrade copy and an in-place import of a store vault are refused.
-  **Undo the vault upgrade** (`nmsvault store rollback`) writes everything made since back out as
+  **Undo the vault upgrade** (`nmsvault-cli store rollback`) writes everything made since back out as
   plain folders, restores the old ones from the copy, and moves `store/` out of the vault; the
   copy is only read.
 * After the upgrade **do not go back to an older app version on that vault**. Older versions
@@ -371,7 +371,7 @@ BaseVersion per platform, and the container kinds it decodes). A save written by
 stays readable, but no live write may read from it or replace it until the app is updated
 (`GAME_NEWER`). After each game update:
 
-1. Run `nmsvault selftest` (read-only, counts only). Exit 0 means every live save and vault
+1. Run `nmsvault-cli selftest` (read-only, counts only). Exit 0 means every live save and vault
    version still decodes, no unknown top-level key appeared and no extractor failed; exit 1
    means something needs an app update (the lines say which kind).
 2. Run `python tools/check_upstream.py`: it asks the GitHub releases API for new releases of
@@ -380,7 +380,7 @@ stays readable, but no live write may read from it or replace it until the app i
 3. Regenerate the pins and lookups: `python tools/gen_lookups.py --meta <meta sqlite> --build
    <build>`; add any new top-level name to `PINNED_TOP_LEVEL` in `core/selftest.py`.
 4. Bump the guard's known version in `core/gameversion.py` (`KNOWN`), run the full suite and
-   `nmsvault selftest` once more, then `python tools/check_upstream.py --record`.
+   `nmsvault-cli selftest` once more, then `python tools/check_upstream.py --record`.
 
 `tools/check_upstream.py` is a development tool: the app never imports it and never calls the
 network for this.
@@ -390,9 +390,9 @@ network for this.
 Build: `packaging\build_portable.ps1 -OutDir build\kit` (build/ is git-ignored). Make a synthetic vault
 with the test builders (`tests/index/test_cli.py::steam_pair`, `tests/index/fixtures.py::rich_base`) through
 `uv run --extra dev python`; point LOCALAPPDATA, APPDATA, HOME, USERPROFILE and the XDG folders at a temp dir
-(as `tests/conftest.py` does); then run the CLI only: `build\kit\nmsvault.exe index build --vault V --live L`.
+(as `tests/conftest.py` does); then run the CLI only: `build\kit\nmsvault-cli.exe index build --vault V --live L`.
 
-`--vault` / `--live` must come after the command in the kit: `nmsvault.exe` is CPython's own signed launcher,
+`--vault` / `--live` must come after the command in the kit: `nmsvault-cli.exe` is CPython's own signed launcher,
 and CPython rejects an unknown first option ("unknown option --vault") in its C argument parser, before `site`
 and `sitecustomize` run, so the launcher cannot fix it. `cli.parse_args` therefore accepts both options before
 or after the command (a leading `--` also works). `--live` also selects the organizer's source (`board`, `saves`).

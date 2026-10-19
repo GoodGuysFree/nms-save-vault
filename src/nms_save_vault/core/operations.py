@@ -100,7 +100,7 @@ class FeatureNotYetAvailableError(OperationError):
 # Same-platform writes (Steam->Steam, Xbox->Xbox) run here; a cross-platform move goes through
 # the Organizer's plan, which has the checks and the confirmation the classic path lacks.
 CROSS_PLATFORM_MSG = ("To move a save between Steam and Xbox, use the Organizer tab "
-                      "(Move to live) or `nmsvault place`.")
+                      "(Move to live) or `nmsvault-cli place`.")
 
 
 @dataclass
@@ -628,7 +628,7 @@ def preview_vault_import(vault: Vault, source_dir: Path) -> dict:
     if source_dir.resolve() == vault.root.resolve():
         raise OperationError("that is the current vault; nothing to import")
     if (source_dir / PRE_UPGRADE_COPY).is_file():
-        raise OperationError("This is the pre-upgrade copy of a vault; use Undo the vault upgrade (Tools > Vault upgrade... > Undo the vault upgrade, or nmsvault store rollback).")
+        raise OperationError("This is the pre-upgrade copy of a vault; use Undo the vault upgrade (Tools > Vault upgrade... > Undo the vault upgrade, or nmsvault-cli store rollback).")
     if _store().is_store_vault(source_dir):
         return _preview_store_merge(vault, source_dir)
     src_entries = Vault(source_dir).load().entries
@@ -646,7 +646,7 @@ def _preview_store_merge(vault: Vault, source_dir: Path) -> dict:
     classic = _store()
     target = classic.store_of(vault)
     if target is None:
-        raise OperationError("Upgrade the vault first (Tools > Vault upgrade, or nmsvault store upgrade) to import a "
+        raise OperationError("Upgrade the vault first (Tools > Vault upgrade, or nmsvault-cli store upgrade) to import a "
                              "vault that has a version store.")
     try:
         source = classic.open_source(source_dir)

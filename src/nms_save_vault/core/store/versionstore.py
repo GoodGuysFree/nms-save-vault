@@ -891,7 +891,7 @@ def _require_store_mode(vault_root: Path) -> None:
     if mode == "legacy" and store_root(vault_root).exists():
         raise StoreUnavailable(DAMAGED_STORE_TEXT)       # a store/ folder whose FORMAT is gone
     if mode != "store":
-        raise StoreNotUpgraded("Upgrade the vault first (Tools > Vault upgrade, or nmsvault store upgrade).")
+        raise StoreNotUpgraded("Upgrade the vault first (Tools > Vault upgrade, or nmsvault-cli store upgrade).")
 
 
 def vault_lock(vault_root: str | Path) -> Callable[[], AbstractContextManager]:

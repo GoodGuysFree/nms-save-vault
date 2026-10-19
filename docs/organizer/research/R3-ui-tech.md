@@ -77,7 +77,7 @@ loopback server (T2) would need that sentence reworded.
 probe).** The kit is assembled from:
 - the python.org embeddable 3.12.10 amd64 zip;
 - `tcltk.msi` from the same release, which supplies Tkinter;
-- PSF-signed `pythonw.exe` / `python.exe`, renamed to `NMSSaveVault.exe` / `nmsvault.exe`;
+- PSF-signed `pythonw.exe` / `python.exe`, renamed to `NMSSaveVault.exe` / `nmsvault-cli.exe`;
 - the stdlib inside `python312.zip`;
 - the app copied recursively into `_runtime/app`.
 
@@ -143,7 +143,7 @@ it).**
   (`packaging/sitecustomize.py:126`) lets them through.
 - So CPU-heavy indexing (R5) can run outside the UI's GIL under either T1 or T2.
 - Side issue (VERIFIED): the `-c` / `-m` bypass at `sitecustomize.py:125-127` never fires.
-  - At `sitecustomize` time `sys.argv == ['-c']`, so `nmsvault.exe -c "..."` starts the CLI
+  - At `sitecustomize` time `sys.argv == ['-c']`, so `nmsvault-cli.exe -c "..."` starts the CLI
     instead.
   - `sys.orig_argv` has the real command line.
   - Any design that spawns `sys.executable -c ...` would launch the app. Use multiprocessing or
@@ -410,7 +410,7 @@ the web and Tk screenshots (removed)).
 1. **Tk host.** An "Open organizer" button starts the server thread inside the Tk process, which
    shares the core and the write lock. Closing Tk ends the server, and the old panes can stay
    until the organizer supersedes them.
-2. **`nmsvault ui` subcommand.** A console process that stops on Ctrl+C. Natural on Linux/macOS.
+2. **`nmsvault-cli ui` subcommand.** A console process that stops on Ctrl+C. Natural on Linux/macOS.
 3. **Web UI as the main window.** The GUI launcher opens the web UI directly and keeps a tiny Tk
    status window (Quit / Reopen) as the visible handle.
 
@@ -549,7 +549,7 @@ T1-A is the better choice if the owner values:
 | Q3 | Window style if T2 | Default-browser tab: no side effects, less app-like. `--app` window: app-like and gives a clean "window closed" signal, but needs a sign-in-free Edge launch (`--inprivate` or policy, both untested) or Chrome. Tk host window plus tab |
 | Q4 | Runtime bump for Tk 9 (if T1) | Stay on 3.12 / Tk 8.6 (no per-cell styles). Move the Windows kit to CPython 3.14.7+ and PBS to Tk 9.0.4: per-cell tags and images, striping, frozen columns, SVG, but a new Python target and Tk 9 behaviour changes, and Linux fonts are still unfixed |
 | Q5 | DPI awareness now | Ship the fix now: crisp, but every pixel constant must be scaled and the window looks bigger. Defer it to the UI restructure |
-| Q6 | T2 hosting and lifecycle | Server thread inside the Tk app: shares the lock, and closing Tk ends both. `nmsvault ui` console subcommand. Web-first launcher with a small Tk status window. Single-instance via a port/lock file in the state dir |
+| Q6 | T2 hosting and lifecycle | Server thread inside the Tk app: shares the lock, and closing Tk ends both. `nmsvault-cli ui` console subcommand. Web-first launcher with a small Tk status window. Single-instance via a port/lock file in the state dir |
 | Q7 | JS approach if T2 | Hand-written vanilla (proof: 378 lines) versus vendored permissive libraries (MIT/BSD/ISC/Apache-2.0 with notices). No CDN in either case |
 | Q8 | JS testing if T2 | API-only pytest plus thin JS. Dev-only browser E2E (e.g. Playwright, which downloads a browser). Headless-browser screenshots in CI (fine on runners; avoid private Edge profiles on personal machines) |
 | Q9 | Packaging assets if T2 | Extend `build_posix_kit.app_sources()` to ship `web/*`, or embed assets as `.py` string modules (no packager change, but the ASCII test then covers them) |
@@ -562,7 +562,7 @@ T1-A is the better choice if the owner values:
 repo. Set `PYTHONUTF8=1` everywhere.
 
 - **Kit runtime probe (K2):**
-  `NMSVAULT_NO_BOOTSTRAP=1 TCL_LIBRARY=<kit>/_runtime/tcl/tcl8.6 TK_LIBRARY=<kit>/_runtime/tcl/tk8.6 dist/NMSSaveVault/nmsvault.exe -B R3/kitprobe.py`.
+  `NMSVAULT_NO_BOOTSTRAP=1 TCL_LIBRARY=<kit>/_runtime/tcl/tcl8.6 TK_LIBRARY=<kit>/_runtime/tcl/tk8.6 dist/NMSSaveVault/nmsvault-cli.exe -B R3/kitprobe.py`.
   The same script also ran under `uv run python`.
 - **Launcher manifest (K5):** search the bytes of `dist/NMSSaveVault/NMSSaveVault.exe` for
   `<assembly` ... `</assembly>`.

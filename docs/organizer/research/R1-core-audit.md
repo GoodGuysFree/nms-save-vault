@@ -232,7 +232,7 @@ inside the `source` folder name.
 - Decrypts with the mapped ordinal, otherwise tries all 31 ordinals and sets `moved`.
 - A bad member never raises; it gets a `note`.
 - `valid` means only that the header check passed. The SizeDecompressed-vs-chunks tie is
-  checked only in repopulate's preflight (ops:925-940), not in scans or `nmsvault verify`.
+  checked only in repopulate's preflight (ops:925-940), not in scans or `nmsvault-cli verify`.
 - `DESIGN.md:91-92` lists "SizeDisk == file size" as a validation step, but the code
   deliberately skips it (ops:928-929); the doc is stale.
 

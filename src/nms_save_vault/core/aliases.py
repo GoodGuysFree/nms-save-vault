@@ -37,7 +37,7 @@ _HEADER = """\
 # Each line maps a real account identifier to the name shown in the app instead.
 # Steam accounts are the 17-digit steamid64 from the st_<id> folder; Xbox / Game Pass
 # accounts are the wgs folder name. Editing this file by hand is fine; the app also
-# writes it from Accounts... in the GUI and `nmsvault accounts --set` in the CLI.
+# writes it from Accounts... in the GUI and `nmsvault-cli accounts --set` in the CLI.
 
 """
 
