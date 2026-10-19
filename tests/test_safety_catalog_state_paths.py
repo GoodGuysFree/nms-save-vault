@@ -238,7 +238,7 @@ def test_a_merge_of_a_store_vault_skips_a_crafted_catalog_id(tmp_path):
     vstore.create_store(src)
     good = operations.create_full_backup(Vault(src), live, warnings=[])
     shutil.copytree(live, tmp_path / "src" / "outside")
-    bad = {"id": "..\..\outside", "kind": "full", "label": "x", "path": "",
+    bad = {"id": "..\\..\\outside", "kind": "full", "label": "x", "path": "",
            "created": "2026-10-01T10:00:00", "source": live.name, "managed": True,
            "slots": [], "note": ""}
     (src / "catalog.json").write_text(json.dumps({"version": 1, "entries": [bad]}), "utf-8")
