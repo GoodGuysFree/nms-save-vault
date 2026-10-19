@@ -137,7 +137,8 @@ def plan_rollback(vault_root: str | Path, store: VersionStore, *, copy: str | Pa
             problems.append(("migration-missing", "The record of the upgrade (migration.json) "
                                                   "is missing or unreadable, so the copy made "
                                                   "before it cannot be found. Choose the folder "
-                                                  "the copy is in."))
+                                                  "the copy is in (the Choose button, or "
+                                                  "nmsvault store rollback --copy <folder>)."))
         elif not (folder.is_dir() and catalog.looks_like_vault_dir(folder)
                   and is_pre_upgrade_copy(folder)):
             problems.append(("copy-mismatch", "That folder is not the copy of the vault made "
@@ -149,7 +150,9 @@ def plan_rollback(vault_root: str | Path, store: VersionStore, *, copy: str | Pa
     if isinstance(recorded, dict):
         if folder is None or not folder.is_dir():
             problems.append(("copy-missing", "The copy of the vault made before the upgrade was "
-                                             "not found. Choose the folder it is in."))
+                                             "not found. Choose the folder it is in (the Choose "
+                                             "button, or nmsvault store rollback --copy "
+                                             "<folder>)."))
         elif _tree_sha(folder, cancel) != recorded.get("tree_sha256"):
             problems.append(("copy-mismatch", "That folder is not the copy of the vault made "
                                               "before the upgrade, or it has changed since."))
@@ -162,7 +165,8 @@ def plan_rollback(vault_root: str | Path, store: VersionStore, *, copy: str | Pa
         problems.append(("corrupt-manifests", f"{len(corrupt)} backups in the store cannot be "
                                               f"read ({', '.join(corrupt[:5])}); undoing the "
                                               "upgrade would leave them behind. Check the "
-                                              "store first, or force the undo."))
+                                              "store first (nmsvault store fsck), or undo "
+                                              "anyway (nmsvault store rollback --force)."))
     needed = sum(f.size for sid, _fid, _kind in work.export for f in store.entry(sid).files)
     needed += sum(_tree_bytes(entry_folder(Vault(use_copy, read_only=True), e))
                   for e in work.copy_entries if e.id in work.restore)
@@ -382,11 +386,11 @@ def _export(root: Path, store: VersionStore, entry: StoreEntry, folder_id: str,
         if staging.exists():
             shutil.rmtree(staging)                  # an earlier, unfinished attempt of ours
         store.materialize(entry.id, staging)        # verified file by file
+        safety.fsync_tree(staging)
         final.parent.mkdir(parents=True, exist_ok=True)
         _rename_retrying(staging, final)
     slots = entry.scope.get("slots") if isinstance(entry.scope.get("slots"), list) else None
     made = Vault(root).make_entry_from_dir(folder_id, kind, entry.label, final, managed=True,
-        safety.fsync_tree(staging)
                                            source=entry.source.get("account_key")
                                            or entry.source.get("name"), slots=slots)
     return dataclasses.replace(made, created=entry.created_local)
@@ -407,18 +411,17 @@ def _restore(root: Path, copy_vault: Vault, entry: CatalogEntry) -> bool:
     if not _same_tree(src, staging):
         raise RollbackError("copy-mismatch", f"The folder of {entry.id} could not be put back "
                                              "intact. Check the drive.")
+    safety.fsync_tree(staging)      # on disk before the rename that makes it the vault's folder
     if dest.exists():
         _move_aside(root, dest, entry.id)
     dest.parent.mkdir(parents=True, exist_ok=True)
     _rename_retrying(staging, dest)
-    safety.fsync_tree(staging)      # on disk before the rename that makes it the vault's folder
     return True
 
 
 # --- helpers ----------------------------------------------------------------------------------
 
 
-def _managed(entry: CatalogEntry) -> bool:
 def _copy_synced(src, dst):
     """``shutil.copy2`` that also flushes the new file to disk."""
     out = shutil.copy2(src, dst)
@@ -427,6 +430,7 @@ def _copy_synced(src, dst):
     return out
 
 
+def _managed(entry: CatalogEntry) -> bool:
     return entry.managed and entry.kind != catalog.KIND_INPLACE
 
 

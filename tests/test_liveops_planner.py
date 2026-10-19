@@ -2,6 +2,7 @@
 pieces in a sandbox (D5 2.3; T-P0, T-B1, T-B2, T-B3)."""
 from __future__ import annotations
 
+import dataclasses
 import os
 import shutil
 from collections import namedtuple
@@ -187,6 +188,12 @@ def test_a_vault_without_the_store_or_space_blocks(world, monkeypatch):
     (world.vault_root / "store" / "FORMAT").rename(world.vault_root / "FORMAT.aside")
     assert "VAULT_UPGRADE_NEEDED" in codes(
         plan_place(world.ctx, world.polestar(), LIVE.target(3)).blocked)
+
+
+def test_a_store_that_cannot_be_opened_is_unavailable_not_upgrade_needed(world):
+    ctx = dataclasses.replace(world.ctx, versions=None)
+    found = codes(plan_place(ctx, world.polestar(), LIVE.target(3)).blocked)
+    assert "VAULT_UNAVAILABLE" in found and "VAULT_UPGRADE_NEEDED" not in found
 
 
 def test_a_source_that_cannot_be_read_is_blocked(world):

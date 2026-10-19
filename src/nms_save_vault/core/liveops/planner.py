@@ -110,7 +110,8 @@ TEXTS = {
     "XBOX_QUOTA": ("block", "Xbox cloud space would be over the 256 MB limit."),
     "VAULT_UPGRADE_NEEDED": ("block", "Upgrade the vault first: Tools > Vault upgrade... "
                              "Nothing was changed."),
-    "VAULT_UNAVAILABLE": ("block", "The vault is not reachable. Nothing was changed."),
+    "VAULT_UNAVAILABLE": ("block", "The vault is not reachable, or its store cannot be opened "
+                          "(made by a newer NMS Save Vault, or damaged). Nothing was changed."),
     "VAULT_SPACE": ("block", "Not enough free disk space."),
     "SOURCE_UNREADABLE": ("block", "That version cannot be read from the vault."),
     "RECOVERY_PENDING": ("block", "An earlier move was interrupted. Resolve it first."),
@@ -434,7 +435,10 @@ def vault_problem(ctx: OpContext) -> Warning | None:
     root = Path(ctx.vault.root)
     if not root.is_dir():
         return warning("VAULT_UNAVAILABLE")
-    if vault_mode(root) != "store" or ctx.versions is None:
+    mode = vault_mode(root)
+    if mode == "store" and ctx.versions is None:
+        return warning("VAULT_UNAVAILABLE")     # a store the app cannot open (too new, damaged)
+    if mode != "store":
         return warning("VAULT_UPGRADE_NEEDED")
     if getattr(ctx.versions, "read_only", False):
         return warning("VAULT_UNAVAILABLE")

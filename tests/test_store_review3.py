@@ -50,12 +50,21 @@ def _lock_held(vault) -> bool:
         return True
 
 
+def test_a_store_with_an_unreadable_format_is_damaged_not_already_upgraded(legacy):
+    vault, live = legacy
+    vstore.run_upgrade(vstore.plan_upgrade(vault.root, live_roots=[live]))
+    (vault.root / "store" / "FORMAT").write_bytes(b"{ not json")
+    plan = vstore.plan_upgrade(vault.root, live_roots=[live])
+    assert [c for c, _t in plan.problems][0] == "damaged"
+
+
 def test_a_store_folder_without_format_is_not_an_old_layout(legacy):
     vault, live = legacy
     (vault.root / "store" / "objects" / "ab").mkdir(parents=True)
     (vault.root / "store" / "objects" / "ab" / "something").write_bytes(b"not ours")
     plan = _plan(vault, live)
-    assert plan.problems == (("damaged", "store folder present without FORMAT - run fsck"),)
+    assert plan.problems == (("damaged", upgrade.DAMAGED_STORE_TEXT),)
+    assert "nmsvault store fsck" in upgrade.DAMAGED_STORE_TEXT
     with pytest.raises(vstore.UpgradeError):
         vstore.run_upgrade(plan)
     (vault.root / "store" / "state").mkdir()

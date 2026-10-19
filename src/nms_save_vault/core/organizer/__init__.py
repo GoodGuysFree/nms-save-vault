@@ -79,7 +79,14 @@ class Organizer:
         self.cache = cache
         self.seen_marker = SeenMarker(machine_dir / SEEN_FILENAME if on_disk else None)
         self.notes = Notes(self.store, clock)
-        self.version_store = _open_version_store(self.vault_root, self.sources, read_only)
+        #: Why a store-mode vault's store could not be opened (None when it opened or the
+        #: vault is not in store mode); the views show it instead of an empty vault.
+        self.store_error: str | None = None
+        try:
+            self.version_store = _open_version_store(self.vault_root, self.sources, read_only)
+        except _StoreNotOpened as exc:
+            self.version_store = None
+            self.store_error = exc.text
         self.scan: ScanResult | None = None
         self.model: ReadModel | None = None
         self.locator: VaultLocator | None = None
@@ -239,7 +246,7 @@ class Organizer:
 
 def _open_version_store(vault_root: Path, sources: Sequence[Source], read_only: bool):
     """The vault's version store when the vault is in store mode, else None. A store that
-    cannot be opened is logged and left out: the folders still answer."""
+    cannot be opened raises _StoreNotOpened (the Organizer keeps the reason in ``store_error``)."""
     from ... import __version__
     from ..store import StoreError, VersionStore, vault_lock, vault_mode
 
@@ -251,7 +258,27 @@ def _open_version_store(vault_root: Path, sources: Sequence[Source], read_only: 
                                  app_version=__version__, live_roots=live, read_only=read_only)
     except StoreError as exc:
         log.warning("the vault's version store is not used: %s", exc)
-        return None
+        raise _StoreNotOpened(store_open_error_text(exc, vault_root)) from exc
+
+
+class _StoreNotOpened(Exception):
+    def __init__(self, text: str) -> None:
+        super().__init__(text)
+        self.text = text
+
+
+def store_open_error_text(exc: Exception, vault_root: Path) -> str:
+    """The plain reason a store in store mode could not be opened, and what to do."""
+    from ..store import StoreTooNew
+
+    if isinstance(exc, StoreTooNew):
+        return ("This vault was made by a newer NMS Save Vault - update the app. "
+                "Until then its backups are not shown and nothing can be moved.")
+    if not Path(vault_root).is_dir():
+        return ("The vault folder cannot be reached (is its drive connected?). "
+                "Its backups are not shown until it is.")
+    return ("The vault's store is damaged or cannot be read - run `nmsvault store fsck` "
+            f"to see what is wrong. Its backups are not shown until then. ({exc})")
 
 
 __all__ = ["Organizer"]

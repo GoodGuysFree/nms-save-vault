@@ -47,6 +47,9 @@ COPY_INFIX = ".pre-store-"
 GIB = 1 << 30
 BLOCK = 1 << 20
 MAX_ROUNDS = 3
+DAMAGED_STORE_TEXT = ("The vault's store is damaged (its FORMAT file is missing or unreadable), "
+                      "so it is not a vault that waits for an upgrade. Run nmsvault store fsck "
+                      "to see what is wrong.")
 MAX_PATH = 260              # Windows' limit; the copy must fit it wherever the vault moves
 MANAGED_DIRS = ("backups", "snapshots", "extracts")
 VAULT_CHANGING = ("The upgrade stopped: the vault kept changing while it was copied. Close other "
@@ -96,6 +99,20 @@ def upgrade_needed(vault_root: str | Path) -> bool:
     root = Path(vault_root)
     return (catalog.looks_like_vault_dir(root) and vault_mode(root) == "legacy"
             and not is_pre_upgrade_copy(root))
+
+
+def _format_readable(root: Path) -> bool:
+    """``store/FORMAT`` parses (a store from a newer app counts: it is not damaged)."""
+    from .errors import StoreTooNew, StoreUnavailable
+    from .versionstore import read_format
+
+    try:
+        read_format(store_root(root))
+    except StoreTooNew:
+        return True
+    except StoreUnavailable:
+        return False
+    return True
 
 
 def tree(vault_root: Path) -> dict[str, tuple[int, int]]:
@@ -162,12 +179,15 @@ def _assess(root: Path, dest: Path, live: Sequence[Path]) -> _Assessment:
     problems: list[tuple[str, str]] = []
     mode = vault_mode(root)
     if mode == "store":
-        problems.append(("already-upgraded", "The vault is already upgraded."))
+        if _format_readable(root):
+            problems.append(("already-upgraded", "The vault is already upgraded."))
+        else:
+            problems.append(("damaged", DAMAGED_STORE_TEXT))
     elif mode == "upgrading":
         problems.append(("in-progress", "The vault is being upgraded by another NMS Save Vault "
                                         "window, or the last upgrade was interrupted."))
     elif store_root(root).exists():
-        problems.append(("damaged", "store folder present without FORMAT - run fsck"))
+        problems.append(("damaged", DAMAGED_STORE_TEXT))
     if is_pre_upgrade_copy(root):
         problems.append(("bad-destination", "This is the pre-upgrade copy of a vault; use Undo "
                                             "the vault upgrade."))
@@ -396,8 +416,7 @@ def cleanup_interrupted_upgrade(vault_root: str | Path) -> UpgradeResult | None:
                 marker.unlink()                                  # it had committed
                 return UpgradeResult(None, 0, 0, 0, "The last upgrade had finished.")
             if not record.get("store_created"):
-                return UpgradeResult(None, 0, 0, 0, "store folder present without FORMAT - run "
-                                                    "fsck. Nothing was removed.")
+                return UpgradeResult(None, 0, 0, 0, DAMAGED_STORE_TEXT + " Nothing was removed.")
             partial, dest = _recorded_copy(record)
             _remove_unfinished(root, partial, dest, store_owned=True)
     except (safety.LockTimeout, RuntimeError):
