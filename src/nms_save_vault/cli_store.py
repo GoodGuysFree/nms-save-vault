@@ -80,7 +80,7 @@ def _no_format(root: Path) -> bool:
     return (root / "store").is_dir() and not (root / "store" / "FORMAT").is_file()
 
 
-FORMAT_HELP = ("error: the vault's store cannot be opened: its FORMAT file (store\FORMAT) is "
+FORMAT_HELP = ("error: the vault's store cannot be opened: its FORMAT file (store/FORMAT) is "
                "missing or damaged. The command line cannot rebuild it; put back a copy of that "
                "one file from a copy of the vault, then run: nmsvault store fsck --deep")
 
