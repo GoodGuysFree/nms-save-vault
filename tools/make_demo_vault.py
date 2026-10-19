@@ -481,6 +481,23 @@ def build(target: Path, *, log=lambda msg: None) -> Demo:
         return _build(target, env, log)
 
 
+ACCOUNT_NAMES = {"steam": "Main PC", "xbox": "Living room"}
+
+
+def _name_accounts(state) -> None:
+    """Display names for the demo accounts, through the app's own alias file (what
+    ``nmsvault accounts --set`` writes), so no account id shows in the window."""
+    from nms_save_vault.core import aliases
+
+    amap = aliases.load()
+    for source in state.sources:
+        name = ACCOUNT_NAMES.get(source.platform)
+        if name and source.account:
+            amap.set(source.account, name)
+    aliases.save(amap)
+    aliases.set_active(amap)
+
+
 def _build(target: Path, env: dict[str, str], log) -> Demo:
     from nms_save_vault.core import discover, operations, state as appstate, store as vstore
     from nms_save_vault.core.catalog import Vault
@@ -551,6 +568,7 @@ def _build(target: Path, env: dict[str, str], log) -> Demo:
         # The journal and the notes
         state.sources = discover.discover_live_sources(nms_root, [xbox])
         appstate.save(state)
+        _name_accounts(state)
         organizer = Organizer(vault_root, state.live_sources, cache=ScanCache(None, None),
                               game_running=lambda: False, clock=clock)
         log(_annotate(organizer, clock))

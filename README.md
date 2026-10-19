@@ -547,8 +547,10 @@ nmsvault selftest                        # read-only: does the app understand ev
 A live slot is `steam:7` or `S7`, `xbox:4` or `X4` (the organizer's own badges), or
 `steam:<account>:7` / `S2.7` when there is more than one account; every command takes both
 forms. `--live` and `--vault` must name something that exists (a new vault is started only by
-`backup`, `import` and `extract`); a failure prints one plain line and exits 1 (set
-`NMSVAULT_DEBUG=1` for the full trace). Every live write needs the vault upgraded to the version store, checks the game is
+`backup`, `import` and `extract`); errors print one plain line on stderr (set
+`NMSVAULT_DEBUG=1` for the full trace). Exit codes: 0 done; 1 an error, a refusal, a declined
+prompt, or `verify`/`selftest` finding a problem; 2 the game is running, a blocked move plan, or
+a command-line usage error; 3 a feature not available yet. Every live write needs the vault upgraded to the version store, checks the game is
 closed (`--force` only answers "could not tell"; a running game always refuses), keeps what it
 replaces in the vault, auto-snapshots the folder, writes atomically, validates, rolls itself
 back exactly on a failed check, and is journaled (`<vault>/organizer/ops.jsonl`) and logged to

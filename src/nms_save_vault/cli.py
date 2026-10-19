@@ -118,9 +118,10 @@ def _fmt_ts(unix: int) -> str:
         return str(unix)
 
 
-def _print_view(view: savedir.SaveDirView) -> None:
+def _print_view(view: savedir.SaveDirView, where: str | None = None) -> None:
+    """``where`` replaces the folder path when that is a temporary copy (a store backup)."""
     cloud = "   (Steam Cloud: on)" if view.steam_cloud else ""
-    print(f"Save folder: {view.path}   (account data: {'yes' if view.account_present else 'no'}){cloud}")
+    print(f"{'Backup' if where else 'Save folder'}: {where or view.path}   (account data: {'yes' if view.account_present else 'no'}){cloud}")
     print(f"{'Slot':<5}{'Name':<28}{'Difficulty':<11}{'Play Time':<10}{'Newest':<15}{'Saved':<18}Notes")
     print("-" * 100)
     for slot in sorted(view.slots):
@@ -463,11 +464,16 @@ def cmd_discover(args) -> int:
 
 def cmd_verify(args) -> int:
     target = args.target or "live"
+    where = None
     with ExitStack() as stack:
         if target == "live":
             path = _resolve_live(args)
         else:
-            path = stack.enter_context(_source_folder(_resolve_vault(args), target))
+            vault = _resolve_vault(args)
+            path = stack.enter_context(_source_folder(vault, target))
+            from .core.store import classic
+
+            where = target if classic.find_entry(vault, target) is not None else None
         view = savedir.scan_any(path)
         bad = [
             (sv.slot, m.save_type_label, m.note)
@@ -475,7 +481,7 @@ def cmd_verify(args) -> int:
             for m in sv.present_members
             if not m.valid
         ]
-        _print_view(view)
+        _print_view(view, where)
     if bad:
         print("\nINVALID saves:")
         for slot, label, note in bad:
@@ -1246,17 +1252,21 @@ def main(argv=None) -> int:
         print(f"error: {cli_live.explain(e)}", file=sys.stderr)
         return 1
     except ops.OperationError as e:
-        print(f"error: {e}", file=sys.stderr)
+        print(f"error: {cli_live.cli_words(str(e))}", file=sys.stderr)
         return 1
     except KeyboardInterrupt:
         print("cancelled", file=sys.stderr)
         return 1
     except (OSError, ValueError, KeyError, EOFError) as e:
-        if os.environ.get("NMSVAULT_DEBUG"):
+        if cli_live.debugging():
             raise
-        print(f"error: {cli_live.explain(e)} (set NMSVAULT_DEBUG=1 to see the full trace)",
-              file=sys.stderr)
+        text = cli_live.explain(e)
+        hint = "" if "NMSVAULT_DEBUG" in text else " (NMSVAULT_DEBUG=1 shows the full trace)"
+        print(f"error: {text}{hint}", file=sys.stderr)
         return 1
+    finally:
+        for notice in appstate.take_notices():       # e.g. a damaged state.json put aside
+            print(f"note: {notice}", file=sys.stderr)
 
 
 if __name__ == "__main__":

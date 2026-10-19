@@ -10,6 +10,7 @@ from pathlib import Path
 from .core import locations
 from .core import state as appstate
 from .core import store as vstore
+from .core.store.errors import StoreNotUpgraded, StoreUnavailable
 
 
 def add_commands(sub: argparse._SubParsersAction) -> None:
@@ -73,6 +74,17 @@ def _ask(question: str) -> bool:
     return answer.strip().lower() in ("y", "yes")
 
 
+def _no_format(root: Path) -> bool:
+    """A store folder whose FORMAT file is gone: no command can open the store, and neither
+    ``fsck`` nor ``upgrade`` can say more than this."""
+    return (root / "store").is_dir() and not (root / "store" / "FORMAT").is_file()
+
+
+FORMAT_HELP = ("error: the vault's store cannot be opened: its FORMAT file (store\FORMAT) is "
+               "missing or damaged. The command line cannot rebuild it; put back a copy of that "
+               "one file from a copy of the vault, then run: nmsvault store fsck --deep")
+
+
 def _vault_root(args, state) -> Path:
     from .core.store import upgrade
 
@@ -101,6 +113,9 @@ def cmd_store_upgrade(args) -> int:
     if root.is_dir() and vstore.start_new_vault(root):
         print("This vault is new: it now uses the version store. Nothing to upgrade.")
         return 0
+    if _no_format(root):
+        print(FORMAT_HELP, file=sys.stderr)
+        return 1
     plan = upgrade.plan_upgrade(root, dest_parent=Path(args.copy_to) if args.copy_to else None,
                                 live_roots=_live_paths(state))
     for _code, text in plan.problems:
@@ -253,7 +268,13 @@ def _progress(p) -> None:
 def cmd_store_fsck(args) -> int:
     state = appstate.load()
     root = _vault_root(args, state)
-    store = vstore.open_store(root, app_state=state)
+    try:
+        store = vstore.open_store(root, app_state=state)
+    except (StoreUnavailable, StoreNotUpgraded):
+        if not (root / "store").is_dir():
+            raise
+        print(FORMAT_HELP, file=sys.stderr)
+        return 1
     for warning in store.warnings:
         print(f"warning: {warning}", file=sys.stderr)
     report = store.fsck(deep=args.deep, repair=args.repair,

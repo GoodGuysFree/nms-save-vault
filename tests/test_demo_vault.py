@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from nms_save_vault.core import discover
+from nms_save_vault.core import aliases, discover
 from nms_save_vault.core.organizer import Organizer
 
 from tools import make_demo_vault as demo_tool
@@ -36,6 +36,8 @@ def test_the_demo_world_has_its_saves_branch_and_notes(short_dir):
     assert lines["First Playthrough"].live == ()                      # only in the vault
     assert [v.label for v in model.versions(lines["Main Save"].pid) if v.label] == ["Before the base experiment"]
     assert not model.problems
+    names = set(aliases.load(demo.target / "app" / "accounts.ini").entries.values())
+    assert names == {"Main PC", "Living room"}                         # no account id on screen
 
 
 def test_the_demo_tool_refuses_real_folders(tmp_path, monkeypatch):

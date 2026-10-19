@@ -66,21 +66,33 @@ def test_an_os_error_is_one_plain_line_and_exit_1(world, capsys, monkeypatch):
     assert "'Q:\\nope' was not found" in err and "WinError" not in err and "Traceback" not in err
 
 
-def test_a_damaged_file_is_named_plainly_and_the_debug_switch_shows_the_trace(
+def test_an_unreadable_file_is_named_and_any_other_error_is_not_called_damage(
         world, capsys, monkeypatch):
+    import json
+
     from nms_save_vault.core.store import classic
 
-    def broken(*a, **k):
-        raise ValueError("Expecting value: line 1 column 1 (char 0)")
+    def unreadable(*a, **k):
+        raise json.JSONDecodeError("Expecting value", "", 0)
 
-    monkeypatch.setattr(classic, "list_entries", broken)
-
+    monkeypatch.setattr(classic, "list_entries", unreadable)
     code, _out, err = run(capsys, "list")
-    assert code == 1 and "damaged or incomplete" in err and "NMSVAULT_DEBUG=1" in err
+    assert code == 1 and "damaged and cannot be understood" in err and "NMSVAULT_DEBUG=1" in err
 
-    monkeypatch.setenv("NMSVAULT_DEBUG", "1")
-    with pytest.raises(ValueError):
-        cli.main(["list"])
+    def bug(*a, **k):
+        raise KeyError("slot")
+
+    monkeypatch.setattr(classic, "list_entries", bug)
+    code, _out, err = run(capsys, "list")
+    assert code == 1 and "Something went wrong: 'slot'" in err
+    assert "damaged" not in err and "not changed" not in err
+
+    monkeypatch.setenv("NMSVAULT_DEBUG", "0")                 # off, not "set"
+    assert run(capsys, "list")[0] == 1
+    for on in ("1", "true", "YES"):
+        monkeypatch.setenv("NMSVAULT_DEBUG", on)
+        with pytest.raises(KeyError):
+            cli.main(["list"])
 
 
 def test_a_prompt_with_nobody_to_answer_says_to_use_yes(monkeypatch):
@@ -279,3 +291,40 @@ def test_a_promote_reports_in_words_not_in_the_operations_name(world, capsys):
                           "--member", "B")
 
     assert code == 0 and "made newest: done" in out and "promote_member" not in out
+
+
+def test_verify_of_a_store_backup_names_the_backup_not_a_temporary_folder(world, capsys):
+    _code, out, _err = run(capsys, "verify", world.backup_id)
+
+    assert f"Backup: {world.backup_id}" in out and "mat-" not in out and "tmp" not in out
+
+
+def test_the_settings_notices_are_printed_once_to_stderr(world, capsys):
+    appstate._notices.append("Your settings file (state.json) could not be read.")
+
+    _code, out, err = run(capsys, "list")
+    assert "note: Your settings file (state.json) could not be read." in err
+    assert "settings file" not in out
+    assert "settings file" not in run(capsys, "list")[2]
+
+
+def test_a_store_without_its_format_file_ends_in_one_answer_not_a_loop(tmp_path, capsys):
+    from .store_helpers import new_vault
+
+    root = new_vault(tmp_path)
+    for damage in ("garbage", None):
+        if damage is None:
+            (root / "store" / "FORMAT").unlink()
+        else:
+            (root / "store" / "FORMAT").write_text(damage, encoding="utf-8")
+        for command in (["store", "fsck"], ["store", "upgrade", "--yes"]):
+            code, _out, err = run(capsys, "--vault", str(root), *command)
+            assert code == 1 and "FORMAT file" in err and "Tools >" not in err, (damage, command)
+
+
+def test_menu_names_in_core_texts_become_commands():
+    from nms_save_vault import cli_live
+
+    text = cli_live.cli_words("Upgrade the vault first (Tools > Vault upgrade...).")
+
+    assert text == "Upgrade the vault first ('nmsvault store upgrade')."

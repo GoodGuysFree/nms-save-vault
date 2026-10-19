@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import argparse
 import builtins
+import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -81,10 +83,28 @@ def explain(exc: BaseException) -> str:
         return f"{why} ('{name}')" if name else why
     if isinstance(exc, EOFError):
         return "it needs an answer, and there is no terminal to ask (add --yes)"
+    if isinstance(exc, (json.JSONDecodeError, UnicodeDecodeError)):    # raised reading a file
+        return f"a file it reads is damaged and cannot be understood ({exc})"
     if isinstance(exc, (ValueError, KeyError)):
-        return ("a file it reads is damaged or incomplete "
-                f"({type(exc).__name__}: {exc}); the file was not changed")
+        return f"Something went wrong: {exc}. Run with NMSVAULT_DEBUG=1 for details."
     return str(exc)
+
+
+_MENU_WORDS = (("Tools > Vault upgrade...", "'nmsvault store upgrade'"),
+               ("Tools > Vault upgrade", "'nmsvault store upgrade'"),
+               ("Undo the vault upgrade", "'nmsvault store rollback'"))
+
+
+def cli_words(text: str) -> str:
+    """Core texts written for the window name its menus; on the command line say the command."""
+    for menu, command in _MENU_WORDS:
+        text = text.replace(menu, command)
+    return text
+
+
+def debugging() -> bool:
+    """NMSVAULT_DEBUG=1 (or true / yes) shows the full trace instead of the one-line error."""
+    return os.environ.get("NMSVAULT_DEBUG", "").strip().lower() in ("1", "true", "yes")
 
 
 _SLOT_HELP = ("the live slot: steam:7 or S7, xbox:4 or X4 (S2.7 / steam:<account>:7 "
@@ -278,9 +298,9 @@ def _source(ctx, args) -> PairSource:
 
 def _show(plan: PlacePlan) -> None:
     if plan.blocked:                           # a refusal is an error: stderr, not a result
-        texts = list(dict.fromkeys(w.text for w in plan.blocked))
-        if plan.outcome and plan.outcome not in texts:
-            _err(plan.outcome)
+        texts = list(dict.fromkeys(cli_words(w.text) for w in plan.blocked))
+        if plan.outcome and cli_words(plan.outcome) not in texts:
+            _err(cli_words(plan.outcome))
         for text in texts:
             _err(f"blocked: {text}")
         return
