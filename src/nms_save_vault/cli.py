@@ -45,11 +45,15 @@ from __future__ import annotations
 import argparse
 import builtins
 import json
+import os
+import re
 import sys
+import time
 from contextlib import ExitStack, contextmanager
-from datetime import datetime
+from datetime import datetime, timedelta, tzinfo
 from pathlib import Path
 
+from . import cli_live
 from .core import aliases, catalog, discover, locations, operations as ops
 from .core import playtime, savedir, slotmap
 from .core import state as appstate
@@ -67,6 +71,7 @@ from .core.organizer.readmodel import (
     resolve_version,
     sort_lines,
 )
+from .core.liveops.errors import TargetError
 from .core.organizer.store import StoreBusy, StoreReadOnly
 
 _print = builtins.print
@@ -86,6 +91,11 @@ def print(*args, **kwargs) -> None:  # noqa: A001 - deliberate module-wide outpu
 def _die(message: str):
     """Exit with an error message, filtered like everything else the CLI prints."""
     sys.exit(aliases.redact(message))
+
+
+def _err(message: str) -> None:
+    """A note or refusal: stderr, so a script reading the result does not mistake it for one."""
+    print(message, file=sys.stderr)
 
 
 # --- formatting helpers ------------------------------------------------------
@@ -168,7 +178,8 @@ def _resolve_vault(args) -> Vault:
         st = appstate.load()
         root = Path(st.vault) if (st and st.vault) else locations.default_vault_dir()
     if (root / catalog.PRE_UPGRADE_COPY).is_file():
-        _die("error: this is the pre-upgrade copy of a vault; use Undo the vault upgrade")
+        _die("error: this is the pre-upgrade copy of a vault, not a vault to use; to go back "
+             "to it run: nmsvault store rollback")
     _upgrade_notice(root)
     return Vault(root).load()
 
@@ -189,7 +200,7 @@ def _resolve_source(vault: Vault, value: str) -> Path:
     p = Path(value)
     if p.is_dir():
         return p
-    _die(f"error: source '{value}' is neither a catalog entry id nor a folder")
+    _die(f"error: '{value}' is neither a backup id nor a folder (see: nmsvault list)")
 
 
 @contextmanager
@@ -215,7 +226,10 @@ def cmd_status(args) -> int:
     running = ops.safety.is_game_running()
     state = {True: "RUNNING (writes blocked)", False: "not running", None: "unknown"}[running]
     print(f"Game: {state}")
-    print(f"Vault: {vault.root}   ({len(vault.entries)} catalog entries)")
+    from .core.store import classic
+
+    count = len(classic.list_entries(vault))
+    print(f"Vault: {vault.root}   ({count} backup{'' if count == 1 else 's'})")
     _print_view(savedir.scan_any(live))
     return 0
 
@@ -226,12 +240,13 @@ def cmd_list(args) -> int:
     vault = _resolve_vault(args)
     entries = sorted(classic.list_entries(vault), key=lambda e: e.id)
     if not entries:
-        print("(catalog is empty; use 'backup', 'import' or 'discover --add')")
+        print("(the vault holds no backups; use 'backup', 'import' or 'discover --add')")
         return 0
-    print(f"{'ID':<26}{'Kind':<10}{'Slots':<6}{'Label'}")
-    print("-" * 80)
+    wide = max(26, max(len(e.id) for e in entries) + 2)
+    print(f"{'ID':<{wide}}{'Kind':<10}{'Slots':<6}{'Label'}")
+    print("-" * (wide + 40))
     for e in entries:
-        print(f"{e.id:<26}{e.kind:<10}{len(e.occupied_slots):<6}{e.label}")
+        print(f"{e.id:<{wide}}{e.kind:<10}{len(e.occupied_slots):<6}{e.label}")
     return 0
 
 
@@ -261,6 +276,9 @@ def cmd_show(args) -> int:
 def cmd_backup(args) -> int:
     live = _resolve_live(args)
     vault = _resolve_vault(args)
+    if not savedir.scan_any(live).occupied_slots:
+        _die("error: that live folder holds no saves, so there is nothing to back up "
+             "(check --live)")
     warns: list[str] = []
     entry = ops.create_full_backup(vault, live, label=args.label or "", include_cache=not args.no_cache, warnings=warns)
     print(f"created full backup '{entry.id}' ({len(entry.occupied_slots)} slots) "
@@ -303,7 +321,13 @@ def cmd_extract(args) -> int:
         else:
             source = _resolve_live(args)
             live_dirs.append(source)                     # the live folder itself
-        entry = ops.extract_slot(vault, source, args.slot, label=args.label or "", warnings=warns, live_dirs=live_dirs)
+        label = args.label or ""
+        if not label and args.source:
+            from .core.store import classic
+
+            if classic.find_entry(vault, args.source) is not None:
+                label = f"slot {args.slot} from {args.source}"
+        entry = ops.extract_slot(vault, source, args.slot, label=label, warnings=warns, live_dirs=live_dirs)
     print(f"extracted slot {args.slot} -> '{entry.id}' at {entry.path or '(the version store)'}")
     _print_warnings(warns)
     return 0
@@ -313,7 +337,10 @@ def cmd_playtime(args) -> int:
     """Total play time across the live folders and the vault, one row per playthrough."""
     vault = _resolve_vault(args)
     st = appstate.load()
-    live = [s.path for s in st.live_sources if s.exists] if st else [str(_resolve_live(args))]
+    if args.live:
+        live = [args.live]
+    else:
+        live = [s.path for s in st.live_sources if s.exists] if st else [str(_resolve_live(args))]
     report = playtime.collect(vault, live)
 
     print(f"{'Play time':>10}  {'Platform':<12}{'Copies':>7}  Save")
@@ -321,14 +348,14 @@ def cmd_playtime(args) -> int:
     for p in report.playthroughs:
         mark = "" if p.identified else "  (by name)"
         print(
-            f"{ops.format_duration(p.play_time):>10}  {','.join(p.platforms):<12}{p.copies:>7}  "
+            f"{_fmt_playtime(p.play_time):>10}  {','.join(p.platforms):<12}{p.copies:>7}  "
             f"{aliases.redact(p.name)}{mark}"
         )
     print()
     print(
         f"{len(report.playthroughs)} playthroughs in {report.saves} save files across "
         f"{report.folders} folders (live + vault), totalling "
-        f"{ops.format_duration(report.total_play_time)} of play time."
+        f"{_fmt_playtime(report.total_play_time)} of play time."
     )
     if report.unidentified:
         n, u = report.unidentified, report.unsupported
@@ -422,12 +449,12 @@ def cmd_discover(args) -> int:
         print(f"skipped {n} live save folder{'' if n == 1 else 's'} (not backups)")
     vault_is_live, aliased = discover.entries_in_live_folders(vault, live)
     if vault_is_live:
-        print(
+        _err(
             f"note: the vault {vault.root} is or lies inside a live save folder; its entries "
             "are left as they are."
         )
     for e in aliased:
-        print(
+        _err(
             f"note: catalog entry '{e.id}' ({e.path}) is or lies inside a live save folder, "
             "not a backup; it is left as it is."
         )
@@ -436,19 +463,19 @@ def cmd_discover(args) -> int:
 
 def cmd_verify(args) -> int:
     target = args.target or "live"
-    if target == "live":
-        path = _resolve_live(args)
-    else:
-        vault = _resolve_vault(args)
-        path = _resolve_source(vault, target)
-    view = savedir.scan_any(path)
-    bad = [
-        (sv.slot, m.save_type_label, m.note)
-        for sv in view.slots.values()
-        for m in sv.present_members
-        if not m.valid
-    ]
-    _print_view(view)
+    with ExitStack() as stack:
+        if target == "live":
+            path = _resolve_live(args)
+        else:
+            path = stack.enter_context(_source_folder(_resolve_vault(args), target))
+        view = savedir.scan_any(path)
+        bad = [
+            (sv.slot, m.save_type_label, m.note)
+            for sv in view.slots.values()
+            for m in sv.present_members
+            if not m.valid
+        ]
+        _print_view(view)
     if bad:
         print("\nINVALID saves:")
         for slot, label, note in bad:
@@ -463,8 +490,16 @@ def _print_warnings(warnings: list[str]) -> None:
         print(f"  warning: {w}")
 
 
+_OP_WORDS = {
+    "restore_extract": "restored a slot", "restore_full": "restored", "undo": "undone",
+    "promote_member": "made newest", "import_vault": "imported a vault",
+    "panic_restore": "restored from a snapshot",
+}
+
+
 def _report(res: ops.OpResult) -> None:
-    print(f"{res.op}: {'OK' if res.ok else 'FAILED'} - {res.detail}")
+    what = _OP_WORDS.get(res.op, res.op.replace("_", " "))
+    print(f"{what}: {'done' if res.ok else 'FAILED'} - {res.detail}")
     if res.changed:
         print(f"  changed: {', '.join(res.changed)}")
     _print_warnings(res.warnings)
@@ -588,7 +623,7 @@ def _print_json(data) -> None:
 
 def _resolve(fn, model, ref):
     try:
-        return fn(model, ref)
+        return fn(model, cli_live.badge_ref(ref))
     except RefError as exc:
         _die(f"error: {exc}")
 
@@ -641,6 +676,10 @@ def cmd_versions(args) -> int:
     return 0
 
 
+_VAULT_WORDS = {"durable": "yes", "partial": "some", "outside-vault": "outside only",
+                "none": "NO BACKUP"}
+
+
 def cmd_board(args) -> int:
     _, model = _model(args)
     board = model.live_board()
@@ -655,9 +694,10 @@ def cmd_board(args) -> int:
             name = {"empty": "<empty>", "unreadable": "<cannot be read>"}.get(slot.state,
                                                                                 slot.name)
             pin = " (pinned)" if slot.pinned else ""
+            held = "-" if slot.state == "empty" else _VAULT_WORDS.get(slot.vault_copy, slot.vault_copy)
             rank = "" if slot.suggest_rank is None else str(slot.suggest_rank + 1)
             print(f"  {slot.label:<7}{(name + pin)[:29]:<30}{_fmt_playtime(slot.play_time):<9}"
-                  f"{_fmt_ts(slot.saved_at):<18}{slot.vault_copy:<15}{rank}")
+                  f"{_fmt_ts(slot.saved_at):<18}{held:<15}{rank}")
     return 0
 
 
@@ -673,9 +713,13 @@ def cmd_note(args) -> int:
                 row.head, pair=row.pair, pid=row.pid, label=args.label, comment=args.comment,
                 locked=True if args.lock else (False if args.unlock else None))
             state = "locked" if note.locked else "not locked"
-            print(f"Version {row.head[:8]}: label {note.label!r}, {state}")
-            return 0
-        pid = _resolve(resolve_save, model, args.ref)
+            label = f"label {note.label!r}" if note.label else "no label"
+            print(f"Version {row.head[:8]}: {label}, {state}")
+            if args.set is None and args.append is None:
+                return 0
+            pid = row.pid                            # --set/--append go to its save file
+        else:
+            pid = _resolve(resolve_save, model, args.ref)
         current = org.notes.save_note(pid)
         if args.history:
             for rev in (current.history if current else ()):
@@ -704,9 +748,30 @@ def cmd_pin(args) -> int:
         org.notes.set_pinned(pid, not args.off)
     except (StoreBusy, StoreReadOnly) as exc:
         _die(f"error: {exc}")
-    state = "no longer pinned" if args.off else "pinned: never suggested for eviction"
+    state = "no longer pinned" if args.off else "pinned: never suggested as the save to replace"
     print(f"{model.line(pid).name}: {state}")
     return 0
+
+
+class _LocalTime(tzinfo):
+    """This machine's time zone for any date (daylight saving included), the way every other
+    time this program prints is shown; ``format_history`` only formats through ``fromtimestamp``."""
+
+    def utcoffset(self, dt):
+        return timedelta(0)
+
+    def dst(self, dt):
+        return timedelta(0)
+
+    def tzname(self, dt):
+        return "local"
+
+    def fromutc(self, dt):
+        seconds = (dt.replace(tzinfo=None) - datetime(1970, 1, 1)).total_seconds()
+        return datetime.fromtimestamp(seconds).replace(tzinfo=self)
+
+
+_LOCAL = _LocalTime()
 
 
 def cmd_history(args) -> int:
@@ -722,10 +787,10 @@ def cmd_history(args) -> int:
     for badge in line.live:
         live.setdefault(badge.head, []).append(badge.label)
     behind = {tip.head: tip.behind_by for tip in line.platform_tips if tip.behind_by}
-    for text in format_history(graph, line.name, live=live, behind=behind):
+    for text in format_history(graph, line.name, live=live, behind=behind, tz=_LOCAL):
         print(text)
     for problem in graph.problems:
-        print(f"note: {problem}")
+        _err(f"note: {problem}")
     return 0
 
 
@@ -759,6 +824,8 @@ def cmd_lineage(args) -> int:
             print(f"{a[:8]} and {b[:8]}: no longer linked (any link you drew between them "
                   "is taken back)")
         elif action == "list":
+            if not cor.state().corrections:
+                print("(no corrections)")
             for c in cor.state().corrections:
                 what = (f"{c.get('child', '')[:8]} comes from "
                         f"{(c.get('parent') or 'nothing')[:8]}" if c.get("kind") == "set_parent"
@@ -776,20 +843,28 @@ def cmd_lineage(args) -> int:
             pid = _resolve(resolve_save, model, args.save)
             into = _resolve(resolve_save, model, args.into)
             cor.combine([pid], into, names={pid: model.line(pid).name})
-            print(f"{model.line(pid).name} is now part of {model.line(into).name}")
+            print(f"{model.line(pid).name} is now part of {model.line(into).name} "
+                  f"(to separate them: nmsvault lineage uncombine {pid[:8]})")
         elif action == "uncombine":
             joined = [a["pid"] for a in cor.state().aliases if isinstance(a.get("pid"), str)]
             ref = args.save.strip().upper()
             found = [p for p in joined if len(ref) >= 6 and p.upper().startswith(ref)]
-            if not found:       # or the combined save file: undo the one joined to it
+            lines: list = []
+            named = not found
+            if not found:       # a name: the one it was combined as, or the save file it joined
+                lines = [ln for ln in model.lines()
+                         if args.save.strip().casefold() in
+                         {n.casefold() for n in (ln.name, *ln.former_names)}]
+                found = sorted({p for ln in lines for p in ln.raw_pids if p in joined})
+            if not found and not lines:
                 line = model.line(_resolve(resolve_save, model, args.save))
                 found = [p for p in line.raw_pids if p in joined]
             if len(found) != 1:
-                _die("error: name the save file to separate by the start of its id "
+                _die("error: name the save file to separate by its name or the start of its id "
                      "(6+ hex digits) - " + (f"{len(found)} are joined here"
                                               if found else "none was combined"))
             cor.uncombine(found[0])
-            print(f"{found[0][:8]} is a save file of its own again")
+            print(f"{args.save if named else found[0][:8]} is a save file of its own again")
         elif action == "split":
             vid = _vid_of(model, args.version)
             pid = model.line_of(vid)
@@ -797,8 +872,15 @@ def cmd_lineage(args) -> int:
                              if v and model.graph.descends_from(v, vid)})
             new = cor.split(model.raw_pid_of(vid), branch, args.name or "")
             print(f"{len(branch)} version(s) are now the save file {new}")
+            print(f"  to take it back: nmsvault lineage unsplit {new}")
         elif action == "unsplit":
-            pid = _resolve(resolve_save, model, args.save)
+            try:
+                pid = _resolve(resolve_save, model, args.save)
+            except SystemExit:
+                known = {sp.get("pid") for sp in cor.state().splits}
+                if args.save.strip() not in known:
+                    raise
+                pid = args.save.strip()         # the id `split` printed
             cor.unsplit(pid)
             print("The split is undone.")
     except (StoreBusy, StoreReadOnly, ValueError) as exc:
@@ -855,7 +937,10 @@ def cmd_organizer_bootstrap(args) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="nmsvault", description="NMS Save Vault")
+    p = argparse.ArgumentParser(
+        prog="nmsvault", description="NMS Save Vault",
+        epilog="A live slot is written steam:7 or S7, xbox:4 or X4 (S2.7 for the second "
+               "account's slot 7); every command that takes a slot accepts both forms.")
     p.add_argument("--live", help="path to the live st_<id> save folder")
     p.add_argument("--vault", help="path to the vault folder")
     sub = p.add_subparsers(dest="command", required=True)
@@ -864,7 +949,7 @@ def build_parser() -> argparse.ArgumentParser:
     cli_live.add_commands(sub)
 
     sub.add_parser("status", help="show the live folder and slot table").set_defaults(func=cmd_status)
-    sub.add_parser("list", help="list catalog entries").set_defaults(func=cmd_list)
+    sub.add_parser("list", help="list the backups in the vault").set_defaults(func=cmd_list)
     sub.add_parser(
         "playtime", help="total play time across live saves and the vault, deduplicated"
     ).set_defaults(func=cmd_playtime)
@@ -874,7 +959,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.set_defaults(func=cmd_sources)
 
     s = sub.add_parser("show", help="show slots of an entry (or 'live')")
-    s.add_argument("target")
+    s.add_argument("target", help="a backup id, a folder, or 'live'")
     s.set_defaults(func=cmd_show)
 
     s = sub.add_parser("backup", help="full backup of the live folder")
@@ -883,9 +968,10 @@ def build_parser() -> argparse.ArgumentParser:
     s.set_defaults(func=cmd_backup)
 
     s = sub.add_parser("restore", help="restore a backup into the live folder")
-    s.add_argument("entry_id")
+    s.add_argument("entry_id", help="the backup to put back (see: nmsvault list)")
     s.add_argument("--no-mirror", action="store_true", help="kept for old scripts: slots the backup does not hold are always left alone")
-    s.add_argument("--force", action="store_true", help="proceed even if the game seems to be running")
+    s.add_argument("--force", action="store_true", help="go on when it cannot be checked whether the game is running "
+                                          "(a running game always refuses)")
     s.add_argument(
         "--with-accountdata", action="store_true",
         help="also roll the account data (unlocks, settings) back to the backup's",
@@ -900,8 +986,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("repopulate", help="write a slot from a backup into a live slot")
     s.add_argument("--from", dest="source", help="source entry id or folder (default: live)")
-    s.add_argument("--src-slot", type=int, required=True)
-    s.add_argument("--to-slot", type=int, required=True)
+    s.add_argument("--src-slot", type=int, required=True, help="the slot to take the save from")
+    s.add_argument("--to-slot", type=int, required=True, help="the live slot to put it in")
     s.add_argument("--yes", action="store_true", help="do not ask for confirmation")
     s.add_argument("--confirm", action="append", default=[], metavar="CODE",
                    help="answer a confirmation the plan asks (repeatable)")
@@ -918,7 +1004,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.set_defaults(func=cmd_promote)
 
     s = sub.add_parser("import", help="register a save folder, or a whole copied vault, in the catalog")
-    s.add_argument("path")
+    s.add_argument("path", help="the save folder (or copied vault) to register")
     s.add_argument("--copy", action="store_true", help="copy files into the vault instead of indexing in place")
     s.add_argument("--label", default="", help="a name for the entry in the catalog")
     s.set_defaults(func=cmd_import)
@@ -938,28 +1024,28 @@ def build_parser() -> argparse.ArgumentParser:
     s.set_defaults(func=cmd_accounts)
 
     s = sub.add_parser("verify", help="scan and validate a folder (live/entry/path)")
-    s.add_argument("target", nargs="?")
+    s.add_argument("target", nargs="?", help="'live' (default), a backup id, or a folder")
     s.set_defaults(func=cmd_verify)
 
     s = sub.add_parser("saves", help="every save file, live and in the vault, one line each")
-    s.add_argument("--sort", choices=SORT_KEYS, default="last_played")
+    s.add_argument("--sort", choices=SORT_KEYS, default="last_played", help="what to order by")
     s.add_argument("--live-only", action="store_true", help="only save files that are live")
-    s.add_argument("--platform", choices=["steam", "xbox"])
+    s.add_argument("--platform", choices=["steam", "xbox"], help="only this platform")
     s.add_argument("--find", help="text in the name, a former name or the note")
-    s.add_argument("--json", action="store_true")
+    s.add_argument("--json", action="store_true", help="machine-readable output")
     s.add_argument("--no-cache", action="store_true", help="hash everything; keep no cache")
     s.set_defaults(func=cmd_saves)
 
     s = sub.add_parser("versions", help="the versions of one save file")
     s.add_argument("save", help="its name, 6+ hex digits of its id, or a live slot like S9")
     s.add_argument("--all", action="store_true", help="every version, not only the key ones")
-    s.add_argument("--json", action="store_true")
-    s.add_argument("--no-cache", action="store_true")
+    s.add_argument("--json", action="store_true", help="machine-readable output")
+    s.add_argument("--no-cache", action="store_true", help="hash everything; keep no cache")
     s.set_defaults(func=cmd_versions)
 
     s = sub.add_parser("board", help="the 15 slots of every live folder")
-    s.add_argument("--json", action="store_true")
-    s.add_argument("--no-cache", action="store_true")
+    s.add_argument("--json", action="store_true", help="machine-readable output")
+    s.add_argument("--no-cache", action="store_true", help="hash everything; keep no cache")
     s.set_defaults(func=cmd_board)
 
     s = sub.add_parser("note", help="show or write the note of a save file or a version")
@@ -972,21 +1058,21 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--comment", help="a version's comment")
     lock = s.add_mutually_exclusive_group()
     lock.add_argument("--lock", action="store_true", help="mark the version to keep")
-    lock.add_argument("--unlock", action="store_true")
+    lock.add_argument("--unlock", action="store_true", help="take the keep mark off the version")
     s.set_defaults(func=cmd_note)
 
     s = sub.add_parser("pin", help="never suggest a save file's slot for another save")
-    s.add_argument("save")
-    s.add_argument("--off", action="store_true")
+    s.add_argument("save", help="the save file: its name, 6+ hex digits of its id, or S9 / steam:9")
+    s.add_argument("--off", action="store_true", help="remove the pin")
     s.set_defaults(func=cmd_pin)
 
     s = sub.add_parser("history", help="the recorded history of a save file, as a tree")
-    s.add_argument("save")
+    s.add_argument("save", help="the save file: its name, 6+ hex digits of its id, or S9 / steam:9")
     group = s.add_mutually_exclusive_group()
     group.add_argument("--key", action="store_true", help="only the key versions")
     group.add_argument("--all", action="store_true", help="fold nothing")
-    s.add_argument("--json", action="store_true")
-    s.add_argument("--no-cache", action="store_true")
+    s.add_argument("--json", action="store_true", help="machine-readable output")
+    s.add_argument("--no-cache", action="store_true", help="hash everything; keep no cache")
     s.set_defaults(func=cmd_history)
 
     s = sub.add_parser("lineage", help="correct the history: what comes from what, and which "
@@ -994,28 +1080,28 @@ def build_parser() -> argparse.ArgumentParser:
     lin = s.add_subparsers(dest="lineage_command", required=True)
     for name in ("set-parent", "comes-from"):
         c = lin.add_parser(name, help="say which version a version comes from")
-        c.add_argument("version")
-        c.add_argument("parent", nargs="?")
+        c.add_argument("version", help="the version (8+ hex digits, S9, or <save>@YYYY-MM-DD)")
+        c.add_argument("parent", nargs="?", help="the version it comes from")
         c.add_argument("--none", "--root", dest="none", action="store_true",
                        help="it comes from nothing known")
-        c.add_argument("--note")
+        c.add_argument("--note", help="why, for your own record")
     c = lin.add_parser("unrelated", help="two versions are not related; drop any link")
-    c.add_argument("version")
-    c.add_argument("other")
-    c.add_argument("--note")
+    c.add_argument("version", help="the first version")
+    c.add_argument("other", help="the second version")
+    c.add_argument("--note", help="why, for your own record")
     lin.add_parser("list", help="the corrections you have made")
     c = lin.add_parser("undo", help="take back one correction (an id, or its start)")
-    c.add_argument("correction")
+    c.add_argument("correction", help="the correction's id (see: lineage list)")
     c = lin.add_parser("combine", help="make a save file part of another")
-    c.add_argument("save")
-    c.add_argument("into")
+    c.add_argument("save", help="the save file to join")
+    c.add_argument("into", help="the save file it becomes part of")
     c = lin.add_parser("uncombine", help="undo a combine")
-    c.add_argument("save")
+    c.add_argument("save", help="the joined save file: its name or 6+ hex digits of its id")
     c = lin.add_parser("split", help="split a version and what came after it into a new save file")
-    c.add_argument("version")
-    c.add_argument("--name")
+    c.add_argument("version", help="the version where the new save file starts")
+    c.add_argument("--name", help="a name for the new save file")
     c = lin.add_parser("unsplit", help="undo a split")
-    c.add_argument("save")
+    c.add_argument("save", help="the split save file: its name, or the id 'split' printed")
     s.set_defaults(func=cmd_lineage)
 
     s = sub.add_parser("scan", help="record what the live slots hold now")
@@ -1033,7 +1119,23 @@ def build_parser() -> argparse.ArgumentParser:
         "selftest", help="read-only: does this app still understand every live save and vault "
                          "version? (counts only; exit 1 means an app update is needed)"
     ).set_defaults(func=cmd_selftest)
+    _show_globals(p)
     return p
+
+
+def _show_globals(parser: argparse.ArgumentParser) -> None:
+    """--live and --vault are read before the subcommand is parsed (see ``parse_args``); listing
+    them on every command only makes --help tell where they go."""
+    subs = next((a for a in parser._actions if isinstance(a, argparse._SubParsersAction)), None)
+    if subs is None:
+        group = parser.add_argument_group("where (also accepted before the command)")
+        group.add_argument("--live", metavar="FOLDER", default=argparse.SUPPRESS,
+                           help="the live st_<id> save folder (default: the configured one)")
+        group.add_argument("--vault", metavar="FOLDER", default=argparse.SUPPRESS,
+                           help="the vault folder (default: the configured one)")
+        return
+    for sub in subs.choices.values():
+        _show_globals(sub)
 
 
 def cmd_selftest(args) -> int:
@@ -1093,6 +1195,35 @@ def parse_args(argv=None):
     return args
 
 
+#: Commands that may start a vault at a path that does not exist yet.
+_MAY_START_VAULT = {"backup", "import", "extract", "store", "selftest", "discover", "sources",
+                    "accounts"}
+
+
+def _check_paths(args) -> None:
+    """--live and --vault must name what they say before anything reads them: a missing
+    folder would otherwise read as an empty vault, or a clean live folder."""
+    live = getattr(args, "live", None)
+    if live:
+        p = Path(live)
+        if not p.exists():
+            _die(f"error: --live {p} does not exist; give the path of a live save folder "
+                 "(st_<id> on Steam)")
+        if not p.is_dir():
+            _die(f"error: --live {p} is a file, not a save folder")
+    vault = getattr(args, "vault", None)
+    if vault:
+        p = Path(vault)
+        if p.exists() and not p.is_dir():
+            _die(f"error: --vault {p} is a file, not a vault folder")
+        if not p.exists():
+            if not p.parent.exists():
+                _die(f"error: --vault {p}: its parent folder does not exist; is the drive "
+                     "connected?")
+            if getattr(args, "command", None) not in _MAY_START_VAULT:
+                _die(f"error: there is no vault at {p}; 'nmsvault backup --vault ...' starts one")
+
+
 def main(argv=None) -> int:
     # Save names/summaries can contain Unicode the Windows console (cp1252) can't encode.
     for stream in (sys.stdout, sys.stderr):
@@ -1103,15 +1234,28 @@ def main(argv=None) -> int:
     args = parse_args(argv)
     _absolutize(args)
     try:
+        _check_paths(args)
         return args.func(args)
     except ops.FeatureNotYetAvailableError as e:
         print(str(e), file=sys.stderr)
         return 3
     except ops.GameRunningError as e:
-        print(f"refused: {e}\n(use --force to override at your own risk)", file=sys.stderr)
+        print(f"refused: {e}\n(close the game, then run the command again)", file=sys.stderr)
         return 2
+    except TargetError as e:
+        print(f"error: {cli_live.explain(e)}", file=sys.stderr)
+        return 1
     except ops.OperationError as e:
         print(f"error: {e}", file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        print("cancelled", file=sys.stderr)
+        return 1
+    except (OSError, ValueError, KeyError, EOFError) as e:
+        if os.environ.get("NMSVAULT_DEBUG"):
+            raise
+        print(f"error: {cli_live.explain(e)} (set NMSVAULT_DEBUG=1 to see the full trace)",
+              file=sys.stderr)
         return 1
 
 

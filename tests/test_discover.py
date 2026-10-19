@@ -253,8 +253,8 @@ def test_discover_notes_an_old_entry_that_is_a_live_folder_and_leaves_it(tmp_pat
 
     assert cli.main(["--vault", str(vault_root), "discover"]) == 0
 
-    out = capsys.readouterr().out
-    assert f"note: catalog entry '{alias.id}' ({alias.path}) is or lies inside a live save folder" in out
+    err = capsys.readouterr().err                       # a note, not a result
+    assert f"note: catalog entry '{alias.id}' ({alias.path}) is or lies inside a live save folder" in err
     assert alias.id in [e.id for e in Vault(vault_root).load().entries]
 
 
@@ -282,5 +282,5 @@ def test_a_vault_inside_a_live_folder_gets_one_note_not_one_per_entry(tmp_path, 
 
     assert cli.main(["--vault", str(vault.root), "discover"]) == 0
 
-    notes = [ln for ln in capsys.readouterr().out.splitlines() if ln.startswith("note:")]
+    notes = [ln for ln in capsys.readouterr().err.splitlines() if ln.startswith("note:")]
     assert len(notes) == 1 and "the vault" in notes[0] and "is or lies inside a live save folder" in notes[0]

@@ -47,8 +47,8 @@ def test_build_stops_when_the_game_holds_older_versions_back(world, monkeypatch,
     finished, code = in_thread(lambda: run(world, "build", "--workers", "1"), 60)
     assert finished, "index build never returned"
     assert code == 2
-    out = capsys.readouterr().out
-    assert "the game is running" in out and "1 older versions wait" in out
+    err = capsys.readouterr().err
+    assert "the game is running" in err and "1 older versions wait" in err
 
 
 def test_build_runs_when_the_game_state_is_unknown_with_a_warning(world, monkeypatch, capsys):  # noqa: F811
@@ -56,8 +56,9 @@ def test_build_runs_when_the_game_state_is_unknown_with_a_warning(world, monkeyp
     monkeypatch.setattr(index_cli, "_warned_unknown", False)
     finished, code = in_thread(lambda: run(world, "build", "--workers", "1"), 60)
     assert finished and code == 0
-    out = capsys.readouterr().out
-    assert "could not tell whether the game is running" in out and "2 ok" in out
+    captured = capsys.readouterr()
+    assert "could not tell whether the game is running" in captured.err
+    assert "2 ok" in captured.out
 
 
 def test_build_stops_when_the_cache_fails(world, monkeypatch, capsys):  # noqa: F811
@@ -67,7 +68,7 @@ def test_build_stops_when_the_cache_fails(world, monkeypatch, capsys):  # noqa: 
     monkeypatch.setattr(IndexCache, "write_result", broken)
     finished, code = in_thread(lambda: run(world, "build", "--workers", "1"), 60)
     assert finished and code == 2
-    assert "Content index stopped" in capsys.readouterr().out
+    assert "Content index stopped" in capsys.readouterr().err
 
 
 # --- 2. pausing while bytes are read; a closed executor starts nothing ----------------------

@@ -514,3 +514,61 @@ def test_lineage_list_undo_and_notes_about_what_was_left_out(world, capsys):
     assert "Main Save (split 1)" in _run(capsys, "saves")[1]
     assert "Main Save (split 1)" in _run(capsys, "history", ref)[1]
     assert "undone" in _run(capsys, "lineage", "unsplit", ref)[1]
+
+
+# --- the whole-program UX review: the CLI's words and consistency ----------------------------
+
+
+def test_note_set_with_lock_applies_both(world, capsys):
+    _, out = _run(capsys, "note", "S9", "--set", "Next: Atlas path", "--lock")
+    assert "locked" in out and "Note saved" in out
+    assert "Next: Atlas path" in _run(capsys, "note", "Main Save")[1]
+    assert "locked" in _run(capsys, "versions", "Main Save", "--all")[1]
+
+
+def test_a_slot_is_accepted_as_s9_or_steam_9_by_every_organizer_command(world, capsys):
+    assert _run(capsys, "versions", "steam:9")[1] == _run(capsys, "versions", "S9")[1]
+    assert _run(capsys, "note", "steam:9", "--set", "x")[0] == 0
+    assert _run(capsys, "note", "S9")[1] == _run(capsys, "note", "steam:9")[1]
+    assert "pinned" in _run(capsys, "pin", "steam:9")[1]
+    assert _run(capsys, "history", "steam:9")[0] == 0
+
+
+def test_history_prints_local_time_like_every_other_command(world, capsys):
+    from datetime import datetime
+
+    for ts in (1_768_000_000, 1_784_000_000):                  # winter and summer dates
+        assert (datetime.fromtimestamp(ts, cli._LOCAL).strftime("%Y-%m-%d %H:%M")
+                == datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M"))
+    _two_versions(world)
+    _, out = _run(capsys, "history", "Main Save")
+    assert datetime.fromtimestamp(T0 + 50).strftime("%Y-%m-%d %H:%M") in out
+
+
+def test_board_says_whether_the_vault_holds_a_save_in_words(world, capsys):
+    _two_versions(world)                                       # slot 4 has no backup
+    _, out = _run(capsys, "board")
+    assert "durable" not in out and "partial" not in out
+    row9 = next(ln for ln in out.splitlines() if ln.lstrip().startswith("S9"))
+    row4 = next(ln for ln in out.splitlines() if ln.lstrip().startswith("S4"))
+    assert " yes " in row9 and "NO BACKUP" in row4
+
+
+def test_uncombine_takes_the_name_the_save_file_was_combined_as(world, capsys):
+    _two_versions(world)
+    _, out = _run(capsys, "lineage", "combine", "Other Run", "Main Save")
+    assert "lineage uncombine" in out                          # the way back is printed
+    _, out = _run(capsys, "lineage", "uncombine", "Other Run")
+    assert out.startswith("Other Run is a save file of its own again")
+    assert "Other Run" in _run(capsys, "saves")[1]
+
+
+def test_lineage_list_says_when_there_is_nothing(world, capsys):
+    assert _run(capsys, "lineage", "list")[1] == "(no corrections)\n"
+
+
+def test_playtime_reads_the_folder_that_live_names(world, tmp_path, capsys):
+    elsewhere = tmp_path / "Elsewhere" / ACCOUNT
+    steam_save(elsewhere, 1, 0, "Far Away Run", 3600, 0x1234, T0)
+    _, out = _run(capsys, "--live", str(elsewhere), "playtime")
+    assert "Far Away Run" in out and "1h00" in out and "1h00m" not in out

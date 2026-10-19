@@ -263,7 +263,7 @@ def test_the_cli_upgrades_only_when_asked(legacy, monkeypatch, capsys):
     assert cli.main(["--vault", str(vault.root), "--live", str(live), "list"]) == 0
     assert vstore.vault_mode(vault.root) == "legacy"            # nothing upgrades by itself
     monkeypatch.setattr("builtins.input", lambda prompt="": "n")
-    assert cli.main(["--vault", str(vault.root), "store", "upgrade"]) == 0
+    assert cli.main(["--vault", str(vault.root), "store", "upgrade"]) == 1   # declined
     assert "Nothing was changed" in capsys.readouterr().out
     assert vstore.vault_mode(vault.root) == "legacy" and not (vault.root / "store").exists()
     assert cli.main(["--vault", str(vault.root), "store", "upgrade", "--yes"]) == 0

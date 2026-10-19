@@ -163,7 +163,7 @@ def test_rollback_interrupted_then_finish_or_keep(upgraded):
 def test_the_cli_undoes_the_upgrade(upgraded, monkeypatch, capsys):
     vault, live, _store, _copy, _old = upgraded
     monkeypatch.setattr("builtins.input", lambda prompt="": "n")
-    assert cli.main(["--vault", str(vault.root), "store", "rollback"]) == 0
+    assert cli.main(["--vault", str(vault.root), "store", "rollback"]) == 1   # declined
     assert "Nothing was changed" in capsys.readouterr().out
     assert vstore.vault_mode(vault.root) == "store"
     assert cli.main(["--vault", str(vault.root), "store", "rollback", "--yes"]) == 0

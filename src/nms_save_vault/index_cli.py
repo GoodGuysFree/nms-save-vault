@@ -35,6 +35,11 @@ def _out(*args, **kwargs) -> None:
     builtins.print(*(aliases.redact(str(a)) for a in args), **kwargs)
 
 
+def _err(*args) -> None:
+    """A warning or a failure: stderr, so a script reading the result does not take it for one."""
+    _out(*args, file=sys.stderr)
+
+
 def add_arguments(parser: argparse.ArgumentParser) -> None:
     sub = parser.add_subparsers(dest="index_command", required=True)
     s = sub.add_parser("status", help="counts by status, stale rows, cache size, execution policy")
@@ -51,9 +56,9 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     s.add_argument("--card", action="store_true", help="the full version card")
     s.set_defaults(func=cmd_show)
     s = sub.add_parser("changes", help="what changed against the recorded parent (or a version you name)")
-    s.add_argument("child")
-    s.add_argument("parent", nargs="?")
-    s.add_argument("--json", action="store_true")
+    s.add_argument("child", help="the version to explain (same forms as 'show')")
+    s.add_argument("parent", nargs="?", help="compare with this version instead of the recorded parent")
+    s.add_argument("--json", action="store_true", help="machine-readable output")
     s.set_defaults(func=cmd_changes)
 
 
@@ -71,7 +76,7 @@ def _game_running() -> bool:
     if running is None:
         global _warned_unknown
         if not _warned_unknown:
-            _out("warning: could not tell whether the game is running; indexing anyway")
+            _err("warning: could not tell whether the game is running; indexing anyway")
             _warned_unknown = True
         return False
     return running
@@ -174,7 +179,7 @@ def cmd_build(args) -> int:
              f"{'s' if p.workers != 1 else ''}); {len(wanted) - queued} already indexed or queued.")
         stuck = _follow(service, args.timeout)
         if stuck:
-            _out(stuck)
+            _err(stuck)
             return 2
         service.flush()
         counts: dict[str, int] = {}
@@ -223,6 +228,9 @@ def _follow(service: IndexService, timeout: float, *, stuck_s: float = STUCK_S) 
 
 def _resolve(org: Organizer, ref: str) -> str:
     """A version by the read model's references; else 6+ hex digits of any scanned version."""
+    from .cli_live import badge_ref
+
+    ref = badge_ref(ref)
     try:
         row = resolve_version(org.model, ref)
         prefix = ref.strip().lower()
@@ -246,7 +254,7 @@ def cmd_show(args) -> int:
             _wait_deep(service, vid)
         view = service.view(vid)
         if view is None:
-            _out(f"No facts for {vid[:12]}: {service.status(vid)}.")
+            _err(f"No facts for {vid[:12]}: {service.status(vid)}.")
             return 1
         if args.json:
             payload = service.card(vid).to_dict() if args.card else view.to_dict()
@@ -280,7 +288,7 @@ def cmd_changes(args) -> int:
         _wait(service, [child, parent])
         cs = _await_changes(service, child, parent, edge_kind)
         if cs is None:
-            _out(f"Not indexed: {service.status(child)} / {service.status(parent)}")
+            _err(f"Not indexed: {service.status(child)} / {service.status(parent)}")
             return 1
         if args.json:
             _out(json.dumps(cs.to_dict(), ensure_ascii=False, indent=1))

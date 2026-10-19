@@ -28,7 +28,8 @@ def add_commands(sub: argparse._SubParsersAction) -> None:
                                              "the vault is made next to it first)")
     u.add_argument("--copy-to", metavar="FOLDER",
                    help="make the copy of the vault in this folder instead of next to it")
-    u.add_argument("--yes", action="store_true", help="do not ask for confirmation")
+    u.add_argument("--yes", action="store_true",
+                   help="do not ask for confirmation (needed when not run in a terminal)")
     u.set_defaults(func=cmd_store_upgrade)
 
     f = store_sub.add_parser("fold", help="read the old backup folders into the store (after the "
@@ -57,8 +58,19 @@ def add_commands(sub: argparse._SubParsersAction) -> None:
     r.add_argument("--force", action="store_true",
                    help="undo even though some backups in the store cannot be read (they stay "
                         "in the moved store)")
-    r.add_argument("--yes", action="store_true", help="do not ask for confirmation")
+    r.add_argument("--yes", action="store_true",
+                   help="do not ask for confirmation (needed when not run in a terminal)")
     r.set_defaults(func=cmd_store_rollback)
+
+
+def _ask(question: str) -> bool:
+    """Ask on the terminal. With nobody to answer (no terminal, input closed) the run must
+    say so: ``--yes`` is the way to agree without one."""
+    try:
+        answer = input(f"{question} [y/N] ")
+    except (EOFError, ValueError, OSError):
+        sys.exit("error: this needs --yes when it is not run in a terminal")
+    return answer.strip().lower() in ("y", "yes")
 
 
 def _vault_root(args, state) -> Path:
@@ -100,10 +112,9 @@ def cmd_store_upgrade(args) -> int:
               f"{plan.dest.name} first; nothing in it changes before that copy is checked.")
     print("After the upgrade, older versions of NMS Save Vault must not be used on this vault.")
     if not args.yes:
-        answer = input("Upgrade the vault now? [y/N] ")
-        if answer.strip().lower() not in ("y", "yes"):
+        if not _ask("Upgrade the vault now?"):
             print("Nothing was changed.")
-            return 0
+            return 1
     result = upgrade.run_upgrade(plan, progress=_progress)
     print(result.message)
     if result.fold_waiting_for_space:
@@ -206,10 +217,9 @@ def cmd_store_rollback(args) -> int:
           f"{len(plan.restore)} old folders are put back from the copy; the store is then moved "
           "next to the vault.")
     if not args.yes:
-        answer = input("Undo the vault upgrade now? [y/N] ")
-        if answer.strip().lower() not in ("y", "yes"):
+        if not _ask("Undo the vault upgrade now?"):
             print("Nothing was changed.")
-            return 0
+            return 1
     result = rollback.run_rollback(plan, store)
     print(result.message)
     return 0
@@ -229,7 +239,8 @@ def _fold(root: Path, state) -> int:
         f"  reading {p.current} ({p.entries_done + 1} of {p.entries_total})"))
     print(report.message)
     if report.fsck_ok is False:
-        print("warning: the check after the fold found damage: run nmsvault store fsck")
+        print("warning: the check after the fold found damage: run nmsvault store fsck",
+              file=sys.stderr)
     return 0 if not report.failed and report.fsck_ok is not False else 1
 
 
@@ -244,7 +255,7 @@ def cmd_store_fsck(args) -> int:
     root = _vault_root(args, state)
     store = vstore.open_store(root, app_state=state)
     for warning in store.warnings:
-        print(f"warning: {warning}")
+        print(f"warning: {warning}", file=sys.stderr)
     report = store.fsck(deep=args.deep, repair=args.repair,
                         fallbacks=[Path(f) for f in args.fallbacks])
     print(f"Checked the version store ({'deep' if report.deep else 'quick'}): "

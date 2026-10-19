@@ -54,9 +54,11 @@ def test_place_prints_the_plan_and_asks_for_the_confirmations_it_names(world, ca
 def test_a_blocked_plan_says_why_and_writes_nothing(world, capsys):
     before = tree_hash(world.live)
 
-    code, out = run(capsys, "swap", f"{ONE}:1", f"{ONE}:5", "--yes")
+    code = cli.main(["swap", f"{ONE}:1", f"{ONE}:5", "--yes"])
+    captured = capsys.readouterr()
 
-    assert code == 2 and "blocked:" in out and "never empties a slot" in out
+    assert code == 2 and "blocked:" in captured.err and "never empties a slot" in captured.err
+    assert captured.out == ""                               # a refusal is not a result
     assert tree_hash(world.live) == before
 
 

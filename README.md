@@ -503,9 +503,9 @@ CLI:
 ```pwsh
 nmsvault status                          # live folder + 15 slots, both saves each
 nmsvault sources [--rescan]              # configured live sources (Steam/Xbox accounts)
-nmsvault list                            # catalog entries
+nmsvault list                            # the backups in the vault
 nmsvault playtime                        # total play time, one row per playthrough
-nmsvault discover --add                  # find existing backups, add them in place
+nmsvault discover --add                  # find backup folders under the Steam NMS folder, add them in place
 nmsvault backup --label "before update"  # full snapshot into the vault
 nmsvault extract 9 --label "main"        # lift slot 9 aside
 nmsvault clear steam:9                   # the steps to empty a live slot yourself (deletes nothing)
@@ -522,7 +522,7 @@ nmsvault panic-restore [<entry-id>]      # a whole snapshot / backup back, slot 
 nmsvault restore <entry-id>              # an extract goes back to its slot; a backup is a panic restore
                                          #   (keeps the account data; --with-accountdata rolls it back too)
 nmsvault undo --whole-folder             # restore the newest snapshot of this folder (panic restore)
-nmsvault verify [live|<id>|<folder>]
+nmsvault verify [live|<id>|<folder>]    # a backup id works for the version store too
 nmsvault accounts [--set <id>=NAME] [--clear <id>]   # hide the real account ids
 nmsvault saves [--sort play_time] [--live-only] [--find TEXT] [--json]   # every save file, one line each
 nmsvault versions "Main Save" [--all]   # its versions (key ones; --all every one), or a slot: S9
@@ -533,7 +533,7 @@ nmsvault pin S9 [--off]                  # never suggest that save's slot for an
 nmsvault scan                            # record what the live slots hold now
 nmsvault organizer bootstrap [--dry-run] # read in the history of an existing vault
 nmsvault import <path> [--copy] [--label L]   # register a save folder, or a whole copied vault
-nmsvault show <entry-id|live>            # the slots of one catalog entry
+nmsvault show <entry-id|live>            # the slots of one backup
 nmsvault history "Main Save" [--key|--all] [--json]   # what changed between its versions
 nmsvault lineage list                    # corrections: also set-parent, comes-from, unrelated,
                                          #   combine, uncombine, split, unsplit, undo
@@ -543,8 +543,11 @@ nmsvault index status                    # the content index; also build, show, 
 nmsvault selftest                        # read-only: does the app understand every save?
 ```
 
-Targets are `steam:7`, `xbox:4`, or `steam:<account>:7` when there is more than one
-account. Every live write needs the vault upgraded to the version store, checks the game is
+A live slot is `steam:7` or `S7`, `xbox:4` or `X4` (the organizer's own badges), or
+`steam:<account>:7` / `S2.7` when there is more than one account; every command takes both
+forms. `--live` and `--vault` must name something that exists (a new vault is started only by
+`backup`, `import` and `extract`); a failure prints one plain line and exits 1 (set
+`NMSVAULT_DEBUG=1` for the full trace). Every live write needs the vault upgraded to the version store, checks the game is
 closed (`--force` only answers "could not tell"; a running game always refuses), keeps what it
 replaces in the vault, auto-snapshots the folder, writes atomically, validates, rolls itself
 back exactly on a failed check, and is journaled (`<vault>/organizer/ops.jsonl`) and logged to
@@ -557,12 +560,14 @@ pins do, and only there.
 
 Microsoft Store / Xbox Game Pass saves (the `wgs` container format under
 `%LOCALAPPDATA%\Packages\HelloGames.NoMansSky_bs190hzg1sesy\SystemAppData\wgs`) are fully
-supported: `discover` finds them, and `verify` / `import` / the GUI show their slots, names,
-play times and summaries just like Steam saves. Point any command at the account folder:
+supported: `verify` / `import` / the GUI show their slots, names, play times and
+summaries just like Steam saves. `discover` looks for backup folders under the Steam NMS
+folder only; a live Xbox folder holds live saves and is not searched. Point any command at
+the account folder:
 
 ```pwsh
 nmsvault verify "<...>\SystemAppData\wgs\<accountfolder>"
-nmsvault discover --add        # also catalogs the Xbox folder if present
+nmsvault backup --live "<...>\SystemAppData\wgs\<accountfolder>"   # a backup of the Xbox saves
 ```
 
 **Same-platform writes are supported** — backup, restore, per-slot extract / repopulate, and
