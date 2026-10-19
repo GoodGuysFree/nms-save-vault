@@ -15,6 +15,15 @@ and prints the environment variables that make the app (run from source or from 
 only those folders. The saves are real container files (LZ4 stream, encrypted meta, wgs
 containers) built by the test helpers, with invented names, bases, ships and progress.
 
+Options (combinable):
+
+    --old-vault   build the vault in the OLD layout (catalog.json + backup folders, no store/),
+                  as v0.2.x made it, with the same history: Tools > Vault upgrade, then
+                  Tools > Free old backup folders, have real work to do.
+    --played      after the last backup, play Pirate Life (slot 6) for two more hours in the
+                  live folder: the Organizer shows NO BACKUP YET for it and "Keep a copy in
+                  the vault" has something to keep.
+
 Refuses a target inside (or holding) the real HelloGames folders, the Packages folder, the
 app's own %LOCALAPPDATA% folder, or D:\\VaultCopy.
 """
@@ -378,6 +387,7 @@ XBOX_PLAN: dict[str, dict[int, Stage]] = {
               38: Stage(38, 59, 0.97, hour_of_day=18)},
     "wanderer": {10: Stage(10, 15, 0.4), 24: Stage(24, 22, 0.65), 38: Stage(38, 30, 1.0)},
 }
+STEAM_PLAN_LAST = {key: plan[max(plan)] for key, plan in STEAM_PLAN.items()}
 CLEAR_OLD_DAY = 5
 RESTORE_DAY = 31        # Main Save goes back to its day-17 version in the live slot
 BRANCH_POINT = 17
@@ -468,7 +478,8 @@ def redirected(env: dict[str, str]):
                 os.environ[k] = v
 
 
-def build(target: Path, *, log=lambda msg: None) -> Demo:
+def build(target: Path, *, log=lambda msg: None, old_vault: bool = False,
+          played: bool = False) -> Demo:
     target = check_target(target)
     if target.exists():
         shutil.rmtree(target)
@@ -478,7 +489,7 @@ def build(target: Path, *, log=lambda msg: None) -> Demo:
     for key in ("home", "app"):
         (target / key).mkdir()
     with redirected(env):
-        return _build(target, env, log)
+        return _build(target, env, log, old_vault, played)
 
 
 ACCOUNT_NAMES = {"steam": "Main PC", "xbox": "Living room"}
@@ -498,8 +509,40 @@ def _name_accounts(state) -> None:
     aliases.set_active(amap)
 
 
-def _build(target: Path, env: dict[str, str], log) -> Demo:
+@contextlib.contextmanager
+def simulated_now(clock: Clock):
+    """The old-layout code names and dates its backups with ``datetime.now()``; it reads the
+    demo's clock here, so the folders carry the six weeks of history like the store's do."""
+    from nms_save_vault.core import catalog, operations
+
+    class SimDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime.fromtimestamp(clock.t, tz)
+
+    saved = catalog.datetime, operations.datetime
+    catalog.datetime = operations.datetime = SimDatetime
+    try:
+        yield
+    finally:
+        catalog.datetime, operations.datetime = saved
+
+
+def play_pirate_life(steam: Path, log) -> None:
+    """Two more hours of Pirate Life in its live slot, saved after the last backup."""
+    stage = Stage(41, STEAM_PLAN_LAST["pirate"].hours + 2, 1.15, "", 23)
+    write_steam(steam, "pirate", stage)
+    when = day_time(stage.day, stage.hour_of_day)
+    _stamp(steam, when)
+    log(f"--played: {SPECS['pirate'].name} (Steam slot {STEAM_SLOTS['pirate']}) is now "
+        f"{stage.hours:g} h, saved {datetime.fromtimestamp(when):%Y-%m-%d %H:%M}, and no backup "
+        "holds it")
+
+
+def _build(target: Path, env: dict[str, str], log, old_vault: bool = False,
+           played: bool = False) -> Demo:
     from nms_save_vault.core import discover, operations, state as appstate, store as vstore
+    from nms_save_vault.core.store import versionstore
     from nms_save_vault.core.catalog import Vault
     from nms_save_vault.core.organizer import Organizer, recorder
     from nms_save_vault.core.organizer.cache import ScanCache
@@ -513,8 +556,15 @@ def _build(target: Path, env: dict[str, str], log) -> Demo:
     (steam / "steam_autocloud.vdf").write_text('"steam_autocloud.vdf"\n{\n}\n', encoding="ascii")
 
     clock = Clock()
-    vstore.create_store(vault_root, clock=clock.dt)
     vault = Vault(vault_root)
+    uses_store = versionstore.NEW_VAULTS_USE_STORE
+    stack = contextlib.ExitStack()
+    if old_vault:
+        versionstore.NEW_VAULTS_USE_STORE = False          # the app's own old-layout path
+        vault.ensure()
+        stack.enter_context(simulated_now(clock))
+    else:
+        vstore.create_store(vault_root, clock=clock.dt)
     xbox: Path | None = None            # the first Xbox save appears on day 10
     last_steam: dict[str, Stage] = {}
     last_xbox: dict[str, Stage] = {}
@@ -561,7 +611,9 @@ def _build(target: Path, env: dict[str, str], log) -> Demo:
                 state_ready = True
             if day in BACKUP_DAYS:
                 label = LABELS.get(day, "")
-                classic._opened[vault] = vstore.open_store(vault_root, app_state=state, clock=clock.dt)
+                if not old_vault:
+                    classic._opened[vault] = vstore.open_store(vault_root, app_state=state,
+                                                               clock=clock.dt)
                 for folder in [steam] + ([xbox] if xbox is not None else []):
                     entry = operations.create_full_backup(vault, folder, label=label, warnings=[])
                     log(f"day {day:2d}  backup {entry.id} of {folder.name}")
@@ -572,7 +624,16 @@ def _build(target: Path, env: dict[str, str], log) -> Demo:
         organizer = Organizer(vault_root, state.live_sources, cache=ScanCache(None, None),
                               game_running=lambda: False, clock=clock)
         log(_annotate(organizer, clock))
+        if old_vault:
+            folders = sorted(p for p in (vault_root / "backups").iterdir() if p.is_dir())
+            size = sum(f.stat().st_size for d in folders for f in d.rglob("*") if f.is_file())
+            log(f"--old-vault: {len(folders)} backup folders ({size / 1048576:.1f} MB) and "
+                f"catalog.json, no store/; Tools > Vault upgrade will fold them")
+        if played:
+            play_pirate_life(steam, log)
     finally:
+        stack.close()
+        versionstore.NEW_VAULTS_USE_STORE = uses_store
         recorder.observe_folder.__defaults__ = recorder_defaults
     names = [s.name for s in SPECS.values()]
     return Demo(target, steam, xbox, vault_root, env, names)
@@ -611,8 +672,12 @@ def powershell_env(env: dict[str, str]) -> str:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("target", help="an empty folder (or an earlier demo world) to build the fake world in")
+    ap.add_argument("--old-vault", action="store_true",
+                    help="build the vault in the old folder layout (for the upgrade demo)")
+    ap.add_argument("--played", action="store_true",
+                    help="play Pirate Life two more hours after the last backup (NO BACKUP YET)")
     args = ap.parse_args(argv)
-    demo = build(Path(args.target), log=print)
+    demo = build(Path(args.target), log=print, old_vault=args.old_vault, played=args.played)
     print(f"\nDemo world ready in {demo.target}")
     print("Run the app against it (PowerShell):\n")
     print(powershell_env(demo.env))
