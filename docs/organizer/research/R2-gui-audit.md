@@ -44,7 +44,7 @@ running against **copies** in a sandbox. Tags: **VERIFIED** (measured/tested her
     **42 %** (layout, populate, menus, history filter, chooser, help).
 11. A catalog entry (`inplace-20260624-182102`) **is the live Xbox folder** indexed "in place":
     it shows a stale 14-slot summary and is counted as one of the "6 backups" of every Xbox save.
-12. 15 screenshots in `img/R2-*.png` (light, dark, expanded, tooltip, 3 context menus, copy and
+12. 15 screenshots (removed from the repo; they showed the owner's real vault) (light, dark, expanded, tooltip, 3 context menus, copy and
     choose-source dialogs, clear confirmation, save-file filter, play time).
 
 ## 2. Findings
@@ -157,7 +157,7 @@ platforms. The combo lists every playthrough with a backup as
 "Name - was: Old  (platforms, play time, N backups)" (1019-1042); choosing one keeps only the
 backups holding it and only the matching slot(s), opened (843-871). Right-click "Show this
 save's history" does the same (1048-1055). It shows **copies, not versions**, ordered by backup
-creation, with snapshots mixed in (see `R2-history-filtered.png`: the same 2026-10-02 22:50
+creation, with snapshots mixed in (seen in the removed history screenshot: the same 2026-10-02 22:50
 version three times in a row).
 
 **Tooltips (VERIFIED).** Text is built at insert time for every row (1,771 strings per refresh)
@@ -182,7 +182,7 @@ switches to `clam` with full state maps for buttons, comboboxes, entries, scroll
 (`theme.py:241-425`); row tag colours and tooltip colours are swapped per palette
 (`gui.py:491-508`); the Help `Text` is coloured by hand (1662-1668); combobox listboxes and
 menus via the option database. `tests/test_theme.py` checks contrast pairs. The Windows title
-bar stays light in dark mode (`R2-main-dark.png`).
+bar stays light in dark mode.
 
 **ASCII-only UI (SOURCED: `DESIGN.md:200-216`; VERIFIED: `tests/test_ui_text.py:49-80`).**
 Every non-docstring string literal under `src/` must be ASCII (AST scan, so f-strings are
@@ -248,27 +248,9 @@ undo 2, import_vault 1, promote_member 1. Two repopulates of the same slot 59 s 
 10. Unnamed saves: 7 live Xbox slots show "<unnamed>"; 2 of them are named Steam saves under the same game id (borrowable names).
 11. Only folder-level labels exist for user text; no per-save, per-version note.
 
-### 2.4 Screenshots (VERIFIED; all from the sandbox, light unless noted, zoom 1.2, 1000x640)
+### 2.4 Screenshots
 
-| File | Shows | Observation |
-|---|---|---|
-| `img/R2-main-light.png` | startup view | 8/14 toolbar buttons visible; ~5 live rows; backups by id, newest first |
-| `img/R2-main-light-expanded.png` | a live slot and a backup slot expanded | backup slot rows have no play time; save time vs backup time differ (2026-02-22 vs 2026-10-05) |
-| `img/R2-tooltip-live-slot.png` | hover on a live slot | "<- the game loads this one" marker, location summary |
-| `img/R2-menu-live-save.png` | right-click a live save | promote offered on the save already loaded (*); menu font not zoomed |
-| `img/R2-menu-backup-slot.png` | right-click a slot inside a backup | "Copy slot 2 into live slot 2" names no folder |
-| `img/R2-menu-backup-entry.png` | right-click a backup | single destructive entry: "Restore all of ... (replaces other slots)" |
-| `img/R2-copy-slot-dialog.png` | Copy into a live slot | source as location only; Copy/Cancel buttons clipped off the bottom |
-| `img/R2-choose-source-dialog.png` | Change... chooser | 51 roots by id ([live], [full], [inplace] ...), catalog order |
-| `img/R2-choose-source-expanded.png` | chooser with one backup open | slots with names, no play time |
-| `img/R2-clear-confirm.png` | Clear slot confirmation (answered No) | play-time gap warning + Steam Cloud procedure |
-| `img/R2-history-combo.png` | Save file dropdown | "<unnamed>" entries first, labels up to 83 chars |
-| `img/R2-history-filtered.png` | filter on a renamed save | 34 roots, same version repeated |
-| `img/R2-playtime-dialog.png` | Play time... | closest thing to the organizer list; truncated header/footnote at 1.2 |
-| `img/R2-main-dark.png`, `img/R2-main-dark-expanded.png` | dark theme | `clam` restyle works; title bar stays light |
-
-![main](img/R2-main-light.png)
-![copy dialog](img/R2-copy-slot-dialog.png)
+The 15 screenshots (main window light/dark, expanded rows, tooltip, context menus, copy and chooser dialogs, clear confirmation, history filter, play time) were removed because they showed the owner's real vault; the observations are in section 2.
 
 ### 2.5 Capacity and performance (VERIFIED, `gui_run.json`, `measure_more.py`)
 

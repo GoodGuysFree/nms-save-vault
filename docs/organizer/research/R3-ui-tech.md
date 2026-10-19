@@ -8,7 +8,7 @@ Evidence tags: **VERIFIED** = measured or tested here, with the command in Appen
 
 All prototypes are throwaway code in the session scratchpad, outside the repo (written `<scratch>/R3/`
 below). Every prototype ran on **synthetic data**: no save file, vault entry or app config of the
-owner was read or written. Screenshots are in `docs/organizer/research/img/R3-*.png`.
+owner was read or written. The screenshots were removed from the repo (they showed real save names); see the app.
 
 ---
 
@@ -32,7 +32,7 @@ owner was read or written. Screenshots are in `docs/organizer/research/img/R3-*.
 5. **The shipped GUI is DPI-unaware**, so Windows stretches it into a blurry bitmap at 150 %. The
    launcher manifest has no `dpiAware`, and awareness measured from the real launcher is 0. The
    fix is `SetProcessDpiAwareness(1)` plus scaling every pixel constant
-   (`img/R3-tk-dpi-compare.png`). This applies with or without the organizer.
+  . This applies with or without the organizer.
 6. **T2 works on the stdlib and is secure enough.** It uses ThreadingHTTPServer, JSON and
    hand-written JS/SVG. All 13 security checks passed (VERIFIED), covering: token -> HttpOnly
    SameSite=Strict cookie; Host / Origin / Sec-Fetch-Site checks; a required custom header;
@@ -108,7 +108,7 @@ asset is silently left out of Linux/macOS kits.
   Tk 9 bump would not fix non-Latin-1 text on the Linux kit.
 - **Windows.** Tk 8.6.15 drew CJK, Hebrew (correct right-to-left visual order), em dash, ellipsis,
   bullet/square and a non-BMP emoji (monochrome) in a `tk.Text`
-  (`img/R3-tk-notes-graph.png`, top line).
+ .
 - **What the test covers.** `test_ui_text.py` polices only the app's own string literals. Save
   names, notes, and ship / companion / base names are user data, which the organizer will show far
   more of. This is R2's Q9 (notes charset).
@@ -123,7 +123,7 @@ asset is silently left out of Linux/macOS kits.
 - With awareness on, Tk switches to scaling 2.0 by itself. Point-sized fonts follow, but pixel
   constants (column widths, paddings, `wraplength`, image sizes) do not, so each needs multiplying
   by `winfo_fpixels('1i') / 96`.
-- `img/R3-tk-dpi-compare.png` shows the same view three ways: unaware (blurry); aware only (crisp,
+- The (removed) DPI comparison screenshot showed the same view three ways: unaware (blurry); aware only (crisp,
   but the date column truncates and the button falls off); aware with scaled constants (correct).
 
 **K6. pythonw has no standard streams (VERIFIED, kit clone launched the way Explorer launches
@@ -178,18 +178,17 @@ it).**
 - a Notebook (Facts / Notes) above a Canvas history graph;
 - a move-to-live dialog and a drag ghost.
 
-Screenshots: `img/R3-tk-organizer.png`, `R3-tk-notes-graph.png`, `R3-tk-graph-zoom.png`,
-`R3-tk-board-dnd.png`, `R3-tk-move-dialog.png`.
+(Screenshots removed.)
 
 | Need | Tk 8.6 mechanism | Result | Limit |
 |---|---|---|---|
-| Grouped, sortable table; one line per save-file, expandable to versions | Treeview parent/child items. A heading command moves top-level rows and children ride along (the pattern `gui.py:968-995` already uses). Filter by `detach`/`reattach` | VERIFIED, see the perf table below | No per-cell style: a tag's font and colour apply to the **whole row**. The monospace lane-art tag leaked into every column (`R3-tk-organizer.png`). No zebra option: stripe with tags and re-tag after every sort or filter. No frozen columns |
+| Grouped, sortable table; one line per save-file, expandable to versions | Treeview parent/child items. A heading command moves top-level rows and children ride along (the pattern `gui.py:968-995` already uses). Filter by `detach`/`reattach` | VERIFIED, see the perf table below | No per-cell style: a tag's font and colour apply to the **whole row**. The monospace lane-art tag leaked into every column. No zebra option: stripe with tags and re-tag after every sort or filter. No frozen columns |
 | Status badges (live in Steam 4 / Xbox 2) | Item image in column #0: a two-segment "S \| X" pill drawn pixel by pixel into a PhotoImage, no files, no fonts. Plus a "Steam 4 + Xbox 2" text column and a row colour tag | VERIFIED | One image per row, only in #0. Data cells hold plain text only |
-| Live-slot board (15 + 15) | Grid of `tk.Frame` / `tk.Label` cells | VERIFIED (`R3-tk-board-dnd.png`) | Classic widgets ignore ttk styles, so palette colours are passed by hand |
-| Version-history DAG, clickable nodes | Canvas items tagged per version. `tag_bind` for click and hover, `find_closest`, `scale("all")` plus a named font for zoom, `scrollregion` plus wheel. Lineage highlight recolours by tag | VERIFIED (`R3-tk-graph-zoom.png`) | We write the lane layout ourselves (true for every technology). No SVG icons in 8.6. No CSS-like styling |
+| Live-slot board (15 + 15) | Grid of `tk.Frame` / `tk.Label` cells | VERIFIED | Classic widgets ignore ttk styles, so palette colours are passed by hand |
+| Version-history DAG, clickable nodes | Canvas items tagged per version. `tag_bind` for click and hover, `find_closest`, `scale("all")` plus a named font for zoom, `scrollregion` plus wheel. Lineage highlight recolours by tag | VERIFIED | We write the lane layout ourselves (true for every technology). No SVG icons in 8.6. No CSS-like styling |
 | Master-detail split | `ttk.PanedWindow` (already used, `gui.py:441`) | VERIFIED | - |
 | Notes editor | `tk.Text` with undo, word wrap, and tags for version headers and the current version | VERIFIED, including Unicode on Windows | Classic widget, themed by hand. The Linux kit cannot draw non-Latin-1 typed text (K4) |
-| Move to live, then pick the slot to evict | Toplevel with an Account radio and a 15-slot Treeview, target preselected | VERIFIED (`R3-tk-move-dialog.png`) | - |
+| Move to live, then pick the slot to evict | Toplevel with an Account radio and a 15-slot Treeview, target preselected | VERIFIED | - |
 | In-app drag-and-drop without tkdnd | `<B1-Motion>` opens an `overrideredirect` ghost Toplevel (alpha 0.9). `root.winfo_containing(x, y)` maps the pointer to a slot cell | VERIFIED: the hit test resolved "Steam slot 7" at the cell centre | In-app only. OS-level drag from Explorer would need tkdnd or OLE (not needed) |
 | Facts detail panel | Grid of `ttk.Label` pairs with `wraplength` | VERIFIED | `wraplength` is in pixels, so it needs DPI scaling (K5) |
 | DPI scaling | See K5 | VERIFIED | Every pixel constant in `gui.py` needs the factor |
@@ -258,8 +257,7 @@ The server is a `ThreadingHTTPServer` on `127.0.0.1`, port 0. It serves:
 The page builds the table with `createElement` / `textContent` only. It uses HTML5 drag-and-drop
 onto slot cells, a `<dialog>` for move-to-live, and an SVG graph with viewBox zoom and pan.
 
-Screenshots: `img/R3-web-organizer.png`, `R3-web-notes.png`, `R3-web-board-dnd.png`,
-`R3-web-move-dialog.png`, `R3-web-app-window-redacted.png`.
+(Screenshots removed.)
 
 **Security: 13/13 cases pass** (VERIFIED, `drive.py` driving `http.client` against the live
 server).
@@ -349,14 +347,14 @@ Two notes on these numbers:
 
 **Unicode** (VERIFIED on Windows; INFERRED on Linux):
 - The browser rendered CJK, Hebrew, em dash, ellipsis, bullets and an emoji in the notes probe
-  (`R3-web-notes.png`).
+ .
 - On Linux the browser draws with the desktop's fonts (fontconfig), so data strings are no longer
   limited by the kit's Tk.
 - `test_ui_text.py` scans only `.py` literals, so static assets can stay UTF-8.
 
 **SVG graph** (VERIFIED): viewBox zoom and pan; hover and lineage highlight via CSS classes; click
 via `data-vid`. It looks clearly better than the Canvas version at equal effort (compare
-`R3-web-organizer.png` with `R3-tk-organizer.png`).
+the web and Tk screenshots (removed)).
 
 **Testing.**
 - The API, security and lifecycle tests are plain pytest + `http.client`; `drive.py` is a
@@ -370,7 +368,7 @@ via `data-vid`. It looks clearly better than the Canvas version at equal effort 
 - **Default browser via `webbrowser.open`.** Uses the user's own profile, opens a tab, and creates
   no new profile, so no sign-in side effect (INFERRED).
 - **Edge/Chrome `--app` with a private `--user-data-dir`.** Gives a chromeless window that looks
-  like a desktop app (`R3-web-app-window-redacted.png`). It was ready in 0.61 s with Edge already
+  like a desktop app. It was ready in 0.61 s with Edge already
   resident, and closing the window ends the server (VERIFIED). **But on Windows a fresh Edge
   profile, headless included, was implicitly signed in to the OS Microsoft account and began
   syncing** (VERIFIED in all four throwaway profiles):
@@ -597,16 +595,4 @@ repo. Set `PYTHONUTF8=1` everywhere.
 
 ## Appendix B - Images
 
-| File | Shows |
-|---|---|
-| `img/R3-tk-organizer.png` | Tk prototype, dark: slot board, grouped tree with an expanded 200-version save-file, Facts tab, Canvas history with lineage highlight. The whole-row mono-font leak and the unreadable Notebook tab are visible |
-| `img/R3-tk-notes-graph.png` | Tk Notes tab with the Windows Unicode probe, plus the history graph |
-| `img/R3-tk-graph-zoom.png` | Canvas graph at 1.5x zoom |
-| `img/R3-tk-board-dnd.png` | Drag ghost over Steam slot 7 (target highlighted) |
-| `img/R3-tk-move-dialog.png` | Move to live: choose the slot to evict |
-| `img/R3-tk-dpi-compare.png` | DPI-unaware versus aware-only versus aware with scaled constants |
-| `img/R3-web-organizer.png` | Web proof (headless Edge), same data and layout |
-| `img/R3-web-notes.png` | Web Notes tab with the Unicode probe |
-| `img/R3-web-board-dnd.png` | Web slot board, drop target highlighted, drag ghost |
-| `img/R3-web-move-dialog.png` | Web move-to-live `<dialog>` |
-| `img/R3-web-app-window-redacted.png` | Web proof in an Edge `--app` window. The account-sync popup is **redacted**; it named the signed-in account |
+(screenshots removed from the repo; they showed real save names and backup ids)

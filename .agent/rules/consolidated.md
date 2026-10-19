@@ -17,9 +17,9 @@ dependency at all — it is the official signed CPython runtime with the app lai
 Environment and builds are managed with `uv`. The code is GPL-3.0 (parts are a Python port
 of the GPL-licensed libNOM.io / NomNom work — see README Credits).
 
-**Windows is what ships today; Linux and macOS support is decided and in progress.** The
-save format is identical on all three, so the work is discovery, game-detection, packaging
-and docs — not format code. `DESIGN.md` holds the binding decisions (D1–D13), the per-platform
+**Windows is the primary platform; Linux (Proton / Steam Deck) and macOS kits exist and run on the same core.** The
+save format is identical on all three, so the platform work is discovery, game-detection, packaging
+and docs — not format code. Xbox / Game Pass and self-update stay Windows-only. `DESIGN.md` holds the binding decisions (D1–D13), the per-platform
 save roots, and the verification ladder; read that section before touching anything
 platform-shaped.
 
@@ -91,8 +91,10 @@ platform-shaped.
 
 - Source lives in `src/nms_save_vault/`. The safety-checked core is under `core/`
   (`formats`, `slotmap`, `meta`, `lz4_block`, `savedir`, `msstore`, `catalog`, `operations`,
-  `safety`, `state`, `discover`, `locations`); `cli.py` and `gui.py` are thin front-ends over
-  it. Tests live in `tests/`.
+  `safety`, `state`, `discover`, `locations`, `platform`, `aliases`, `playtime`, and the packages
+  `store` (version store), `index` (content index), `liveops` (live operations) and `organizer`
+  (read model)); `cli.py` (+ `cli_live`, `cli_store`, `index_cli`), `gui.py` and `ui/` (incl.
+  `ui/organizer`) are thin front-ends over it. Tests live in `tests/`.
 - **Separation of concerns:** keep save-format / crypto / I/O logic in `core/` isolated from
   front-end (CLI/GUI) presentation logic; the front-ends must not reimplement core behavior,
   and one core module should not reach into another's internals. Steam and Xbox (`wgs`)
@@ -117,7 +119,7 @@ platform-shaped.
   interim on Linux and macOS. Per D4, keep the POSIX kits the same *shape* as the Windows
   one (launcher + `_runtime/app` beside it, `NMSVAULT_PORTABLE_ROOT` exported) so a future
   cross-platform self-updater is a small job rather than a redesign.
-- **Write portable code; keep platform specifics at the edges.** Only `locations`,
+- **Write portable code; keep platform specifics at the edges.** Only `locations`, `platform`,
   `msstore`, `safety`, `state`, `theme`, `gui`, `updates` and `packaging/` may branch on the OS —
   everything else stays platform-neutral. Use `pathlib` and `os.replace` (atomic on both
   Windows and POSIX), never string path joins, and never assume case-insensitive filenames.

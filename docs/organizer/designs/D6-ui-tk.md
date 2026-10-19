@@ -5,10 +5,7 @@ Design wave, UI design D6 (subject S7, owner fork F1 option T; F2 history style)
 and 7), research R2, R3, R4, R6, R7, R8, and the final designs D1 (read model), D3 (version store),
 D4 (content index) and D5 (live operations). Nothing under `src/`, `tests/` or `packaging/` was changed.
 
-Mockups: `docs/organizer/mockups/tk/*.png`, rendered by real Tk 8.6.15 / ttk widgets (the app's own
-`theme.py`), DPI-aware at 150 %, from `mockups/sample-data.json` (the owner's real 30 save files and
-110 versions). Notes, pins and the "Vesper Ridge" side branch (#20-#22) are invented sample content;
-every image says so in its caption band. Scripts: `mockups/tk/source/` (throwaway, not app code).
+Mockups: removed after the design was implemented; see the app. They were rendered by real Tk / ttk widgets (the app's own `theme.py`), DPI-aware at 150 %; notes, pins and the "Vesper Ridge" side branch (#20-#22) were invented sample content.
 
 Owner decisions (01-consolidation 4a, including the owner's answers to the design review),
 applied here and in the mockups: F2 = **C** (version table with a lane column and a key / all
@@ -113,9 +110,6 @@ app stores the last tab in `state.json` (`ui.last_view`) and opens there.
 
 ### 2.2 Screen 01 - the organizer tab
 
-![01](../mockups/tk/01-organizer.png)
-![01 dark](../mockups/tk/01-organizer-dark.png)
-
 **Layout (top to bottom).** Native menu bar (File, Edit, View, Live, Tools, Help); a `ttk.Notebook`
 whose tabs sit directly under the menu bar: `Live saves and backups | Organizer` (shell 10a). The
 Organizer tab holds: a slim toolbar with the selection actions `Move to live...`, `History`,
@@ -211,8 +205,6 @@ D1 `set_pinned`. No D5 call.
 
 ### 2.3 Screen 02 - a line expanded
 
-![02](../mockups/tk/02-line-expanded.png)
-
 Expanding a line inserts its versions (D1 `versions(pid)` joined with `history(pid, "default")`).
 Each row is one captured pair (C4), labelled by its head. The block has two parts (owner decision:
 no guessed link):
@@ -252,9 +244,6 @@ Reads: D1 `versions`, `history(pid, "default")`; D4 `view`, `changes`, `card`, `
 INTERACTIVE)`, `request_deep`.
 
 ### 2.4 Screens 03 and 03b - the move dialog (Move to live, Replace with)
-
-![03](../mockups/tk/03-move-to-live.png)
-![03b](../mockups/tk/03b-replace-from-slot.png)
 
 One modal dialog class with one layout (owner review: "the dialogs should follow the web
 version"), entered from either end (C30). **Move to live...** (03) starts from a version: a line
@@ -332,8 +321,6 @@ enabled, Esc cancels, Ctrl+F focuses Find (03b). Calls: D5 `eviction_picker`, `p
 
 ### 2.5 Screen 04c - History (style C on the web layout)
 
-![04c](../mockups/tk/04c-history-hybrid.png)
-
 A non-modal window over one save file, laid out like the web mockup (owner review):
 
 - **Header**: name, live badge (`S9`), "23 versions - 3 branch tips - 532h16 played", and a legend
@@ -371,8 +358,6 @@ rejected by the owner in favour of C; they are not built.
 
 ### 2.6 Screen 05 - Notes
 
-![05](../mockups/tk/05-notes.png)
-
 The notes window edits the two levels of C19 for the selected save file:
 
 - **Save-file note**: a `tk.Text` editor (undo, word wrap). `Save note` calls
@@ -399,8 +384,6 @@ Calls: D1 `Notes` only.
 
 ### 2.7 Screen 06 - Compare two versions
 
-![06](../mockups/tk/06-compare.png)
-
 Two version cards (A and B) with `Swap A and B` and `Pick other versions...`; an info strip with the
 nearest common ancestor over D1's drawn edges ("#11, branch point; A played +6h14, B +3h36 since";
 "no common ancestor recorded" when the two are not linked); a
@@ -412,8 +395,6 @@ side" (the top D4 changes along each branch). Facts come from D4 `view` / `card`
 not call `changes()` on non-adjacent versions (D4 rule N1). Calls: none.
 
 ### 2.8 Screen 07 - First run and indexing
-
-![07](../mockups/tk/07-first-run-indexing.png)
 
 Meta columns (name, live, versions, play time, last played, mode, state) appear after D1's first
 scan; facts columns show "..." until D4 has read that version. A dismissible info banner explains
@@ -428,10 +409,6 @@ and dialogs work during indexing. When the game is running D4 drops to one worke
 so. Calls: D4 `request`, `progress`, `events_since`, `pause`, `resume`, `cancel`.
 
 ### 2.9 Screens 08, 08b, 08c - Steam and Xbox, the live area
-
-![08](../mockups/tk/08-cross-platform.png)
-![08b](../mockups/tk/08b-live-one-source.png)
-![08c](../mockups/tk/08c-live-pick-two.png)
 
 **08.** With the `On both 4` chip: Creative Primary (`S13 X8`, `NOT IN VAULT; Xbox behind 6h33`) and
 The Cartographers (`S3 X14`, `Xbox behind 2h35`) are expanded. Creative Primary #3-#12 are linked as
@@ -463,8 +440,6 @@ Xbox). The two lists can be any two (two Steam accounts, Steam + Xbox). The choi
 
 ### 2.10 Screen 09 - Done, Undo, waiting to confirm
 
-![09](../mockups/tk/09-done-undo.png)
-
 After `execute` returns `done`, no modal appears. A **Done bar** (banner colours) slides in above the
 status bar: "Done. Moved 'CrossSaveTest-300qs' into Steam slot 5. 'Ex-Beachhead-160qs' is in the
 vault. Waiting for the next game launch to confirm." with `Undo` (default), `Show in history`, `x`.
@@ -484,9 +459,6 @@ bar ("Steam Cloud put the old save back in Steam slot 5. 'CrossSaveTest-300qs' i
 vault." with `Put it back`, `Show steps`, `Dismiss`).
 
 ### 2.11 Screens 10a / 10b - the shell
-
-![10a](../mockups/tk/10a-shell-tab.png)
-![10b](../mockups/tk/10b-shell-organizer-first.png)
 
 - **10a, chosen (default).** One main window: the native menu bar, then a `ttk.Notebook` with the
   tabs `Live saves and backups | Organizer` directly under it, and the status bar at the bottom. The
@@ -880,7 +852,7 @@ The suite keeps exactly one Tk root per session (`conftest.py:121-158`; R2 / R3 
 - **DPI**: `px()` scales with fpixels and zoom (pure function).
 - **Performance smoke**: 300 lines / 12,000 version rows populate under 300 ms and an incremental
   refresh of one changed line under 20 ms (R3 measured 148 ms for the full stress build).
-- **Screenshot loop** (dev-only, not pixel-asserted): the approach of `mockups/tk/source` - real
+- **Screenshot loop** (dev-only, not pixel-asserted): the approach of the (removed) mockup scripts - real
   widgets on fixtures, DPI-aware, captured through the DWM frame bounds and `PIL.ImageGrab` on
   Windows (xvfb + `import` on Linux per DESIGN D10) - produces PNGs of every screen for review in
   light and dark at zoom 1.0 and 1.2.
@@ -970,31 +942,6 @@ designs:
    **D3** `store_status` replaces D2's `housekeep()` for the alerts (V-16).
 5. UI preferences (`ui` in `state.json`) are per-machine settings, not organizer store data.
 
-## Appendix - mockups and how they were made
+## Appendix - mockups
 
-| File | Shows |
-|---|---|
-| `01-organizer.png`, `01-organizer-dark.png` | Organizer tab of shell 10a: 30 lines with `>` markers, live lists Steam + Xbox, the empty-slot tooltip on Steam slot 1, Main Save summary; dark theme with the dark title bar and the light native menu bar |
-| `02-line-expanded.png` | Main Save expanded (linked history with lanes - recorded moves, the live slot, seen in backups - then the dated list) and All Parts Building (one chain seen in backups, a folded re-save), other lines muted, #18 card |
-| `03-move-to-live.png` | the move dialog from CrossSaveTest-300qs #2: in/out boxes, 15 slots (empty slot 1 suggested, "checked after the next launch"; slot 5 picked), What you are putting in ("no recorded parent"), What will happen, Your pick, "Swap into Steam slot 5" |
-| `03b-replace-from-slot.png` | the same dialog entered from Steam slot 5: version picker (Vault only / Older versions / Live elsewhere), picking AF24 #2 |
-| `04c-history-hybrid.png` | history on the web mockup's layout, key versions: linked tree with lanes and folded runs, the dated list of versions seen only in hand-made folders, branch tips, version panel |
-| `05-notes.png` | notes window: save-file note, revisions, version label/comment/lock, snapshot diff, automatic changes |
-| `06-compare.png` | #23 (main line) vs #22 (invented side branch) |
-| `07-first-run-indexing.png` | first run: facts filling in, progress strip, banner |
-| `08-cross-platform.png` | Creative Primary and The Cartographers (both "Xbox behind"), linked where app backups saw them, the rest by date; the move dialog going back to an older version (same-save-file group, confirm, gate) |
-| `08b-live-one-source.png` | live area, one live folder with selector; empty Steam slot 1 selected (inline warning + slot card) |
-| `08c-live-pick-two.png` | live area, two side by side; the source list open (with an invented second Steam account) |
-| `09-done-undo.png` | after a Place: Done bar, pending verification |
-| `10a-shell-tab.png` | shell 10a (chosen): tabs under the menu bar, classic tab shown (`Clear slot...` became the manual steps) |
-| `10b-shell-organizer-first.png` | the alternative organizer-first shell (not chosen) |
-
-Rendering: `uv run --with pillow python docs/organizer/mockups/tk/source/render_all.py` on Windows
-(one process per screen; `SetProcessDpiAwareness(1)`, the app's `theme.apply`, window frame from
-`DwmGetWindowAttribute(DWMWA_EXTENDED_FRAME_BOUNDS)`, `PIL.ImageGrab`, downscaled to 1,800 px with a
-caption band). Data: `mockups/sample-data.json` only, read as `mockups/sample-data.md` says (no
-inferred edge drawn; hand-made folders outside the vault); times in the owner's local time (UTC+3);
-the vault is shown after the phase-2 upgrade with pruning stopped (every app-made copy durable). Tooltips and the open combobox
-list in 01 and 08c are real Tk windows captured with the main window. Not shown in images: the drag
-ghost (R3 verified it), the deep-facts spinner, animations, and the Linux kit (its Tk would show `?`
-for the Greek settlement name).
+(mockups removed after the design was implemented; see the app)

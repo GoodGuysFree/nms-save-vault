@@ -6,7 +6,7 @@ Design wave, UI design D7 (subject S7, owner fork F1 option W; F2 decided). Bran
 `design/save-organizer`. Binding inputs: `01-consolidation.md` (C1-C32, sections 6 and 7),
 research R2-R4 and R6-R8, and the core designs D1 (read model), D4 (facts), D5 (operations);
 D2/D3 for storage wording. Nothing under `src/`, `tests/`, `packaging/`, `README.md` or `DESIGN.md`
-was changed. The mockups are throwaway design artifacts in `docs/organizer/mockups/web/`.
+was changed. The web mockups were throwaway design artifacts (removed after the design was implemented; see the app).
 
 Evidence tags: **VERIFIED** = rendered or run by D7 (named below); **SOURCED** = read in a
 design, research report or the code; **INFERRED** = reasoning. Live sources are shown as
@@ -80,19 +80,9 @@ Vocabulary is C32 only: Live, Vault, Version, Save file. Storage kinds never app
 version store (F3) a version is shown as "Vault: since <first captured>", plus "first captured
 by a backup / an automatic snapshot / an imported folder" as a muted detail.
 
-Every screen below was rendered from the owner's real data (`mockups/sample-data.json`,
-read-only export) by the mockup renderer: `docs/organizer/mockups/web/render.py` runs headless
-Google Chrome 155 with a throwaway profile (VERIFIED, 12 PNGs, 1600x1000). Things the sample data
-does not hold and the mockups invent are marked ILLUSTRATIVE: pins on Main Save and All Parts
-Building, a lock on `9e4b2f00`, the note revision history, the edit in progress, and the date
-recording "started" (2026-10-05 17:41, the backup that opens the first fully recorded operation,
-the rollback), which decides what is drawn as a tree.
+The screens below were illustrated by mockups (removed after the design was implemented; see the app). Things that were invented there are marked ILLUSTRATIVE (pins, a lock, the note revision history, the edit in progress, the date recording "started" that decides what is drawn as a tree).
 
 ### 2.2 Save files (01, 01-dark)
-
-![Save files, light](../mockups/web/01-organizer.png)
-
-![Save files, dark](../mockups/web/01-organizer-dark.png)
 
 **Layout, top to bottom.** Top bar (46 px). Live board (2 rows x 15 cells, 58 px each). Filter
 chips. Then the table (flexible width) beside the detail pane (384 px). Status bar (28 px). All
@@ -155,8 +145,6 @@ banner line per kind ("Xbox folder missing"). Server gone: full-page overlay (2.
 
 ### 2.3 A line expanded (02)
 
-![Main Save expanded](../mockups/web/02-line-expanded.png)
-
 Main Save expanded in the table: its 23 versions (default mode: D1 folding of touches and
 outside edits, C5; nothing folds here because the one touch is noted), newest first, each a
 captured pair labelled by its newer member (C4). The caret column becomes the lane gutter with
@@ -180,8 +168,6 @@ Reads: `GET /api/lines/{pid}/versions?mode=default` (rows + lanes), `/api/versio
 `/api/versions/{vid}/card`. Keyboard: Right on a line opens it, Down walks into its versions.
 
 ### 2.4 Move to live, entered from a version (03)
-
-![Move to live](../mockups/web/03-move-to-live.png)
 
 A sheet from the right (1000 px), not a centred modal: the board stays visible and live above
 it, so both ends are on screen (C30). The table behind is dimmed lightly but readable, the
@@ -223,8 +209,6 @@ still running" (classic restore in the app window or another app instance).
 
 ### 2.5 Replace with..., entered from a live slot (03b)
 
-![Replace with](../mockups/web/03b-replace-from-slot.png)
-
 Same sheet, the other entry point (C30): the target is fixed (Steam slot 5), the user picks the
 version. Left: the two ends, a search box, chips (Not live 4, Older versions of
 Ex-Beachhead-160qs 1, Live elsewhere 16 Steam save files), and a grouped tree of lines with
@@ -236,8 +220,6 @@ facts before a swap). Footer and button as in 03. Calls: `GET /api/lines`,
 `/api/lines/{pid}/versions`, `/api/versions/{vid}/card`, then `plan` and `execute` as above.
 
 ### 2.6 History, style C (04c)
-
-![History, style C](../mockups/web/04c-history-hybrid.png)
 
 The owner chose C, and decided that history from before recording started is **not** drawn as a
 guessed tree. The view therefore has two sections in one table:
@@ -281,8 +263,6 @@ selected one, `M` move to live.
 
 ### 2.7 Notes (05)
 
-![Notes](../mockups/web/05-notes.png)
-
 Left, **save-file note** (one per line, C19): an editor (plain text, Unicode as typed: em dash,
 arrow, Greek in the mockup), unsaved-changes badge, Save note (Ctrl+Enter) / Discard (Esc),
 revision list (rev 3 editing now, rev 2 current, rev 1), the version labels on this save file
@@ -304,8 +284,6 @@ Calls: `GET/PUT /api/lines/{pid}/note`, `GET /api/versions/{vid}` (label, commen
 
 ### 2.8 Compare two versions (06)
 
-![Compare](../mockups/web/06-compare.png)
-
 Main Save's side-branch tip `syn-3` against the live `f073ea37`; both continue from
 `6536c83c` (2026-09-10 10:47): side branch +3h36, main line +6h14. Groups: Progress, Bases
 (counts, parts, bases only on one side - "+ Vesper Ridge Retreat (planet, 540 parts, Euclid)"
@@ -319,8 +297,6 @@ one version onto another. Calls: `GET /api/compare?a=&b=` = D4 `card(a)`, `card(
 (the page shows the 202 state of 2.9).
 
 ### 2.9 First run: facts being read (07)
-
-![First run](../mockups/web/07-first-run-indexing.png)
 
 The first scan finishes in about 3 s (D1 2.15); the table, board and meta columns (name, live,
 versions, play time, last played, difficulty) are complete at once. A banner shows D4's
@@ -336,8 +312,6 @@ versions ahead of it" and shows the meta facts it already has. The Tk host's sta
 the same counter. Calls: `GET /api/index/progress`, `POST /api/index {action}`, the event stream.
 
 ### 2.10 Steam and Xbox (08)
-
-![Cross-platform](../mockups/web/08-cross-platform.png)
 
 Chip "On both" (4 lines) with a column "Steam and Xbox" instead of the facts: Creative Primary
 "Diverged - different progress" (amber fork icon), The Cartographers "Steam ahead by 2h35",
@@ -366,8 +340,6 @@ The sheet is the Move-to-live for Creative Primary's vault version 2026-10-04 09
 
 ### 2.11 Done - Undo, and waiting to confirm (09)
 
-![Done and undo](../mockups/web/09-done-undo.png)
-
 After `execute` returns `done`: a non-modal toast (C30) "Done - FreshStart is in Steam slot 5,
 dated today in the game. Ex-Beachhead-160qs is in the vault. The slot is checked again after
 your next game session." with Undo (D5 `UndoOffer`, a new `plan_undo` + `execute`, slot-scoped,
@@ -391,8 +363,6 @@ opens a banner on every view until resolved; new moves on that account are block
 POSTs.
 
 ### 2.12 The host window and the browser (10)
-
-![Host window and browser](../mockups/web/10-host.png)
 
 The left window is real Tk (VERIFIED: Tk 8.6 with the app's own `theme.py`, light, DPI-aware,
 captured with `PrintWindow`; content is a mockup). Sections: **Organizer** (state "Open in your
@@ -624,8 +594,7 @@ Vanilla JavaScript ES modules (`<script type="module" src="/static/js/main.js">`
 | `css/app.css` | tokens (light / dark), layout, components | 600 |
 
 About 2,600 lines of JS and 600 of CSS, ~110 KB unminified (served locally; no compression
-needed). Measure for this estimate: the mockup renderer (`mockups/web/app.js`, 1,351 lines;
-`app.css`, 484) already draws every screen from real data with the D1 lane algorithm, without
+needed). Measure for this estimate: the mockup renderer (1,351 lines of JS, 484 of CSS; removed) already draws every screen from real data with the D1 lane algorithm, without
 the API, state and interaction plumbing. The server computes everything that needs judgement
 (sorting rules, lanes, key versions, warnings, diffs); the page renders, so JS stays thin.
 
@@ -681,7 +650,7 @@ at a glance, but a second view without the table's columns).
 | Gate | - | an owner test run on his PC: open, close, reopen; check that no profile, sign-in or sync prompt appears |
 
 Recommendation: tab in phases 1-4; the app window as a setting after the gate passes. Scripted
-headless Chrome stays a test tool only (CI and mockups, throwaway profile, deleted).
+headless Chrome stays a test tool only (CI, throwaway profile, deleted).
 
 ### 4.3 Hosting
 
@@ -799,8 +768,7 @@ requests:
    edges of tier `recorded`, `owner`, or `observed` by the live journal; versions whose parent
    edge is a bootstrap `capture-sequence` or a classifier edge are returned as unlinked rows (a
    `flat` row kind) in time order, while D1 keeps those edges internally for "what changed" and
-   the cross-platform state. The mockup implements exactly this rule (`recordedGraph` in
-   `mockups/web/app.js`).
+   the cross-platform state. The mockup implemented exactly this rule.
 3. Request to D4: `changes(a, b)` accepted for any two versions of one line (Compare), not only
    a version and its lineage parent; D4 2.8 already names the web progress and events endpoints
    used here.

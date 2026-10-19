@@ -1,6 +1,6 @@
 # Owner review of the UI mockups
 
-Mockups compared: `mockups/tk/` (D6) and `mockups/web/` (D7), side by side.
+Mockups compared: the Tk (D6) and web (D7) mockups, side by side (mockups removed after the design was implemented; see the app).
 
 ## Decisions
 

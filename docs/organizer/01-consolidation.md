@@ -323,5 +323,5 @@ Design documents (`designs/`):
 | D3 | Storage option B: content-addressed version store, copy-aside, fold | S6 F3-B | to build (phase 2, phase 5) |
 | D4 | Content index engine: decoder fixes, HashName, extractor framework, fact catalog v1, contexts, lookups, worker pool, cache schema, changelog | S2 (C7-C14) | to build |
 | D5 | Live operations: Place / PlaceIntoEmpty / Swap / undo / keep-a-copy / journal / verification / cloud; F4a, F5b, F7b, F8 as decided; cross-platform phase (F6) | S5 (C23-C26) | to build |
-| D6 | Tk organizer, shell 10a, history style C, mockups rendered by real Tk from `mockups/sample-data.json` | S7 F1-T, F2 | to build |
+| D6 | Tk organizer, shell 10a, history style C, mockups rendered by real Tk from sample data (mockups removed) | S7 F1-T, F2 | to build |
 | D7 | Local web UI | S7 F1-W | not chosen (F1 = Tk); kept for reference, nothing depends on it |
