@@ -20,6 +20,7 @@ from pathlib import Path
 
 from . import formats, lz4_block, meta, msstore, safety, savedir
 from .catalog import (
+    OperationError,
     KIND_EXTRACT,
     KIND_FULL,
     KIND_IMPORTED,
@@ -39,8 +40,7 @@ log = logging.getLogger(__name__)
 SPACE_MARGIN = 100 * 1024 * 1024
 
 
-class OperationError(Exception):
-    pass
+# OperationError lives in catalog (the vault itself raises it); re-exported here.
 
 
 class GameRunningError(OperationError):
@@ -276,6 +276,7 @@ def _new_managed_entry(
         copier = _Copier()
         fill(dest, copier)
         _verify_copy(source_root, dest, files, copier, live)
+        safety.fsync_tree(dest)
         entry = vault.make_entry_from_dir(
             entry_id, kind, label, dest, managed=True, source=source, slots=slots
         )
@@ -680,7 +681,12 @@ def import_vault(vault: Vault, source_dir: Path, copy_into_vault: bool) -> OpRes
     have = {e.id for e in vault.entries}
     if store is not None:
         have |= {e.id for e in store.entries()}
+    from .store.manifest import is_entry_id
+
     for e in src.entries:
+        if not is_entry_id(e.id):       # the id names a folder of this vault: never a path
+            warnings.append(f"{e.id!r}: not a valid backup id, skipped")
+            continue
         if e.id in have:
             continue
         if store is not None:

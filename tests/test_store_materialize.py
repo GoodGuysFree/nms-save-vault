@@ -7,7 +7,7 @@ import time
 
 import pytest
 
-from nms_save_vault.core import catalog, discover, msstore, savedir
+from nms_save_vault.core import catalog, discover, msstore, safety, savedir
 from nms_save_vault.core import store as vstore
 from nms_save_vault.core.catalog import Vault
 from nms_save_vault.core.operations import extract_slot
@@ -46,7 +46,7 @@ def test_capture_steam_exact_tree_scans_the_same(tmp_path):
     entry = _steam_full(store, live, kind="snapshot", scope=vstore.CaptureScope())
     with store.materialized(entry.id) as folder:
         assert catalog.summarize(savedir.scan(folder)) == catalog.summarize(savedir.scan(live))
-        assert folder.parent == vault / "store" / "tmp" and folder.name.startswith("mat-")
+        assert safety.plain_path(folder.parent) == vault / "store" / "tmp" and folder.name.startswith("mat-")
     assert not folder.exists()
 
 
@@ -227,4 +227,4 @@ def test_path_lengths(tmp_path, make_wgs_account):
     with store.materialized(entry.id) as folder:
         assert max(len(str(p)) for p in folder.rglob("*")) < 260
     digest = "f" * 64
-    assert len(str(store.objects.path_for(digest))) == 100 + len("/store/objects/ff/") + 64
+    assert len(str(safety.plain_path(store.objects.path_for(digest)))) == 100 + len("/store/objects/ff/") + 64

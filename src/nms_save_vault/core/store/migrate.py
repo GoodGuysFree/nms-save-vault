@@ -54,7 +54,7 @@ class FoldReport:
 
 def write_migration(vault_root: Path, body: dict) -> None:
     raw = json.dumps(body, indent=1, sort_keys=True, ensure_ascii=True).encode("ascii")
-    safety.atomic_write_bytes(store_root(vault_root) / STATE / MIGRATION_JSON, raw,
+    safety.atomic_write_bytes(safety.long_path(store_root(vault_root)) / STATE / MIGRATION_JSON, raw,
                               temp_prefix=".migration.tmp_")
 
 

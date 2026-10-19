@@ -27,7 +27,7 @@ from .core.liveops import classic
 from .core import platform as host_platform
 from .core import playtime, savedir
 from .core import state as appstate
-from .core.catalog import Vault
+from .core.catalog import OperationError, Vault
 from .ui import dpi, logfile
 from .core.organizer import Organizer
 from .ui.fmt import local_time as _fmt_ts
@@ -396,8 +396,19 @@ class App(tk.Tk):
         self.geometry(f"{width}x{height}+{x}+{y}")
         vault_root =Path(vault) if vault else (self.state.vault or locations.default_vault_dir())
         self.vault = Vault(vault_root)
-        self.vault.ensure()
-        self.vault.load()
+        try:
+            self.vault.ensure()
+            self.vault.load()
+        except OperationError as exc:
+            # A vault that cannot be reached or read is never overwritten, emptied or rebuilt:
+            # the app opens with the vault shown empty and read-only, and says why.
+            log.warning("the vault cannot be used: %s", exc.__cause__ or exc)
+            self.vault = Vault(vault_root, read_only=True)
+            self.vault.mark_unreadable()
+            appstate._notices.append(f"{exc} The vault is shown empty and cannot be changed "
+                                     "in this session.")
+        for n, text in enumerate(appstate.take_notices()):
+            self.after(300 + 150 * n, lambda text=text: _showinfo("Settings", text, parent=self))
         # D3 4.1: an upgrade interrupted by a crash is cleaned up (its own leftovers only).
         from .core.store.upgrade import startup_notice
 
@@ -445,7 +456,11 @@ class App(tk.Tk):
     # --- state ---------------------------------------------------------------
 
     def _load_or_bootstrap_state(self) -> appstate.AppState:
-        st = appstate.load(self.state_path)
+        try:
+            st = appstate.load(self.state_path)
+        except OperationError as exc:     # unreadable and not movable: start with defaults, write nothing
+            appstate._notices.append(f"{exc} The app started with its defaults.")
+            return discover.bootstrap_state()
         if st is None:  # first run: discover everything and write state.json
             st = discover.bootstrap_state()
             try:
@@ -692,7 +707,13 @@ class App(tk.Tk):
         env = VaultEnv(self.vault.root, [Path(s.path) for s in self.state.live_sources],
                        self.state, __version__)
         return VaultWindow(self, worker=self.worker, themed=self.themed, env=env,
-                           on_changed=lambda: self.organizer_view.vault_changed())
+                           on_changed=self._vault_changed)
+
+    def _vault_changed(self) -> None:
+        """The vault window changed the vault (upgrade, undo, fold, copy-in): the Organizer and
+        the classic panes read it again (the catalog is re-read when its file changed)."""
+        self.organizer_view.vault_changed()
+        self.refresh()
 
     def _free_menu_label(self) -> str:
         """An interrupted freeing of old folders is resumed by the same item (D3 4.5 step 4)."""

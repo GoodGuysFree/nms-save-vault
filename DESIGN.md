@@ -189,8 +189,11 @@ src/nms_save_vault/
   **Undo the vault upgrade** (`nmsvault store rollback`) writes everything made since back out as
   plain folders, restores the old ones from the copy, and moves `store/` out of the vault; the
   copy is only read.
-* After the upgrade **older app versions cannot read the vault** and refuse to open it (it is
-  marked by `store/FORMAT`; owner decision Q2). Undo it first to go back.
+* After the upgrade **do not go back to an older app version on that vault**. Older versions
+  have no guard: they do not refuse a store vault (owner decision Q2: no barrier), they do not
+  see the store's backups, and v0.2.x prunes snapshot folders beyond its retention, including
+  the folders an undo of the upgrade writes out. To go back, use **Undo the vault upgrade**
+  first.
 
 ## Safety invariants
 1. Never write while `NMS.exe` runs.

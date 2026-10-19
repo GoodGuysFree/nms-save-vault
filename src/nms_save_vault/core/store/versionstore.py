@@ -85,7 +85,7 @@ def store_root(vault_root: str | Path) -> Path:
 def vault_mode(vault_root: str | Path) -> VaultMode:
     """"upgrading" while ``store/state/upgrade.json`` exists (an upgrade or a rollback runs or
     was interrupted); else "store" when ``store/FORMAT`` exists; else "legacy". No lock."""
-    root = store_root(vault_root)
+    root = safety.long_path(store_root(vault_root))
     if (root / STATE / UPGRADE_JSON).exists():
         return "upgrading"
     if (root / FORMAT_NAME).is_file():
@@ -136,7 +136,7 @@ def read_format(root: Path) -> StoreFormat:
     """Parse and check ``store/FORMAT``. Raises StoreUnavailable when it cannot be read or is
     malformed, StoreTooNew when reading the store needs a newer app."""
     try:
-        d = json.loads((root / FORMAT_NAME).read_bytes().decode("ascii"))
+        d = json.loads((safety.long_path(root) / FORMAT_NAME).read_bytes().decode("ascii"))
     except (OSError, ValueError) as exc:
         raise StoreUnavailable(f"The vault is not reachable (store FORMAT unreadable: {exc}).") from exc
     try:
@@ -165,7 +165,7 @@ def create_store(vault_root: str | Path, *, clock: Callable[[], datetime] = utc_
     """Create an empty store: its folders first, FORMAT last, since FORMAT appearing is what
     turns store mode on. The upgrade's commit step (D3 4.1 step 7) and a new vault use it; the
     caller holds the vault lock. Refuses a vault that already has a store."""
-    root = store_root(vault_root)
+    root = safety.long_path(store_root(vault_root))
     if (root / FORMAT_NAME).exists():
         raise StoreUnavailable("The vault already has a version store.")
     created = not root.is_dir()
@@ -258,6 +258,7 @@ class VersionStore:
                  faults: FaultHook | None, app_state: AppState | None = None) -> None:
         self.vault_root = vault_root
         self.root = store_root(vault_root)
+        self._io = safety.long_path(self.root)    # for opening, listing and replacing files
         self.format = fmt
         self.store_id = fmt.store_id
         self.inline_max = fmt.inline_max
@@ -340,7 +341,7 @@ class VersionStore:
         """A verified temporary folder holding the entry, on the store's volume; removed on
         exit, also after an error. For reading only. A lock on ``<folder>.lock`` is held for
         as long as the folder is in use, so no other process's sweep removes it."""
-        dest = self.root / TMP / f"mat-{entry_id}-{secrets.token_hex(4)}"
+        dest = self._io / TMP / f"mat-{entry_id}-{secrets.token_hex(4)}"
         lock_file = _mat_lock(dest)
         try:
             with safety.exclusive_lock(lock_file, timeout=0):
@@ -370,6 +371,7 @@ class VersionStore:
 
     def _materialize(self, entry_id: str, dest: Path, *, slots: Iterable[int] | None,
                      account_files: bool, cache: bool, keep_mtimes: bool) -> MaterializeResult:
+        dest = safety.long_path(dest)
         entry = self.entry(entry_id)
         if slots is not None:
             slots = tuple(slots)
@@ -394,13 +396,13 @@ class VersionStore:
         modification time, D3 2.7) or ``force``. Manifests never change once written, so a
         name already indexed (or found corrupt) is not read again."""
         try:
-            st = os.stat(self.root / ENTRIES)
+            st = os.stat(self._io / ENTRIES)
         except OSError as exc:
             raise StoreUnavailable(f"The vault is not reachable ({exc.strerror or exc}).") from exc
         if not force and st.st_mtime_ns == self._entries_seen:
             return
         try:
-            names = os.listdir(self.root / ENTRIES)
+            names = os.listdir(self._io / ENTRIES)
         except OSError as exc:
             raise StoreUnavailable(f"The vault is not reachable ({exc.strerror or exc}).") from exc
         with self._index_guard:
@@ -412,7 +414,7 @@ class VersionStore:
                 if not name.endswith(".json") or name[:-5] in self._index or name in self._corrupt:
                     continue
                 try:
-                    raw = (self.root / ENTRIES / name).read_bytes()
+                    raw = (self._io / ENTRIES / name).read_bytes()
                 except OSError as exc:
                     log.warning("could not read the store manifest %s: %s", name, exc)
                     continue
@@ -691,13 +693,13 @@ class VersionStore:
             raise StoreError(f"The vault catalog cannot be read ({exc}).") from exc
 
     def _manifest_path(self, entry_id: str) -> Path:
-        return self.root / ENTRIES / f"{entry_id}.json"
+        return self._io / ENTRIES / f"{entry_id}.json"
 
     def _write_manifest(self, entry: StoreEntry) -> None:
         raw = entry.to_bytes()
         dest = self._manifest_path(entry.id)
         # Not named after the id: a long id would push the temp path past Windows' limit.
-        tmp = self.root / TMP / f"entry.{os.getpid()}.{secrets.token_hex(4)}.part"
+        tmp = self._io / TMP / f"entry.{os.getpid()}.{secrets.token_hex(4)}.part"
         try:
             with open(tmp, "wb") as f:
                 f.write(raw)
@@ -766,7 +768,7 @@ class VersionStore:
         log.warning(text)
 
     def _probe_writable(self) -> None:
-        tmp = self.root / TMP
+        tmp = self._io / TMP
         probe = tmp / f"probe.{os.getpid()}.{secrets.token_hex(4)}.part"
         try:
             tmp.mkdir(exist_ok=True)
@@ -794,7 +796,7 @@ class VersionStore:
         folder is removed only when its lock is free (no live :meth:`materialized` holds it)."""
         cutoff = time.time() - TMP_MAX_AGE
         try:
-            items = list((self.root / TMP).iterdir())
+            items = list((self._io / TMP).iterdir())
         except OSError as exc:
             log.warning("could not list the store's temp folder: %s", exc)
             return

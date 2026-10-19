@@ -32,7 +32,7 @@ def test_object_put_get_verifies(tmp_path):
     result = objs.put(DATA, digest)
     assert result == vstore.PutResult(digest, len(DATA), written=True, healed=False)
     path = tmp_path / "objects" / digest[:2] / digest
-    assert objs.path_for(digest) == path and path.read_bytes() == DATA
+    assert safety.plain_path(objs.path_for(digest)) == path and path.read_bytes() == DATA
     assert objs.has(digest) and objs.get(digest, size=len(DATA)) == DATA
     assert list((tmp_path / "tmp").iterdir()) == []
 
@@ -99,15 +99,16 @@ def test_new_folders_are_made_durable(tmp_path, monkeypatch):
     objs = _objects(tmp_path)
     digest = _sha(DATA)
     objs.put(DATA, digest)
-    assert tmp_path / "objects" in synced                    # the new fan-out folder
+    plain = lambda: [safety.plain_path(p) for p in synced]   # noqa: E731
+    assert tmp_path / "objects" in plain()                   # the new fan-out folder
     (tmp_path / "quarantine").rmdir()
     objs.quarantine(digest, "test")
-    assert tmp_path in synced                                # the new quarantine folder
+    assert tmp_path in plain()                               # the new quarantine folder
     vault = tmp_path / "vault"
     vault.mkdir()
     synced.clear()
     vstore.create_store(vault)
-    assert vault in synced and vault / "store" in synced     # store/ itself, then FORMAT
+    assert vault in plain() and vault / "store" in plain()     # store/ itself, then FORMAT
 
 
 def test_dedupe_hit_rehashes_and_heals(tmp_path):

@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 from weakref import WeakKeyDictionary
 
-from .. import catalog, savedir
+from .. import catalog, safety, savedir
 from ..catalog import CatalogEntry, Vault
 from ..state import AppState
 from .capture import CaptureScope
@@ -157,7 +157,7 @@ def folder_source(store: VersionStore, folder: Path) -> dict[str, str]:
     """How an entry records the folder it was taken of: by name, never a path; a temporary
     copy of one of this vault's entries by that entry's id."""
     tmp = store.root / TMP
-    if folder.parent == tmp and folder.name.startswith("mat-"):
+    if safety.plain_path(folder.parent) == tmp and folder.name.startswith("mat-"):
         return {"type": "entry", "entry": folder.name[len("mat-"):-9]}    # mat-<id>-<8 hex>
     return {"type": "folder", "name": folder.name}
 

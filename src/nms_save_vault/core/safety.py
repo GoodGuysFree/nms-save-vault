@@ -74,8 +74,18 @@ def copy_and_hash(src: str | Path, dst: str | Path, chunk: int = 1 << 20) -> str
         for block in iter(lambda: fi.read(chunk), b""):
             h.update(block)
             fo.write(block)
+        fo.flush()
+        os.fsync(fo.fileno())       # on disk before anything records the copy as a backup
     shutil.copystat(src, dst)
     return h.hexdigest()
+
+
+def fsync_tree(folder: str | Path) -> None:
+    """Make the folders of a freshly copied tree durable (where a directory can be synced), so
+    the files in them are found after a power loss; the files themselves were synced as written."""
+    for dirpath, _dirs, _files in os.walk(folder):
+        fsync_dir(dirpath)
+    fsync_dir(Path(folder).parent)
 
 
 def same_path(a: str | os.PathLike, b: str | os.PathLike) -> bool:

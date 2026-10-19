@@ -7,7 +7,7 @@ import shutil
 
 import pytest
 
-from nms_save_vault.core import catalog, operations, savedir
+from nms_save_vault.core import catalog, operations, safety, savedir
 from nms_save_vault.core import store as vstore
 from nms_save_vault.core.catalog import Vault
 from nms_save_vault.core.organizer.model import EntryRef, LiveTarget, StoreRef
@@ -137,7 +137,7 @@ def test_open_entry_folder(mixed):
     with vstore.open_entry_folder(vault, store, stored, slots=[2]) as folder:
         assert savedir.scan(folder).slots[2].occupied
         assert not savedir.scan(folder).slots[1].occupied
-        assert folder.parent == store.root / "tmp"
+        assert safety.plain_path(folder.parent) == store.root / "tmp"
     assert not folder.exists()
     with pytest.raises(vstore.StoreUnavailable):
         with vstore.open_entry_folder(vault, None, stored):

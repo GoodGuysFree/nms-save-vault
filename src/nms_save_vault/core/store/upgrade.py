@@ -110,7 +110,8 @@ def tree(vault_root: Path) -> dict[str, tuple[int, int]]:
         for name in filenames:
             p = here / name
             rel = p.relative_to(root).as_posix()
-            if rel.startswith("organizer/") and name.endswith(".lock"):
+            if (rel.startswith("organizer/") and name.endswith(".lock")) \
+                    or rel == catalog.CATALOG_LOCK:
                 continue
             st = p.stat()
             out[rel] = (st.st_size, st.st_mtime_ns)

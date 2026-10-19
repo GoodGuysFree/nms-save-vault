@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
-from .. import catalog, discover, savedir, slotmap
+from .. import catalog, discover, safety, savedir, slotmap
 from ..catalog import CatalogEntry, MemberSummary, SlotSummary
 from ..formats import MAX_SAVE_SLOTS
 from ..organizer.model import EntryRef, Platform, StoreRef
@@ -303,7 +303,7 @@ def store_status(vault_root: Path, store: "VersionStore | None", *,
 
 
 def read_migration(vault_root: Path) -> dict:
-    path = store_root(vault_root) / STATE / MIGRATION_JSON
+    path = safety.long_path(store_root(vault_root)) / STATE / MIGRATION_JSON
     try:
         d = json.loads(path.read_bytes().decode("utf-8"))
     except FileNotFoundError:

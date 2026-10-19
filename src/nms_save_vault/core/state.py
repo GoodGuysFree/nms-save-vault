@@ -14,11 +14,15 @@ merges newly found sources without clobbering anything the user has edited.
 from __future__ import annotations
 
 import json
+import logging
 import os
+import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from . import platform
+
+log = logging.getLogger(__name__)
 
 STATE_VERSION = 2  # v2: Xbox sources are writable (same-platform). See _migrate().
 
@@ -172,20 +176,57 @@ def default_state_path() -> Path:
     return install_dir() / "state.json"
 
 
+_notices: list[str] = []
+
+
+def take_notices() -> list[str]:
+    """Plain messages about what load() had to do (a damaged state.json put aside); each is
+    returned once, for the front end to show."""
+    out, _notices[:] = list(_notices), []
+    return out
+
+
 def load(path: str | Path | None = None) -> AppState | None:
-    """Load state, or ``None`` if the file does not exist yet (first run)."""
+    """Load state, or ``None`` if the file does not exist yet (first run) or could not be read:
+    a damaged state.json is moved aside (``state.json.corrupt-<time>``, never deleted), said in
+    :func:`take_notices`, and the app starts as on a first run."""
     p = Path(path) if path else default_state_path()
     if not p.is_file():
         return None
-    # utf-8-sig: a state.json saved by an editor that adds a BOM still loads.
-    return AppState.from_dict(json.loads(p.read_text("utf-8-sig")))
+    try:
+        # utf-8-sig: a state.json saved by an editor that adds a BOM still loads.
+        text = p.read_text("utf-8-sig")
+    except OSError as exc:
+        from .catalog import OperationError
+
+        raise OperationError(f"The settings file ({p.name}) cannot be read "
+                             f"({exc.strerror or type(exc).__name__}); it was not changed.") from exc
+    try:
+        return AppState.from_dict(json.loads(text))
+    except (ValueError, KeyError, TypeError, AttributeError) as exc:
+        aside = p.with_name(f"{p.name}.corrupt-{time.strftime('%Y%m%d-%H%M%S')}")
+        n = 2
+        while aside.exists():
+            aside = p.with_name(f"{p.name}.corrupt-{time.strftime('%Y%m%d-%H%M%S')}-{n}")
+            n += 1
+        log.warning("state.json could not be read (%s: %s); kept as %s", type(exc).__name__, exc,
+                    aside.name)
+        try:
+            os.replace(p, aside)
+        except OSError as move_error:
+            log.warning("could not put the damaged state.json aside: %s", move_error)
+            return None
+        _notices.append(f"Your settings file (state.json) could not be read. It was kept as "
+                        f"{aside.name} next to it, and the app started with its defaults and "
+                        "the save folders it found.")
+        return None
 
 
 def save(state: AppState, path: str | Path | None = None) -> Path:
-    """Write state atomically (temp + replace), creating the folder if needed."""
+    """Write state atomically: temp file, fsync, replace, creating the folder if needed."""
+    from . import safety
+
     p = Path(path) if path else default_state_path()
-    p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = p.with_name(p.name + ".tmp")
-    tmp.write_text(json.dumps(state.to_dict(), indent=2), "utf-8")
-    os.replace(tmp, p)
+    safety.atomic_write_bytes(p, json.dumps(state.to_dict(), indent=2).encode("utf-8"),
+                              temp_prefix=p.name + ".tmp_")
     return p

@@ -14,6 +14,7 @@ import dataclasses
 import hashlib
 import json
 import logging
+import os
 import shutil
 import threading
 from collections.abc import Callable
@@ -385,6 +386,7 @@ def _export(root: Path, store: VersionStore, entry: StoreEntry, folder_id: str,
         _rename_retrying(staging, final)
     slots = entry.scope.get("slots") if isinstance(entry.scope.get("slots"), list) else None
     made = Vault(root).make_entry_from_dir(folder_id, kind, entry.label, final, managed=True,
+        safety.fsync_tree(staging)
                                            source=entry.source.get("account_key")
                                            or entry.source.get("name"), slots=slots)
     return dataclasses.replace(made, created=entry.created_local)
@@ -401,7 +403,7 @@ def _restore(root: Path, copy_vault: Vault, entry: CatalogEntry) -> bool:
     if staging.exists():
         shutil.rmtree(capture.long_path(staging))
     shutil.copytree(capture.long_path(src), capture.long_path(staging),
-                    copy_function=shutil.copy2)
+                    copy_function=_copy_synced)
     if not _same_tree(src, staging):
         raise RollbackError("copy-mismatch", f"The folder of {entry.id} could not be put back "
                                              "intact. Check the drive.")
@@ -409,6 +411,7 @@ def _restore(root: Path, copy_vault: Vault, entry: CatalogEntry) -> bool:
         _move_aside(root, dest, entry.id)
     dest.parent.mkdir(parents=True, exist_ok=True)
     _rename_retrying(staging, dest)
+    safety.fsync_tree(staging)      # on disk before the rename that makes it the vault's folder
     return True
 
 
@@ -416,6 +419,14 @@ def _restore(root: Path, copy_vault: Vault, entry: CatalogEntry) -> bool:
 
 
 def _managed(entry: CatalogEntry) -> bool:
+def _copy_synced(src, dst):
+    """``shutil.copy2`` that also flushes the new file to disk."""
+    out = shutil.copy2(src, dst)
+    with open(out, "rb+") as f:
+        os.fsync(f.fileno())
+    return out
+
+
     return entry.managed and entry.kind != catalog.KIND_INPLACE
 
 

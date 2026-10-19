@@ -215,7 +215,7 @@ def _repair(store: "VersionStore", sizes: dict[str, int], bad: dict[str, tuple[s
     digests fixed and, for each whose re-store failed, why (the others are left as they are)."""
     wanted_sizes = set(sizes.values())
     by_size: dict[int, list[Path]] = defaultdict(list)
-    own = store.root.resolve()
+    own = capture.plain_path(store.root).resolve()
     for root in candidate_folders(store, fallbacks):
         for dirpath, dirs, names in os.walk(capture.long_path(root)):
             if capture.plain_path(dirpath).resolve() == own:

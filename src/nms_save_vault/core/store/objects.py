@@ -67,9 +67,9 @@ class PutResult:
 class ObjectStore:
     def __init__(self, objects: Path, tmp: Path, quarantine: Path, *,
                  faults: Callable[[str], None] | None = None) -> None:
-        self.objects = objects
-        self.tmp = tmp
-        self.quarantine_dir = quarantine
+        self.objects = safety.long_path(objects)      # a vault path over 260 characters works
+        self.tmp = safety.long_path(tmp)
+        self.quarantine_dir = safety.long_path(quarantine)
         self._faults = faults
 
     def path_for(self, digest: str) -> Path:

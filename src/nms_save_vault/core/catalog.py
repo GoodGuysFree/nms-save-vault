@@ -181,6 +181,17 @@ class OplogRead(list):
         )
 
 
+CATALOG_LOCK = ".catalog.lock"      # held while the catalog is read, changed and written (not copied by the upgrade)
+
+
+class OperationError(Exception):
+    """A plain-text reason an operation or the vault cannot go on; shown to the owner as is."""
+
+
+HOW_TO_CHANGE_VAULT = ("To use another folder, start the app with --vault <folder>, or change the "
+                       "\"vault\" entry in state.json.")
+
+
 class Vault:
     """Managed storage root + catalog of all known backups."""
 
@@ -196,6 +207,7 @@ class Vault:
         self.oplog_path = self.root / "oplog.jsonl"
         self._entries: list[CatalogEntry] = []
         self._loaded = False
+        self._seen: tuple[int, int] | None = None   # the catalog file as last read or written
 
     def ensure(self) -> None:
         if self.read_only:
@@ -203,8 +215,14 @@ class Vault:
         # A vault the app CREATES (the folder missing or completely empty) starts in store mode
         # (D3 4.1); one that has anything in it is never converted by being opened or written.
         created = not self.root.exists() or (self.root.is_dir() and not any(self.root.iterdir()))
-        for d in (self.root, self.backups_dir, self.snapshots_dir, self.extracts_dir):
-            d.mkdir(parents=True, exist_ok=True)
+        try:
+            for d in (self.root, self.backups_dir, self.snapshots_dir, self.extracts_dir):
+                d.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise OperationError(
+                f"The vault folder ({self.root.name}) cannot be reached or created "
+                f"({exc.strerror or type(exc).__name__}). Is its drive connected, and is the "
+                f"name a folder? {HOW_TO_CHANGE_VAULT}") from exc
         if created:
             from .store.versionstore import start_new_vault
 
@@ -213,13 +231,36 @@ class Vault:
     def load(self) -> "Vault":
         if not self.read_only:
             self._remove_stale_temp_files()
-        if self.catalog_path.is_file():
-            data = json.loads(self.catalog_path.read_text("utf-8"))
-            self._entries = [_entry_from_dict(e) for e in data.get("entries", [])]
+        self._reload()
+        return self
+
+    def mark_unreadable(self) -> None:
+        """catalog.json cannot be read: the vault has no entries here, and the file is left
+        exactly as it is (use with ``read_only``)."""
+        self._entries, self._loaded, self._seen = [], True, self._stamp()
+
+    def _stamp(self) -> tuple[int, int] | None:
+        try:
+            st = self.catalog_path.stat()
+        except OSError:
+            return None
+        return st.st_mtime_ns, st.st_size
+
+    def _reload(self) -> None:
+        stamp = self._stamp()
+        if stamp is not None:
+            try:
+                data = json.loads(self.catalog_path.read_text("utf-8"))
+                self._entries = [_entry_from_dict(e) for e in data.get("entries", [])]
+            except (ValueError, KeyError, TypeError, AttributeError) as exc:
+                raise OperationError(
+                    f"The catalog of the vault ({self.root.name}, file catalog.json) cannot be "
+                    f"read ({type(exc).__name__}). The file was not changed; restore it from a "
+                    f"copy or fix it, then try again. {HOW_TO_CHANGE_VAULT}") from exc
         else:
             self._entries = []
+        self._seen = stamp
         self._loaded = True
-        return self
 
     def save(self) -> None:
         self.ensure()
@@ -228,6 +269,7 @@ class Vault:
         safety.atomic_write_bytes(
             self.catalog_path, json.dumps(data, indent=2).encode("utf-8"), temp_prefix=CATALOG_TEMP_PREFIX
         )
+        self._seen = self._stamp()
 
     def _remove_stale_temp_files(self) -> None:
         """Delete temp files an interrupted catalog save left behind (only those, and only
@@ -245,33 +287,37 @@ class Vault:
 
     @property
     def entries(self) -> list[CatalogEntry]:
-        if not self._loaded:
-            self.load()
+        """The entries; re-read when another writer (a CLI run, another window, an undo of the
+        upgrade) changed catalog.json since this object last looked."""
+        if not self._loaded or self._stamp() != self._seen:
+            self._reload()
         return list(self._entries)
 
     def get(self, entry_id: str) -> CatalogEntry | None:
         return next((e for e in self.entries if e.id == entry_id), None)
 
     def upsert(self, entry: CatalogEntry) -> None:
-        if not self._loaded:
-            self.load()
-        self._commit([e for e in self._entries if e.id != entry.id] + [entry])
+        self._change(lambda cur: [e for e in cur if e.id != entry.id] + [entry])
 
     def remove(self, entry_id: str) -> None:
-        if not self._loaded:
-            self.load()
-        self._commit([e for e in self._entries if e.id != entry_id])
+        self._change(lambda cur: [e for e in cur if e.id != entry_id])
 
-    def _commit(self, entries: list[CatalogEntry]) -> None:
-        """Make ``entries`` the catalog and save it. If the save fails, memory goes back to
-        what the file still says, so the two never disagree."""
-        before = self._entries
-        self._entries = entries
-        try:
-            self.save()
-        except BaseException:
-            self._entries = before
-            raise
+    def _change(self, apply) -> None:
+        """One change to the catalog as it is on disk now: under the catalog lock the file is
+        read again, only this change is applied and the result written, so an entry another
+        writer added meanwhile is never dropped by a stale in-memory list. If the save fails,
+        memory goes back to what the file still says."""
+        self.ensure()
+        with safety.exclusive_lock(self.root / CATALOG_LOCK):
+            self._reload()
+            before = self._entries
+            self._entries = apply(before)
+            try:
+                self.save()
+            except BaseException:
+                self._entries = before
+                raise
+            self._seen = self._stamp()
 
     def new_id(
         self, kind: str, when: datetime | None = None, tag: str | None = None, folder: Path | None = None
