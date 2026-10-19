@@ -141,9 +141,13 @@ def test_a_version_placed_into_steam_is_listed_once_with_each_place_once():
     from nms_save_vault.core.organizer import Organizer
     from nms_save_vault.core.organizer.model import LiveRef
 
+    from nms_save_vault.core import aliases
+
+    before_aliases = aliases.active()
     root = Path(tempfile.mkdtemp(prefix="nd"))
     try:
         demo = demo_tool.build(root / "w")
+        assert aliases.active() is before_aliases        # a library build leaves the process alone
         sources = discover.discover_live_sources(
             demo.target / "Roaming" / "HelloGames" / "NMS", [demo.xbox])
         org = Organizer(demo.vault, sources, game_running=lambda: False)
@@ -165,3 +169,66 @@ def test_a_version_placed_into_steam_is_listed_once_with_each_place_once():
         assert len(labels) == len(set(labels)) and "Live: Steam slot 9" in labels
     finally:
         shutil.rmtree(root, ignore_errors=True)
+
+
+def _world(root):
+    from tools import make_demo_vault as demo_tool
+    from nms_save_vault.core.liveops.context import context_for
+    from nms_save_vault.core.organizer import Organizer
+
+    demo = demo_tool.build(root / "w")
+    sources = discover.discover_live_sources(demo.target / "Roaming" / "HelloGames" / "NMS", [demo.xbox])
+    org = Organizer(demo.vault, sources, game_running=lambda: False)
+    model = org.refresh(record=False)
+    host = platform.Host(platform.WINDOWS, root / "home", {"LOCALAPPDATA": str(demo.target / "Local")})
+    ctx = context_for(org, host=host, machine_id="m-1", app_version="t", game_probe=lambda: False)
+    return demo, sources, model, ctx
+
+
+def test_a_promoted_member_keeps_its_version_live():
+    from nms_save_vault.core.liveops.execute import execute
+    from nms_save_vault.core.liveops.planner import plan_promote
+    from nms_save_vault.core.organizer import Organizer
+    from nms_save_vault.core.organizer.model import LiveRef
+
+    root = Path(tempfile.mkdtemp(prefix="nd"))
+    try:
+        demo, sources, model, ctx = _world(root)
+        steam = next(s for s in sources if s.platform == "steam")
+        ref = LiveRef("steam", Path(steam.path).name)
+        line = next(x for x in model.lines() if x.name == "Pirate Life")
+        assert any(r.live_in for r in model.versions(line.pid))
+        plan = plan_promote(ctx, ref.target(6), "B")
+        assert not plan.blocked, plan.blocked
+        assert execute(ctx, plan, plan.confirmations).status == "done"
+        after = Organizer(demo.vault, sources, game_running=lambda: False).refresh(record=False)
+        assert any(r.live_in for r in after.versions(line.pid))
+        assert "live" in {f for r in after.versions(line.pid) for f in r.flags}
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def test_two_same_day_entries_are_two_places():
+    from nms_save_vault.core.organizer.model import EntryRef, RawLocation
+    from nms_save_vault.core.organizer.readmodel import LocationSummary, _distinct
+
+    def loc(entry):
+        raw = RawLocation(EntryRef(entry), 1, "A", "snapshot", True, 1)
+        return LocationSummary("vault", "Vault: safety snapshot 2026-10-18", raw)
+
+    assert len(_distinct([loc("e1"), loc("e2"), loc("e1")])) == 2
+
+
+def test_the_history_table_fills_parts_and_bases_when_the_index_finishes(host, gui_app, tmp_path):
+    w, (a, b, c, d, e, f), _ = _long(tmp_path)
+    service = _Service(ready=False)
+    win = H.HistoryWindow(host, model=w.refresh(), themed=gui_app.themed, pid=PID, head=f,
+                          facts=lambda: service)
+    try:
+        iid = win._iid_of_head[f]
+        assert win.tree.set(iid, "parts") == "" and win.tree.set(iid, "bases") == ""
+        service.become_ready([f])
+        win.on_index_events([_event("indexed", f)])
+        assert win.tree.set(iid, "parts") == "900" and win.tree.set(iid, "bases") == "3"
+    finally:
+        win.destroy()

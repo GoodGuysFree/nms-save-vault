@@ -652,6 +652,7 @@ class HistoryWindow(tk.Toplevel):
             if row.head is not None:
                 self._iid_of_head.setdefault(row.head, iid)
         self._fill_tips(tips)
+        self._refresh_facts_cells()
         if select is None and self._iid_of_head:
             select = next(r.head for r in rows if r.head)
         if select in self._iid_of_head:
@@ -768,10 +769,25 @@ class HistoryWindow(tk.Toplevel):
             rtext(p, "end", part, *tags)
         p.configure(state="disabled")
 
+    def _refresh_facts_cells(self) -> None:
+        """Parts and Bases of every shown version from the index's current views."""
+        service = self.facts() if self.facts is not None else None
+        if service is None:
+            return
+        by_head = {r.head: r for r in self.model.versions(self.pid)}
+        for iid, hrow in self.rows.items():
+            row = by_head.get(hrow.head) if hrow.kind == "ver" else None
+            if row is not None and row.facts is None:
+                parts, bases = _facts(fresh_row(row, service))
+                self.tree.set(iid, "parts", parts)
+                self.tree.set(iid, "bases", bases)
+
     def on_index_events(self, events: list) -> None:
         """Index events (already on the Tk thread): redraw the panel when one of them is about
         the shown version or its parent. ``_show_panel`` reads the current selection, so a
         switch of version while waiting can never leave a stale panel."""
+        if any(e.kind in ("indexed", "failed", "cleared", "warmed") for e in events):
+            self._refresh_facts_cells()
         row = next((r for r in self.model.versions(self.pid) if r.head == self.head), None)
         if row is None:
             return

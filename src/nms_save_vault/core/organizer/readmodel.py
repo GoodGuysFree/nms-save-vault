@@ -579,7 +579,7 @@ class _Builder:
         parent_vid = display.get(p.head)
         edge = self.edge_of.get(p.head)
         direct = bool(edge and parent_vid and edge.parent == parent_vid)   # else an ancestor, not that edge
-        live_in = tuple(t for t, lp in live.items() if lp.head == p.head)
+        live_in = tuple(t for t, lp in live.items() if lp.head == p.head or lp.pair == p.pair)
         note = self.notes.versions.get(p.head)
         flags = set()
         if live_in:
@@ -1190,10 +1190,12 @@ def _one_per_head(pairs: dict[PairKey, _Pair]) -> dict[PairKey, _Pair]:
 
 
 def _distinct(locations) -> tuple[LocationSummary, ...]:
-    """The same place once: both members of one slot hold the same save."""
+    """The same place once: both members of one slot hold the same save. Two entries that only
+    share a date-only label stay two."""
     seen: dict[tuple, LocationSummary] = {}
     for loc in locations:
-        seen.setdefault((loc.kind, loc.label), loc)
+        raw = loc.location
+        seen.setdefault((loc.kind, loc.label, raw.where, raw.slot), loc)
     return tuple(seen.values())
 
 

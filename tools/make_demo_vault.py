@@ -488,8 +488,14 @@ def build(target: Path, *, log=lambda msg: None, old_vault: bool = False,
     env = environment(target)
     for key in ("home", "app"):
         (target / key).mkdir()
-    with redirected(env):
-        return _build(target, env, log, old_vault, played)
+    from nms_save_vault.core import aliases
+
+    previous = aliases._active          # _name_accounts sets the process-wide map; a library caller keeps its own
+    try:
+        with redirected(env):
+            return _build(target, env, log, old_vault, played)
+    finally:
+        aliases._active = previous
 
 
 ACCOUNT_NAMES = {"steam": "Main PC", "xbox": "Living room"}
