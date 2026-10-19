@@ -733,14 +733,15 @@ def test_the_undo_question_focuses_no(app, monkeypatch):
         assert focused == [expected]
 
 
-def test_a_dialog_opened_from_a_modal_one_hands_the_grab_back(app):
+def test_a_dialog_opened_from_a_modal_one_hands_the_grab_back(app, monkeypatch):
+    from nms_save_vault.ui.organizer import ops
     from nms_save_vault.ui.organizer.ops import _Dialog
 
     outer = tk.Toplevel(app)
     regrabbed = []
     outer.grab_set = lambda: regrabbed.append(1)
     holder = tk.Toplevel(app)
-    holder.grab_current = lambda: outer
+    monkeypatch.setattr(ops, "grab_owner", lambda widget: outer if widget is holder else None)
     try:
         dialog = _Dialog(holder, app.themed, "Inner")
         dialog.destroy()

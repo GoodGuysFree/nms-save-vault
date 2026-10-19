@@ -29,7 +29,7 @@ from .core import playtime, savedir
 from .core import state as appstate
 from .core.catalog import OperationError, Vault
 from .ui import dpi, logfile
-from .ui.dialogs import bind_escape, bind_return, focus_first, tab_last
+from .ui.dialogs import bind_escape, bind_return, focus_first, grab_held, tab_last
 from .core.organizer import Organizer
 from .ui.fmt import local_time as _fmt_ts
 from .ui.fmt import play_time as _fmt_play
@@ -928,7 +928,7 @@ class App(tk.Tk):
                         return "break"
                 except (AttributeError, KeyError, tk.TclError):
                     return "break"
-            if self.grab_current() is None:
+            if not grab_held(self):
                 action()
             return "break"
         return run
@@ -1030,7 +1030,7 @@ class App(tk.Tk):
     def _focus_main_list(self) -> None:
         """The list of the tab in front has the keyboard focus (arrows work at once)."""
         try:
-            if self.grab_current() is not None:
+            if grab_held(self):
                 return
             tree = (self.organizer_view.table.tree if self.current_view() == ORGANIZER
                     else self.live_tree)
@@ -1279,7 +1279,7 @@ class App(tk.Tk):
     def _close_poll(self) -> None:
         if not self._closing:
             return
-        if self._running_work() is None and self.grab_current() is None:
+        if self._running_work() is None and not grab_held(self):
             self._closing = False
             self.destroy()
             return

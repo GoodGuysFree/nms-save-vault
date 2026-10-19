@@ -18,6 +18,31 @@ SCREEN_SHARE = 0.9
 _OWN_RETURN = (tk.Text,)
 
 
+def grab_owner(widget: tk.Misc) -> tk.Misc | None:
+    """The window holding the grab, or None. Tk's own dialogs (the message box on Linux and
+    macOS is ``.__tk__messagebox``) hold a grab tkinter has no widget for, and
+    ``grab_current()`` raises KeyError for them; such a grab answers ``widget`` itself, so a
+    caller still sees "something holds the grab"."""
+    try:
+        name = widget.tk.call("grab", "current")
+    except tk.TclError:
+        return None
+    if not name:
+        return None
+    try:
+        return widget.nametowidget(str(name))
+    except (KeyError, tk.TclError):
+        return widget
+
+
+def grab_held(widget: tk.Misc) -> bool:
+    """Whether any window of the app holds the grab now (a dialog or a Tk message box)."""
+    try:
+        return bool(widget.tk.call("grab", "current"))
+    except tk.TclError:
+        return False
+
+
 def bind_escape(win: tk.Misc, cancel: Callable[[], None],
                 busy: Callable[[], bool] | None = None) -> Callable[[object], str | None]:
     """Escape runs ``cancel`` unless ``busy()`` (a write is under way). Returns the handler."""

@@ -25,6 +25,7 @@ from ...core.liveops import (
     pending_recovery, plan_keep, plan_promote, plan_swap, plan_undo, update_verification)
 from ...core.organizer import Organizer
 from ...core.organizer.readmodel import BoardSlot, LiveSource, ReadModel
+from ..dialogs import grab_owner
 from ..dpi import px, pxs
 from ..menuhint import bind_menu_hints
 from ..redact import set_label
@@ -761,7 +762,7 @@ class OrganizerView(ttk.Frame):
         organizer = self.organizer
         top = self.winfo_toplevel()
         self.recovery_dialog = RecoveryDialog(
-            top.grab_current() or top, worker=self.worker, themed=self.themed,
+            grab_owner(top) or top, worker=self.worker, themed=self.themed,
             make_context=lambda: self.make_context(organizer), items=items,
             on_changed=lambda: self.rescan())
         return self.recovery_dialog

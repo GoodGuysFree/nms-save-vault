@@ -894,11 +894,13 @@ def test_about_names_the_version(app, monkeypatch):
 
 def test_window_keys_do_nothing_while_a_dialog_holds_the_grab(app, monkeypatch):
     """F5 under an open dialog refreshed the panes behind it; zoom rebuilt them."""
+    from nms_save_vault import gui
+
     calls = []
     run = app._shortcut(lambda: calls.append("ran"))
-    monkeypatch.setattr(app, "grab_current", lambda: app.live_tree)     # a dialog's grab
+    monkeypatch.setattr(gui, "grab_held", lambda widget: True)          # a dialog's grab
     assert run() == "break" and calls == []
-    monkeypatch.setattr(app, "grab_current", lambda: None)
+    monkeypatch.setattr(gui, "grab_held", lambda widget: False)
     assert run() == "break" and calls == ["ran"]
 
 

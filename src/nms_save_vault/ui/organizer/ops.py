@@ -19,7 +19,7 @@ from ...core.liveops import (
     EmptySlotGuide, OpContext, OpOutcome, OpSummary, PlacePlan, RecoveryItem, Warning, execute,
     op_history, resolve_recovery)
 from ...core.organizer.model import LiveTarget
-from ..dialogs import bind_escape, cap_minsize, keep_on_screen
+from ..dialogs import bind_escape, cap_minsize, grab_owner, keep_on_screen
 from ..dpi import px, pxs
 from ..fmt import play_time
 from ..redact import rtitle, set_label, shown
@@ -96,7 +96,7 @@ class _Dialog(tk.Toplevel):
         self._outer_grab = None
         if modal:
             try:
-                self._outer_grab = master.grab_current()    # a dialog this one is opened from
+                self._outer_grab = grab_owner(master)    # a dialog this one is opened from
                 self.grab_set()
             except tk.TclError:
                 pass

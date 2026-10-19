@@ -384,3 +384,19 @@ def test_the_rollback_view_offers_to_choose_the_copy_when_it_cannot_be_found(gui
     finally:
         win.destroy()
         top.destroy()
+
+
+def test_a_grab_held_by_a_tk_dialog_without_a_tkinter_widget_is_seen_without_error(host):  # noqa: F811
+    """Linux/macOS: Tk's own message box (.__tk__messagebox) holds the grab but has no tkinter
+    widget, and grab_current() raised KeyError on every key press while it was open."""
+    from nms_save_vault.ui.dialogs import grab_held, grab_owner
+
+    host.tk.eval("toplevel .__tk__fake_dialog")
+    try:
+        host.tk.call("grab", "set", ".__tk__fake_dialog")
+        assert grab_held(host) is True
+        assert grab_owner(host) is host       # "something holds it", no KeyError
+    finally:
+        host.tk.call("grab", "release", ".__tk__fake_dialog")
+        host.tk.eval("destroy .__tk__fake_dialog")
+    assert grab_held(host) is False and grab_owner(host) is None
