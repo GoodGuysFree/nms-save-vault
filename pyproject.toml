@@ -1,7 +1,7 @@
 [project]
 name = "nms-save-vault"
-version = "0.2.8"
-description = "Safe backup, catalog, and slot management for No Man's Sky (PC/Steam) save files."
+version = "0.3.0"
+description = "Safe backup, catalog, and slot management for No Man's Sky (PC: Steam and Xbox / Game Pass) save files."
 readme = "README.md"
 license = { text = "GPL-3.0-or-later" }
 requires-python = ">=3.10"
@@ -10,10 +10,11 @@ requires-python = ">=3.10"
 dependencies = []
 
 [project.optional-dependencies]
-dev = ["pytest>=8"]
+dev = ["pytest>=8", "pytest-xdist>=3.5"]
 
 [project.scripts]
-nmsvault = "nms_save_vault.cli:main"
+nmsvault-cli = "nms_save_vault.cli:main"
+nmsvault = "nms_save_vault.cli:main"   # older name, kept for existing habits
 nmsvault-gui = "nms_save_vault.gui:main"
 
 [build-system]
@@ -25,4 +26,5 @@ packages = ["src/nms_save_vault"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-q"
+addopts = "-q -m 'not slow'"
+markers = ["slow: long checks (the real-data smoke test, the time budget); run with -m slow"]

@@ -228,12 +228,12 @@ def test_restore_label_for_an_extract_names_the_slot(app):
     assert gui._restore_menu_label(extract) == "Put slot 1 back into live slot 1"
 
 
-def test_restore_label_for_a_backup_warns_that_it_replaces(app):
+def test_restore_label_for_a_backup_says_slots_it_lacks_are_left_alone(app):
     from nms_save_vault import gui
 
     full = next(e for e in app.vault.entries if e.kind == "full")
     label = gui._restore_menu_label(full)
-    assert "Restore all" in label and "replaces other slots" in label
+    assert "Restore all" in label and "slots it lacks are left alone" in label
 
 
 def test_only_single_slot_extracts_are_treated_as_slot_restores(app):

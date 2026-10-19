@@ -54,6 +54,8 @@ if exist "%TARGET%" (
         exit /b 1
     )
 )
+rem  The command-line launcher was called nmsvault.exe before it became nmsvault-cli.exe.
+if exist "%INSTALL_DIR%\nmsvault.exe" del /f /q "%INSTALL_DIR%\nmsvault.exe" >nul 2>&1
 if exist "%INSTALL_DIR%\_runtime" rmdir /s /q "%INSTALL_DIR%\_runtime"
 
 xcopy "%APPSRC%" "%INSTALL_DIR%" /e /i /y /q >nul

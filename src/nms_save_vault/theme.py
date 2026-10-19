@@ -23,9 +23,14 @@ field. Every interactive widget below therefore gets a ``map`` as well as a ``co
 """
 from __future__ import annotations
 
+import functools
+import logging
+import sys
 import tkinter as tk
 from tkinter import font as tkfont
 from tkinter import ttk
+
+from .ui.dpi import px, pxs
 
 SYSTEM = "system"
 LIGHT = "light"
@@ -59,14 +64,20 @@ _NAMED_FONTS = (
 )
 
 #: Fonts the app defines for itself, so widgets can name one instead of hardcoding a
-#: size that would not zoom. Values are (points relative to TkDefaultFont, weight).
+#: size that would not zoom. Values are (points relative to TkDefaultFont, weight, slant).
 BOLD_FONT = "NmsVaultBold"
 HEADING_FONT = "NmsVaultHeading"
 TIP_FONT = "NmsVaultTip"
+TITLE_FONT = "NmsVaultTitle"
+SMALL_FONT = "NmsVaultSmall"
+ITALIC_FONT = "NmsVaultItalic"
 _APP_FONTS = {
-    BOLD_FONT: (0, "bold"),
-    HEADING_FONT: (1, "bold"),
-    TIP_FONT: (0, "normal"),
+    BOLD_FONT: (0, "bold", "roman"),
+    HEADING_FONT: (1, "bold", "roman"),
+    TIP_FONT: (0, "normal", "roman"),
+    TITLE_FONT: (4, "bold", "roman"),
+    SMALL_FONT: (-1, "normal", "roman"),
+    ITALIC_FONT: (0, "normal", "italic"),
 }
 
 #: Unscaled size of every font above, captured once before anything is resized.
@@ -108,9 +119,9 @@ def init_fonts(root: tk.Misc) -> None:
     except tk.TclError:
         return
     base = _base_sizes.get("TkDefaultFont", 9)
-    for name, (delta, weight) in _APP_FONTS.items():
+    for name, (delta, weight, slant) in _APP_FONTS.items():
         size = base + (delta if base > 0 else -delta)
-        spec = ("-family", family, "-size", size, "-weight", weight)
+        spec = ("-family", family, "-size", size, "-weight", weight, "-slant", slant)
         # Created through Tcl rather than tkfont.Font: a Font object owns the font it
         # creates and deletes it again when it is garbage-collected, and nothing here
         # would hold a reference to keep it alive.
@@ -168,6 +179,35 @@ PALETTES = {
         # Update banner
         "banner_bg": "#fff4c2",
         "banner_fg": "#3d3000",
+        # The organizer (D6 3.12): platforms, states, version rows, cards and the move
+        # dialog's in (green) / out (amber) pair.
+        "steam": "#1f5fa8",
+        "xbox": "#147a31",
+        "warn": "#a35200",
+        "warn_bg": "#fff1d6",
+        "ok": "#1e7b34",
+        "muted": "#6b6b6b",
+        "dim": "#858585",            # the other lines while one is expanded
+        "danger": "#b00020",
+        "pending": "#7a5b00",
+        "event": "#5a4a9a",
+        "group_bg": "#e8f0fa",       # an expanded line's version rows
+        "zebra": "#f0f2f5",
+        "hl_bg": "#dcebfb",
+        "card": "#ffffff",
+        "chip_on": "#cfe1f6",
+        "slot_empty": "#f4f4f4",
+        "callout_bg": "#fff6d6",
+        "diff_add": "#d7f5dd",
+        "diff_del": "#fbdcdc",
+        "in_bg": "#e3f4e6",
+        "in_fg": "#1e7b34",
+        "out_bg": "#fff0d9",
+        "out_fg": "#a35200",
+        "lane0": "#0a64c8",          # history lanes: main line, then branches
+        "lane1": "#7b3fb5",
+        "lane2": "#c25e00",
+        "lane3": "#008b8b",
     },
     DARK: {
         "bg": "#242424",
@@ -198,8 +238,42 @@ PALETTES = {
         "tip_border": "#6a6a50",
         "banner_bg": "#40381a",
         "banner_fg": "#ffe9a3",
+        "steam": "#6aa8f0",
+        "xbox": "#5fd58a",
+        "warn": "#f0a35a",
+        "warn_bg": "#3d2e14",
+        "ok": "#5fd58a",
+        "muted": "#9a9a9a",
+        "dim": "#767676",
+        "danger": "#ff7b7b",
+        "pending": "#e0b34a",
+        "event": "#b8a6f0",
+        "group_bg": "#1f2a36",
+        "zebra": "#232323",
+        "hl_bg": "#24364a",
+        "card": "#1b1b1b",
+        "chip_on": "#2f4f73",
+        "slot_empty": "#222222",
+        "callout_bg": "#3a3420",
+        "diff_add": "#1e3b26",
+        "diff_del": "#45201f",
+        "in_bg": "#1e3b26",
+        "in_fg": "#5fd58a",
+        "out_bg": "#3d2e14",
+        "out_fg": "#f0a35a",
+        "lane0": "#5a9fd4",
+        "lane1": "#c39bf0",
+        "lane2": "#f0a35a",
+        "lane3": "#4fd1c5",
     },
 }
+
+#: The history lanes in drawing order (D6 3.1.3).
+LANE_KEYS = ("lane0", "lane1", "lane2", "lane3")
+
+
+def lanes(p: dict) -> list[str]:
+    return [p[key] for key in LANE_KEYS]
 
 
 def system_prefers_dark() -> bool | None:
@@ -257,9 +331,9 @@ def ttk_theme_for(root: tk.Misc, name: str, native_ttk_theme: str) -> str:
 def _row_height(root: tk.Misc) -> int:
     """Tree row height with a little air, derived from the font so it survives any DPI."""
     try:
-        return tkfont.nametofont("TkDefaultFont").metrics("linespace") + 8
+        return tkfont.nametofont("TkDefaultFont").metrics("linespace") + px(8)
     except tk.TclError:
-        return 24
+        return px(24)
 
 
 def apply(root: tk.Misc, choice: str, native_ttk_theme: str) -> str:
@@ -293,13 +367,15 @@ def apply(root: tk.Misc, choice: str, native_ttk_theme: str) -> str:
     style.configure("TLabel", background=p["bg"], foreground=p["fg"])
     style.map("TLabel", foreground=[("disabled", p["disabled_fg"])])
     style.configure("TPanedwindow", background=p["bg"])
-    style.configure("Sash", sashthickness=6, gripcount=12, background=p["bg"])
+    style.configure("Sash", sashthickness=px(6), gripcount=12, background=p["bg"])
     style.configure("Status.TLabel", background=p["status_bg"], foreground=p["fg"])
     style.configure("Banner.TLabel", background=p["banner_bg"], foreground=p["banner_fg"])
     style.configure("Banner.TFrame", background=p["banner_bg"])
 
     _style_button(style, "TButton", p, p["btn_bg"], p["fg"])
     _style_button(style, "Banner.TButton", p, p["banner_bg"], p["banner_fg"])
+    _style_containers(style, p)
+    _style_organizer(style, p)
 
     style.configure(
         "Treeview",
@@ -321,7 +397,7 @@ def apply(root: tk.Misc, choice: str, native_ttk_theme: str) -> str:
         foreground=p["heading_fg"],
         bordercolor=p["border"],
         relief="flat",
-        padding=(6, 4),
+        padding=pxs(6, 4),
     )
     # Hovering a sortable heading used to turn it selection-blue, which read as "this
     # column is chosen". A slight lift says "clickable" without claiming state.
@@ -341,7 +417,7 @@ def apply(root: tk.Misc, choice: str, native_ttk_theme: str) -> str:
         foreground=p["fg"],
         arrowcolor=p["fg"],
         bordercolor=p["border"],
-        padding=3,
+        padding=px(3),
     )
     style.map(
         "TCombobox",
@@ -365,7 +441,7 @@ def apply(root: tk.Misc, choice: str, native_ttk_theme: str) -> str:
         foreground=p["fg"],
         insertcolor=p["fg"],
         bordercolor=p["border"],
-        padding=3,
+        padding=px(3),
     )
     style.map(
         "TEntry",
@@ -388,12 +464,24 @@ def apply(root: tk.Misc, choice: str, native_ttk_theme: str) -> str:
         arrowcolor=[("disabled", p["disabled_fg"])],
     )
 
+    # clam draws the indicator from indicatorbackground / indicatorforeground (the mark) and
+    # two border colours, all white-on-grey by default: a white box in dark mode. The right
+    # margin is the gap between the box and its text.
     for widget in ("TCheckbutton", "TRadiobutton"):
-        style.configure(widget, background=p["bg"], foreground=p["fg"], focuscolor=p["accent"])
+        style.configure(
+            widget, background=p["bg"], foreground=p["fg"], focuscolor=p["accent"],
+            indicatorbackground=p["field"], indicatorforeground=p["fg"],
+            upperbordercolor=p["muted"], lowerbordercolor=p["muted"],
+            indicatormargin=pxs(1, 1, 6, 1), padding=px(2))
         style.map(
             widget,
             background=[("active", p["bg"])],
             foreground=[("disabled", p["disabled_fg"])],
+            indicatorbackground=[("disabled", p["disabled_bg"]), ("pressed", p["hover_bg"]),
+                                 ("!disabled", p["field"])],
+            indicatorforeground=[("disabled", p["disabled_fg"]), ("!disabled", p["fg"])],
+            upperbordercolor=[("disabled", p["border"]), ("focus", p["accent"])],
+            lowerbordercolor=[("disabled", p["border"]), ("focus", p["accent"])],
             indicatorcolor=[("selected", p["accent"]), ("!selected", p["field"])],
         )
 
@@ -411,18 +499,318 @@ def apply(root: tk.Misc, choice: str, native_ttk_theme: str) -> str:
     root.option_add("*TCombobox*Listbox.foreground", p["fg"])
     root.option_add("*TCombobox*Listbox.selectBackground", p["sel_bg"])
     root.option_add("*TCombobox*Listbox.selectForeground", p["sel_fg"])
-    # Context menus and the Help window's Text are classic widgets too.
-    root.option_add("*Menu.background", p["bg"])
+    # Classic widgets keep the system colours unless told otherwise. Widgets made from now
+    # on take these defaults; the ones that exist are re-tinted by retint().
+    root.option_add("*Menu.background", p["btn_bg"])
     root.option_add("*Menu.foreground", p["fg"])
     root.option_add("*Menu.activeBackground", p["sel_bg"])
     root.option_add("*Menu.activeForeground", p["sel_fg"])
     root.option_add("*Menu.disabledForeground", p["disabled_fg"])
+    for cls in ("Toplevel", "Frame", "Labelframe", "Panedwindow", "Label", "Message",
+                "Checkbutton", "Radiobutton"):
+        root.option_add(f"*{cls}.background", p["bg"])
+        root.option_add(f"*{cls}.highlightBackground", p["bg"])
+    for cls in ("Label", "Message", "Checkbutton", "Radiobutton"):
+        root.option_add(f"*{cls}.foreground", p["fg"])
+    for cls in ("Checkbutton", "Radiobutton"):
+        root.option_add(f"*{cls}.activeBackground", p["bg"])
+        root.option_add(f"*{cls}.activeForeground", p["fg"])
+    for cls in ("Text", "Listbox", "Entry", "Spinbox", "Canvas"):
+        root.option_add(f"*{cls}.background", p["field"])
+        root.option_add(f"*{cls}.highlightBackground", p["bg"])
+        root.option_add(f"*{cls}.highlightColor", p["accent"])
+    for cls in ("Text", "Listbox", "Entry", "Spinbox"):
+        root.option_add(f"*{cls}.foreground", p["fg"])
+        root.option_add(f"*{cls}.insertBackground", p["fg"])
+        root.option_add(f"*{cls}.selectBackground", p["sel_bg"])
+        root.option_add(f"*{cls}.selectForeground", p["sel_fg"])
 
     try:
         root.configure(background=p["bg"])
     except tk.TclError:
         pass
+    retint(root, p)
     return name
+
+
+def wants_menu_strip(dark: bool) -> bool:
+    """Windows draws its native menu bar light whatever the theme, so only there, and only in
+    the dark theme, the window shows an in-window bar. Everywhere else the native one is kept
+    (macOS' global bar, screen readers, X11's colourable menubar)."""
+    return dark and sys.platform == "win32"
+
+
+_log = logging.getLogger(__name__)
+_MSGF_MENU, _WM_KEYDOWN, _WH_MSGFILTER = 2, 0x0100, -1
+_VK_LEFT, _VK_RIGHT = 0x25, 0x27
+
+
+class MenuKeyHook:
+    """Left / Right in a menu the in-window bar posted (Windows): leave it, name the neighbour.
+
+    Windows runs a posted Tk menu as a native popup whose modal loop passes its messages
+    through a WH_MSGFILTER hook. While installed (``install`` .. ``remove``, around one post)
+    a Left, or a Right that is not on an entry opening a cascade, is swallowed, the popup is
+    ended and the step recorded; ``remove`` returns it (-1, 0 or +1) for the bar to act on once
+    the popup has returned. The callback only records and calls ``EndMenu``: it runs inside
+    Tk's own call, so it must never call back into Tk."""
+
+    def __init__(self) -> None:
+        self.in_submenu = False   # one of the posted menu's cascades is open: Left closes that
+        self.on_cascade = False   # the highlighted entry opens a cascade: Right opens it
+        self._step = 0
+        self._handle = None
+        self._proc = None
+
+    def handle(self, code: int, wparam: int, lparam: int) -> bool:
+        """Whether this message is swallowed (and the popup ended) by the hook."""
+        if code != _MSGF_MENU or self._step:
+            return False
+        msg = _msg_struct().from_address(lparam)
+        if msg.message != _WM_KEYDOWN:
+            return False
+        if msg.wParam == _VK_LEFT and not self.in_submenu:
+            self._step = -1
+        elif msg.wParam == _VK_RIGHT and not self.on_cascade:
+            self._step = 1
+        else:
+            return False
+        self._end_menu()
+        return True
+
+    @staticmethod
+    def _end_menu() -> None:
+        import ctypes
+
+        ctypes.windll.user32.EndMenu()
+
+    def install(self) -> None:
+        import ctypes
+        from ctypes import wintypes
+
+        self.in_submenu = self.on_cascade = False
+        self._step = 0
+        if self._handle:
+            return
+        user32 = ctypes.windll.user32
+        proto = ctypes.WINFUNCTYPE(ctypes.c_ssize_t, ctypes.c_int, wintypes.WPARAM,
+                                   wintypes.LPARAM)
+        user32.CallNextHookEx.argtypes = [ctypes.c_void_p, ctypes.c_int, wintypes.WPARAM,
+                                          wintypes.LPARAM]
+        user32.CallNextHookEx.restype = ctypes.c_ssize_t
+        user32.SetWindowsHookExW.argtypes = [ctypes.c_int, proto, wintypes.HINSTANCE,
+                                             wintypes.DWORD]
+        user32.SetWindowsHookExW.restype = ctypes.c_void_p
+        user32.UnhookWindowsHookEx.argtypes = [ctypes.c_void_p]
+
+        def proc(code, wparam, lparam):
+            try:
+                if self.handle(code, wparam, lparam):
+                    return 1
+            except Exception:       # a hook must never raise into the OS
+                _log.exception("menu key hook failed")
+            return user32.CallNextHookEx(None, code, wparam, lparam)
+
+        self._proc = proto(proc)    # kept alive while the hook is
+        self._handle = user32.SetWindowsHookExW(
+            _WH_MSGFILTER, self._proc, None, ctypes.windll.kernel32.GetCurrentThreadId())
+        if not self._handle:
+            _log.warning("menu key hook not installed (error %s): Left / Right keep Windows' "
+                         "own behaviour", ctypes.GetLastError())
+
+    def remove(self) -> int:
+        """Take the hook out; the step it recorded (-1, 0, +1)."""
+        import ctypes
+
+        if self._handle:
+            ctypes.windll.user32.UnhookWindowsHookEx(self._handle)
+            self._handle = None
+        step, self._step = self._step, 0
+        return step
+
+
+@functools.lru_cache(maxsize=1)
+def _msg_struct():
+    import ctypes
+    from ctypes import wintypes
+
+    class MSG(ctypes.Structure):
+        _fields_ = [("hwnd", wintypes.HWND), ("message", wintypes.UINT),
+                    ("wParam", wintypes.WPARAM), ("lParam", wintypes.LPARAM),
+                    ("time", wintypes.DWORD), ("pt", wintypes.POINT)]
+
+    return MSG
+
+
+def menu_key_hook() -> MenuKeyHook | None:
+    """The key hook for the in-window menu bar; only Windows has the native popups it needs."""
+    return MenuKeyHook() if sys.platform == "win32" else None
+
+
+def style_menu(menu: tk.Menu, p: dict) -> None:
+    """Colour a dropdown or context menu; Tk draws its items itself on Windows."""
+    menu.configure(
+        background=p["btn_bg"], foreground=p["fg"], activebackground=p["sel_bg"],
+        activeforeground=p["sel_fg"], disabledforeground=p["disabled_fg"],
+        selectcolor=p["fg"], borderwidth=1, activeborderwidth=0)
+
+
+# Tk's own defaults, in case a colour name is unknown on this windowing system.
+_SYSTEM_COLOURS = ("SystemButtonFace", "SystemWindow", "SystemWindowText", "white", "black",
+                   "#d9d9d9", "#ffffff", "#000000", "#f0f0f0")
+
+
+def _hex(widget: tk.Misc, colour: str) -> str | None:
+    try:
+        r, g, b = widget.winfo_rgb(colour)
+    except tk.TclError:
+        return None
+    return f"#{r >> 8:02x}{g >> 8:02x}{b >> 8:02x}"
+
+
+def retint(widget: tk.Misc, p: dict) -> None:
+    """Give every classic Tk widget under ``widget`` the colours of palette ``p``.
+
+    Only colours that are stale are replaced: the system default, or a surface colour of
+    either palette (the previous theme). A colour a widget was given on purpose - the green
+    and amber outcome boxes, a lane colour - is none of those and is left alone, as are the
+    widgets that recolour themselves (indicator-less chip buttons).
+    """
+    known: dict[str, str] = {}
+    for palette in PALETTES.values():
+        for key in ("bg", "field", "card"):
+            known.setdefault(palette[key], key)
+    known_fg = {palette["fg"] for palette in PALETTES.values()}
+    known_fg |= {h for c in ("SystemWindowText", "black", "#000000") if (h := _hex(widget, c))}
+    defaults = {h for c in _SYSTEM_COLOURS if (h := _hex(widget, c))}
+
+    def stale(w: tk.Misc, option: str) -> str | None:
+        """The palette key to use for ``option`` if its value is stale, else None."""
+        try:
+            current = _hex(w, str(w.cget(option)))
+        except tk.TclError:
+            return None
+        if current is None:
+            return None
+        if current in known:
+            return known[current]
+        return "default" if current in defaults else None
+
+    def put(w: tk.Misc, option: str, fallback: str, *, fg: bool = False) -> None:
+        if fg:
+            try:
+                current = _hex(w, str(w.cget(option)))
+            except tk.TclError:
+                return
+            if current not in known_fg:
+                return
+            key = fallback
+        else:
+            key = stale(w, option)
+            if key is None:
+                return
+            if key == "default":
+                key = fallback
+        try:
+            w.configure(**{option: p[key]})
+        except tk.TclError:
+            pass
+
+    stack = [widget]
+    while stack:
+        w = stack.pop()
+        stack.extend(w.winfo_children())
+        cls = w.winfo_class()
+        if cls in ("Tk", "Toplevel"):
+            try:
+                w.configure(background=p["bg"])
+            except tk.TclError:
+                pass
+        elif cls == "Menu":
+            style_menu(w, p)
+        elif cls in ("Frame", "Labelframe", "Panedwindow", "Label", "Message"):
+            put(w, "background", "bg")
+            put(w, "foreground", "fg", fg=True)
+            put(w, "highlightbackground", "bg")
+        elif cls in ("Checkbutton", "Radiobutton"):
+            if str(w.cget("indicatoron")) in ("0", "false"):
+                continue                          # a chip: it colours itself
+            put(w, "background", "bg")
+            put(w, "foreground", "fg", fg=True)
+            put(w, "highlightbackground", "bg")
+            put(w, "activebackground", "bg")
+            put(w, "activeforeground", "fg", fg=True)
+            w.configure(selectcolor=p["field"])
+        elif cls in ("Text", "Listbox", "Entry", "Spinbox", "Canvas"):
+            put(w, "background", "field")
+            put(w, "highlightbackground", "bg")
+            if cls != "Canvas":
+                put(w, "foreground", "fg", fg=True)
+                try:
+                    w.configure(insertbackground=p["fg"], selectbackground=p["sel_bg"],
+                                selectforeground=p["sel_fg"])
+                except tk.TclError:
+                    pass
+
+
+def _style_containers(style: ttk.Style, p: dict) -> None:
+    """Notebook tabs, label frames and separators: unmapped, clam drew the tabs light grey
+    with light text in dark mode (unreadable) and the frames with white bevels."""
+    style.configure("TNotebook", background=p["bg"], bordercolor=p["border"],
+                    lightcolor=p["bg"], darkcolor=p["bg"], tabmargins=pxs(2, 4, 2, 0))
+    style.configure("TNotebook.Tab", background=p["btn_bg"], foreground=p["fg"],
+                    bordercolor=p["border"], lightcolor=p["btn_bg"], darkcolor=p["btn_bg"],
+                    padding=pxs(10, 3))
+    style.map(
+        "TNotebook.Tab",
+        background=[("selected", p["field"]), ("active", p["hover_bg"])],
+        foreground=[("disabled", p["disabled_fg"]), ("selected", p["fg"]), ("active", p["fg"])],
+        lightcolor=[("selected", p["field"])],
+        darkcolor=[("selected", p["field"])],
+    )
+    style.configure("TLabelframe", background=p["bg"], bordercolor=p["border"],
+                    lightcolor=p["bg"], darkcolor=p["bg"])
+    style.configure("TLabelframe.Label", background=p["bg"], foreground=p["fg"])
+    style.configure("TSeparator", background=p["border"])
+
+
+def _style_organizer(style: ttk.Style, p: dict) -> None:
+    """The named styles the organizer's views use (D6 3.12)."""
+    style.configure("Card.TFrame", background=p["card"])
+    style.configure("Card.TLabel", background=p["card"], foreground=p["fg"])
+    style.configure("CardMuted.TLabel", background=p["card"], foreground=p["muted"])
+    style.configure("CardTitle.TLabel", background=p["card"], foreground=p["fg"],
+                    font=TITLE_FONT)
+    style.configure("Muted.TLabel", foreground=p["muted"])
+    style.configure("Title.TLabel", font=TITLE_FONT)
+    style.configure("Head.TLabel", font=HEADING_FONT)
+    style.configure("Warn.TLabel", foreground=p["warn"])
+    style.configure("Toast.TFrame", background=p["banner_bg"])
+    style.configure("Toast.TLabel", background=p["banner_bg"], foreground=p["banner_fg"])
+    style.configure("Info.TFrame", background=p["hl_bg"])
+    style.configure("Info.TLabel", background=p["hl_bg"], foreground=p["fg"])
+    style.configure("Alert.TFrame", background=p["warn_bg"])
+    style.configure("Alert.TLabel", background=p["warn_bg"], foreground=p["fg"])
+
+
+#: DWMWA_USE_IMMERSIVE_DARK_MODE (Windows 10 20H1 and later).
+_DWM_DARK_MODE = 20
+
+
+def dark_title_bar(window: tk.Misc, dark: bool) -> bool:
+    """Ask Windows 11 to draw ``window``'s title bar dark (or light again). Best effort: an
+    older Windows, another OS or a window not yet mapped simply keeps its title bar."""
+    if sys.platform != "win32":
+        return False
+    import ctypes
+
+    try:
+        hwnd = int(window.wm_frame(), 16)
+        value = ctypes.c_int(1 if dark else 0)
+        return ctypes.windll.dwmapi.DwmSetWindowAttribute(
+            hwnd, _DWM_DARK_MODE, ctypes.byref(value), ctypes.sizeof(value)) == 0
+    except (AttributeError, OSError, ValueError, tk.TclError):
+        return False
 
 
 def _style_button(style: ttk.Style, widget: str, p: dict, base: str, fg: str) -> None:
@@ -440,7 +828,7 @@ def _style_button(style: ttk.Style, widget: str, p: dict, base: str, fg: str) ->
         darkcolor=base,
         focuscolor=p["accent"],
         relief="flat",
-        padding=(10, 5),
+        padding=pxs(10, 5),
     )
     style.map(
         widget,

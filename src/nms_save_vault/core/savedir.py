@@ -6,6 +6,8 @@ back to auto-detection and flags the mismatch).
 """
 from __future__ import annotations
 
+import hashlib
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -18,6 +20,8 @@ from .formats import (
 )
 from .meta import MetaInfo
 from .slotmap import SaveFileRef, slot_file_numbers
+
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -37,6 +41,9 @@ class MemberView:
     # future writer can rewrite the save in place. None for Steam saves. Typed loosely to
     # avoid a circular import with msstore.
     xbox: object | None = None
+    # sha256 hex of the decrypted meta (Xbox: the meta as stored); "" when it is unreadable.
+    # One save's data can sit beside several metas (promote and moves re-stamp them).
+    meta_sha256: str = ""
 
     @property
     def slot(self) -> int:
@@ -80,12 +87,14 @@ class MemberView:
 
     @property
     def timestamp(self) -> int:
+        """The meta save time; 0 when the meta has none (e.g. a 280-byte Xbox meta)."""
         return self.info.timestamp if self.info else 0
 
     @property
     def effective_timestamp(self) -> int:
-        """Meta timestamp, falling back to file mtime when absent (e.g. Xbox saves store
-        the save time in containers.index rather than the meta)."""
+        """When this save was made: the meta save time, else the file time (Xbox: the
+        containers.index time). For showing, storing and comparing saves across slots and
+        folders; which member of one slot is newer is :meth:`SlotView.order_time`'s call."""
         return self.timestamp or int(self.data_mtime)
 
 
@@ -107,13 +116,29 @@ class SlotView:
     def occupied(self) -> bool:
         return bool(self.present_members)
 
+    def _candidates(self) -> list[MemberView]:
+        return [m for m in self.present_members if m.valid] or self.present_members
+
+    def order_time(self, m: MemberView) -> float:
+        """The time :attr:`newest` compares for ``m`` -- only for choosing the newer member of
+        this slot: the meta save time when every candidate has one, else the file time (Xbox:
+        the containers.index time) for both.
+
+        Never one clock against the other: the index time is the local write or sync time,
+        often hours or days after the save time, so mixing them picks the wrong member. To
+        show a member's time or compare saves across slots, use ``effective_timestamp``.
+        """
+        if all(c.timestamp for c in self._candidates()):
+            return m.timestamp or m.data_mtime   # only a non-candidate can lack one here
+        return m.data_mtime
+
     @property
     def newest(self) -> MemberView | None:
-        """The member the game treats as current: highest meta timestamp, then mtime."""
-        candidates = [m for m in self.present_members if m.valid] or self.present_members
+        """The member the game treats as current: the later :meth:`order_time`."""
+        candidates = self._candidates()
         if not candidates:
             return None
-        return max(candidates, key=lambda m: m.effective_timestamp)
+        return max(candidates, key=self.order_time)
 
     @property
     def display_name(self) -> str:
@@ -165,20 +190,20 @@ def _load_member(folder: Path, file_no: int) -> MemberView:
             ordinal, plain = meta.decrypt_autodetect(blob, ref.storage_ordinal)
         mv.ordinal_used = ordinal
         mv.info = meta.parse(plain, ordinal)
+        if mv.info.valid:
+            mv.meta_sha256 = hashlib.sha256(plain).hexdigest()
         if ordinal != ref.storage_ordinal:
             mv.note = f"meta keyed for ordinal {ordinal} (moved without re-key)"
     except Exception as exc:  # noqa: BLE001 - report, never raise during a scan
-        mv.note = f"meta unreadable: {exc}"
+        log.info("meta of %s could not be read: %s: %s", mv.meta_path.name, type(exc).__name__, exc)
+        mv.note = "meta unreadable (the file is damaged or is not a save's meta)"
     return mv
 
 
 def scan(path: str | Path) -> SaveDirView:
     """Scan a folder and return a structured, read-only view of its slots."""
     folder = Path(path)
-    slots: dict[int, SlotView] = {}
-    for slot in range(1, MAX_SAVE_SLOTS + 1):
-        fa, fb = slot_file_numbers(slot)
-        slots[slot] = SlotView(slot=slot, a=_load_member(folder, fa), b=_load_member(folder, fb))
+    slots = {slot: scan_slot(folder, slot) for slot in range(1, MAX_SAVE_SLOTS + 1)}
     account = (folder / ACCOUNT_DATA_NAME).is_file() and (folder / ACCOUNT_META_NAME).is_file()
     return SaveDirView(
         path=folder,
@@ -186,6 +211,12 @@ def scan(path: str | Path) -> SaveDirView:
         account_present=account,
         steam_cloud=(folder / formats.STEAM_AUTOCLOUD).is_file(),
     )
+
+
+def scan_slot(path: str | Path, slot: int) -> SlotView:
+    """One slot of a Steam-style folder, without reading the other fourteen."""
+    fa, fb = slot_file_numbers(slot)
+    return SlotView(slot=slot, a=_load_member(Path(path), fa), b=_load_member(Path(path), fb))
 
 
 def looks_like_save_dir(path: str | Path) -> bool:

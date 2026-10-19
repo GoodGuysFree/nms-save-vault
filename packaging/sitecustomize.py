@@ -16,11 +16,10 @@ from __future__ import annotations
 import ctypes
 import os
 import sys
-from ctypes import wintypes
 from pathlib import Path
 
 #: Launcher file name -> which front-end it starts.
-ENTRY_POINTS = {"nmssavevault.exe": "gui", "nmsvault.exe": "cli"}
+ENTRY_POINTS = {"nmssavevault.exe": "gui", "nmsvault-cli.exe": "cli"}
 
 #: Set to "1" to get a plain interpreter for debugging the packaged runtime.
 BYPASS_ENV = "NMSVAULT_NO_BOOTSTRAP"
@@ -28,29 +27,22 @@ BYPASS_ENV = "NMSVAULT_NO_BOOTSTRAP"
 #: Exported so ``core.state.install_dir`` keeps the config next to the program.
 ROOT_ENV = "NMSVAULT_PORTABLE_ROOT"
 
+#: Long Python options whose value is the next argument (``-X`` / ``-W`` are short flags,
+#: handled with the others).
+_VALUE_OPTIONS = ("--check-hash-based-pycs",)
 
-def _windows_argv() -> list[str]:
-    """The original command line, which ``python.exe`` has already consumed.
 
-    The interpreter rewrites ``sys.argv`` for its own option parsing before we
-    run, so the real arguments have to come from the OS.
+def _command_line() -> list[str]:
+    """The command line as given, before Python consumed its own options from it.
+
+    ``sys.orig_argv`` (3.10+; the kit ships 3.12) holds it. Without it, ``sys.argv``
+    behind the executable is the fallback: at ``site`` time it is the app's own arguments,
+    or starts with ``-c`` / ``-m`` when Python is being driven as one.
     """
-    try:
-        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-        shell32 = ctypes.WinDLL("shell32", use_last_error=True)
-        kernel32.GetCommandLineW.restype = wintypes.LPWSTR
-        shell32.CommandLineToArgvW.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(ctypes.c_int)]
-        shell32.CommandLineToArgvW.restype = ctypes.POINTER(wintypes.LPWSTR)
-        argc = ctypes.c_int(0)
-        argv = shell32.CommandLineToArgvW(kernel32.GetCommandLineW(), ctypes.byref(argc))
-        if not argv:
-            raise ctypes.WinError(ctypes.get_last_error())
-        try:
-            return [argv[i] for i in range(argc.value)]
-        finally:
-            kernel32.LocalFree(argv)
-    except OSError:
-        return [sys.executable, *sys.argv[1:]]
+    orig = getattr(sys, "orig_argv", None)
+    if orig:
+        return list(orig)
+    return [sys.executable, *([] if sys.argv == [""] else sys.argv)]
 
 
 def _report_startup_failure(details: str) -> None:
@@ -81,6 +73,36 @@ def _report_startup_failure(details: str) -> None:
         )
     except OSError:
         pass
+
+
+def _app_arguments(command_line: list[str]) -> list[str] | None:
+    """The app's own arguments: what follows Python's own options (``-u``, ``-X utf8``, ...).
+
+    None when the launcher is being driven as Python (``-c`` / ``-m``), so the app must stay
+    out of the way. A multiprocessing child is one of these: it starts as ``<exe> [options]
+    -c "from multiprocessing.spawn import spawn_main; ..." --multiprocessing-fork``.
+    """
+    i = 1
+    while i < len(command_line):
+        arg = command_line[i]
+        if arg in _VALUE_OPTIONS:
+            i += 2
+            continue
+        if arg == "--":
+            i += 1
+            break
+        if arg == "-" or not arg.startswith("-"):
+            break
+        if not arg.startswith("--"):
+            for j, flag in enumerate(arg[1:], start=1):
+                if flag in "cm":
+                    return None
+                if flag in "XW":
+                    if j == len(arg) - 1:
+                        i += 1                     # its value is the next argument
+                    break
+        i += 1
+    return command_line[i:]
 
 
 def _run(front_end: str, argv: list[str]) -> None:
@@ -121,12 +143,13 @@ def _bootstrap() -> None:
         return
 
     # Leave the interpreter alone when it is being driven as one, so the packaged
-    # runtime stays inspectable: NMSSaveVault.exe -c "..." / nmsvault.exe -m pytest.
-    args = [a.lower() for a in sys.argv[1:]]
-    if args[:1] in (["-c"], ["-m"]) or "--multiprocessing-fork" in args:
+    # runtime stays inspectable: NMSSaveVault.exe -c "..." / nmsvault-cli.exe -m pytest.
+    command_line = _command_line()
+    app_arguments = _app_arguments(command_line)
+    if app_arguments is None:
         return
 
-    _run(front_end, _windows_argv())
+    _run(front_end, [command_line[0], *app_arguments])
 
 
 # Runs for every launcher, including the bypassed ones, so the config location is

@@ -19,9 +19,9 @@ Since 2026 the game also keeps a plain mirror beside wgs, with the same blob byt
 Every wgs write here is mirrored into it (when the game has created it), so the two never
 disagree about a save the vault changed. An account with xgs but no wgs is read-only.
 
-Current Xbox data blobs decompress with the shared
-``lz4_block`` code; older variants (single LZ4 block, or the "HGSAVEV2" chunk format) are
-also handled.
+Current Xbox data blobs decompress with the shared ``lz4_block`` code, and so do the
+oldest (one bare LZ4 block). The ``HGSAVEV2`` container of game versions 4.52-4.99 is
+recognised but not decoded: ``lz4_block`` refuses it as unsupported.
 
 Attribution: the wgs/containers.index format and offsets were learned from libNOM.io's
 ``PlatformMicrosoft`` by Christian Engelhardt (zencq),
@@ -29,11 +29,13 @@ https://github.com/zencq/libNOM.io, licensed GPL-3.0. See LICENSE and README.md 
 """
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import shutil
 import struct
 import uuid
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -48,6 +50,9 @@ CONTAINERSINDEX_FOOTER = 0x10000000
 BLOBCONTAINER_HEADER = 0x4
 BLOB_IDENTIFIER_LENGTH = 0x80  # 128 bytes (UTF-16, 64 chars)
 BLOBCONTAINER_TOTAL_LENGTH = 4 + 4 + 2 * (BLOB_IDENTIFIER_LENGTH + 2 * 0x10)  # 328
+# Each containers.index record ends in [ext 1][sync state 4][dir guid 16][last write 8]
+# [reserved 8][total size 8], after its three length-prefixed strings.
+RECORD_TAIL_LENGTH = 45
 
 # MicrosoftBlobSyncStateEnum (per save) and MicrosoftIndexSyncStateEnum (whole index).
 BLOB_SYNC_SYNCED = 1
@@ -56,7 +61,6 @@ SYNC_STATE_DELETED = 3          # == MicrosoftBlobSyncStateEnum.Deleted
 BLOB_SYNC_CREATED = 5
 INDEX_SYNC_MODIFIED = 2
 
-HGSAVEV2_HEADER = b"HGSAVEV2\x00"
 
 # MS meta field offsets (plaintext; differ from Steam)
 MS_OFF_BASE_VERSION = 0x00   # u32
@@ -70,6 +74,12 @@ MS_OFF_DIFFICULTY = 0x114    # 276
 MS_OFF_SLOT_ID = 0x118       # 280, u64 (Worlds)
 MS_OFF_TIMESTAMP = 0x120     # 288, u32 (Worlds)
 MS_OFF_META_FORMAT = 0x124   # 292, u32 (Worlds)
+
+# MS meta lengths (libNOM.io PlatformMicrosoft.cs:22-25). Not the Steam ones in ``formats``:
+# the plaintext Microsoft meta has no header or hash area, so every era is shorter.
+MS_META_LEN_WAYPOINT = 0x118   # 280: names, difficulty as a single byte
+MS_META_LEN_WORLDS_I = 0x128   # 296: + u32 difficulty, playthrough id, save time, format
+MS_META_LEN_WORLDS_II = 0x168  # 360: + 64-byte difficulty tag
 
 
 def microsoft_root() -> Path | None:
@@ -127,6 +137,14 @@ def xgs_twin(folder: str | Path) -> Path | None:
     return twin if twin.is_dir() else None
 
 
+def with_xgs_twins(folders: Iterable[str | Path]) -> list[Path]:
+    """``folders`` plus the xgs twin of each wgs account folder among them. The game mirrors
+    a wgs account into its twin, so the two are one live save: wherever a live folder must
+    not be mistaken for a backup or for another folder, its twin must not be either."""
+    out = [Path(f) for f in folders]
+    return out + [twin for f in out if (twin := xgs_twin(f)) is not None]
+
+
 def _slot_member(identifier: str) -> tuple[int, int] | None:
     """``"Slot{N}Auto"`` -> (N, 0), ``"Slot{N}Manual"`` -> (N, 1); None for anything else."""
     m = re.fullmatch(r"Slot(\d+)(Auto|Manual)", identifier)
@@ -163,8 +181,14 @@ class XboxIndexInfo:
     process_id: str
     account_id: str
     sync_state: int
-    last_write: float            # unix epoch seconds
+    filetime: int                # the index's last write as stored (100 ns ticks since 1601)
     container_count: int
+    trailer: bytes = b""         # any bytes after the last record, written back verbatim
+
+    @property
+    def last_write(self) -> float:
+        """``filetime`` as unix epoch seconds."""
+        return _filetime_to_unix(self.filetime)
 
 
 @dataclass
@@ -173,7 +197,10 @@ class _Container:
     directory: Path
     sync_state: int
     extension: int
-    last_write: float  # unix epoch seconds
+    # The record's last write as stored (100 ns ticks since 1601): a float of seconds cannot
+    # hold it, and rewriting from one moved other saves' times. Required, so no record is
+    # ever written with an accidental 0 (= 1601).
+    filetime: int
     size_disk: int
     data_file: Path | None = None
     meta_file: Path | None = None
@@ -186,12 +213,35 @@ class _Container:
     meta_local_guid: str | None = None
     data_cloud_guid: str | None = None
     meta_cloud_guid: str | None = None
+    # --- the record as stored, so an untouched record is written back byte for byte ---
+    reserved: bytes = bytes(8)
+    raw: bytes = b""
+    parsed: tuple = field(default=(), repr=False, compare=False)
+
+    @property
+    def last_write(self) -> float:
+        """``filetime`` as unix epoch seconds."""
+        return _filetime_to_unix(self.filetime)
+
+
+def _record_fields(c: _Container) -> tuple:
+    """Everything a record serialises; a record whose fields still equal what was parsed is
+    written back as its raw bytes."""
+    return (
+        c.identifier, c.second_identifier, c.sync_time, c.extension, c.sync_state,
+        c.dir_guid, c.filetime, c.reserved, c.size_disk,
+    )
 
 
 def _read_lp_string(b: bytes, off: int) -> tuple[str, int]:
-    """Length-prefixed UTF-16LE string: [int char-count][chars]. Returns (str, new_off)."""
+    """Length-prefixed UTF-16LE string: [int char-count][chars]. Returns (str, new_off).
+    Raises ``ValueError`` when the count is negative or runs past the end of ``b``."""
+    if not 0 <= off <= len(b) - 4:
+        raise ValueError(f"containers.index: no string length at offset {off}, past the end")
     n = struct.unpack_from("<i", b, off)[0]
     end = off + 4 + 2 * n
+    if n < 0 or end > len(b):
+        raise ValueError(f"containers.index: the string at offset {off} claims an impossible length {n}")
     return b[off + 4 : end].decode("utf-16-le"), end
 
 
@@ -206,62 +256,135 @@ def _filetime_to_unix(filetime: int) -> float:
     return filetime / 1e7 - 11644473600.0
 
 
-def parse_containers_index(folder: Path) -> tuple[XboxIndexInfo, list[_Container]]:
-    folder = Path(folder)
-    b = (folder / "containers.index").read_bytes()
-    if struct.unpack_from("<i", b, 0)[0] != CONTAINERSINDEX_HEADER:
+def split_index(raw: bytes) -> tuple[bytes, list[tuple[str, bytes]], bytes]:
+    """Cut a ``containers.index`` into its header (the bytes after the record count, up to
+    the first record), each record's raw bytes keyed by identifier, and any trailing bytes.
+    Decodes only what it takes to find the boundaries; :func:`join_index` puts the pieces
+    back byte for byte."""
+    if len(raw) < 12 or struct.unpack_from("<i", raw, 0)[0] != CONTAINERSINDEX_HEADER:
         raise ValueError("bad containers.index header")
-    count = struct.unpack_from("<q", b, 4)[0]
-
-    proc, off = _read_lp_string(b, 12)           # process identifier
-    # [last write 8][sync state 4] then account identifier
-    index_last_write = _filetime_to_unix(struct.unpack_from("<q", b, off)[0])
-    index_sync_state = struct.unpack_from("<i", b, off + 8)[0]
-    acct, off = _read_lp_string(b, off + 12)
-    if struct.unpack_from("<q", b, off)[0] != CONTAINERSINDEX_FOOTER:
+    count = struct.unpack_from("<q", raw, 4)[0]
+    # A record is at least three empty strings and its fixed tail.
+    if not 0 <= count <= (len(raw) - 12) // (3 * 4 + RECORD_TAIL_LENGTH):
+        raise ValueError(f"containers.index claims {count} records, impossible for its size")
+    _proc, off = _read_lp_string(raw, 12)
+    _acct, off = _read_lp_string(raw, off + 12)  # after [last write 8][sync state 4]
+    if off + 8 > len(raw) or struct.unpack_from("<q", raw, off)[0] != CONTAINERSINDEX_FOOTER:
         raise ValueError("bad containers.index footer")
     off += 8
-
-    containers: list[_Container] = []
+    header = raw[12:off]
+    records: list[tuple[str, bytes]] = []
     for _ in range(count):
-        c, off = _parse_blob_container_index(b, off, folder)
-        containers.append(c)
+        start = off
+        identifier, off = _read_lp_string(raw, off)
+        _second, off = _read_lp_string(raw, off)
+        _sync, off = _read_lp_string(raw, off)
+        off += RECORD_TAIL_LENGTH
+        if off > len(raw):
+            raise ValueError("containers.index ends inside a record")
+        records.append((identifier, raw[start:off]))
+    # Bytes past the last record are not described by the format; they are kept as they are.
+    return header, records, raw[off:]
+
+
+def salvage_index(raw: bytes) -> tuple[bytes | None, list[tuple[str, bytes]]]:
+    """What a damaged ``containers.index`` still holds: its header and every whole record
+    before the damage. The header is None when not even that reads."""
+    try:
+        if len(raw) < 12 or struct.unpack_from("<i", raw, 0)[0] != CONTAINERSINDEX_HEADER:
+            return None, []
+        count = struct.unpack_from("<q", raw, 4)[0]
+        _proc, off = _read_lp_string(raw, 12)
+        _acct, off = _read_lp_string(raw, off + 12)
+        if off + 8 > len(raw) or struct.unpack_from("<q", raw, off)[0] != CONTAINERSINDEX_FOOTER:
+            return None, []
+        off += 8
+        header = raw[12:off]
+    except Exception:  # noqa: BLE001 - anything unreadable is "no header"
+        return None, []
+    records: list[tuple[str, bytes]] = []
+    for _ in range(max(0, min(count, len(raw)))):
+        try:
+            start = off
+            identifier, off = _read_lp_string(raw, off)
+            _second, off = _read_lp_string(raw, off)
+            _sync, off = _read_lp_string(raw, off)
+            off += RECORD_TAIL_LENGTH
+            if off > len(raw):
+                break
+            records.append((identifier, raw[start:off]))
+        except Exception:  # noqa: BLE001 - the damage starts here
+            break
+    return header, records
+
+
+def index_header_account(header: bytes) -> str:
+    """The account identifier in a header from :func:`split_index`."""
+    _proc, off = _read_lp_string(header, 0)
+    acct, _off = _read_lp_string(header, off + 12)
+    return acct
+
+
+def join_index(header: bytes, records: list[tuple[str, bytes]], trailer: bytes = b"") -> bytes:
+    """Inverse of :func:`split_index`; the record count is taken from ``records``."""
+    out = struct.pack("<i", CONTAINERSINDEX_HEADER) + struct.pack("<q", len(records)) + header
+    return out + b"".join(rec for _identifier, rec in records) + trailer
+
+
+def parse_containers_index(folder: Path) -> tuple[XboxIndexInfo, list[_Container]]:
+    folder = Path(folder)
+    return _parse_index((folder / "containers.index").read_bytes(), folder)
+
+
+def _parse_index(raw: bytes, folder: Path) -> tuple[XboxIndexInfo, list[_Container]]:
+    """Parse index bytes; record directories (and blob files) resolve under ``folder``."""
+    header, records, trailer = split_index(raw)
+    proc, off = _read_lp_string(header, 0)       # process identifier
+    # [last write 8][sync state 4] then account identifier
+    index_filetime = struct.unpack_from("<q", header, off)[0]
+    index_sync_state = struct.unpack_from("<i", header, off + 8)[0]
+    acct, _off = _read_lp_string(header, off + 12)
+
+    containers = [_parse_record(rec, folder) for _identifier, rec in records]
     info = XboxIndexInfo(
         process_id=proc,
         account_id=acct,
         sync_state=index_sync_state,
-        last_write=index_last_write,
-        container_count=count,
+        filetime=index_filetime,
+        container_count=len(records),
+        trailer=trailer,
     )
     return info, containers
 
 
-def _parse_blob_container_index(b: bytes, off: int, folder: Path) -> tuple[_Container, int]:
-    identifier, off = _read_lp_string(b, off)    # save identifier 1
-    second, off = _read_lp_string(b, off)        # save identifier 2 (unused since 5.50)
-    sync, off = _read_lp_string(b, off)          # sync hex
-    # [ext 1][sync state 4][dir guid 16][last mod 8][empty 8][total size 8]
-    extension = b[off]
-    sync_state = struct.unpack_from("<i", b, off + 1)[0]
-    dir_guid = _guid_name(b[off + 5 : off + 21])
-    last_write = _filetime_to_unix(struct.unpack_from("<q", b, off + 21)[0])
-    size_disk = struct.unpack_from("<q", b, off + 37)[0]
-    off += 45
+def _parse_record(rec: bytes, folder: Path) -> _Container:
+    identifier, off = _read_lp_string(rec, 0)    # save identifier 1
+    second, off = _read_lp_string(rec, off)      # save identifier 2 (unused since 5.50)
+    sync, off = _read_lp_string(rec, off)        # sync hex
+    # [ext 1][sync state 4][dir guid 16][last mod 8][reserved 8][total size 8]
+    extension = rec[off]
+    sync_state = struct.unpack_from("<i", rec, off + 1)[0]
+    dir_guid = _guid_name(rec[off + 5 : off + 21])
+    filetime = struct.unpack_from("<q", rec, off + 21)[0]
+    size_disk = struct.unpack_from("<q", rec, off + 37)[0]
 
     c = _Container(
         identifier=identifier,
         directory=folder / dir_guid,
         sync_state=sync_state,
         extension=extension,
-        last_write=last_write,
+        filetime=filetime,
         size_disk=int(size_disk),
         dir_guid=dir_guid,
         second_identifier=second,
         sync_time=sync,
+        reserved=rec[off + 29 : off + 37],
+        raw=rec,
     )
+    c.parsed = _record_fields(c)
     if c.directory.is_dir() and c.sync_state != SYNC_STATE_DELETED:
         _resolve_blobs(c)
-    return c, off
+    return c
 
 
 def _resolve_blobs(c: _Container) -> None:
@@ -308,6 +431,12 @@ def _ms_string(b: bytes, off: int, length: int = 128) -> str:
     return raw.decode("utf-8", errors="replace")
 
 
+def _has_save_time(meta_len: int) -> bool:
+    """Worlds-era layout (difficulty u32, playthrough id, save time, format): 296 or 360
+    bytes, and anything longer, which is taken to extend the 360-byte layout."""
+    return meta_len == MS_META_LEN_WORLDS_I or meta_len >= MS_META_LEN_WORLDS_II
+
+
 def parse_ms_meta(disk: bytes) -> dict:
     """Parse a Microsoft (plaintext) meta blob into the common field set."""
     L = len(disk)
@@ -326,28 +455,34 @@ def parse_ms_meta(disk: bytes) -> dict:
     }
     if out["season"] == 0xFFFF:
         out["season"] = 0
-    if L >= formats.META_LEN_WAYPOINT:  # 280+: names present
+    if L >= MS_META_LEN_WAYPOINT:
         out["name"] = _ms_string(disk, MS_OFF_NAME)
         out["summary"] = _ms_string(disk, MS_OFF_SUMMARY)
-    if L in (formats.META_LEN_WORLDS_I, formats.META_LEN_WORLDS_II):  # 296 / 360
+    if _has_save_time(L):
         out["difficulty"] = _u(disk, MS_OFF_DIFFICULTY, "<I", 4)
-        out["slot_id"] = _u(disk, MS_OFF_SLOT_ID, "<Q", 8)
         out["timestamp"] = _u(disk, MS_OFF_TIMESTAMP, "<I", 4)
         out["meta_format"] = _u(disk, MS_OFF_META_FORMAT, "<I", 4)
-    elif L == formats.META_LEN_WAYPOINT:
-        out["difficulty"] = disk[MS_OFF_DIFFICULTY] if MS_OFF_DIFFICULTY < L else 0
+        # A pre-Worlds meta of this length (format 0, e.g. "Voyagers") holds a non-zero u64
+        # here that is not a playthrough id.
+        if out["meta_format"] >= formats.META_FORMAT_3:
+            out["slot_id"] = _u(disk, MS_OFF_SLOT_ID, "<Q", 8)
+    elif L == MS_META_LEN_WAYPOINT:
+        out["difficulty"] = disk[MS_OFF_DIFFICULTY]
     return out
 
 
 def set_ms_meta_timestamp(meta_bytes: bytes, ts: int) -> bytes:
-    """Set the timestamp field of a Worlds-era MS meta blob (no-op for shorter metas that
-    don't carry one). Promote uses this so the meta and the containers.index FILETIME agree
-    on which save is newest, regardless of which the game keys off."""
-    if len(meta_bytes) >= formats.META_LEN_WORLDS_I and MS_OFF_TIMESTAMP + 4 <= len(meta_bytes):
-        b = bytearray(meta_bytes)
-        struct.pack_into("<I", b, MS_OFF_TIMESTAMP, int(ts) & 0xFFFFFFFF)
-        return bytes(b)
-    return meta_bytes
+    """Set the save time (u32 at 0x120) of a Worlds-era MS meta (296 or 360 bytes).
+
+    Raises ``ValueError`` for any other length: only these two layouts are known well enough
+    to write into (a longer meta is still read, see :func:`parse_ms_meta`), and handing the
+    input back unchanged would let promote report a change it never made.
+    """
+    if len(meta_bytes) not in (MS_META_LEN_WORLDS_I, MS_META_LEN_WORLDS_II):
+        raise ValueError(f"an Xbox meta of {len(meta_bytes)} bytes has no save time to set")
+    b = bytearray(meta_bytes)
+    struct.pack_into("<I", b, MS_OFF_TIMESTAMP, int(ts) & 0xFFFFFFFF)
+    return bytes(b)
 
 
 def _data_decompressed_size(data: bytes, fallback: int) -> int:
@@ -399,7 +534,9 @@ def _build_member(slot: int, member: int, c: _Container) -> MemberView:
         mv.note = "Xbox save: blob missing" if c.sync_state != SYNC_STATE_DELETED else "Xbox save: deleted"
         return mv
     data = data_file.read_bytes()
-    fields = parse_ms_meta(meta_file.read_bytes())
+    meta_bytes = meta_file.read_bytes()
+    fields = parse_ms_meta(meta_bytes)
+    mv.meta_sha256 = hashlib.sha256(meta_bytes).hexdigest()
     mv.data_size = len(data)
     mv.data_mtime = c.last_write or data_file.stat().st_mtime
     mv.ordinal_used = None  # not Steam-keyed
@@ -463,7 +600,7 @@ def scan_xgs(folder: str | Path) -> SaveDirView:
     slots = {k: SlotView(slot=k, a=_empty_member(k, 0), b=_empty_member(k, 1)) for k in range(1, formats.MAX_SAVE_SLOTS + 1)}
     for d in sorted(p for p in folder.iterdir() if p.is_dir()):
         c = _Container(
-            identifier=d.name, directory=d, sync_state=0, extension=0, last_write=0.0,
+            identifier=d.name, directory=d, sync_state=0, extension=0, filetime=0,
             size_disk=0, data_file=d / "data", meta_file=d / "meta",
         )
         mv = _place_member(slots, c)
@@ -526,34 +663,39 @@ def build_blob_container(data_local: str, meta_local: str, data_cloud: str = "",
 
 
 def _build_container_record(c: _Container) -> bytes:
-    """Serialize one ``containers.index`` per-save record from a parsed ``_Container``."""
+    """One ``containers.index`` record: the raw bytes it was read from when nothing in it has
+    changed, else serialised from its fields (FILETIME as the stored integer)."""
+    if c.raw and _record_fields(c) == c.parsed:
+        return c.raw
     out = _build_lp_string(c.identifier)
     out += _build_lp_string(c.second_identifier)
     out += _build_lp_string(c.sync_time)
     out += bytes([c.extension & 0xFF])
     out += struct.pack("<i", c.sync_state)
     out += _guid_bytes_from_name(c.dir_guid)
-    out += struct.pack("<q", _unix_to_filetime(c.last_write))
-    out += struct.pack("<q", 0)                  # reserved / empty
+    out += struct.pack("<q", c.filetime)
+    out += c.reserved
     out += struct.pack("<q", int(c.size_disk))
     return out
 
 
 def build_containers_index(info: XboxIndexInfo, records: list[_Container]) -> bytes:
-    """Serialize a complete ``containers.index`` from parsed structures (header + records).
+    """Serialize a complete ``containers.index``: header from ``info``, then the records.
 
-    The record ``count`` is taken from ``records`` (authoritative), so adding or removing a
-    save stays consistent."""
-    out = struct.pack("<i", CONTAINERSINDEX_HEADER)
-    out += struct.pack("<q", len(records))
-    out += _build_lp_string(info.process_id)
-    out += struct.pack("<q", _unix_to_filetime(info.last_write))
-    out += struct.pack("<i", info.sync_state)
-    out += _build_lp_string(info.account_id)
-    out += struct.pack("<q", CONTAINERSINDEX_FOOTER)
-    for c in records:
-        out += _build_container_record(c)
-    return out
+    Records the caller did not change go back byte for byte (P-X1: rewriting them from
+    floats moved other saves' FILETIMEs and perturbed their sync). The record ``count`` is
+    taken from ``records``, so adding or removing a save stays consistent."""
+    return join_index(
+        _build_header(info), [(c.identifier, _build_container_record(c)) for c in records], info.trailer
+    )
+
+
+def _build_header(info: XboxIndexInfo) -> bytes:
+    header = _build_lp_string(info.process_id)
+    header += struct.pack("<q", info.filetime)
+    header += struct.pack("<i", info.sync_state)
+    header += _build_lp_string(info.account_id)
+    return header + struct.pack("<q", CONTAINERSINDEX_FOOTER)
 
 
 # --- writer (wgs save mutation; Phase 2b) ----------------------------------------------
@@ -581,7 +723,7 @@ def _new_container(folder: Path, identifier: str, when: float, *, double_identif
         directory=Path(folder) / dir_name,
         sync_state=BLOB_SYNC_CREATED,
         extension=0,            # _stage_new_blobs bumps to 1 on the first write
-        last_write=when,
+        filetime=_unix_to_filetime(when),
         size_disk=0,
         dir_guid=dir_name,
         second_identifier=identifier if double_identifier else "",
@@ -623,6 +765,17 @@ def _stage_new_blobs(c: _Container, data_bytes: bytes, meta_bytes: bytes, when: 
     return [p for p in superseded if p not in keep]
 
 
+def _require_time(when: float) -> None:
+    if when <= 0:  # a 0 FILETIME reads as 1601-01-01
+        raise ValueError(f"a save write needs a real time, not {when!r}")
+
+
+def _stamp(c: _Container, when: float, created: bool) -> None:
+    """Set a changed record's time to ``when``, but never back from what it was: a record
+    moving back in time looks older than a copy the sync already has."""
+    c.filetime = max(_unix_to_filetime(when), 0 if created else c.filetime + 1)
+
+
 def _write_containers_index_file(folder: Path, info: XboxIndexInfo, records: list[_Container]) -> None:
     safety.atomic_write_bytes(Path(folder) / "containers.index", build_containers_index(info, records))
 
@@ -644,8 +797,10 @@ def write_save(
     (no Steam<->Xbox conversion). Raises ``ValueError`` if the save is missing and
     ``create_if_missing`` is False."""
     folder = Path(folder)
+    _require_time(when)
     info, containers = parse_containers_index(folder)
     target = next((c for c in containers if c.identifier == identifier), None)
+    created = target is None
     if target is None:
         if not create_if_missing:
             raise ValueError(f"no save '{identifier}' in {folder} (pass create_if_missing to add it)")
@@ -656,14 +811,14 @@ def write_save(
 
     stale = _stage_new_blobs(target, data_bytes, meta_bytes, when)
 
-    target.last_write = when
+    _stamp(target, when, created)
     if target.sync_state != BLOB_SYNC_CREATED:
         # Synced/Deleted/Modified all become Modified on a content write; a brand-new save
         # stays Created. Writing into a Deleted record must un-delete it, not leave it
         # flagged for the Xbox app's cloud garbage-collection.
         target.sync_state = BLOB_SYNC_MODIFIED
     info.sync_state = INDEX_SYNC_MODIFIED
-    info.last_write = when
+    info.filetime = max(info.filetime, target.filetime)
 
     _write_containers_index_file(folder, info, containers)
 
@@ -689,6 +844,7 @@ def delete_save(folder: str | Path, identifier: str, when: float) -> bool:
     ``write_save`` un-deletes such a record, so the slot can be refilled later.
     """
     folder = Path(folder)
+    _require_time(when)
     info, containers = parse_containers_index(folder)
     target = next((c for c in containers if c.identifier == identifier), None)
     if target is None or target.sync_state == SYNC_STATE_DELETED:
@@ -696,12 +852,12 @@ def delete_save(folder: str | Path, identifier: str, when: float) -> bool:
 
     blob_dir = target.directory
     target.sync_state = SYNC_STATE_DELETED
-    target.last_write = when
+    _stamp(target, when, created=False)
     target.size_disk = 0
     target.data_file = target.meta_file = target.blob_container_file = None
     target.data_local_guid = target.meta_local_guid = None
     info.sync_state = INDEX_SYNC_MODIFIED
-    info.last_write = when
+    info.filetime = max(info.filetime, target.filetime)
     _write_containers_index_file(folder, info, containers)
 
     # Only ever a GUID-named child of the account folder; never recurse anywhere else.
@@ -712,6 +868,51 @@ def delete_save(folder: str | Path, identifier: str, when: float) -> bool:
     if twin is not None:
         _xgs_delete(twin, identifier)
     return True
+
+
+def restored_index(
+    backup_index: bytes, when: float, floors: dict[str, int], index_floor: int = 0,
+    keep: tuple[str, bytes] | None = None, keep_position: int = 0,
+) -> bytes:
+    """The containers.index a wholesale restore writes, composed in memory so it can be
+    written once, after every folder it names is in place.
+
+    The backup's records, each made a fresh local write: its FILETIME becomes ``when`` (now)
+    -- never earlier than one tick after the time it had before the restore (``floors``, by
+    identifier) -- and Synced becomes Modified, so the Xbox app cannot take its cloud copy for
+    the newer one and put it back. A slot's two records keep the order they had, a second
+    apart. ``keep`` -- (identifier, raw record) from the live index -- stands in for the
+    backup's record of that identifier byte for byte (at ``keep_position`` if the backup has
+    none). The index time never moves back from ``index_floor``.
+    """
+    info, containers = _parse_index(backup_index, Path("."))
+    kept_id = keep[0] if keep else None
+    now = _unix_to_filetime(when)
+    groups: dict[object, list[_Container]] = {}
+    for c in containers:
+        if c.identifier == kept_id:
+            continue
+        pair = _slot_member(c.identifier)
+        groups.setdefault(pair[0] if pair else c.identifier, []).append(c)
+    for members in groups.values():
+        base = max([now] + [floors.get(c.identifier, -1) + 1 for c in members])
+        order = sorted({c.filetime for c in members})
+        for c in members:
+            # A second apart (equal times stay equal): last_write is a float, and a float of
+            # seconds this size cannot tell two records 100 ns apart.
+            c.filetime = base + order.index(c.filetime) * 10_000_000
+            if c.sync_state == BLOB_SYNC_SYNCED:
+                c.sync_state = BLOB_SYNC_MODIFIED
+    info.sync_state = INDEX_SYNC_MODIFIED
+    info.filetime = max(info.filetime, index_floor, now)
+    records = [(c.identifier, _build_container_record(c)) for c in containers]
+    if keep is not None:
+        at = next((i for i, (ident, _rec) in enumerate(records) if ident == kept_id), None)
+        if at is None:
+            records.insert(min(keep_position, len(records)), keep)
+        else:
+            records[at] = keep
+    return join_index(_build_header(info), records, info.trailer)
 
 
 def mark_modified(folder: str | Path) -> None:
@@ -783,3 +984,469 @@ def mirror_xgs(folder: str | Path) -> list[str]:
             _xgs_delete(twin, d.name)
             changed.append(f"-xgs/{d.name}")
     return changed
+
+
+# --- pair writer (the live operations, D5 2.6.2) ----------------------------------------
+#
+# Both members of a slot change with ONE containers.index write, edited at the record-bytes
+# level: untouched records and the header's identity go back byte for byte. prepare_pair
+# reads only and pre-generates every name; apply_pair writes the new blobs under those names,
+# then the index, then the xgs mirror; until finalize_pair the replaced blobs stay on disk,
+# unreferenced, so rollback_pair restores the slot exactly without anything from the vault.
+# The xgs mirror of a replaced save must hold its wgs bytes (or nothing): bytes only xgs
+# holds are never overwritten, so the mirror's pre-image is always rebuildable.
+
+
+class IndexChanged(Exception):
+    """containers.index is neither as planned nor as this write left it (the Xbox app
+    syncing, or another tool): neither the write nor its rollback acts on it."""
+
+
+class XgsMismatch(ValueError):
+    """The xgs copy of a save the write would replace holds bytes its wgs record does not
+    (or a save wgs does not have): writing would destroy the only copy of those bytes."""
+
+
+class RollbackError(Exception):
+    """rollback_pair cannot put the slot back exactly; it changed nothing."""
+
+
+@dataclass(frozen=True)
+class RecordInfo:
+    identifier: str
+    second_identifier: str
+    dir_guid: str
+    extension: int
+    sync_state: int
+    filetime: int
+
+
+def record_info(raw: bytes) -> RecordInfo:
+    """The fields of one raw containers.index record, read from its bytes alone."""
+    identifier, off = _read_lp_string(raw, 0)
+    second, off = _read_lp_string(raw, off)
+    _sync, off = _read_lp_string(raw, off)
+    if off + RECORD_TAIL_LENGTH != len(raw):
+        raise ValueError("not one containers.index record")
+    return RecordInfo(identifier, second, _guid_name(raw[off + 5 : off + 21]), raw[off],
+                      struct.unpack_from("<i", raw, off + 1)[0],
+                      struct.unpack_from("<q", raw, off + 21)[0])
+
+
+@dataclass(frozen=True)
+class XboxRecordWrite:
+    identifier: str                 # "Slot7Auto" / "Slot7Manual"
+    data: bytes
+    meta: bytes
+    when: float                     # FILETIME as unix seconds; converted once to an int
+
+
+@dataclass(frozen=True)
+class XboxBlobWrite:
+    """Where one record's new blobs go (names relative to the account folder)."""
+
+    identifier: str
+    dir_name: str                   # <DIRGUID>
+    data_name: str                  # local GUID of the data blob
+    meta_name: str
+    container_name: str             # container.<n>
+    data_cloud: str                 # cloud GUIDs carried over into the new container
+    meta_cloud: str
+    data_sha256: str
+    meta_sha256: str
+    mtime: float
+
+
+@dataclass(frozen=True)
+class XboxPairPlan:
+    folder: Path
+    pre_index_sha256: str
+    pre_header_raw: bytes                        # index bytes 12..first record
+    pre_records_raw: Mapping[str, bytes | None]  # identifier -> raw record, None = absent
+    new_header_raw: bytes                        # FILETIME + state patched as integers
+    new_records_raw: Mapping[str, bytes]
+    new_files: tuple[str, ...]                   # "<DIRGUID>/<GUID>", ".../container.<n>"
+    new_dirs: tuple[str, ...]                    # record dirs created for new identifiers
+    superseded: tuple[str, ...]                  # old blobs + old container.<n>, for finalize
+    xgs: bool
+    blobs: tuple[XboxBlobWrite, ...]             # in write order (the loading member last)
+    pre_xgs: Mapping[str, tuple[str, str] | None] = field(default_factory=dict)
+                                                 # identifier -> sha256 of xgs (data, meta),
+                                                 # "" = no file; None = no folder
+
+
+def prepare_pair(folder: str | Path, writes: Sequence[XboxRecordWrite]) -> XboxPairPlan:
+    """Plan the records of one write: new blob names, new record bytes, the patched header,
+    the xgs pre-image. Reads only. A record's FILETIME never goes back from its old one, and
+    the records keep the order of their ``when`` strictly (the loading member is written
+    latest). Raises :class:`XgsMismatch` when xgs holds bytes wgs does not."""
+    folder = Path(folder)
+    idents = [w.identifier for w in writes]
+    if not writes or len(set(idents)) != len(idents):
+        raise ValueError("a pair write names each save once")
+    if any(_slot_member(i) is None for i in idents):
+        raise ValueError("only slot saves are written; account records never are")
+    raw = (folder / "containers.index").read_bytes()
+    header, records, _trailer = split_index(raw)
+    if len({ident for ident, _rec in records}) != len(records):
+        raise ValueError("containers.index names a save twice")
+    current = {ident: rec for ident, rec in records}
+    index_ft = struct.unpack_from("<q", header, 4 + 2 * struct.unpack_from("<i", header, 0)[0])[0]
+    twin = xgs_twin(folder)
+
+    prev_ft = 0
+    new_records: dict[str, bytes] = {}
+    pre_xgs: dict[str, tuple[str, str] | None] = {}
+    blobs, new_files, new_dirs, superseded = [], [], [], []
+    for w in sorted(writes, key=lambda w: w.when):
+        _require_time(w.when)
+        rec = current.get(w.identifier)
+        # A NEW record is written the way the current game writes new saves: the identifier
+        # once (the real index holds old records in the doubled form and the newest in this
+        # one). An existing record keeps the form it has.
+        c = _parse_record(rec, folder) if rec is not None else _new_container(
+            folder, w.identifier, w.when)
+        if twin is not None:
+            pre_xgs[w.identifier] = _xgs_pre(twin, c)
+        if not c.directory.is_dir():
+            new_dirs.append(c.dir_guid)
+        superseded += [p.relative_to(folder).as_posix()
+                       for p in (c.data_file, c.meta_file, c.blob_container_file)
+                       if p is not None and p.is_file()]
+        ext = _free_extension(c)
+        data_name, meta_name = _new_guid_name(), _new_guid_name()
+        prev_ft = c.filetime = max(_unix_to_filetime(w.when), prev_ft + 1,
+                                   0 if rec is None else c.filetime + 1)
+        c.extension = ext
+        c.size_disk = len(w.data) + len(w.meta)
+        if c.sync_state != BLOB_SYNC_CREATED:
+            c.sync_state = BLOB_SYNC_MODIFIED     # Synced / Deleted / Modified all become this
+        new_records[w.identifier] = _build_container_record(c)
+        blob = XboxBlobWrite(w.identifier, c.dir_guid, data_name, meta_name, f"container.{ext}",
+                             c.data_cloud_guid or "", c.meta_cloud_guid or "",
+                             hashlib.sha256(w.data).hexdigest(),
+                             hashlib.sha256(w.meta).hexdigest(), w.when)
+        blobs.append(blob)
+        new_files += [f"{c.dir_guid}/{n}" for n in (data_name, meta_name, blob.container_name)]
+    return XboxPairPlan(
+        folder=folder, pre_index_sha256=hashlib.sha256(raw).hexdigest(), pre_header_raw=header,
+        pre_records_raw={i: current.get(i) for i in idents},
+        new_header_raw=_patched_header(header, max(index_ft, prev_ft), INDEX_SYNC_MODIFIED),
+        new_records_raw=new_records, new_files=tuple(new_files), new_dirs=tuple(new_dirs),
+        superseded=tuple(superseded), xgs=twin is not None, blobs=tuple(blobs),
+        pre_xgs=pre_xgs)
+
+
+def apply_pair(plan: XboxPairPlan, payload: Mapping[str, tuple[bytes, bytes]],
+               faults=None) -> None:
+    """Write the planned blobs, then one new containers.index, then the xgs mirror.
+    ``payload``: identifier -> (data, meta), checked against the plan. If the index changed
+    since ``prepare_pair`` (or anything fails before the index write), the new blobs are
+    removed and nothing references them. ``faults``: the tests' crash points."""
+    folder = plan.folder
+    index = folder / "containers.index"
+    for b in plan.blobs:                     # the checks that must not remove anything
+        data, meta_bytes = payload[b.identifier]
+        if (hashlib.sha256(data).hexdigest(), hashlib.sha256(meta_bytes).hexdigest()) != (
+                b.data_sha256, b.meta_sha256):
+            raise ValueError(f"the bytes for {b.identifier} are not the planned ones")
+        taken = [n for n, _ok in _blob_files(plan, b) if (folder / b.dir_name / n).exists()
+                 and not _is_ours(folder / b.dir_name, b, n)]
+        if taken:                            # the Xbox app wrote there since the plan
+            raise IndexChanged(f"{b.dir_name}/{taken[0]} appeared since the write was planned")
+    try:
+        for b in plan.blobs:
+            data, meta_bytes = payload[b.identifier]
+            d = folder / b.dir_name
+            if b.dir_name in plan.new_dirs and not d.is_dir():
+                d.mkdir()
+            for name, blob in ((b.data_name, data), (b.meta_name, meta_bytes)):
+                safety.atomic_write_bytes(d / name, blob)
+                safety.set_file_mtime(d / name, b.mtime)
+            safety.atomic_write_bytes(d / b.container_name, build_blob_container(
+                b.data_name, b.meta_name, b.data_cloud, b.meta_cloud))
+            safety.fsync_dir(d)              # the blobs exist before the index names them
+        if plan.new_dirs:
+            safety.fsync_dir(folder)
+        _fault(faults, "before_index")
+        raw = index.read_bytes()
+        if hashlib.sha256(raw).hexdigest() != plan.pre_index_sha256:
+            raise IndexChanged("containers.index changed since the write was planned")
+    except Exception:
+        _remove_new(plan)
+        raise
+    safety.atomic_write_bytes(index, _post_index(plan, raw))
+    safety.fsync_dir(folder)
+    _fault(faults, "after_index")
+    twin = xgs_twin(folder) if plan.xgs else None
+    if twin is not None:
+        for b in plan.blobs:
+            _xgs_write(twin, b.identifier, *payload[b.identifier])
+            safety.fsync_dir(_xgs_identifier_dir(twin, b.identifier))
+            _fault(faults, f"xgs:{b.identifier}")
+        safety.fsync_dir(twin)
+
+
+def finalize_pair(plan: XboxPairPlan) -> None:
+    """After validation: delete the replaced blobs of the op's own records (now unreferenced;
+    never a record)."""
+    for rel in plan.superseded:
+        (plan.folder / rel).unlink(missing_ok=True)
+
+
+def pair_index_state(plan: XboxPairPlan) -> str:
+    """``pre`` (as planned), ``post`` (exactly as apply_pair wrote it) or ``other``."""
+    return _index_state(plan, (plan.folder / "containers.index").read_bytes())[0]
+
+
+def pair_xgs_states(plan: XboxPairPlan) -> dict[str, str]:
+    """Per identifier: ``pre``, ``post``, ``torn`` (each file one or the other) or
+    ``other``; empty when the account has no xgs mirror."""
+    twin = xgs_twin(plan.folder) if plan.xgs else None
+    if twin is None:
+        return {}
+    post = {b.identifier: (b.data_sha256, b.meta_sha256) for b in plan.blobs}
+    states = {}
+    for ident, pre in plan.pre_xgs.items():
+        now = _xgs_hashes(_xgs_identifier_dir(twin, ident))
+        # A file the write leaves as it was (the same data, a new meta) is both pre and post:
+        # only the files that differ between the two tell them apart.
+        kinds = {"pre" if n == b else "post" if n == p else "other"
+                 for n, b, p in zip(now, pre or ("", ""), post[ident]) if b != p or n != b}
+        states[ident] = ("other" if "other" in kinds else "torn" if len(kinds) > 1
+                         else kinds.pop() if kinds else "post")
+    return states
+
+
+def complete_pair(plan: XboxPairPlan, payload: Mapping[str, tuple[bytes, bytes]]) -> None:
+    """Finish a write interrupted after its index write: mirror into xgs whatever is not
+    there yet. Refuses (IndexChanged) unless the index is exactly as the write left it."""
+    if pair_index_state(plan) != "post":
+        raise IndexChanged("containers.index is not as the interrupted write left it")
+    twin = xgs_twin(plan.folder) if plan.xgs else None
+    if twin is None:
+        return
+    states = pair_xgs_states(plan)
+    if "other" in states.values():
+        raise IndexChanged("an xgs copy changed since the interrupted write")
+    for b in plan.blobs:
+        if states.get(b.identifier) != "post":
+            _xgs_write(twin, b.identifier, *payload[b.identifier])
+            safety.fsync_dir(_xgs_identifier_dir(twin, b.identifier))
+    safety.fsync_dir(twin)
+
+
+def rollback_pair(plan: XboxPairPlan) -> None:
+    """Put the slot back exactly: the index gets its old header and the op's records their
+    old bytes (records the op added are dropped), the new blobs and dirs go, and the xgs
+    mirror gets its pre-image back. Every check runs first; on any doubt it changes nothing:
+    :class:`IndexChanged` when the index is neither as planned nor as the write left it,
+    :class:`RollbackError` when the replaced blobs are gone (the write was finalized) or an
+    xgs copy holds bytes that are neither its pre- nor its post-image."""
+    folder = plan.folder
+    index = folder / "containers.index"
+    state, restored = _index_state(plan, index.read_bytes())
+    if state == "other":
+        raise IndexChanged("containers.index is neither as planned nor as the write left it; "
+                           "nothing was changed")
+    if any(not (folder / rel).is_file() for rel in plan.superseded):
+        raise RollbackError("the replaced saves are gone (the write was finalized); "
+                            "nothing was changed")
+    xgs_states = pair_xgs_states(plan)
+    if "other" in xgs_states.values():
+        raise RollbackError("an xgs copy changed since the write; nothing was changed")
+    old = {ident: _old_blobs(plan, ident) for ident, st in xgs_states.items()
+           if st != "pre" and any(plan.pre_xgs[ident] or ())}
+    if state == "post":
+        if index.read_bytes() != _post_index(plan, restored):
+            restored = _flag_for_upload(plan, restored)    # the Xbox app uploaded our write
+        safety.atomic_write_bytes(index, restored)
+    _remove_new(plan)
+    for d in {b.dir_name for b in plan.blobs} - set(plan.new_dirs):
+        if (folder / d).is_dir():
+            safety.fsync_dir(folder / d)
+    safety.fsync_dir(folder)
+    twin = xgs_twin(folder) if xgs_states else None
+    for ident, st in xgs_states.items():
+        if st != "pre" and twin is not None:
+            _xgs_restore(_xgs_identifier_dir(twin, ident), plan.pre_xgs[ident], old.get(ident))
+    if twin is not None:
+        safety.fsync_dir(twin)
+
+
+def _index_state(plan: XboxPairPlan, raw: bytes) -> tuple[str, bytes | None]:
+    """The index's state and, for ``post``, the pre-image bytes to write back."""
+    if hashlib.sha256(raw).hexdigest() == plan.pre_index_sha256:
+        return "pre", raw
+    try:
+        _header, records, trailer = split_index(raw)
+    except ValueError:
+        return "other", None
+    out = []
+    for ident, rec in records:
+        if ident not in plan.pre_records_raw:
+            out.append((ident, rec))
+        elif plan.pre_records_raw[ident] is not None:
+            out.append((ident, plan.pre_records_raw[ident]))
+    restored = join_index(plan.pre_header_raw, out, trailer)
+    if hashlib.sha256(restored).hexdigest() != plan.pre_index_sha256:
+        return "other", None
+    expected = _post_index(plan, restored)
+    if expected != raw and _ignoring_sync(plan, expected) != _ignoring_sync(plan, raw):
+        return "other", None
+    return "post", restored
+
+
+def _ignoring_sync(plan: XboxPairPlan, raw: bytes) -> bytes:
+    """``raw`` with the sync state of the index and of the op's own records fixed: the Xbox
+    app moving them from Modified to Synced (an upload) does not change what was written
+    (the record identity, the blobs, the times)."""
+    header, records, trailer = split_index(raw)
+    own = {b.identifier for b in plan.blobs}
+    out = []
+    for ident, rec in records:
+        if ident in own:
+            buf = bytearray(rec)
+            struct.pack_into("<i", buf, len(rec) - RECORD_TAIL_LENGTH + 1, BLOB_SYNC_MODIFIED)
+            rec = bytes(buf)
+        out.append((ident, rec))
+    off = 4 + 2 * struct.unpack_from("<i", header, 0)[0]
+    head = bytearray(header)
+    struct.pack_into("<i", head, off + 8, INDEX_SYNC_MODIFIED)
+    return join_index(bytes(head), out, trailer)
+
+
+def _flag_for_upload(plan: XboxPairPlan, pre_raw: bytes) -> bytes:
+    """``pre_raw`` with the op's old records and the index marked Modified: the cloud holds our
+    write, so the app must upload the put-back one instead of seeing a conflict."""
+    header, records, trailer = split_index(pre_raw)
+    own = {i for i, rec in plan.pre_records_raw.items() if rec is not None}
+    out = []
+    for ident, rec in records:
+        if ident in own:
+            buf = bytearray(rec)
+            struct.pack_into("<i", buf, len(rec) - RECORD_TAIL_LENGTH + 1, BLOB_SYNC_MODIFIED)
+            rec = bytes(buf)
+        out.append((ident, rec))
+    off = 4 + 2 * struct.unpack_from("<i", header, 0)[0]
+    head = bytearray(header)
+    struct.pack_into("<i", head, off + 8, INDEX_SYNC_MODIFIED)
+    return join_index(bytes(head), out, trailer)
+
+
+def _post_index(plan: XboxPairPlan, pre_raw: bytes) -> bytes:
+    """The index apply_pair writes over ``pre_raw``: the op's records replaced in place (new
+    ones appended), every other record raw, the patched header."""
+    _header, records, trailer = split_index(pre_raw)
+    present = {ident for ident, _rec in records}
+    out = [(ident, plan.new_records_raw.get(ident, rec)) for ident, rec in records]
+    out += [(b.identifier, plan.new_records_raw[b.identifier])
+            for b in plan.blobs if b.identifier not in present]
+    return join_index(plan.new_header_raw, out, trailer)
+
+
+def _xgs_hashes(d: Path) -> tuple[str, str]:
+    return tuple(safety.sha256_file(d / n) if (d / n).is_file() else "" for n in ("data", "meta"))
+
+
+def _xgs_pre(twin: Path, c: _Container) -> tuple[str, str] | None:
+    """The xgs pre-image of one record (None: no folder). Refuses an xgs copy holding bytes
+    that are not the record's own wgs blobs: nothing could rebuild them after the write."""
+    d = _xgs_identifier_dir(twin, c.identifier)
+    if not d.is_dir():
+        return None
+    found = _xgs_hashes(d)
+    if found == ("", ""):
+        return found
+    wgs = None
+    if (c.sync_state != SYNC_STATE_DELETED and c.data_file is not None and c.data_file.is_file()
+            and c.meta_file is not None and c.meta_file.is_file()):
+        wgs = (safety.sha256_file(c.data_file), safety.sha256_file(c.meta_file))
+    if found != wgs:
+        raise XgsMismatch(f"{c.identifier}: the xgs copy holds bytes the wgs save does not")
+    return found
+
+
+def _old_blobs(plan: XboxPairPlan, ident: str) -> tuple[bytes, bytes]:
+    """The replaced wgs blobs of ``ident``, checked against its xgs pre-image."""
+    rec = plan.pre_records_raw.get(ident)
+    c = _parse_record(rec, plan.folder) if rec is not None else None
+    if c is None or c.data_file is None or c.meta_file is None:
+        raise RollbackError(f"{ident}: the replaced save cannot be read; nothing was changed")
+    data, meta_bytes = c.data_file.read_bytes(), c.meta_file.read_bytes()
+    if (hashlib.sha256(data).hexdigest(), hashlib.sha256(meta_bytes).hexdigest()) != \
+            plan.pre_xgs[ident]:
+        raise RollbackError(f"{ident}: the replaced save is not the xgs pre-image; "
+                            "nothing was changed")
+    return data, meta_bytes
+
+
+def _xgs_restore(d: Path, pre: tuple[str, str] | None, old: tuple[bytes, bytes] | None) -> None:
+    for i, name in enumerate(("data", "meta")):
+        want, path = (pre or ("", ""))[i], d / name
+        if not want:
+            path.unlink(missing_ok=True)          # a file this write created
+        elif (safety.sha256_file(path) if path.is_file() else "") != want:
+            safety.atomic_write_bytes(path, old[i])
+    if pre is None and d.is_dir() and not any(d.iterdir()):
+        d.rmdir()
+    elif d.is_dir():
+        safety.fsync_dir(d)
+
+
+def _free_extension(c: _Container) -> int:
+    """The next ``container.<n>`` number after the record's own whose file does not exist
+    (1..255, never 0), so a write never overwrites a file it did not create."""
+    ext = c.extension
+    for _ in range(255):
+        ext = (ext % 255) + 1
+        if not (c.directory / f"container.{ext}").exists():
+            return ext
+    raise ValueError(f"{c.identifier}: no free container number")
+
+
+def _patched_header(header: bytes, filetime: int, state: int) -> bytes:
+    """The index header with its FILETIME and sync state replaced as integers; the process
+    and account identifiers stay byte for byte."""
+    off = 4 + 2 * struct.unpack_from("<i", header, 0)[0]
+    out = bytearray(header)
+    struct.pack_into("<q", out, off, filetime)
+    struct.pack_into("<i", out, off + 8, state)
+    return bytes(out)
+
+
+def _blob_files(plan: XboxPairPlan, b: XboxBlobWrite) -> list[tuple[str, str]]:
+    return [(b.data_name, b.data_sha256), (b.meta_name, b.meta_sha256),
+            (b.container_name, "")]
+
+
+def _is_ours(d: Path, b: XboxBlobWrite, name: str) -> bool:
+    """The data and meta names are fresh GUIDs, so they are always this op's own. A
+    ``container.<n>`` file is ours only when it holds exactly the bytes this op writes: the
+    Xbox app may have made the same number since the plan."""
+    if name != b.container_name:
+        return True
+    try:
+        return (d / name).read_bytes() == build_blob_container(
+            b.data_name, b.meta_name, b.data_cloud, b.meta_cloud)
+    except OSError:
+        return False
+
+
+def _remove_new(plan: XboxPairPlan) -> None:
+    """Remove the files this op wrote; a file with the same name that holds other bytes is
+    someone else's and stays."""
+    for b in plan.blobs:
+        d = plan.folder / b.dir_name
+        for name, _sha in _blob_files(plan, b):
+            if (d / name).is_file() and _is_ours(d, b, name):
+                (d / name).unlink()
+    for rel in plan.new_dirs:
+        d = plan.folder / rel
+        if d.is_dir() and not any(d.iterdir()):
+            d.rmdir()
+
+
+def _fault(faults, point: str) -> None:
+    if faults is not None:
+        faults.at(point)

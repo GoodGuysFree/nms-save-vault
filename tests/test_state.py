@@ -62,3 +62,12 @@ def test_font_scale_round_trips_and_survives_a_hand_edited_config():
     assert state.AppState.from_dict(st.to_dict()).font_scale == 1.3
     assert state.AppState.from_dict({"font_scale": "big"}).font_scale == 1.0
     assert state.AppState.from_dict({}).font_scale == 1.0
+
+
+def test_a_state_file_with_a_bom_still_loads(tmp_path):
+    """An editor that saves UTF-8 with a BOM (older Notepad) must not stop the app from
+    starting."""
+    p = tmp_path / "state.json"
+    p.write_bytes(b"\xef\xbb\xbf" + b'{"version": 2, "vault": null, "sources": []}')
+    st = state.load(p)
+    assert st is not None and st.sources == []

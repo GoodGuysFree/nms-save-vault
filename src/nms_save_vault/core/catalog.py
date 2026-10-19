@@ -7,15 +7,28 @@ per-slot summary (computed by scanning + decoding metas) so the UI is fast.
 from __future__ import annotations
 
 import json
+import logging
 import os
+import shutil
+import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-from . import formats, savedir, slotmap
+from . import formats, safety, savedir, slotmap
 from .savedir import SaveDirView
 
+log = logging.getLogger(__name__)
+
+# catalog.json is saved through a temp file named like this. One older than a few minutes is
+# a leftover of a save that was interrupted, never a save still in progress.
+CATALOG_TEMP_PREFIX = ".catalog.json.tmp_"
+STALE_TEMP_SECONDS = 5 * 60
+
 CATALOG_VERSION = 1
+
+# Marks the copy of a vault made before its upgrade to the version store (D3 4.1).
+PRE_UPGRADE_COPY = "PRE-UPGRADE-COPY.txt"
 
 # Entry kinds
 KIND_FULL = "full"          # app-created full snapshot (managed)
@@ -98,7 +111,7 @@ def _member_summary(mv) -> MemberSummary:
         ms.game_mode = mv.info.game_mode
         ms.season = mv.info.season
         ms.play_time = mv.info.total_play_time
-        ms.timestamp = mv.effective_timestamp  # falls back to mtime for Xbox saves
+        ms.timestamp = mv.effective_timestamp  # falls back to mtime when the meta has none
         ms.base_version = mv.info.base_version
         ms.difficulty = mv.info.difficulty
     return ms
@@ -147,11 +160,66 @@ def _entry_from_dict(d: dict) -> CatalogEntry:
     )
 
 
+class OplogRead(list):
+    """The readable op-log records, oldest first, plus where the log is damaged. ``lines``
+    holds each record's line number, so damage can be placed relative to a record."""
+
+    def __init__(self, records=(), damaged_lines=(), lines=()):
+        super().__init__(records)
+        self.damaged_lines: list[int] = list(damaged_lines)
+        self.lines: list[int] = list(lines)
+
+    @property
+    def warning(self) -> str:
+        """One sentence for the user about damage, or '' when there is none."""
+        if not self.damaged_lines:
+            return ""
+        lines = ", ".join(str(n) for n in self.damaged_lines[:5])
+        if len(self.damaged_lines) > 5:
+            lines += f" and {len(self.damaged_lines) - 5} more"
+        return (
+            f"The undo log (oplog.jsonl) has damaged lines ({lines}); they were skipped, so "
+            "the operations they recorded cannot be undone."
+        )
+
+
+CATALOG_LOCK = ".catalog.lock"      # held while the catalog is read, changed and written (not copied by the upgrade)
+
+
+BUSY_SECONDS = 1.5      # how long a catalog read or write waits for another process's open handle
+
+
+def _when_free(action):
+    """Run ``action``, retrying briefly on a Windows sharing violation (another process has
+    catalog.json open for a moment, as a reader or while swapping it in); then the error."""
+    deadline = time.monotonic() + BUSY_SECONDS
+    pause = 0.01
+    while True:
+        try:
+            return action()
+        except PermissionError:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(pause)
+            pause = min(pause * 2, 0.1)
+
+
+class OperationError(Exception):
+    """A plain-text reason an operation or the vault cannot go on; shown to the owner as is."""
+
+
+HOW_TO_CHANGE_VAULT = ("To use another folder, start the app with --vault <folder>, or change the "
+                       "\"vault\" entry in state.json.")
+
+
 class Vault:
     """Managed storage root + catalog of all known backups."""
 
-    def __init__(self, root: str | Path):
+    def __init__(self, root: str | Path, *, read_only: bool = False):
         self.root = Path(root)
+        # A read-only vault is only looked at: loading tidies nothing and nothing is saved
+        # (the organizer's read-only mode and its checks against a real vault).
+        self.read_only = read_only
         self.backups_dir = self.root / "backups"
         self.snapshots_dir = self.root / "snapshots"
         self.extracts_dir = self.root / "extracts"
@@ -159,75 +227,208 @@ class Vault:
         self.oplog_path = self.root / "oplog.jsonl"
         self._entries: list[CatalogEntry] = []
         self._loaded = False
+        self._seen: tuple[int, int] | None = None   # the catalog file as last read or written
 
     def ensure(self) -> None:
-        for d in (self.root, self.backups_dir, self.snapshots_dir, self.extracts_dir):
-            d.mkdir(parents=True, exist_ok=True)
+        if self.read_only:
+            raise PermissionError(f"the vault at {self.root.name} is opened read-only")
+        # A vault the app CREATES (the folder missing or completely empty) starts in store mode
+        # (D3 4.1); one that has anything in it is never converted by being opened or written.
+        existed = self.root.exists()
+        created = not existed or (self.root.is_dir() and not any(self.root.iterdir()))
+        try:
+            for d in (self.root, self.backups_dir, self.snapshots_dir, self.extracts_dir):
+                d.mkdir(parents=True, exist_ok=True)
+            if created:
+                from .store.versionstore import start_new_vault
+
+                start_new_vault(self.root)
+        except OSError as exc:
+            if created:
+                self._undo_creation(existed)
+            raise OperationError(
+                f"The vault folder ({self.root.name}) cannot be reached or created "
+                f"({exc.strerror or type(exc).__name__}). Is its drive connected, and is the "
+                f"name a folder? {HOW_TO_CHANGE_VAULT}") from exc
+
+    def _undo_creation(self, root_existed: bool) -> None:
+        """A vault this call was creating failed half way: the folder was missing or empty, so
+        everything in it is this call's own; remove it, so a retry finds an empty folder."""
+        try:
+            for child in self.root.iterdir():
+                if child.is_dir() and not child.is_symlink():
+                    shutil.rmtree(child)
+                else:
+                    child.unlink()
+            if not root_existed:
+                self.root.rmdir()
+        except OSError as exc:
+            log.warning("could not remove what a failed vault creation left: %s", exc)
 
     def load(self) -> "Vault":
-        if self.catalog_path.is_file():
-            data = json.loads(self.catalog_path.read_text("utf-8"))
-            self._entries = [_entry_from_dict(e) for e in data.get("entries", [])]
+        if not self.read_only:
+            self._remove_stale_temp_files()
+        self._reload()
+        return self
+
+    def mark_unreadable(self) -> None:
+        """catalog.json cannot be read: the vault has no entries here, and the file is left
+        exactly as it is (use with ``read_only``)."""
+        self._entries, self._loaded, self._seen = [], True, self._stamp()
+
+    def _stamp(self) -> tuple[int, int] | None:
+        try:
+            st = self.catalog_path.stat()
+        except OSError:
+            return None
+        return st.st_mtime_ns, st.st_size
+
+    def _reload(self) -> None:
+        stamp = self._stamp()
+        if stamp is not None:
+            try:
+                data = json.loads(_when_free(lambda: self.catalog_path.read_text("utf-8")))
+                self._entries = [_entry_from_dict(e) for e in data.get("entries", [])]
+            except (ValueError, KeyError, TypeError, AttributeError) as exc:
+                raise OperationError(
+                    f"The catalog of the vault ({self.root.name}, file catalog.json) cannot be "
+                    f"read ({type(exc).__name__}). The file was not changed; restore it from a "
+                    f"copy or fix it, then try again. {HOW_TO_CHANGE_VAULT}") from exc
         else:
             self._entries = []
+        self._seen = stamp
         self._loaded = True
-        return self
 
     def save(self) -> None:
         self.ensure()
         data = {"version": CATALOG_VERSION, "entries": [asdict(e) for e in self._entries]}
-        tmp = self.catalog_path.with_name(self.catalog_path.name + ".tmp")
-        tmp.write_text(json.dumps(data, indent=2), "utf-8")
-        os.replace(tmp, self.catalog_path)
+        # Temp file, fsync, os.replace: a crash leaves the old catalog or the new one, whole.
+        raw = json.dumps(data, indent=2).encode("utf-8")
+        _when_free(lambda: safety.atomic_write_bytes(self.catalog_path, raw,
+                                                     temp_prefix=CATALOG_TEMP_PREFIX))
+        self._seen = self._stamp()
+
+    def _remove_stale_temp_files(self) -> None:
+        """Delete temp files an interrupted catalog save left behind (only those, and only
+        once they are too old to belong to a save in progress)."""
+        if not self.root.is_dir():
+            return
+        cutoff = datetime.now().timestamp() - STALE_TEMP_SECONDS
+        for tmp in self.root.glob(f"{CATALOG_TEMP_PREFIX}*.part"):
+            try:
+                if tmp.is_file() and tmp.stat().st_mtime < cutoff:
+                    tmp.unlink()
+                    log.warning("removed %s, left by an interrupted catalog save", tmp.name)
+            except OSError as exc:
+                log.warning("could not remove %s, left by an interrupted catalog save: %s", tmp.name, exc)
 
     @property
     def entries(self) -> list[CatalogEntry]:
-        if not self._loaded:
-            self.load()
+        """The entries; re-read when another writer (a CLI run, another window, an undo of the
+        upgrade) changed catalog.json since this object last looked."""
+        if not self._loaded or self._stamp() != self._seen:
+            self._reload()
         return list(self._entries)
 
     def get(self, entry_id: str) -> CatalogEntry | None:
         return next((e for e in self.entries if e.id == entry_id), None)
 
     def upsert(self, entry: CatalogEntry) -> None:
-        if not self._loaded:
-            self.load()
-        self._entries = [e for e in self._entries if e.id != entry.id]
-        self._entries.append(entry)
-        self.save()
+        self._change(lambda cur: [e for e in cur if e.id != entry.id] + [entry])
 
     def remove(self, entry_id: str) -> None:
-        if not self._loaded:
-            self.load()
-        self._entries = [e for e in self._entries if e.id != entry_id]
-        self.save()
+        self._change(lambda cur: [e for e in cur if e.id != entry_id])
 
-    def new_id(self, kind: str, when: datetime | None = None, tag: str | None = None) -> str:
+    def _change(self, apply) -> None:
+        """One change to the catalog as it is on disk now: under the catalog lock the file is
+        read again, only this change is applied and the result written, so an entry another
+        writer added meanwhile is never dropped by a stale in-memory list. If the save fails,
+        memory goes back to what the file still says."""
+        self.ensure()
+        with safety.exclusive_lock(self.root / CATALOG_LOCK):
+            self._reload()
+            before = self._entries
+            self._entries = apply(before)
+            try:
+                self.save()
+            except BaseException:
+                self._entries = before
+                raise
+            self._seen = self._stamp()
+
+    def new_id(
+        self, kind: str, when: datetime | None = None, tag: str | None = None, folder: Path | None = None
+    ) -> str:
+        """A fresh entry id; with ``folder``, also one that names no existing ``folder/<id>``."""
         when = when or datetime.now()
         stamp = f"{when:%Y%m%d-%H%M%S}"
         base = f"{kind}-{tag}-{stamp}" if tag else f"{kind}-{stamp}"
         existing = {e.id for e in self.entries}
-        if base not in existing:
+
+        def taken(candidate: str) -> bool:
+            return candidate in existing or (folder is not None and (folder / candidate).exists())
+
+        if not taken(base):
             return base
         i = 2
-        while f"{base}-{i}" in existing:
+        while taken(f"{base}-{i}"):
             i += 1
         return f"{base}-{i}"
 
-    def append_oplog(self, record: dict) -> None:
-        self.ensure()
-        with open(self.oplog_path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(record) + "\n")
+    @staticmethod
+    def tag_of(entry_id: str) -> str | None:
+        """The tag :meth:`new_id` put into an id ('snapshot-steam-20261017-120000' ->
+        'steam'), or None for an id made without one."""
+        parts = entry_id.split("-")
+        if len(parts) >= 4 and not parts[1].isdigit() and parts[2].isdigit():
+            return parts[1]
+        return None
 
-    def read_oplog(self) -> list[dict]:
+    def append_oplog(self, record: dict) -> None:
+        """Append one record as one complete line, fsynced, so a crash can lose the record
+        but never leave half a line in front of later ones. A line torn by an earlier crash
+        is never extended: the record starts on a fresh line. One handle checks the last
+        byte and writes, and every byte is written even if the OS takes them in pieces."""
+        self.ensure()
+        data = (json.dumps(record) + "\n").encode("utf-8")
+        with open(self.oplog_path, "a+b", buffering=0) as f:
+            size = f.seek(0, os.SEEK_END)
+            if size:
+                f.seek(size - 1)
+                if f.read(1) != b"\n":
+                    data = b"\n" + data
+            pending = memoryview(data)
+            while pending:                 # appends go to the end whatever the position
+                pending = pending[f.write(pending):]
+            os.fsync(f.fileno())
+
+    def read_oplog(self) -> OplogRead:
+        """Every readable record, oldest first, and where the log is damaged. A line that is
+        not a record -- torn by a crash mid-write, invalid UTF-8, or otherwise damaged -- is
+        logged and skipped, never raised: one bad line must not make the whole history
+        unreadable. Each record's line number is kept, so damage can be placed relative to
+        it (undo must not act on an operation older than a damaged line)."""
         if not self.oplog_path.is_file():
-            return []
-        out = []
-        for line in self.oplog_path.read_text("utf-8").splitlines():
-            line = line.strip()
-            if line:
-                out.append(json.loads(line))
-        return out
+            return OplogRead()
+        records: list[dict] = []
+        record_lines: list[int] = []
+        damaged: list[int] = []
+        for number, raw in enumerate(self.oplog_path.read_bytes().split(b"\n"), start=1):
+            if not raw.strip():
+                continue
+            try:
+                record = json.loads(raw.decode("utf-8"))
+            except ValueError as exc:      # UnicodeDecodeError is a ValueError too
+                log.warning("skipped line %d of %s, not a valid record: %s", number, self.oplog_path.name, exc)
+                damaged.append(number)
+                continue
+            if not isinstance(record, dict):
+                log.warning("skipped line %d of %s, not a record object", number, self.oplog_path.name)
+                damaged.append(number)
+                continue
+            records.append(record)
+            record_lines.append(number)
+        return OplogRead(records, damaged, lines=record_lines)
 
     def make_entry_from_dir(self, entry_id, kind, label, path, *, managed, source=None, slots=None, note="") -> CatalogEntry:
         """Scan ``path`` and build a catalog entry with a cached slot summary."""
@@ -249,7 +450,8 @@ def looks_like_vault_dir(path: str | Path) -> bool:
     """True if ``path`` is an NMS Save Vault root. The authoritative marker is
     ``catalog.json`` (written the first time the vault gains an entry); a vault copied
     elsewhere carries it along with its ``backups``/``snapshots``/``extracts`` folders."""
-    return (Path(path) / "catalog.json").is_file()
+    return ((Path(path) / "catalog.json").is_file()
+            or (Path(path) / "store" / "FORMAT").is_file())
 
 
 def discover_save_dirs(root: str | Path, exclude=(), max_depth: int = 3) -> list[Path]:
@@ -264,6 +466,11 @@ def discover_save_dirs(root: str | Path, exclude=(), max_depth: int = 3) -> list
         if depth >= max_depth:
             dirnames[:] = []
         if here.resolve() in excluded:
+            dirnames[:] = []
+            continue
+        if here != root and (looks_like_vault_dir(here) or (here / PRE_UPGRADE_COPY).is_file()):
+            # A vault's own folders (or a pre-upgrade copy of one, D3 4.1) are its entries,
+            # never backups of their own.
             dirnames[:] = []
             continue
         if savedir.looks_like_save_dir(here):

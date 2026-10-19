@@ -35,7 +35,7 @@ build fails if any part of it is not validly signed by the Python Software Found
 ## 3b. Build the Linux and macOS kits
 
 ```pwsh
-python packaging\build_posix_kit.py all   # -> build\kits\NMSSaveVault-X.Y.Z-<os>-<arch>.tar.gz
+python packaging\build_posix_kit.py all   # -> build\kits\NMSSaveVault-vX.Y.Z-<os>-<arch>.tar.gz
 ```
 
 Runs anywhere, Windows included: the bundled interpreter is repacked archive-to-archive, so
@@ -52,11 +52,13 @@ Stage a versioned copy (the `releases/` folder is gitignored — local staging o
 ```pwsh
 New-Item -ItemType Directory -Force releases | Out-Null
 Copy-Item dist\NMSSaveVault-Setup.zip releases\NMSSaveVault-Setup-vX.Y.Z.zip -Force
+Copy-Item build\kits\NMSSaveVault-vX.Y.Z-*.tar.gz releases\ -Force
 ```
 
-## 4. Commit & push (no binary)
+## 4. Merge, commit & push (no binary)
 
-Commit the version + README changes and push `main`:
+If the work was done on a feature branch, merge it into `main` first (`git switch main`,
+`git merge <branch>`), then commit the version + README changes and push `main`:
 
 ```pwsh
 git add VERSION pyproject.toml src/nms_save_vault/__init__.py README.md
@@ -69,12 +71,15 @@ git push origin main
 ```pwsh
 gh release create vX.Y.Z `
   releases\NMSSaveVault-Setup-vX.Y.Z.zip `
+  releases\NMSSaveVault-vX.Y.Z-linux-x86_64.tar.gz `
+  releases\NMSSaveVault-vX.Y.Z-macos-arm64.tar.gz `
   -R GoodGuysFree/nms-save-vault `
   --target main `
   --title "vX.Y.Z" `
   --notes "<highlights>"
 ```
 
+The Windows zip must stay the only `.zip` asset (the in-app updater takes the first one).
 The asset filename becomes the public download name, so keep the `-vX.Y.Z` suffix. The
 QuickStart link in the README points at `/releases/latest`, so it always resolves to the
 newest release automatically.

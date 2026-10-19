@@ -58,6 +58,8 @@ if exist "%INSTALL_DIR%\%EXE%" (
     )
 )
 
+rem  nmsvault.exe is the command-line launcher's name in older versions.
+if exist "%INSTALL_DIR%\nmsvault.exe" del /f /q "%INSTALL_DIR%\nmsvault.exe" >nul 2>&1
 echo   - Removing %INSTALL_DIR%
 echo(
 echo  Done. NMS Save Vault has been uninstalled.

@@ -7,8 +7,8 @@ a backup into a live target:
   directly under ``%APPDATA%\\HelloGames\\NMS`` and looks like a save dir. Each
   distinct steamid64 is its own account (so a machine with two Steam accounts gets
   two live sources).
-* **Xbox live** -- each Game Pass account folder under the ``wgs`` root (writable for
-  same-platform operations; Steam<->Xbox transfer is not yet supported).
+* **Xbox live** -- each Game Pass account folder under the ``wgs`` root (writable; a Steam<->Xbox
+  move goes through the Organizer).
 * **In-place backup** -- anything else under the NMS root that still contains save
   files: a hand-pasted ``st_... - Copy``, a renamed/dated folder, etc. These are
   *not* live targets; they are handed to the catalog as in-place backups.
@@ -19,9 +19,11 @@ into or modifies any save directory.
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
+from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import catalog, locations, savedir, state
+from . import catalog, locations, msstore, savedir, state
 from .state import (
     ORIGIN_AUTO,
     ORIGIN_MANUAL,
@@ -133,8 +135,7 @@ def discover_live_sources(
                 path=str(d),
                 label=_xbox_label(account, i),
                 role=ROLE_LIVE,
-                # Same-platform Xbox writes are supported (Steam<->Xbox is not); an xgs-only
-                # account has no containers.index and is read-only.
+                # An xgs-only account has no containers.index and is read-only.
                 writable=(Path(d) / "containers.index").is_file(),
                 origin=ORIGIN_AUTO,
             )
@@ -142,26 +143,126 @@ def discover_live_sources(
     return sources
 
 
+def all_live_paths(
+    state: AppState | None,
+    ms_dirs: list[Path] | None = None,
+    nms_root: str | Path | None = None,
+) -> list[str]:
+    """Every folder the game itself uses: each live source in ``state``, enabled or not
+    (switching a source off in the app does not stop the game using it), plus the live
+    folders on disk now (:func:`discover_live_sources`), which ``state`` may lack."""
+    paths = [s.path for s in state.sources if s.role == ROLE_LIVE] if state is not None else []
+    return paths + [s.path for s in discover_live_sources(nms_root, ms_dirs=ms_dirs)]
+
+
 def discover_inplace_backups(
     nms_root: str | Path | None = None,
     *,
-    exclude: list[str | Path] = (),
+    live: Iterable[str | Path] = (),
+    exclude: Iterable[str | Path] = (),
 ) -> list[Path]:
-    """Save folders under the NMS root(s) that are *not* live targets -- i.e. backups."""
+    """Save folders under the NMS root(s) that are *not* live targets -- i.e. backups.
+
+    ``live`` are the live source folders (e.g. :func:`all_live_paths`): anything that is or
+    lies inside one is classified as live, never returned. ``exclude`` (the vault) is not
+    searched at all. :func:`find_backups` applies the rule.
+    """
+    return find_backups(nms_root, live=live, exclude=exclude).backups
+
+
+class LiveFolders(list):
+    """Resolved live folders with their xgs twins, as :func:`live_folders` returns them.
+    Handing one back to a function here costs nothing: it is not resolved again."""
+
+
+def live_folders(paths: Iterable[str | Path]) -> LiveFolders:
+    """The resolved live save folders for ``paths`` (live sources), each with its xgs twin
+    (:func:`msstore.with_xgs_twins`): the game itself reads and writes there, so none of
+    them is ever a backup. A list this already returned is passed through as it is."""
+    if isinstance(paths, LiveFolders):
+        return paths
+    out = LiveFolders()
+    for folder in msstore.with_xgs_twins(paths):
+        try:
+            resolved = folder.resolve()
+        except OSError:
+            continue
+        if resolved not in out:
+            out.append(resolved)
+    return out
+
+
+def is_inside(path: str | Path, folders: Iterable[Path]) -> bool:
+    """True if ``path`` is, or lies inside, one of ``folders`` (resolved ones, e.g. from
+    :func:`live_folders`)."""
+    try:
+        resolved = Path(path).resolve()
+    except OSError:
+        return False
+    return any(resolved == f or f in resolved.parents for f in folders)
+
+
+def is_live_folder(path: str | Path, live: Iterable[str | Path]) -> bool:
+    """True if ``path`` is, or lies inside, one of the ``live`` source folders or the xgs
+    twin of one. ``live`` may be given in any form: it goes through :func:`live_folders`."""
+    return is_inside(path, live_folders(live))
+
+
+@dataclass
+class BackupSearch:
+    roots: list[Path] = field(default_factory=list)           # the NMS roots searched
+    backups: list[Path] = field(default_factory=list)
+    # Save folders found that are live after all: a live source not named st_<id>, or a
+    # folder inside a live one.
+    skipped_live: list[Path] = field(default_factory=list)
+
+
+def find_backups(
+    nms_root: str | Path | None = None,
+    *,
+    live: Iterable[str | Path],
+    exclude: Iterable[str | Path] = (),
+) -> BackupSearch:
+    """Every save folder under the NMS root(s) (bar ``exclude``), split into backups and the
+    live folders among them (P9: a live folder catalogued as a backup of itself shows every
+    one of its saves twice).
+
+    A canonical ``st_<id>`` folder directly under a root is the game's own by name and not
+    a candidate at all. Any other folder is live when it is, or lies inside, one of the
+    ``live`` source folders or the xgs twin of one (:func:`live_folders`).
+    """
+    folders = live_folders(live)
     excluded = list(exclude)
-    live = {Path(p).resolve() for p in excluded}
-    out: list[Path] = []
+    search = BackupSearch()
     seen: set[Path] = set()
     for root in _search_roots(nms_root):
         if not root.is_dir():
             continue
+        search.roots.append(root)
         for d in catalog.discover_save_dirs(root, exclude=excluded):
-            rd = d.resolve()
-            if rd in live or rd in seen or is_canonical_steam_live(d, root):
+            try:
+                rd = d.resolve()
+            except OSError:
+                continue
+            if rd in seen or is_canonical_steam_live(d, root):
                 continue
             seen.add(rd)
-            out.append(d)
-    return out
+            (search.skipped_live if is_inside(rd, folders) else search.backups).append(d)
+    return search
+
+
+def entries_in_live_folders(vault: catalog.Vault, live: Iterable[str | Path]) -> tuple[bool, list]:
+    """Whether the vault itself is, or lies inside, a live folder, and the catalog entries
+    that are or lie inside one (outside the vault, when it is) -- live folders an older
+    version catalogued as backups (P9). Read-only: the caller notes them, nothing changes."""
+    folders = live_folders(live)
+    root = vault.root.resolve()
+    vault_is_live = is_inside(root, folders)
+    entries = [
+        e for e in vault.entries
+        if not (vault_is_live and is_inside(e.path, [root])) and is_inside(e.path, folders)
+    ]
+    return vault_is_live, entries
 
 
 def bootstrap_state(

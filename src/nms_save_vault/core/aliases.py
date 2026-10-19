@@ -37,7 +37,7 @@ _HEADER = """\
 # Each line maps a real account identifier to the name shown in the app instead.
 # Steam accounts are the 17-digit steamid64 from the st_<id> folder; Xbox / Game Pass
 # accounts are the wgs folder name. Editing this file by hand is fine; the app also
-# writes it from Accounts... in the GUI and `nmsvault accounts --set` in the CLI.
+# writes it from Accounts... in the GUI and `nmsvault-cli accounts --set` in the CLI.
 
 """
 
@@ -184,3 +184,49 @@ def reload(path: str | Path | None = None) -> AliasMap:
 def redact(text):
     """Filter one user-visible value through the active alias map."""
     return active().redact(text)
+
+
+#: A SteamID64 (also inside ``st_<id>`` folder names) and an Xbox account folder name
+#: (``<xuid>_<title id>``), wherever they appear.
+STEAM_ID = re.compile(r"7656119\d{10}")
+XBOX_ACCOUNT = re.compile(r"\b[0-9A-Fa-f]{16}_[0-9A-Fa-f]{32}\b")
+
+
+def home_pattern(home: Path) -> re.Pattern | None:
+    """The home folder however a message spells it: either slash, any case (where names
+    ignore case another spelling is the same folder; elsewhere redacting one more spelling
+    costs nothing)."""
+    text = str(home).rstrip("\\/")
+    if len(text) < 3:
+        return None
+    parts = [re.escape(p) for p in re.split(r"[\\/]+", text) if p]
+    prefix = "/" if text.startswith("/") else ""
+    return re.compile(prefix + r"[\\/]+".join(parts) + r"(?=[\\/]|$|\W)", re.IGNORECASE)
+
+
+_HOME: tuple[Path, re.Pattern | None] | None = None
+
+
+def scrub(text, home: re.Pattern | None = None):
+    """``redact``, then no Steam or Xbox account id survives (an unaliased one becomes a
+    neutral label) and the user's home folder reads ``~``. Shared by the log file and the
+    screen. Non-strings pass through."""
+    if not isinstance(text, str) or not text:
+        return text
+    try:
+        text = redact(text)              # configured names first, readable
+    except Exception:  # noqa: BLE001 - a broken alias map must not cost the text
+        pass
+    text = STEAM_ID.sub("<steam id>", text)
+    text = XBOX_ACCOUNT.sub("<xbox account>", text)
+    if home is None:
+        global _HOME
+        if _HOME is None:
+            try:
+                _HOME = (Path.home(), home_pattern(Path.home()))
+            except (RuntimeError, OSError):
+                _HOME = (Path(), None)
+        home = _HOME[1]
+    if home is not None:
+        text = home.sub("~", text)
+    return text

@@ -4,11 +4,27 @@ Safe backup, catalog, and slot management for **No Man's Sky** (PC — Steam and
 Game Pass; GOG / Epic use the same format) save files — designed to give you effectively
 unlimited save slots beyond the game's 15. See [Platform support](#platform-support).
 
+## Screenshots
+
+All data below is invented (a demo world, not anyone's saves).
+
+[![Organizer: every save file on one line, its versions and branches, live slots and what is inside](docs/img/organizer.png)](docs/img/organizer.png)
+*The Organizer: one line per save file, versions and a branch, both platforms' live slots, and the facts read from inside the save.*
+
+[![Move to live: the replace preview](docs/img/move-to-live.png)](docs/img/move-to-live.png)
+*Move to live: what goes in, what goes to the vault first, and what the slot will hold.*
+
+[![History of one save with a branch and what changed](docs/img/history.png)](docs/img/history.png)
+*History: the recorded branches of one save, and what changed since the version it comes from.*
+
+[![Live saves and backups](docs/img/live-and-backups.png)](docs/img/live-and-backups.png)
+*Live saves and backups: the classic tab, with every backup in the vault.*
+
 ## QuickStart
 
 **Just want to run it? No Python needed.** Download the ready-to-use Windows kit from the
 [**latest release**](https://github.com/GoodGuysFree/nms-save-vault/releases/latest) — grab
-`NMSSaveVault-Setup-v0.2.8.zip` under **Assets**.
+`NMSSaveVault-Setup-v0.3.0.zip` under **Assets**.
 
 Extract the zip, open the `NMSSaveVault` folder and run **`NMSSaveVault.exe`**. That is the
 whole thing — Python and Tkinter are bundled, nothing is installed, and because the app
@@ -18,6 +34,54 @@ shortcuts? `install.bat` in the zip adds them. Full details under
 [Run it](#run-it-windows-no-python-needed); every version is on the
 [Releases](https://github.com/GoodGuysFree/nms-save-vault/releases) page.
 
+## The Organizer
+
+The **Organizer** tab (Ctrl+1) is the easy way to see and move your saves. It shows **every
+save file as one line** - live or only in the vault - and a `>` opens its **versions**. Live
+markers show which slot of your Steam and Xbox folders holds each one. Facts columns (story
+and Atlas progress, bases, ships, companions, play time and more) are read from the saves and
+shown for each version. Chips, Find, sorting and a column chooser narrow the list.
+
+* **Move to live / Replace with / Swap / Keep a copy / Undo.** Put a version into a live
+  slot, pick the version for a slot, exchange two slots, or keep a copy of a live slot in the
+  vault. **The save being replaced always goes to the vault first**, every move is checked
+  and rolled back exactly if it is wrong, and each one has an **Undo**. The app **never
+  empties a slot**: where a slot would end up empty it shows the steps to do it yourself.
+* **History, Compare, Notes and Pins.** **History** lists a save file's versions and what
+  changed between them; **Compare** puts two versions side by side; **Notes** keeps a note
+  per save file and a label, comment and lock per version (in the vault, never in the save);
+  a **Pin** stops the app suggesting that save's slot for another save.
+* **Corrections.** If the app linked two saves wrongly, say where a version **comes from**,
+  **Combine** two save files into one, or **Split** one apart. Each can be undone, and none
+  touches a save file.
+* **No backup yet** marks a version that exists only in a live folder; hover any chip, marker
+  or column title for a plain-words explanation.
+* **One-time vault upgrade.** Moves in the Organizer need the version store. **Tools > Vault
+  upgrade** (or `nmsvault-cli store upgrade`) does it once: the vault is copied aside first, and
+  **Undo the vault upgrade** goes back. Older app versions cannot read an upgraded vault.
+  Details in [the vault format and the upgrade](#the-vault-format-and-the-upgrade).
+* **After a game update** run `nmsvault-cli selftest`: it reads every live save and vault version
+  in memory, writes nothing and reports what it could not understand. A save written by a
+  newer game than the app knows is flagged `GAME_NEWER`, and the app refuses to move it
+  rather than guess.
+* **Steam <-> Xbox moves** work in Move to live: the data is copied unchanged, only the small
+  info file is converted, the game takes ownership at your first save there, and you confirm once
+  because it is another account. Into an occupied slot, the old save goes to the vault first.
+
+On the command line the same features are: `saves`, `versions`, `board`, `history`,
+`lineage`, `place`, `swap`, `keep`, `undo`, `ops`, `recover`, `index`, `store` and
+`selftest`. Options go after the command:
+
+```pwsh
+nmsvault-cli saves --vault D:\Vault                 # every save file, one line each
+nmsvault-cli versions "Main Save" --vault D:\Vault  # its versions
+nmsvault-cli history "Main Save" --vault D:\Vault   # what changed between them
+nmsvault-cli swap steam:3 steam:9 --vault D:\Vault
+nmsvault-cli selftest --vault D:\Vault
+```
+
+The full list is under [Usage](#usage).
+
 ## What it does
 
 1. **Full backup / restore** — snapshot the entire live save folder, and restore any
@@ -26,24 +90,33 @@ shortcuts? `install.bat` in the zip adds them. Full details under
    name/mode/play-time/date; lift a single slot aside; and repopulate any live slot from
    any save in any cataloged backup (re-keying the meta when the slot number differs).
    You can also inspect a slot's two saves (the Auto-Save and the Restore-Point)
-   individually and force either one to become the newest, and **clear** a live slot to
-   free it - which first compares that slot's play time with the newest copy of it in the
-   vault and warns you if clearing would lose progress.
-3. **Import** — register an existing manual backup folder into the catalog, or import an
+   individually and force either one to become the newest. The app **only replaces**, it
+   never empties a slot: **Empty a slot** shows the steps to do it yourself (they differ for
+   Steam Cloud, Steam without Cloud and Xbox) and first offers to keep a copy of the slot in
+   the vault.
+3. **Live operations** - every write into a live slot (put a save there, swap two slots,
+   make the other save load, put an extract back) is one checked operation: what the slot
+   held is kept in the vault first, both positions are always written (a slot never holds
+   two different saves), the result is validated and rolled back exactly if it is wrong,
+   an interrupted one is recovered at the next start, and each one has its own **Undo**.
+   After a game launch the app looks again and tells you if Steam Cloud or Xbox sync put
+   the old save back. The whole-folder restore is the **panic restore** (below).
+4. **Import** — register an existing manual backup folder into the catalog, or import an
    entire copied Save Vault folder: it compares that vault's entries with yours and offers
    to copy the new ones in or index them in place (idempotent — re-importing is harmless).
-4. **Account display names** — give each account a name of your choosing and the app shows
+   A vault that has a version store of its own is **merged** into yours (see below).
+5. **Account display names** — give each account a name of your choosing and the app shows
    that instead of the real id everywhere, so a screenshot or a screen-share never exposes
    your `st_<steamid64>` or Xbox `<xuid>_<titleid>`. See
    [Account display names](#account-display-names).
-5. **Total play time** — how long you have actually played, counted once per playthrough
+6. **Total play time** — how long you have actually played, counted once per playthrough
    rather than once per file: the two saves in a slot, every dated backup of them, and the
    same run carried to another platform by the NMS cloud all fold into a single row, and
-   the highest play time wins. **Play time...** in the GUI, `nmsvault playtime` on the CLI.
+   the highest play time wins. **Play time...** in the GUI, `nmsvault-cli playtime` on the CLI.
    The same identity drives **Save file** above the backups: pick a save (listed with the
    names it had before) or right-click a slot, and the backups narrow to every copy of it,
    renamed or moved, so its backup history reads top to bottom.
-6. **Know what you are looking at** — each slot's two saves are named for what they are
+7. **Know what you are looking at** — each slot's two saves are named for what they are
    (**Auto-Save** vs **Restore-Point**), the difficulty preset is shown by name, Xbox saves
    report their cloud sync state, and hovering any row explains it. See
    [The two saves in every slot](#the-two-saves-in-every-slot).
@@ -52,9 +125,38 @@ shortcuts? `install.bat` in the zip adds them. Full details under
 
 * The save **data** file is copied **verbatim** — never recompressed — so it can't drift.
 * Only the small 432-byte **meta** is transformed (XXTEA re-encryption / timestamp edit).
-* Every destructive operation auto-snapshots first, writes atomically (stage → validate →
-  swap), validates by header + size cross-checks + hashes, and refuses to run while the
-  game is open.
+* Every live write keeps what it replaces in the vault first, auto-snapshots the folder,
+  writes atomically (stage → validate → swap), validates by header + size cross-checks +
+  hashes, rolls itself back exactly when the check fails, and refuses to run while the game
+  is open. The app never deletes a save: it only replaces.
+* Every auto-snapshot is kept. In the version store a snapshot costs only the files that
+  changed; an older vault still in plain folders adds a full copy of the live folder
+  (roughly 40-65 MB) per live write until it is upgraded.
+
+## The vault format and the upgrade
+
+A new vault starts in the version store: files are kept once by content, so a backup that
+changed one file costs only that file. An older vault keeps each backup as a plain folder
+until **Tools > Vault upgrade** (or `nmsvault-cli store upgrade`) moves it to the store. The upgrade
+only runs when you ask, first makes a
+verified copy of the whole vault next to it (`<vault>.pre-store-<UTC>`, so you need that much
+free space), and never touches your live saves.
+
+* **Older app versions cannot open an upgraded vault.** Update every PC that uses it first.
+* **Undo the vault upgrade** (`nmsvault-cli store rollback`) goes back to plain folders with
+  everything made since, and moves the store next to the vault; the copy is not changed.
+* Delete the copy and the moved store yourself, when you no longer need them.
+* **Free old backup folders** (Tools menu, or `nmsvault-cli store free-old-folders`) deletes the
+  plain folders that were folded into the store, to give the disk space back. It only runs when
+  you ask: the command shows what it would free and deletes nothing until you add `--yes`. A full
+  check of the store runs first and any damage stops it before anything is deleted. A folder
+  that changed after the fold, your hand-made backup folders, the live folders and the
+  pre-upgrade copy are never touched. Every backup stays listed, and Undo the vault upgrade
+  still works while the copy exists. If it is interrupted, run it again.
+* **Importing a vault that has a version store** merges it: its stored files and backups are
+  copied in and checked, and what you already have is skipped, so importing the same vault again
+  (for example a copy on a USB drive) adds only what is new. A backup whose name you already use
+  for something else is imported as `<name>-m1`. The source is only read.
 
 See [DESIGN.md](DESIGN.md) for the architecture and the verified save-format details.
 
@@ -65,7 +167,7 @@ See [DESIGN.md](DESIGN.md) for the architecture and the verified save-format det
 | **Steam** (Windows) | **Supported and tested** — the primary target. |
 | **GOG.com** (Windows) | **Should work — untested.** GOG uses the *identical* Steam save format, just in a `DefaultUser` folder instead of `st_<steamid>`. |
 | **Epic Games Store** (Windows) | **Should work — untested.** Same as GOG: Epic and GOG share the exact same `DefaultUser` folder and save format. |
-| **Microsoft Store / Xbox Game Pass** (Windows) | **Supported** — read *and* same-platform write; see [Xbox / Game Pass](#xbox--game-pass-read-and-write). |
+| **Microsoft Store / Xbox Game Pass** (Windows) | **Supported** — read *and* write, and Steam ↔ Xbox moves in the Organizer; see [Xbox / Game Pass](#xbox--game-pass-read-and-write). |
 | **Steam Deck / Linux** (Proton) | **Runs on real hardware.** The portable Linux kit has been launched on a Linux desktop and finds the Proton prefix in every Steam library (Flatpak, Snap and a Deck's SD card included). Not yet exercised across the full backup / restore round-trip by anyone but the author. |
 | **macOS** (native, Apple Silicon) | **Should work — untested.** A portable `.app` kit now builds, and auto-discovery finds `~/Library/Application Support/HelloGames/NMS`. Nobody has run it on a real Mac yet. |
 
@@ -73,7 +175,7 @@ See [DESIGN.md](DESIGN.md) for the architecture and the verified save-format det
 this tool already reads and writes, so everything *should* just work. But nobody has confirmed
 it on a real GOG or Epic install yet, and auto-discovery does not yet recognise the
 `DefaultUser` folder as a live source — for now, point commands at it explicitly, e.g.
-`nmsvault status --live "%AppData%\HelloGames\NMS\DefaultUser"`. **If you play on GOG or Epic,
+`nmsvault-cli status --live "%AppData%\HelloGames\NMS\DefaultUser"`. **If you play on GOG or Epic,
 we'd love your help:** try it against a *copy* of your save first, then
 [open an issue or discussion](https://github.com/GoodGuysFree/nms-save-vault/issues) with how it
 went. Both success testimonials and bug reports move these from "untested" to officially supported.
@@ -85,8 +187,8 @@ Both platforms have a portable kit on the
 
 | Platform | Asset |
 |---|---|
-| Linux / Steam Deck (x86_64) | `NMSSaveVault-v0.2.8-linux-x86_64.tar.gz` |
-| macOS (Apple Silicon) | `NMSSaveVault-v0.2.8-macos-arm64.tar.gz` |
+| Linux / Steam Deck (x86_64) | `NMSSaveVault-v0.3.0-linux-x86_64.tar.gz` |
+| macOS (Apple Silicon) | `NMSSaveVault-v0.3.0-macos-arm64.tar.gz` |
 
 ### Read this first: back up your saves by hand
 
@@ -100,7 +202,7 @@ place to find out.
 
 ```sh
 # Linux (Proton). If the game is on a second drive or an SD card the path differs -- run
-# ./nmsvault status first, it prints the folder it found, and copy that one.
+# ./nmsvault-cli status first, it prints the folder it found, and copy that one.
 cp -a ~/.local/share/Steam/steamapps/compatdata/275850/pfx/drive_c/users/steamuser/AppData/Roaming/HelloGames/NMS \
       ~/nms-save-backup-$(date +%F)
 
@@ -118,9 +220,9 @@ saw last. It is not a substitute for the copy above.
 ### Then run it
 
 ```sh
-tar -xzf NMSSaveVault-v0.2.8-linux-x86_64.tar.gz
+tar -xzf NMSSaveVault-v0.3.0-linux-x86_64.tar.gz
 cd NMSSaveVault
-./NMSSaveVault          # the app;  ./nmsvault status  for the command line
+./NMSSaveVault          # the app;  ./nmsvault-cli status  for the command line
 ```
 
 On macOS, open `NMSSaveVault.app` — **right-click it and choose Open the first time**, because
@@ -147,13 +249,13 @@ and can only draw ISO8859-1. Every string the app displays is therefore plain AS
 
 ## Run it (Windows, no Python needed)
 
-Download **`NMSSaveVault-Setup-v0.2.8.zip`** from the
+Download **`NMSSaveVault-Setup-v0.3.0.zip`** from the
 [**Releases**](https://github.com/GoodGuysFree/nms-save-vault/releases) page (under the
 release's **Assets**) and extract it. Open the `NMSSaveVault` folder and run
 **`NMSSaveVault.exe`** — that is all. Everything (Python + Tkinter) is bundled, nothing is
 installed, and the config (`state.json`, `accounts.ini`) is written beside the program, so the folder is
 self-contained: move it, put it on a USB stick, delete it to be rid of it. Beside the GUI
-launcher sits `nmsvault.exe`, the same tool on the command line (see [Usage](#usage)).
+launcher sits `nmsvault-cli.exe`, the same tool on the command line (see [Usage](#usage)).
 
 ### Optional: shortcuts and a tidy install folder
 
@@ -212,8 +314,20 @@ installed to build it.
 ```pwsh
 uv venv
 uv pip install -e ".[dev]"
-uv run pytest
+uv run pytest              # serial, about 6.5 minutes
+uv run --extra dev pytest -n 12   # parallel (pytest-xdist), about 1 minute; -n auto can flake on a busy machine
+uv run pytest -m slow      # the long ones: real-data read-only smoke, time budget
 ```
+
+`uv run --extra dev python tools/make_demo_vault.py <empty folder>` builds a fake NMS world
+(Steam and Xbox saves, a vault with six weeks of history, notes, a branch) for screenshots
+and demos, and prints the environment variables that make the app see only that world. It
+refuses to run inside any real save, package or app folder.
+
+The tests never touch this machine's own folders: each runs with %LOCALAPPDATA%, %APPDATA%,
+HOME, the XDG folders and the install folder (state.json, accounts.ini) pointed at temp
+folders, and any write under the real ones (Windows, Linux or macOS user folders, the
+safety backup) is refused before it happens and fails the test (`tests/conftest.py`).
 
 ## Auto-configuration
 
@@ -228,9 +342,10 @@ small config file, `state.json`, kept **in the install directory next to the exe
 * Any *other* save folder under the NMS root — a hand-pasted `st_… - Copy`, a renamed or
   dated folder — is treated as an **in-place backup**, not a live target.
 
-The GUI shows the two groups separately (**● LIVE SAVES** vs **■ BACKUPS**), highlights the
-active write target, and badges Xbox folders read-only. Use **Rescan** (GUI) or
-`nmsvault sources --rescan` (CLI) to pick up a new account or backup later; your manual
+The classic tab shows the two groups separately (**\* LIVE SAVES** vs **\# BACKUPS**),
+highlights the active write target, and badges an Xbox folder read-only only when it has no
+save index. Use **Rescan** (GUI) or
+`nmsvault-cli sources --rescan` (CLI) to pick up a new account or backup later; your manual
 edits to the config are preserved. Discovery is strictly read-only.
 
 ## Account display names
@@ -239,8 +354,8 @@ Save folders are named after the account that owns them, so the raw id would oth
 up in folder names, paths, source labels and operation messages throughout both front-ends.
 Map each account to a name of your choosing and the app shows only that name — everywhere:
 
-* **GUI:** **Accounts…** on the toolbar (or right-click any row → *Account display names…*).
-* **CLI:** `nmsvault accounts` lists them; `nmsvault accounts --set <id>="Main"` sets one and
+* **GUI:** **Accounts…** on the toolbar of the *Live saves and backups* tab, or *Live → Accounts…* in the menu bar on either tab (right-clicking a row on the *Live saves and backups* tab offers it too).
+* **CLI:** `nmsvault-cli accounts` lists them; `nmsvault-cli accounts --set <id>="Main"` sets one and
   `--clear <id>` removes it.
 
 Those two places are the *only* ones that still show the real identifiers — they are where
@@ -295,10 +410,10 @@ offered that cannot work, and nothing sensible is missing.
 
 | You right-clicked | You can |
 |---|---|
-| **A live save folder** | Back it up · make it the active write target · copy a save into one of its slots · undo the last change |
-| **A live slot** | **Replace it with a save from anywhere** · copy it into another live slot · extract it to the vault · **clear it** (deletes both its saves, after warning if the vault has no copy this far on) · show its history |
+| **A live save folder** | Back it up · make it the active write target · copy a save into one of its slots · restore the newest snapshot of the whole folder (panic restore) |
+| **A live slot** | **Replace it with a save from anywhere** · copy it into another live slot · extract it to the vault · **the steps to empty it yourself** (after offering to keep a copy in the vault) · show its history |
 | **One of the two saves in a live slot** | All of the above, plus **Promote** — make *that* save the one the game loads |
-| **A backup** (full / snapshot / imported / in-place) | Restore all of it, which **replaces** the live folder |
+| **A backup** (full / snapshot / imported / in-place) | Restore all of it slot by slot (the panic restore: slots it lacks are left alone, nothing is deleted) |
 | **A single-slot extract** | Put it back in its own slot · **or** copy it into any live slot you choose |
 | **A slot inside a backup, or either save in it** | Copy it into the same-numbered live slot · copy it into a slot you choose · extract it to the vault · show its history |
 
@@ -314,21 +429,44 @@ per-save action — it changes *which* of a slot's two saves the game loads.
 
 ## Appearance and updates
 
-**Theme.** The dropdown at the top right offers **Light**, **Dark**, or **System**, which
+**Tabs.** Under the menu bar the window has two tabs: **Organizer** (**Ctrl+1**) and **Live
+saves and backups** (**Ctrl+2**; the two panes described above, as they have always been).
+The keys (or **View**) switch, and the app reopens the tab you used last (`state.json`,
+`ui.last_view`).
+
+**No backup yet** (Organizer tab): a version that exists only in the live save folder; no
+backup in the vault holds it, so overwriting the slot would lose it. Back up, or let a move
+keep it. Hovering the words explains this.
+
+**The Organizer tab** shows every save file once - live or only in the vault - with its
+versions under a `>`: first the ones the app saw connected (its own moves, the live slot,
+consecutive backups), then the rest by date; nothing is guessed. Filter chips (Live, Vault
+only, Steam, Xbox, On both, Has note, Pinned, No backup yet, Expedition), Find, sortable
+columns and a column chooser. On the right, your live slots as one or two lists (any of
+your Steam accounts and Xbox, chosen in the selectors); an empty slot warns that Steam Cloud
+or Xbox sync may fill it again (the app never empties a slot). Below them, the selection's
+details; **Notes...** keeps a note per save file (with every earlier revision) and a label,
+comment and lock per version, in the vault and never in the save files. Moving a
+version into a live slot is described in [The Organizer](#the-organizer).
+
+**Theme.** **View > Theme** offers **Light**, **Dark**, or **System**, which
 follows your Windows light/dark setting. Your choice is remembered in `state.json`. (Light
 keeps the native Windows widget styling the app has always had; dark switches to a
-fully-colourable widget theme, because the native one ignores colour settings.)
+fully-colourable widget theme, because the native one ignores colour settings.) In the dark
+theme on Windows the menu bar is drawn inside the window; Alt, F10 and Alt+letter work the same.
 
 **Font size.** **Ctrl+plus** and **Ctrl+minus** (the main keys or the numeric keypad) scale
-every font in the window, from 70% to 200% of your system's own size. Tree rows grow with
-the text, and the size is remembered in `state.json` as `font_scale`.
+every font in the window, from 70% to 200% of your system's own size (**Ctrl+0** goes back
+to 100%). Tree rows grow with the text, and the size is remembered in `state.json` as
+`font_scale`. Every toolbar action is also in the menu bar (File, Edit, View, Live, Tools,
+Help), so the keyboard reaches it at any window size.
 
 **Update checks are opt-in.** The first run asks whether the app may check for new versions.
 If you say yes, it asks GitHub **once a day, on startup**, whether a newer release exists and
 shows a bar at the top when there is one. Nothing about you or your saves is sent, and nothing
 is downloaded until you ask for it — this is the only thing the app uses the network for.
-Right-click anywhere → **Check for updates…** to check immediately, or to turn the daily check
-back on. The answer lives in `state.json` as `update_check` (`ask` / `on` / `off`).
+**Tools → Check for updates…** checks immediately; **Tools → Check for updates automatically**
+turns the daily check on or off. The answer lives in `state.json` as `update_check` (`ask` / `on` / `off`).
 
 **Installing an update.** The bar's **Install update** button does the whole thing: it
 downloads the release zip from GitHub, checks that the program inside it is a validly signed
@@ -350,7 +488,10 @@ offered, and **Open download page** is there instead.
 
 Both front-ends share the same safety-checked core. The live folder and a vault folder
 (default: a `_SaveVault` sibling of `st_<id>`) come from the config (or are auto-detected);
-override with `--live`/`--vault`.
+override with `--live`/`--vault`. In the GUI, **File → Choose vault folder…** picks another vault (or
+starts a new one in an empty folder) and remembers it. Put them after the command
+(`nmsvault-cli.exe saves --vault D:\Vault`): the packaged `nmsvault-cli.exe` is Python's own launcher,
+which rejects an option placed before the command.
 
 GUI:
 
@@ -358,44 +499,84 @@ GUI:
 nmsvault-gui        # or: python -m nms_save_vault.gui
 ```
 
-CLI:
+CLI (a source install also has `nmsvault`, the older name of `nmsvault-cli`):
 
 ```pwsh
-nmsvault status                          # live folder + 15 slots, both saves each
-nmsvault sources [--rescan]              # configured live sources (Steam/Xbox accounts)
-nmsvault list                            # catalog entries
-nmsvault playtime                        # total play time, one row per playthrough
-nmsvault discover --add                  # find existing backups, add them in place
-nmsvault backup --label "before update"  # full snapshot into the vault
-nmsvault extract 9 --label "main"        # lift slot 9 aside
-nmsvault clear 9 [--yes]                 # empty live slot 9; warns if that loses progress
-nmsvault repopulate --from <id|folder> --src-slot 9 --to-slot 3   # re-keys the meta
-nmsvault promote --slot 9 --member B     # force B (the restore-point) to be newest
-nmsvault restore <entry-id>              # mirror the live folder to a backup
-nmsvault undo                            # restore the last auto-snapshot
-nmsvault verify [live|<id>|<folder>]
-nmsvault accounts [--set <id>=NAME] [--clear <id>]   # hide the real account ids
+nmsvault-cli status                          # live folder + 15 slots, both saves each
+nmsvault-cli sources [--rescan]              # configured live sources (Steam/Xbox accounts)
+nmsvault-cli list                            # the backups in the vault
+nmsvault-cli playtime                        # total play time, one row per playthrough
+nmsvault-cli discover --add                  # find backup folders under the Steam NMS folder, add them in place
+nmsvault-cli backup --label "before update"  # full snapshot into the vault
+nmsvault-cli extract 9 --label "main"        # lift slot 9 aside
+nmsvault-cli clear steam:9                   # the steps to empty a live slot yourself (deletes nothing)
+nmsvault-cli place steam:3 --from <id> --src-slot 9 [--member A|B] [--yes --confirm CODE]
+                                         # put a save into a live slot; what it replaces is kept first
+nmsvault-cli swap steam:3 steam:9            # exchange two occupied slots
+nmsvault-cli keep steam:9                    # copy a live slot into the vault, changing nothing live
+nmsvault-cli ops steam:9                     # the moves made to a slot, newest first
+nmsvault-cli undo [--to steam:9 | --op <op-id>]   # undo a move of one slot (it can be undone again)
+nmsvault-cli recover [--op <op-id> --choice forward|back|leave]   # an interrupted move
+nmsvault-cli repopulate --from <id|folder> --src-slot 9 --to-slot 3   # the same as place, for old scripts
+nmsvault-cli promote --slot 9 --member B     # make B (the restore-point) the save the game loads
+nmsvault-cli panic-restore [<entry-id>]      # a whole snapshot / backup back, slot by slot
+nmsvault-cli restore <entry-id>              # an extract goes back to its slot; a backup is a panic restore
+                                         #   (keeps the account data; --with-accountdata rolls it back too)
+nmsvault-cli undo --whole-folder             # restore the newest snapshot of this folder (panic restore)
+nmsvault-cli verify [live|<id>|<folder>]    # a backup id works for the version store too
+nmsvault-cli accounts [--set <id>=NAME] [--clear <id>]   # hide the real account ids
+nmsvault-cli saves [--sort play_time] [--live-only] [--find TEXT] [--json]   # every save file, one line each
+nmsvault-cli versions "Main Save" [--all]   # its versions (key ones; --all every one), or a slot: S9
+nmsvault-cli board                           # the 15 slots of every live folder
+nmsvault-cli note S9 --set "Next: Atlas"     # a save file's note (--append, --history);
+                                         #   a version's: --label/--comment/--lock
+nmsvault-cli pin S9 [--off]                  # never suggest that save's slot for another save
+nmsvault-cli scan                            # record what the live slots hold now
+nmsvault-cli organizer bootstrap [--dry-run] # read in the history of an existing vault
+nmsvault-cli import <path> [--copy] [--label L]   # register a save folder, or a whole copied vault
+nmsvault-cli show <entry-id|live>            # the slots of one backup
+nmsvault-cli history "Main Save" [--key|--all] [--json]   # what changed between its versions
+nmsvault-cli lineage list                    # corrections: also set-parent, comes-from, unrelated,
+                                         #   combine, uncombine, split, unsplit, undo
+nmsvault-cli store upgrade                   # one-time vault upgrade; also fold, copy-in,
+                                         #   free-old-folders, rollback, fsck
+nmsvault-cli index status                    # the content index; also build, show, changes
+nmsvault-cli selftest                        # read-only: does the app understand every save?
 ```
 
-Every write first checks the game is closed (override `--force`), auto-snapshots the
-live state, writes atomically, validates, and logs to `oplog.jsonl` for `undo`.
+A live slot is `steam:7` or `S7`, `xbox:4` or `X4` (the organizer's own badges), or
+`steam:<account>:7` / `S2.7` when there is more than one account; every command takes both
+forms. `--live` and `--vault` must name something that exists (a new vault is started only by
+`backup`, `import` and `extract`); errors print one plain line on stderr (set
+`NMSVAULT_DEBUG=1` for the full trace). Exit codes: 0 done; 1 an error, a refusal, a declined
+prompt, or `verify`/`selftest` finding a problem; 2 the game is running, a blocked move plan, or
+a command-line usage error; 3 a feature not available yet. Every live write needs the vault upgraded to the version store, checks the game is
+closed (`--force` only answers "could not tell"; a running game always refuses), keeps what it
+replaces in the vault, auto-snapshots the folder, writes atomically, validates, rolls itself
+back exactly on a failed check, and is journaled (`<vault>/organizer/ops.jsonl`) and logged to
+`oplog.jsonl`. The commands print the plan's warnings and ask; a non-interactive run needs
+`--yes` plus `--confirm CODE` for each confirmation the plan names. Live writes wait for one
+another (one window at a time). Listing commands never write the vault; `scan`, notes and
+pins do, and only there.
 
 ## Xbox / Game Pass (read **and write**)
 
 Microsoft Store / Xbox Game Pass saves (the `wgs` container format under
 `%LOCALAPPDATA%\Packages\HelloGames.NoMansSky_bs190hzg1sesy\SystemAppData\wgs`) are fully
-supported: `discover` finds them, and `verify` / `import` / the GUI show their slots, names,
-play times and summaries just like Steam saves. Point any command at the account folder:
+supported: `verify` / `import` / the GUI show their slots, names, play times and
+summaries just like Steam saves. `discover` looks for backup folders under the Steam NMS
+folder only; a live Xbox folder holds live saves and is not searched. Point any command at
+the account folder:
 
 ```pwsh
-nmsvault verify "<...>\SystemAppData\wgs\<accountfolder>"
-nmsvault discover --add        # also catalogs the Xbox folder if present
+nmsvault-cli verify "<...>\SystemAppData\wgs\<accountfolder>"
+nmsvault-cli backup --live "<...>\SystemAppData\wgs\<accountfolder>"   # a backup of the Xbox saves
 ```
 
 **Same-platform writes are supported** — backup, restore, per-slot extract / repopulate, and
-promote all work within Xbox, exactly as for Steam (every write auto-snapshots first, so
-`undo` works). The wgs writer rotates the blob GUIDs, rewrites `containers.index` with the
-correct sync state, and copies the save data verbatim — it follows the layout used by
+promote all work within Xbox, exactly as for Steam (every write keeps what it replaces and
+auto-snapshots first, so `undo` works). The wgs writer rotates the blob GUIDs, updates only the changed saves' records
+in `containers.index` (with the correct sync state), and copies the save data verbatim — it follows the layout used by
 [libNOM.io](https://github.com/zencq/libNOM.io) (see Credits).
 
 The game now also keeps a plain copy of each save in `SystemAppData\xgs\<accountfolder>\`
@@ -403,9 +584,9 @@ The game now also keeps a plain copy of each save in `SystemAppData\xgs\<account
 there, so the two never disagree. An account that has only `xgs` (no `wgs`) is shown
 read-only.
 
-**Cross-platform transfer (Steam ↔ Xbox) is not yet supported** and is gated with a "coming
-soon" notice: the obfuscated save body carries a platform field and the two platforms use
-different meta formats, so a faithful transfer needs a conversion step that isn't built yet.
+**Cross-platform transfer (Steam ↔ Xbox)** works in the Organizer (Move to live, or
+`nmsvault-cli place`): the save data is copied unchanged and only the small meta file is converted.
+The classic Backups view does not do it and points to the Organizer.
 
 > First time writing to a real Game Pass save? Close the game, and keep the auto-snapshot
 > (the app makes one before every write) — or take a full backup first.
@@ -419,42 +600,50 @@ No Man's Sky uses Steam Cloud, which syncs the `st_<id>` folder. To avoid cloud 
 2. Make your changes (restore / repopulate / promote).
 3. Launch the game. If Steam shows a cloud conflict, choose the **local** copy.
 
-**Deleting is the exception.** Steam's manifest still lists a save it has uploaded, so a
-file that is merely *missing* locally is downloaded again at the next launch: clear a slot
-and it comes back. Overwrites are safe (a changed file is seen as a change, and the app
-stamps every live write with the current time so the cloud copy never looks newer), but to
-make a deletion stick:
+**Deleting is the exception, and the app does not do it.** Steam's manifest still lists a
+save it has uploaded, so a file that is merely *missing* locally is downloaded again at the
+next launch: an emptied slot comes back. Overwrites are safe (a changed file is seen as a
+change, and the app stamps every live write with the current time so the cloud copy never
+looks newer), so the app only replaces. To empty a slot yourself (**Empty a slot** or
+`nmsvault-cli clear` shows these):
 
 1. Steam → No Man's Sky → Properties → General → turn off **Keep game saves in the Steam
    Cloud**.
-2. Clear the slot in NMS Save Vault, with the game closed.
+2. With the game closed, delete the four files of the slot in the save folder.
 3. Launch the game, check the slot is gone, quit.
 4. Turn Cloud back on; if Steam asks, keep the **local** copy.
 
-Xbox / Game Pass is not affected: a cleared save keeps its `containers.index` record
-flagged `Deleted`, which is the cloud's instruction to remove it.
+On Xbox / Game Pass a slot is emptied in the game's own load menu (the app cannot edit slot
+records by hand), then let Xbox sync finish.
 
 The vault lives outside `st_<id>`, so it is never scanned by the game or synced by Steam.
 
 ## Status
 
 Working. Core format/crypto and all operations are verified against the real save files and
-in a temp sandbox (412 tests). Xbox / Game Pass saves are supported for reading **and**
-same-platform writing — verified against a real install (reads) and synthetic `wgs` fixtures
+in a temp sandbox (2698 tests). Xbox / Game Pass saves are supported for reading **and**
+writing, including Steam ↔ Xbox moves (validated in the real game) — verified against a real install (reads) and synthetic `wgs` fixtures
 (writes). A full file-copy safety backup of the live folder was made before development
-(`C:\Devel\NMS-SaveBackup-SAFETY-2026-06-24`).
+(`C:\Devel\NMS-SaveBackup-SAFETY-2026-06-24`). The Organizer is in (see above); a
+read-only content index of every save version (story and Atlas progress, bases, ships,
+companions, expeditions, and what changed against the recorded parent) is kept in a
+per-machine cache and available as `nmsvault-cli index status | build | show | changes`.
+For support, setting the environment variable `NMSVAULT_INDEX=off` stops the app running that
+index (the Organizer then shows no facts columns); the `ui.index` preference in `state.json`
+does the same.
 
 ## Version history
 
 | Version | Date | Highlights |
 |---|---|---|
+| **0.3.0** | 2026-10-18 | **The Organizer.** A new tab that shows every save file as one line with its versions, live markers and facts; Move to live, Replace with, Swap, Keep a copy and Undo (the replaced save always goes to the vault first); Steam <-> Xbox moves; History, Compare, Notes, Pins and corrections; new vaults start in the version store, and **Tools > Vault upgrade** moves an older one (older app versions cannot open a vault made or upgraded by 0.3.0); **Free old backup folders** gives the old folders' disk space back; importing a copied vault in the new format merges only what is new; the dark theme now draws the menu bar in the window; `nmsvault-cli selftest`; and the matching CLI commands. |
 | **0.2.8** | 2026-10-02 | **Xbox: keep the game's new `xgs` save copy in step.** The game now also keeps a plain copy of each Xbox save in `SystemAppData\xgs`, beside `wgs`. The vault only wrote `wgs`, so a promote, clear, repopulate, restore or undo left the game a stale `xgs` copy; every write now updates both. An account that has only `xgs` is shown read-only. |
 | **0.2.7** | 2026-09-26 | **Filter backups by save file.** A save's history was scattered: the same run sits in a different slot in one backup than in the next, and a rename makes its old copies look like somebody else's. The new **Save file** dropdown above the backups lists every save that has a backup, under its current name and the names it had before (here, *SHIPSTOGIVE-1400QS - was: ShipsToGive-2400qs*), with its platforms, play time and backup count. Pick one, or right-click any slot or save in either pane and choose **Show this save's history**, and the backups narrow to every copy of that run - renamed, moved, or carried to another platform by the NMS cloud - each opened to just the slot holding it, newest first. **All saves** clears it. It uses the same game-written save id as **Play time**, so it costs no extra decoding. |
-| **0.2.6** | 2026-09-19 | **Total play time.** How long have you actually played? Counting files cannot answer that: each playthrough exists twice in its slot (Auto-Save and Restore-Point), again in every dated backup in the vault, and - because an NMS cloud save carries a run to a linked account on another platform - once more under a second platform entirely. 821 save files here are 29 playthroughs. **Play time...** (toolbar) and `nmsvault playtime` fold every copy onto one row and count the highest play time of the copies, since play time only ever goes up. Identity is the game's own: the u64 the Steam meta carries at `OFF_SLOT_IDENTIFIER`, which is the same number the save data holds as `WmU` - it survives a rename, a move to another slot, and the trip through the cloud to another platform. Xbox metas leave that field 0, so an Xbox save is identified from its data blob instead, cached per file so the second run costs nothing. Saves older than the field are matched on their name and the report says how many those were. Also: `lz4_block` now reads the unframed container of pre-Waypoint Xbox saves - one bare LZ4 block with no chunk headers - which previously decoded to nothing. |
+| **0.2.6** | 2026-09-19 | **Total play time.** How long have you actually played? Counting files cannot answer that: each playthrough exists twice in its slot (Auto-Save and Restore-Point), again in every dated backup in the vault, and - because an NMS cloud save carries a run to a linked account on another platform - once more under a second platform entirely. 821 save files here are 29 playthroughs. **Play time...** (toolbar) and `nmsvault-cli playtime` fold every copy onto one row and count the highest play time of the copies, since play time only ever goes up. Identity is the game's own: the u64 the Steam meta carries at `OFF_SLOT_IDENTIFIER`, which is the same number the save data holds as `WmU` - it survives a rename, a move to another slot, and the trip through the cloud to another platform. Xbox metas leave that field 0, so an Xbox save is identified from its data blob instead, cached per file so the second run costs nothing. Saves older than the field are matched on their name and the report says how many those were. Also: `lz4_block` now reads the unframed container of pre-Waypoint Xbox saves - one bare LZ4 block with no chunk headers - which previously decoded to nothing. |
 | **0.2.5** | 2026-09-19 | **Fix: Steam Cloud put a cleared slot straight back.** Reported after a clear looked like it worked: the slot was gone in the app, and there again in the game. Steam's Auto-Cloud manifest still lists every `save*.hg` it has uploaded, so a file that is merely *missing* locally is downloaded again at the next launch - nothing inside the save folder can stop that. The clear confirmation now says so before you believe the slot is gone, and gives the sequence that does work: turn off **Keep game saves in the Steam Cloud**, clear the slot, launch and quit the game, turn Cloud back on. The same comparison was quietly threatening restores, which *do* sync: `repopulate_slot` and `restore_full` stamped the live file with the backup's original mtime, so Steam judged its own copy the newer one and could overwrite what had just been restored. Under Cloud a live write now carries the write time; without Cloud the save keeps the age it had. Xbox / Game Pass was right already - a cleared record stays in `containers.index` flagged `Deleted`, which is the cloud's instruction to remove it. |
 | **0.2.4** | 2026-09-17 | **Ctrl+plus / Ctrl+minus change the font size.** The window drew at whatever size Windows picked and there was no way to change it, which is a problem on a high-DPI screen and a different problem on a TV. Both keys now step the whole UI between 70% and 200% of your system size - the main keys or the numeric keypad - and the tree rows grow with the text rather than clipping it, because the row height was already derived from the font metrics. The size is remembered in `state.json` as `font_scale`, exactly like the theme is, so the app reopens the way you left it. It works by resizing Tk's *named* fonts, which every widget in the app draws with, so one keystroke moves everything at once; the five labels that had hardcoded their own point size - the pane titles, the bold group and active rows, the tooltip and the Accounts headings - would have stayed put, so they now name app-defined fonts that scale with the rest. |
 | **0.2.3** | 2026-09-13 | **Fix: Clear slot refused every row you could offer it.** Reported within the hour: "no matter what I try, I get this error" - *Clear empties one of your LIVE slots, so it needs a live one*, on a slot and on either save inside it alike. The right-click menu narrows a save row to its slot before handing it to an action, because clearing is slot-granular, and the dict it built for that carried the folder and the slot number but not the flag saying the slot is **live** - so Clear, the one action that checks it, concluded the row was a backup and bounced it. The toolbar button worked, which is exactly why it shipped: the tests asserted the menu *offered* Clear, and asserted the handler cleared when handed a row, but never clicked the entry to see what the menu actually passed. They now invoke the menu entry itself. |
-| **0.2.2** | 2026-09-13 | **Clear a slot.** Freeing a live slot meant extracting it and then deleting the files by hand, which is exactly the moment to delete the wrong one. **Clear slot** does it from the app - toolbar, or right-click any live slot - and before it does, it goes looking for the most recently made copy of *that slot* in the vault and compares its play time with the live save's. If the live save is further on, or if the vault has no copy of the slot at all, it says so in the confirmation and asks again, because that gap is precisely what clearing would cost you. The live folder never counts as its own backup, even when it is catalogued in place - that would answer "backed up" by pointing at the very save about to be deleted. Like every other write, the live state is auto-snapshotted first, so **Undo** brings the slot straight back. Xbox / Game Pass clears the same way: the `containers.index` record is kept and flagged `Deleted`, as the Xbox app itself does, so the cloud copy is told to go rather than being re-synced back down - and writing into the slot again un-deletes it. On the CLI: `nmsvault clear <slot> [--yes]`. |
+| **0.2.2** | 2026-09-13 | **Clear a slot.** Freeing a live slot meant extracting it and then deleting the files by hand, which is exactly the moment to delete the wrong one. **Clear slot** does it from the app - toolbar, or right-click any live slot - and before it does, it goes looking for the most recently made copy of *that slot* in the vault and compares its play time with the live save's. If the live save is further on, or if the vault has no copy of the slot at all, it says so in the confirmation and asks again, because that gap is precisely what clearing would cost you. The live folder never counts as its own backup, even when it is catalogued in place - that would answer "backed up" by pointing at the very save about to be deleted. Like every other write, the live state is auto-snapshotted first, so **Undo** brings the slot straight back. Xbox / Game Pass clears the same way: the `containers.index` record is kept and flagged `Deleted`, as the Xbox app itself does, so the cloud copy is told to go rather than being re-synced back down - and writing into the slot again un-deletes it. On the CLI: `nmsvault-cli clear <slot> [--yes]`. |
 | **0.2.1** | 2026-09-07 | **The themes actually theme now.** Reported from Linux: "the dark theme isn't great, the buttons don't highlight properly". They did not. A ttk widget picks its colours per *state* — active, pressed, disabled, focus, readonly — and the app only ever set the base colour, so everything else kept `clam`'s own defaults, which were chosen for a light grey theme. Buttons were inert under the pointer, a disabled button's label vanished into its background, and the readonly **Active live** and **Theme** pickers drew dark text on a dark field with the value stuck in a permanent selection highlight. Every interactive widget is now mapped for every state, and buttons, entries, scrollbars, checkboxes and the progress bar are flat rather than bevelled. Light mode on Linux also stops using Tk's `default` theme — X11 has no native ttk theme, and that fallback is a Motif-era look that ignores much of what is set on it — so both palettes use `clam` there. Windows and macOS keep their native look in light mode, unchanged. Tree rows gained a little height, derived from the font so it survives any DPI. The palettes now carry explicit hover / pressed / disabled / accent colours, and `tests/test_theme.py` checks every text pair against WCAG 2.1 contrast rather than trusting an eyeball. |
 | **0.2.0** | 2026-09-07 | **Linux and macOS.** The save format is identical on all three platforms, so nothing about how saves are read or written changed — what was missing was knowing where to look, and something to download. Discovery now returns *several* save roots instead of one, because Linux has no native build: the game runs under Proton and its saves sit inside whichever Steam library holds the install, so the app probes the five places Steam installs itself (Flatpak and Snap included), parses each `libraryfolders.vdf` for libraries on other drives and a Steam Deck's SD card, and deduplicates by real path since those roots are largely symlinks to each other. macOS reads `~/Library/Application Support/HelloGames/NMS` plus any App Store container. Config now lands where each OS expects it (`~/.config`, `~/Library/Application Support`, `%LOCALAPPDATA%`) and a vault never defaults into a Proton prefix, which Steam can delete and recreate. **Portable kits for both**, built by `packaging/build_posix_kit.py` from a checksum-verified python-build-standalone runtime, with a double-clickable `.app` on macOS. **The UI is now ASCII**: the bundled Tk is built without Xft, so it falls back to X11 core fonts and rendered every em dash and ellipsis as garbage on a real Linux desktop. Xbox / Game Pass stays Windows-only, and self-updating stays Windows-only for now. Windows behaviour is unchanged throughout. |
 | **0.1.2** | 2026-08-22 | **Updates install themselves.** The update bar's new **Install update** button downloads the release from GitHub, verifies it, then closes the app, swaps the files and reopens on the new version - no browser, no zip, no install.bat. The download URL is pinned to GitHub hosts (including across the redirect), the extracted launcher must be a validly signed Python Software Foundation binary and must declare the version that was promised, and the zip is rejected if any entry would write outside the folder it is unpacked into. Because a running program cannot overwrite itself, the swap is handed to a script that waits until the launcher can actually be deleted - the only reliable proof the app has exited - keeps the old `_runtime` aside until the copy succeeds, and restores everything if it does not. Your config, vault and saves are untouched. **The window title now shows the version.** |
@@ -462,14 +651,14 @@ same-platform writing — verified against a real install (reads) and synthetic 
 | **0.1.0** | 2026-08-22 | **First milestone release.** Identical code to 0.0.10 — this is the 0.0.x line promoted to a round number now that the app knows what it is showing you and the last data-losing edge has been closed. Rolling up everything since 0.0.7: **account display names** (0.0.8) so a screenshot never exposes your `st_<steamid64>` or Xbox `<xuid>_<titleid>`; the two saves in each slot **named for what they are** — Auto-Save vs Restore-Point — plus a real **Difficulty** column, per-save **Xbox cloud sync state**, and hover tooltips throughout; **live saves and backups split into two panes** with sortable backup columns; a **Light / Dark / System theme**; an **opt-in update check** (0.0.9); and the fix for **restoring a single-slot extract deleting every other save** (0.0.10). |
 | **0.0.10** | 2026-08-22 | **Fix: restoring a single-slot extract wiped every other save.** An extract is one slot lifted aside, but Restore ran it through the *full* restore path, which mirrors — so every live file not in the one-slot extract, including `accountdata.hg`, was deleted, and the folder was left holding only that slot. Restoring an extract now puts that slot back into **its own slot** and touches nothing else. The dangerous call is refused in the core, not merely avoided by the UI, so no front-end can reach it. The menu and the confirmation now say which of the two things will happen — a backup replaces the folder, an extract restores one slot — and a full restore states how many slots it holds and that anything not in it is removed. **Undo now explains itself:** it used to answer every failure with "no undoable operation found in the op log"; it now distinguishes nothing-done-yet, nothing-to-undo (Backup / Extract / Import only add to the vault and never change live saves), and a snapshot that has gone missing. |
 | **0.0.9** | 2026-08-22 | **You can tell what you are looking at.** A slot's two saves are no longer "A" and "B": they are named for what the game actually uses them for — the periodic **Auto-Save** and the **Restore-Point** written when you leave your ship or use a save point / beacon / POI save. Either can be the newer one, and the app marks whichever the game will load. The **Mode** column, which printed `1` on every row because Waypoint retired that field, is now **Difficulty** and shows the real preset by name (Normal, Creative, Custom, Relaxed, Survival, Permadeath; pre-Waypoint saves fall back to the old game mode). Xbox saves report their **cloud sync state**; Steam has no per-save equivalent, so it is reported at folder level only. "Play" is now "Play Time". **Live saves and backups are now two separate panes** with a draggable divider — the backups pane has its own columns and every heading sorts (dates chronologically, slot counts numerically), newest-first by default. **Hover any row** for what it is, its difficulty, play time, where you were, its file, size, integrity and cloud state. Plus a **Light / Dark / System theme** that follows Windows, and an **opt-in update check** that asks first, then looks at GitHub once a day and shows a bar when a newer release exists — nothing is downloaded or installed, and it is the only network access in the app. |
-| **0.0.8** | 2026-08-22 | **Account display names — hide your Steam / Xbox account id.** Save folders are named after the account that owns them, so `st_<steamid64>` and the Xbox `<xuid>_<titleid>` used to show up in folder names, paths, source labels and operation messages all over both front-ends — awkward for a screenshot, a bug report or a screen-share. Map each account to a name of your choosing (**Accounts…** in the GUI, `nmsvault accounts --set` in the CLI) and the app shows only that name, everywhere. Those two screens are the only ones that still show the real ids, since you cannot name an id you cannot see. The mapping is a plain `accounts.ini` beside `state.json`, safe to edit by hand; clearing a name shows the real id again. Display only — `state.json`, `catalog.json` and every path the app opens keep the real identifiers, so nothing about how saves are found or written changes. Upgrading keeps your config. |
-| **0.0.7** | 2026-08-21 | **No more "unknown publisher" warning, and no installation needed.** The distributable is no longer a one-file PyInstaller build. It ships as a folder whose launcher is a verbatim renamed copy of the Authenticode-signed `pythonw.exe` published by the Python Software Foundation, so Windows starts a binary it already trusts instead of an unsigned custom `.exe` (renaming does not affect a signature — check it yourself with `Get-AuthenticodeSignature`). Extract the zip and run `NMSSaveVault.exe`; `install.bat` is now optional, for Desktop / Start Menu shortcuts. The command-line `nmsvault.exe` ships alongside it, so installed users get the CLI too. The build downloads the official runtime from python.org and refuses to package anything not validly signed, so there is no build dependency left at all. No change to what the app does; upgrading keeps your config. |
+| **0.0.8** | 2026-08-22 | **Account display names — hide your Steam / Xbox account id.** Save folders are named after the account that owns them, so `st_<steamid64>` and the Xbox `<xuid>_<titleid>` used to show up in folder names, paths, source labels and operation messages all over both front-ends — awkward for a screenshot, a bug report or a screen-share. Map each account to a name of your choosing (**Accounts…** in the GUI, `nmsvault-cli accounts --set` in the CLI) and the app shows only that name, everywhere. Those two screens are the only ones that still show the real ids, since you cannot name an id you cannot see. The mapping is a plain `accounts.ini` beside `state.json`, safe to edit by hand; clearing a name shows the real id again. Display only — `state.json`, `catalog.json` and every path the app opens keep the real identifiers, so nothing about how saves are found or written changes. Upgrading keeps your config. |
+| **0.0.7** | 2026-08-21 | **No more "unknown publisher" warning, and no installation needed.** The distributable is no longer a one-file PyInstaller build. It ships as a folder whose launcher is a verbatim renamed copy of the Authenticode-signed `pythonw.exe` published by the Python Software Foundation, so Windows starts a binary it already trusts instead of an unsigned custom `.exe` (renaming does not affect a signature — check it yourself with `Get-AuthenticodeSignature`). Extract the zip and run `NMSSaveVault.exe`; `install.bat` is now optional, for Desktop / Start Menu shortcuts. The command-line `nmsvault-cli.exe` ships alongside it, so installed users get the CLI too. The build downloads the official runtime from python.org and refuses to package anything not validly signed, so there is no build dependency left at all. No change to what the app does; upgrading keeps your config. |
 | **0.0.6** | 2026-07-01 | **Fix: extract a single slot from Xbox / Game Pass saves.** `extract_slot` only understood Steam filenames, so extracting a slot from a `wgs` folder always failed with "slot N has no saves to extract"; it now has an Xbox variant that copies the slot's blobs into a self-contained mini-`wgs` folder in the vault, so it catalogs and repopulates like any Xbox source. (Extract was the only operation missing an Xbox code path.) |
-| **0.0.5** | 2026-07-01 | **Import a whole Save Vault directory.** Point Import at a copied `_SaveVault` folder and it compares that vault's entries with yours (by entry id) and offers to copy the new ones into your vault (self-contained) or index them in place (referencing that folder) — idempotent, so re-importing is harmless. In-place-imported entries are unmanaged, and snapshot pruning now only touches snapshots this vault owns, so importing another vault in place can never delete its files. Works in the GUI (Import shows new/existing counts, then copy vs in-place) and the CLI (`nmsvault import <vault-dir> [--copy]`). |
+| **0.0.5** | 2026-07-01 | **Import a whole Save Vault directory.** Point Import at a copied `_SaveVault` folder and it compares that vault's entries with yours (by entry id) and offers to copy the new ones into your vault (self-contained) or index them in place (referencing that folder) — idempotent, so re-importing is harmless. In-place-imported entries are unmanaged, and snapshot pruning now only touches snapshots this vault owns, so importing another vault in place can never delete its files. Works in the GUI (Import shows new/existing counts, then copy vs in-place) and the CLI (`nmsvault-cli import <vault-dir> [--copy]`). |
 | **0.0.4** | 2026-07-01 | Installer-kit improvements (no changes to the app itself): added an uninstaller (`uninstall.bat`) that removes the app, its config (`state.json`), and the Desktop / Start Menu shortcuts while leaving your game saves and backups / vault untouched — no registry entries, no admin rights; `install.bat` drops it into the install folder so it's always available. The Desktop / Start Menu shortcuts now use the app icon directly (the `.ico` is installed on disk and referenced explicitly, instead of relying on the exe's embedded icon index). |
 | **0.0.3** | 2026-07-01 | Reliability fixes: auto-snapshot pruning is now chronological, so it can no longer delete the snapshot that an `undo` needs (it previously grouped by platform when both Steam and Xbox were in use); the game-running check no longer flashes a console window on every action in the windowed build; and every write operation (not just backup) now shows a modal "please wait" dialog while it works. |
-| **0.0.2** | 2026-06-30 | **Xbox / Game Pass saves are now read-write** for same-platform operations (backup, restore, per-slot repopulate, promote) — the wgs writer rotates blob GUIDs and rewrites `containers.index` with correct sync states, following the libNOM.io layout; every write auto-snapshots so `undo` works. Steam↔Xbox transfer remains gated ("coming soon"). |
-| **0.0.1** | 2026-06-30 | First public release. Full backup / restore; catalog with per-slot extract / repopulate (meta re-keyed across slots) / promote; manual-backup import; multi-account auto-config (Steam live read-write, Xbox / Game Pass read-only); Tkinter GUI + `nmsvault` CLI; one-file Windows installer kit. Xbox→Steam transfer is gated ("coming soon"). |
+| **0.0.2** | 2026-06-30 | **Xbox / Game Pass saves are now read-write** for same-platform operations (backup, restore, per-slot repopulate, promote) — the wgs writer rotates blob GUIDs and rewrites `containers.index` with correct sync states, following the libNOM.io layout; every write auto-snapshots so `undo` works. Steam↔Xbox transfer was still gated then (it opened in 2026-10). |
+| **0.0.1** | 2026-06-30 | First public release. Full backup / restore; catalog with per-slot extract / repopulate (meta re-keyed across slots) / promote; manual-backup import; multi-account auto-config (Steam live read-write, Xbox / Game Pass read-only); Tkinter GUI + `nmsvault-cli` CLI; one-file Windows installer kit. Xbox→Steam transfer was gated then (it opened in 2026-10). |
 
 Each version's installer kit is attached to its
 [GitHub Release](https://github.com/GoodGuysFree/nms-save-vault/releases).
@@ -499,6 +688,19 @@ derived from, the excellent open-source work of **Christian Engelhardt (zencq)**
 The save format itself (byte offsets, magic numbers, the XXTEA key derivation, the
 slot model) is factual information; XXTEA/TEA is public domain. The reused **expression**
 (the C# routines above) is what makes this a derivative work, hence the GPL-3.0 license.
+
+The content index computes the obfuscated save keys itself instead of shipping a mapping
+file:
+
+- **MBINCompiler** — `core/hashname.py` ports its `HashName` (algorithm and constants from
+  `SaveFileMapping/Program.cs`, credited there to AndASM; MBINCompiler is LGPL-3.0). Its
+  published `mapping.json` was used only to check the port (`tests/data/hashname_pins.json`).
+  <https://github.com/monkeyman192/MBINCompiler>
+- **SpookyHash V2** by Bob Jenkins, public domain, which `HashName` runs on.
+  <https://burtleburtle.net/bob/hash/spooky.html>
+- The small name tables in `core/index/lookups/` (galaxies, expeditions, journey ranks,
+  mission stages, legacy part ids) come from Hello Games' game data, plus the community's
+  list of galaxy names beyond the first few.
 
 The rest of the code — `lz4_block` (a from-spec implementation of the public LZ4 block
 format by Yann Collet), `savedir`, `catalog`, `operations`, `safety`, `slotmap`,

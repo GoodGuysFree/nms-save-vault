@@ -465,6 +465,8 @@ xcopy "%SRC%" "%DST%" /e /i /y /q /r >>"%LOG%" 2>&1
 if errorlevel 1 goto rollback
 
 >>"%LOG%" echo Installed.
+rem The command-line launcher was called nmsvault.exe before it was renamed.
+if exist "%DST%\nmsvault.exe" del /f /q "%DST%\nmsvault.exe" >nul 2>&1
 if exist "%DST%\_runtime.old" rmdir /s /q "%DST%\_runtime.old"
 start "" "%DST%\%EXE%"
 goto cleanup

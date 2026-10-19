@@ -9,30 +9,38 @@ member only edits the meta timestamp. The data bytes are never recompressed.
 """
 from __future__ import annotations
 
+import logging
+import os
 import shutil
+import warnings as pywarnings
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
 
 from . import formats, lz4_block, meta, msstore, safety, savedir
 from .catalog import (
+    OperationError,
     KIND_EXTRACT,
     KIND_FULL,
     KIND_IMPORTED,
     KIND_INPLACE,
     KIND_SNAPSHOT,
+    PRE_UPGRADE_COPY,
     CatalogEntry,
-    SlotSummary,
     Vault,
     looks_like_vault_dir,
 )
-from .slotmap import SaveFileRef, slot_file_numbers, storage_ordinal
+from .slotmap import SaveFileRef, slot_file_numbers
 
-SNAPSHOT_RETENTION = 20
+log = logging.getLogger(__name__)
+
+# Free space a new vault copy must leave on the vault drive beyond its own size, so a copy
+# never fills the drive the catalog still has to be written to.
+SPACE_MARGIN = 100 * 1024 * 1024
 
 
-class OperationError(Exception):
-    pass
+# OperationError lives in catalog (the vault itself raises it); re-exported here.
 
 
 class GameRunningError(OperationError):
@@ -43,14 +51,56 @@ class ValidationError(OperationError):
     pass
 
 
+class WrittenButInvalidError(ValidationError):
+    """The live folder was written, but the result failed its check. Carries the operation's
+    result (``ok`` False) so the caller still has its snapshot id and warnings for undo."""
+
+    def __init__(self, message: str, result: "OpResult"):
+        super().__init__(message)
+        self.result = result
+
+
+class SourceChangedError(OperationError):
+    """A file changed (``vanished`` False) or disappeared (True) while it was being copied
+    into the vault. From a live folder (``live``) the game or the Xbox app was most likely
+    writing; from anywhere else the folder changed or became unavailable (a removed drive)."""
+
+    def __init__(self, name: str, vanished: bool, live: bool):
+        what = "disappeared" if vanished else "changed"
+        if live:
+            hint = "Close the game (or let the Xbox app finish syncing) and try again."
+        else:
+            hint = "Check that the source folder is still there and unchanged (a drive removed?) and try again."
+        super().__init__(
+            f"The file {name} {what} while it was being copied into the vault, so nothing was "
+            f"saved. {hint}"
+        )
+        self.name = name
+        self.vanished = vanished
+        self.live = live
+
+
+class ForeignAccountError(OperationError):
+    """A backup of another account was refused: restoring it would write that account's
+    identity into this one. Nothing was changed."""
+
+
+class OplogNotWrittenWarning(UserWarning):
+    """An operation that returns no OpResult (backup, extract, import) finished, but its
+    op-log record could not be written. Issued with ``warnings.warn`` only when the caller
+    passed no ``warnings`` list to collect it in."""
+
+
 class FeatureNotYetAvailableError(OperationError):
-    """A deliberately-gated capability the UI should present as 'coming soon',
-    not as an error/failure."""
+    """A capability this path deliberately does not offer; the UI shows the message as
+    information, not as an error/failure."""
 
 
 # Shown when a write would transfer a save between Steam and Xbox (either direction).
-# Same-platform writes (Steam->Steam, Xbox->Xbox) are supported; cross-platform is gated.
-CROSS_PLATFORM_MSG = "Transferring saves between Steam and Xbox / Game Pass is coming soon."
+# Same-platform writes (Steam->Steam, Xbox->Xbox) run here; a cross-platform move goes through
+# the Organizer's plan, which has the checks and the confirmation the classic path lacks.
+CROSS_PLATFORM_MSG = ("To move a save between Steam and Xbox, use the Organizer tab "
+                      "(Move to live) or `nmsvault-cli place`.")
 
 
 @dataclass
@@ -62,6 +112,12 @@ class OpResult:
     entry_id: str | None = None
     changed: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    op_id: str | None = None          # a live operation's id (the undo and history key)
+
+
+LIVE_OP_BUSY = (
+    "Another NMS Save Vault window is changing live saves. Try again when it has finished."
+)
 
 
 # --- file-set helpers --------------------------------------------------------
@@ -95,7 +151,7 @@ def _steam_cloud_on(folder: Path) -> bool:
 
 
 def _guard_same_platform(src: Path, dst: Path) -> None:
-    """Cross-platform (Steam<->Xbox) transfer is gated; same-platform is supported."""
+    """Cross-platform (Steam<->Xbox) is not done here (use the Organizer); same-platform is."""
     if savedir.platform_of(src) != savedir.platform_of(dst):
         raise FeatureNotYetAvailableError(CROSS_PLATFORM_MSG)
 
@@ -112,84 +168,229 @@ def _check_slot(slot: int) -> None:
 # --- snapshots & copying -----------------------------------------------------
 
 
-def _copy_save_state(src: Path, dst: Path) -> list[str]:
-    """Copy the live save state from src to dst. Steam: all *.hg (+ steam_autocloud.vdf).
-    Xbox/wgs: the whole account folder (containers.index + every blob dir). Returns the
-    copied file names (relative to dst)."""
-    src = Path(src)
+def _save_state_files(src: Path) -> list[Path]:
+    """The files that make up the live save state. Steam: all *.hg (+ steam_autocloud.vdf).
+    Xbox/wgs: every file of the account folder (containers.index + every blob dir)."""
     if _is_xbox(src):
-        shutil.copytree(src, dst, dirs_exist_ok=True)
-        return [str(p.relative_to(dst)) for p in dst.rglob("*") if p.is_file()]
-    dst.mkdir(parents=True, exist_ok=True)
-    copied = []
-    for p in _hg_files(src):
-        shutil.copy2(p, dst / p.name)
-        copied.append(p.name)
+        return _all_files(src)
     vdf = src / formats.STEAM_AUTOCLOUD
-    if vdf.is_file():
-        shutil.copy2(vdf, dst / vdf.name)
-    return copied
+    return _hg_files(src) + ([vdf] if vdf.is_file() else [])
 
 
-def snapshot_live(vault: Vault, live_dir: Path, reason: str) -> CatalogEntry:
-    """Copy the live save state into the vault as an auto-snapshot entry."""
+def _all_files(folder: Path) -> list[Path]:
+    return [p for p in folder.rglob("*") if p.is_file()]
+
+
+class _Copier:
+    """Copies files reading each source once, keeping the sha256 of what it read (to check
+    the copy against) and noting a source whose size or time moved meanwhile. Usable as
+    ``shutil.copytree``'s ``copy_function``."""
+
+    def __init__(self) -> None:
+        self.hashes: dict[str, str] = {}
+        self.moved: set[str] = set()
+        self.stats: dict[str, tuple[int, int]] = {}   # (size, mtime_ns) when it was copied
+
+    def __call__(self, src, dst, *args, **kwargs):
+        before = os.stat(src)
+        digest = safety.copy_and_hash(src, dst)
+        after = os.stat(src)
+        key = _path_key(src)
+        self.hashes[key] = digest
+        self.stats[key] = (after.st_size, after.st_mtime_ns)
+        if (before.st_size, before.st_mtime_ns) != self.stats[key]:
+            self.moved.add(key)
+        return dst
+
+
+def _path_key(path) -> str:
+    return os.path.normcase(os.path.abspath(path))
+
+
+def _copy_save_state(src: Path, dst: Path, files: list[Path], copy: _Copier) -> None:
+    """Copy the live save state (``files`` = :func:`_save_state_files`) into ``dst``. Xbox
+    copies the whole tree, empty folders included: a mirror restore from this copy deletes
+    whatever it lacks."""
+    if _is_xbox(src):
+        shutil.copytree(src, dst, dirs_exist_ok=True, copy_function=copy)
+    else:
+        for p in files:
+            copy(p, dst / p.name)
+
+
+def _require_free_space(folder: Path, needed: int) -> None:
+    free = shutil.disk_usage(folder).free
+    if free < needed + SPACE_MARGIN:
+        mb = 1024 * 1024
+        raise OperationError(
+            f"Not enough free space in the vault: this needs about {(needed + SPACE_MARGIN) // mb} MB "
+            f"({needed // mb} MB of saves plus {SPACE_MARGIN // mb} MB to spare), and the vault "
+            f"drive has {free // mb} MB free. Nothing was changed."
+        )
+
+
+def _remove_partial(folder: Path) -> None:
+    """Delete a half-written vault folder. A failure is logged, not raised, so the caller
+    still sees the error that made the copy fail."""
+    try:
+        shutil.rmtree(folder)
+    except OSError as exc:
+        log.warning("could not remove the incomplete vault folder %s: %s", folder, exc)
+
+
+def _new_managed_entry(
+    vault: Vault,
+    kind: str,
+    parent: Path,
+    *,
+    tag: str,
+    source_root: Path,
+    files: list[Path],
+    fill: Callable[[Path, _Copier], None],
+    label: str,
+    source: str,
+    slots: list[int] | None = None,
+    live: bool = False,
+) -> CatalogEntry:
+    """Copy into a new managed vault folder and catalogue it -- or leave nothing behind.
+
+    The folder is always a fresh one (never a leftover of an earlier failure, whose contents
+    are unknown); ``fill`` copies ``files`` into it through the given copier, each to its
+    place relative to ``source_root``. The copier reads each source once and keeps its
+    sha256; every copy is then checked against it, and a source that changed meanwhile is
+    caught too. If the copy, the check, the scan or the catalog write fails, the
+    half-written folder is removed and the error re-raised: a partial, corrupt or
+    uncatalogued copy is not a backup and must never be mistaken for one. ``live``: the
+    source is a live save folder (it decides what a changed-source error advises).
+    """
     vault.ensure()
-    sid = vault.new_id(KIND_SNAPSHOT, tag=savedir.platform_of(live_dir))
-    dest = vault.snapshots_dir / sid
-    _copy_save_state(Path(live_dir), dest)
-    entry = vault.make_entry_from_dir(
-        sid, KIND_SNAPSHOT, f"auto: {reason}", dest, managed=True, source=Path(live_dir).name
-    )
-    vault.upsert(entry)
-    _prune_snapshots(vault)
+    try:
+        needed = sum(p.stat().st_size for p in files)
+    except FileNotFoundError as exc:
+        raise SourceChangedError(Path(exc.filename or "").name, vanished=True, live=live) from exc
+    _require_free_space(parent, needed)
+    entry_id = vault.new_id(kind, tag=tag, folder=parent)
+    dest = parent / entry_id
+    dest.mkdir()
+    try:
+        copier = _Copier()
+        fill(dest, copier)
+        _verify_copy(source_root, dest, files, copier, live)
+        safety.fsync_tree(dest)
+        entry = vault.make_entry_from_dir(
+            entry_id, kind, label, dest, managed=True, source=source, slots=slots
+        )
+        with _store().guarded_write(vault.root):
+            vault.upsert(entry)
+    except BaseException as exc:
+        _remove_partial(dest)
+        gone = next((f for f in files if not f.exists()), None)
+        if isinstance(exc, OSError) and gone is not None:
+            raise SourceChangedError(gone.name, vanished=True, live=live) from exc
+        raise
     return entry
 
 
-def _prune_snapshots(vault: Vault) -> None:
-    # Sort by creation time, not id: ids are "snapshot-<platform>-<stamp>", so sorting by id
-    # groups by platform and would prune the wrong (not the oldest) snapshots when a user has
-    # both Steam and Xbox live folders -- including a just-created one still referenced by the
-    # oplog, which would silently defeat undo. Only prune snapshots this vault manages -- an
-    # in-place-imported snapshot (managed=False) belongs to another vault; never delete it.
-    snaps = sorted(
-        (e for e in vault.entries if e.kind == KIND_SNAPSHOT and e.managed), key=lambda e: e.created
+def _store():
+    """The store's classic-operation helpers (D3 2.10), imported late: the store imports this
+    module for its errors."""
+    from .store import classic
+
+    return classic
+
+
+def snapshot_live(vault: Vault, live_dir: Path, reason: str) -> CatalogEntry:
+    """Copy the live save state into the vault as an auto-snapshot entry (in store mode, a
+    store entry; refused while the vault is being upgraded)."""
+    live_dir = Path(live_dir)
+    store = _store().store_of(vault)
+    if store is not None:
+        return _store().keep_live(store, live_dir, kind=KIND_SNAPSHOT, label=f"auto: {reason}",
+                                  scope=_store().CaptureScope(), reason=reason)
+    files = _save_state_files(live_dir)
+    return _new_managed_entry(
+        vault, KIND_SNAPSHOT, vault.snapshots_dir, tag=savedir.platform_of(live_dir),
+        source_root=live_dir, files=files,
+        fill=lambda dest, copy: _copy_save_state(live_dir, dest, files, copy),
+        label=f"auto: {reason}", source=live_dir.name, live=True,
     )
-    for old in snaps[:-SNAPSHOT_RETENTION]:
-        shutil.rmtree(old.path, ignore_errors=True)
-        vault.remove(old.id)
 
 
 # --- feature 1: full backup / restore ---------------------------------------
 
 
-def create_full_backup(vault: Vault, live_dir: Path, label: str = "", include_cache: bool = True) -> CatalogEntry:
-    vault.ensure()
+def create_full_backup(
+    vault: Vault, live_dir: Path, label: str = "", include_cache: bool = True,
+    warnings: list[str] | None = None,
+) -> CatalogEntry:
+    """Copy the live folder into the vault. ``warnings`` collects anything the caller should
+    show (today: an op-log record that could not be written); without it such a message is
+    issued as an :class:`OplogNotWrittenWarning`."""
     live_dir = Path(live_dir)
-    bid = vault.new_id(KIND_FULL, tag=savedir.platform_of(live_dir))
-    dest = vault.backups_dir / bid
-    if include_cache:
-        shutil.copytree(live_dir, dest)
+    files = _all_files(live_dir) if include_cache else _save_state_files(live_dir)
+    collected: list[str] = []
+
+    def fill(dest: Path, copy: _Copier) -> None:
+        if include_cache:
+            shutil.copytree(live_dir, dest, dirs_exist_ok=True, copy_function=copy)
+        else:
+            _copy_save_state(live_dir, dest, files, copy)
+
+    store = _store().store_of(vault)
+    if store is not None:
+        entry = _store().keep_live(
+            store, live_dir, kind=KIND_FULL, label=label,
+            scope=_store().CaptureScope(cache="include" if include_cache else "omit"))
     else:
-        _copy_save_state(live_dir, dest)
-    # Xbox always copies the whole wgs tree (no *.hg), so verify the full tree, not just *.hg.
-    _verify_copy(live_dir, dest, only_hg=not include_cache and not _is_xbox(live_dir))
-    entry = vault.make_entry_from_dir(bid, KIND_FULL, label, dest, managed=True, source=live_dir.name)
-    vault.upsert(entry)
-    vault.append_oplog(_oplog("full_backup", entry_id=bid))
+        entry = _new_managed_entry(
+            vault, KIND_FULL, vault.backups_dir, tag=savedir.platform_of(live_dir),
+            source_root=live_dir, files=files, fill=fill, label=label, source=live_dir.name,
+            live=True,
+        )
+    _log_op(vault, _oplog("full_backup", entry_id=entry.id), collected)
+    _hand_over(collected, warnings)
+    from .organizer import recorder
+
+    recorder.observe_folder(vault.root, live_dir)   # a look at the folder narrows the journal's gaps
     return entry
 
 
-def _verify_copy(src: Path, dst: Path, only_hg: bool) -> None:
-    files = _hg_files(src) if only_hg else [p for p in src.rglob("*") if p.is_file()]
+def _hand_over(collected: list[str], warnings: list[str] | None) -> None:
+    """Give a backup's, extract's or import's messages to the caller's list, or -- with no
+    list to return them in -- issue them as :class:`OplogNotWrittenWarning`. Called by the
+    public function itself, so the warning points at that function's caller."""
+    if warnings is not None:
+        warnings += collected
+        return
+    for message in collected:
+        pywarnings.warn(OplogNotWrittenWarning(message), stacklevel=3)
+
+
+def _verify_copy(src: Path, dst: Path, files: list[Path], copier: _Copier, live: bool) -> None:
+    """Every file was copied, no source moved while it was read or afterwards (until the
+    last file was copied -- so a data / meta pair cannot be split across a game write), and
+    each copy hashes to what was read. Sources are only stat'ed again, never re-read."""
+    for p in files:
+        key = _path_key(p)
+        try:
+            now = p.stat()
+        except FileNotFoundError:
+            raise SourceChangedError(str(p.relative_to(src)), vanished=True, live=live) from None
+        if key in copier.stats and (now.st_size, now.st_mtime_ns) != copier.stats[key]:
+            copier.moved.add(key)
     for p in files:
         rel = p.relative_to(src)
+        key = _path_key(p)
+        if key in copier.moved:
+            raise SourceChangedError(str(rel), vanished=False, live=live)
         d = dst / rel
-        if not d.is_file() or safety.sha256_file(p) != safety.sha256_file(d):
-            raise ValidationError(f"backup verification failed for {rel}")
+        if key not in copier.hashes or not d.is_file() or safety.sha256_file(d) != copier.hashes[key]:
+            raise ValidationError(f"the copy of {rel} in the vault does not match the original")
 
 
 def restore_entry(
-    vault: Vault, entry: CatalogEntry, live_dir: Path, allow_game_running: bool = False
+    vault: Vault, entry: CatalogEntry, live_dir: Path, allow_game_running: bool = False,
+    restore_accountdata: bool = False,
 ) -> OpResult:
     """Put a catalog entry back into the live folder, the right way for its kind.
 
@@ -197,10 +398,14 @@ def restore_entry(
     lifted aside. Restoring it means putting that slot back where it came from and leaving
     every other slot alone. Running it through :func:`restore_full` instead would mirror
     the live folder onto a one-slot backup and delete every other save in it, which is
-    exactly the accident this function exists to prevent.
+    exactly the accident this function exists to prevent. A version store's ``preserve``
+    entry (one slot kept before a live write) is restored the same way (D3 2.9 rule 5).
     """
-    if entry.kind != KIND_EXTRACT:
-        return restore_full(vault, entry, live_dir, allow_game_running=allow_game_running)
+    if entry.kind not in _store().SLOT_KINDS:
+        return restore_full(
+            vault, entry, live_dir, allow_game_running=allow_game_running,
+            restore_accountdata=restore_accountdata,
+        )
 
     slots = [s.slot for s in entry.occupied_slots]
     if not slots:
@@ -211,9 +416,10 @@ def restore_entry(
             "with repopulate, choosing the destination slot for each."
         )
     slot = slots[0]
-    result = repopulate_slot(
-        vault, Path(entry.path), slot, live_dir, slot, allow_game_running=allow_game_running
-    )
+    with _store().entry_folder(vault, entry, slots=[slot]) as folder:
+        result = repopulate_slot(
+            vault, folder, slot, live_dir, slot, allow_game_running=allow_game_running
+        )
     return replace(
         result,
         op="restore_extract",
@@ -221,85 +427,75 @@ def restore_entry(
     )
 
 
-def restore_full(
-    vault: Vault, entry: CatalogEntry, live_dir: Path, mirror: bool = True, allow_game_running: bool = False
-) -> OpResult:
-    warnings: list[str] = []
-    _guard_game(allow_game_running, warnings)
-    live_dir = Path(live_dir)
-    src = Path(entry.path)
-    if not src.is_dir():
-        raise OperationError(f"backup folder not found: {src}")
-    if mirror and entry.kind == KIND_EXTRACT:
-        # Refused structurally, not just in the UI: mirroring the live folder onto a
-        # single-slot extract deletes every other save (and the account data) in it.
-        raise OperationError(
-            f"'{entry.id}' is a single-slot extract, not a full backup. Restoring it as one "
-            "would delete every other save in the live folder. Use restore_entry(), which "
-            "puts the slot back where it came from."
-        )
-    _guard_same_platform(src, live_dir)
-    if _is_xbox(live_dir):
-        return _restore_full_xbox(vault, entry, src, live_dir, warnings)
-    if not _hg_files(src):
-        raise OperationError(
-            f"'{entry.id}' has no Steam-format save*.hg files, so it cannot be restored into a "
-            "Steam folder."
-        )
-
-    snap = snapshot_live(vault, live_dir, reason=f"pre-restore of {entry.id}")
-    changed: list[str] = []
-
-    # Steam Cloud compares each local file against its own manifest, so a restored file
-    # stamped with the backup's original mtime looks OLDER than the cloud copy and Steam
-    # can overwrite the restore on the next launch. Under Cloud the write time is the
-    # honest one; elsewhere the save keeps the age it had.
-    keep_mtime = not _steam_cloud_on(live_dir)
-    src_hg = {p.name for p in _hg_files(src)}
-    for p in _hg_files(src):
-        safety.atomic_copy(p, live_dir / p.name, preserve_mtime=keep_mtime)
-        changed.append(p.name)
-    vdf = src / formats.STEAM_AUTOCLOUD
-    if vdf.is_file():
-        safety.atomic_copy(vdf, live_dir / vdf.name, preserve_mtime=keep_mtime)
-
-    if mirror:
-        for p in _hg_files(live_dir):
-            if p.name not in src_hg:
-                p.unlink()
-                changed.append(f"-{p.name}")
-
-    _validate_dir_metas(live_dir, warnings)
-    vault.append_oplog(_oplog("restore_full", entry_id=entry.id, snapshot_id=snap.id, changed=changed))
-    return OpResult(True, "restore_full", f"restored {entry.id}", snapshot_id=snap.id, changed=changed, warnings=warnings)
+ACCOUNT_DATA_KEPT = (
+    "The backup's account data (unlocks, settings) was not restored: the live folder kept its "
+    "own. Restoring it as well would roll those back."
+)
 
 
 # --- feature 2: extract a slot, repopulate a slot, promote a member ----------
 
 
-def extract_slot(vault: Vault, source_dir: Path, slot: int, label: str = "") -> CatalogEntry:
-    vault.ensure()
+def extract_slot(
+    vault: Vault, source_dir: Path, slot: int, label: str = "", warnings: list[str] | None = None,
+    live_dirs: Iterable[Path] = (),
+) -> CatalogEntry:
+    """Copy one slot into the vault. ``warnings`` as in :func:`create_full_backup`.
+    ``live_dirs``: the caller's live folders, so a problem copying from one of them is
+    explained as the game or the Xbox app writing, not as a missing drive."""
+    if not str(source_dir).strip() or not Path(source_dir).is_absolute():
+        raise OperationError("That source has no folder of its own to read from; a relative or "
+                             "empty path is never used. Nothing was changed.")
     source_dir = Path(source_dir)
     _check_slot(slot)
-    if _is_xbox(source_dir):
-        return _extract_slot_xbox(vault, source_dir, slot, label)
-    eid = vault.new_id(KIND_EXTRACT, tag=savedir.platform_of(source_dir))
-    dest = vault.extracts_dir / eid
-    dest.mkdir(parents=True, exist_ok=True)
-    copied = 0
+    collected: list[str] = []
+    live = any(safety.same_path(source_dir, d) for d in live_dirs)
+    store = _store().store_of(vault)
+    if store is not None:
+        entry = _extract_into_store(vault, store, source_dir, slot, label, live, collected)
+    elif _is_xbox(source_dir):
+        entry = _extract_slot_xbox(vault, source_dir, slot, label, collected, live)
+    else:
+        entry = _extract_slot_steam(vault, source_dir, slot, label, collected, live)
+    _hand_over(collected, warnings)
+    return entry
+
+
+def _extract_into_store(vault: Vault, store, source_dir: Path, slot: int, label: str,
+                        live: bool, collected: list[str]) -> CatalogEntry:
+    """Store mode: the slot becomes a store entry (an Xbox slot with an index of its own)."""
+    classic = _store()
+    label = label or f"slot {slot} from {source_dir.name}"
+    scope = classic.CaptureScope(slots=(slot,))
+    if live:
+        entry = classic.keep_live(store, source_dir, kind=KIND_EXTRACT, label=label, scope=scope)
+    else:
+        entry = classic.keep_folder(store, source_dir, kind=KIND_EXTRACT, label=label,
+                                    scope=scope)
+    platform = "xbox " if _is_xbox(source_dir) else ""
+    _log_op(vault, _oplog("extract_slot", entry_id=entry.id, detail=f"{platform}slot {slot}"),
+            collected)
+    return entry
+
+
+def _extract_slot_steam(
+    vault: Vault, source_dir: Path, slot: int, label: str, collected: list[str], live: bool
+) -> CatalogEntry:
+    files: list[Path] = []
     for fno in slot_file_numbers(slot):
-        d, m = _member_paths(source_dir, fno)
-        if d.is_file() and m.is_file():
-            shutil.copy2(d, dest / d.name)
-            shutil.copy2(m, dest / m.name)
-            copied += 1
-    if copied == 0:
-        shutil.rmtree(dest, ignore_errors=True)
+        data, meta_file = _member_paths(source_dir, fno)
+        if data.is_file() and meta_file.is_file():
+            files += [data, meta_file]
+    if not files:
         raise OperationError(f"slot {slot} has no saves to extract in {source_dir}")
-    lbl = label or f"slot {slot} from {source_dir.name}"
-    entry = vault.make_entry_from_dir(eid, KIND_EXTRACT, lbl, dest, managed=True, source=source_dir.name, slots=[slot])
-    vault.upsert(entry)
-    vault.append_oplog(_oplog("extract_slot", entry_id=eid, detail=f"slot {slot}"))
+    entry = _new_managed_entry(
+        vault, KIND_EXTRACT, vault.extracts_dir, tag=savedir.platform_of(source_dir),
+        source_root=source_dir, files=files,
+        fill=lambda dest, copy: _copy_save_state(source_dir, dest, files, copy),
+        label=label or f"slot {slot} from {source_dir.name}", source=source_dir.name, slots=[slot],
+        live=live,
+    )
+    _log_op(vault, _oplog("extract_slot", entry_id=entry.id, detail=f"slot {slot}"), collected)
     return entry
 
 
@@ -312,158 +508,35 @@ def repopulate_slot(
     allow_game_running: bool = False,
 ) -> OpResult:
     """Write the two saves of ``source_slot`` (from ``source_dir``) into ``dest_slot`` of
-    the live folder, re-keying each meta when the slot number differs."""
-    warnings: list[str] = []
-    source_dir = Path(source_dir)
-    live_dir = Path(live_dir)
-    _check_slot(source_slot)
-    _check_slot(dest_slot)
-    _guard_same_platform(source_dir, live_dir)
-    if _is_xbox(live_dir):
-        return _repopulate_slot_xbox(vault, source_dir, source_slot, live_dir, dest_slot, allow_game_running)
-    _guard_game(allow_game_running, warnings)
+    the live folder: one live operation (D5 4.1). Both positions are written, what the slot
+    held is preserved in the vault first, and the write is checked and journaled."""
+    from .liveops import classic
 
-    # Pre-flight: build the (data_bytes, new_meta_bytes, dst paths, mtime) for each member.
-    planned = []
-    for member in (0, 1):
-        src_f = slot_file_numbers(source_slot)[member]
-        dst_f = slot_file_numbers(dest_slot)[member]
-        src_data, src_meta = _member_paths(source_dir, src_f)
-        if not (src_data.is_file() and src_meta.is_file()):
-            warnings.append(f"source slot {source_slot}{'AB'[member]} missing; skipped")
-            continue
-        data_bytes = src_data.read_bytes()
-        meta_bytes = src_meta.read_bytes()
-        dst_ord = storage_ordinal(dst_f)
-        used_ord, _plain = meta.decrypt_autodetect(meta_bytes, storage_ordinal(src_f))
-        new_meta = meta_bytes if used_ord == dst_ord else meta.re_key(meta_bytes, used_ord, dst_ord)
-        _validate_pair(new_meta, dst_ord, data_bytes)
-        dst_data, dst_meta = _member_paths(live_dir, dst_f)
-        planned.append((dst_data, data_bytes, dst_meta, new_meta, src_data.stat().st_mtime))
-
-    if not planned:
-        raise OperationError(f"source slot {source_slot} has no saves in {source_dir}")
-
-    snap = snapshot_live(vault, live_dir, reason=f"pre-repopulate slot {dest_slot}")
-    # See restore_full: under Steam Cloud the source mtime would make the cloud copy look
-    # newer than what we just wrote, and Steam would put its copy back.
-    keep_mtime = not _steam_cloud_on(live_dir)
-    changed: list[str] = []
-    for dst_data, data_bytes, dst_meta, new_meta, mtime in planned:
-        safety.atomic_write_bytes(dst_data, data_bytes)
-        safety.atomic_write_bytes(dst_meta, new_meta)
-        if keep_mtime:
-            safety.set_file_mtime(dst_data, mtime)
-            safety.set_file_mtime(dst_meta, mtime)
-        changed += [dst_data.name, dst_meta.name]
-
-    _validate_slot(live_dir, dest_slot, warnings)
-    vault.append_oplog(
-        _oplog("repopulate_slot", snapshot_id=snap.id, detail=f"{source_dir.name} slot {source_slot} -> slot {dest_slot}", changed=changed)
-    )
-    return OpResult(True, "repopulate_slot", f"slot {source_slot} -> {dest_slot}", snapshot_id=snap.id, changed=changed, warnings=warnings)
+    return classic.repopulate(vault, source_dir, source_slot, live_dir, dest_slot,
+                              allow_game_running)
 
 
 def promote_member(vault: Vault, live_dir: Path, slot: int, member: int, allow_game_running: bool = False) -> OpResult:
-    """Force a slot member to be the one the game treats as newest (timestamp bump)."""
-    warnings: list[str] = []
-    live_dir = Path(live_dir)
-    _check_slot(slot)
-    if _is_xbox(live_dir):
-        return _promote_member_xbox(vault, live_dir, slot, member, allow_game_running)
-    _guard_game(allow_game_running, warnings)
-    view = savedir.scan(live_dir)
-    sv = view.slots[slot]
-    target = sv.members[member]
-    sibling = sv.members[1 - member]
-    if not target.exists or not target.valid:
-        raise OperationError(f"slot {slot}{'AB'[member]} is missing or unreadable")
+    """Make a slot member the one the game loads: one live operation (D5 4.1)."""
+    from .liveops import classic
 
-    base = target.timestamp
-    if sibling.exists and sibling.info is not None:
-        base = max(base, sibling.timestamp)
-    new_ts = base + 1
-
-    ordinal = target.ordinal_used or target.mapped_ordinal
-    plain = meta.decrypt(target.meta_path.read_bytes(), ordinal)
-    new_meta = meta.encrypt(meta.set_timestamp(plain, new_ts), ordinal)
-    if not meta.is_valid_for(new_meta, ordinal):
-        raise ValidationError("promote: re-encrypted meta failed validation")
-
-    snap = snapshot_live(vault, live_dir, reason=f"pre-promote slot {slot}{'AB'[member]}")
-    safety.atomic_write_bytes(target.meta_path, new_meta)
-    safety.set_file_mtime(target.meta_path, new_ts)
-    if target.data_path.is_file():
-        safety.set_file_mtime(target.data_path, new_ts)
-    changed = [target.meta_path.name, target.data_path.name]
-    vault.append_oplog(_oplog("promote_member", snapshot_id=snap.id, detail=f"slot {slot}{'AB'[member]} ts->{new_ts}", changed=changed))
-    return OpResult(True, "promote_member", f"slot {slot}{'AB'[member]} promoted", snapshot_id=snap.id, changed=changed, warnings=warnings)
+    return classic.promote(vault, live_dir, slot, member, allow_game_running)
 
 
-# --- Xbox / Game Pass (wgs) variants -----------------------------------------
+# --- Xbox / Game Pass (wgs) extract ------------------------------------------
 #
-# Same-platform only: data + meta blobs are copied verbatim and the slot identity lives in
-# containers.index (no XXTEA, no re-keying). All three snapshot the live folder first, so
-# `undo` (which routes back through restore_full -> _restore_full_xbox) recovers the prior
-# state. Cross-platform Steam<->Xbox transfer stays gated (see _guard_same_platform).
+# Same-platform only here: data + meta blobs are copied verbatim and the slot identity lives in
+# containers.index (no XXTEA, no re-keying). Steam<->Xbox goes through the Organizer
+# (see _guard_same_platform).
 
 
 def _ms_identifier(slot: int, member: int) -> str:
     return f"Slot{slot}{'Auto' if member == 0 else 'Manual'}"
 
 
-def _require_wgs(live_dir: Path) -> None:
-    # An xgs-only account has no containers.index to keep the Xbox app's sync state in, so
-    # writing it would be invisible to (or undone by) the cloud. Read-only until understood.
-    if not msstore.is_microsoft_save_dir(live_dir):
-        raise OperationError(f"{live_dir} is an xgs-only Xbox folder; the vault can read it but not write it")
-
-
-def _validate_xbox_slot(live_dir: Path, slot: int, warnings: list[str]) -> None:
-    view = savedir.scan_any(live_dir)
-    present = view.slots[slot].present_members if slot in view.slots else []
-    if not present:
-        raise ValidationError(f"slot {slot} has no readable save after the write")
-    for m in present:
-        if m.info is None:
-            raise ValidationError(f"slot {slot}{m.label} is unreadable after the write: {m.note}")
-
-
-def _validate_xbox_dir(live_dir: Path, warnings: list[str]) -> None:
-    view = savedir.scan_any(live_dir)
-    for sv in view.slots.values():
-        for m in sv.present_members:
-            if m.info is None:
-                warnings.append(f"slot {sv.slot}{m.label}: {m.note}")
-
-
-def _promote_member_xbox(vault: Vault, live_dir: Path, slot: int, member: int, allow_game_running: bool) -> OpResult:
-    warnings: list[str] = []
-    _require_wgs(live_dir)
-    _guard_game(allow_game_running, warnings)
-    view = savedir.scan_any(live_dir)
-    sv = view.slots[slot]
-    target, sibling = sv.members[member], sv.members[1 - member]
-    if not target.exists or target.xbox is None:
-        raise OperationError(f"slot {slot}{'AB'[member]} is missing or not an Xbox save")
-    new_ts = target.effective_timestamp
-    if sibling.exists:
-        new_ts = max(new_ts, sibling.effective_timestamp)
-    new_ts += 1
-
-    # Bump BOTH the index FILETIME (write_save's `when`) and the meta timestamp field, so the
-    # promoted member is newest regardless of which one the game keys off.
-    data_bytes = Path(target.data_path).read_bytes()
-    meta_bytes = msstore.set_ms_meta_timestamp(Path(target.meta_path).read_bytes(), new_ts)
-    snap = snapshot_live(vault, live_dir, reason=f"pre-promote slot {slot}{'AB'[member]}")
-    msstore.write_save(live_dir, target.xbox.identifier, data_bytes, meta_bytes, float(new_ts))
-    _validate_xbox_slot(live_dir, slot, warnings)
-    changed = [target.xbox.identifier]
-    vault.append_oplog(_oplog("promote_member", snapshot_id=snap.id, detail=f"xbox slot {slot}{'AB'[member]} ts->{new_ts}", changed=changed))
-    return OpResult(True, "promote_member", f"slot {slot}{'AB'[member]} promoted", snapshot_id=snap.id, changed=changed, warnings=warnings)
-
-
-def _extract_slot_xbox(vault: Vault, source_dir: Path, slot: int, label: str) -> CatalogEntry:
+def _extract_slot_xbox(
+    vault: Vault, source_dir: Path, slot: int, label: str, collected: list[str], live: bool
+) -> CatalogEntry:
     """Extract one wgs slot into the vault as a minimal, self-contained wgs folder: its own
     ``containers.index`` (just this slot's records) plus the slot's blob directories copied
     verbatim. That way it scans, summarises and repopulates exactly like any Xbox source."""
@@ -473,311 +546,66 @@ def _extract_slot_xbox(vault: Vault, source_dir: Path, slot: int, label: str) ->
     if not picked:
         raise OperationError(f"slot {slot} has no saves to extract in {source_dir}")
 
-    eid = vault.new_id(KIND_EXTRACT, tag="xbox")
-    dest = vault.extracts_dir / eid
-    dest.mkdir(parents=True, exist_ok=True)
-    for c in picked:
-        shutil.copytree(c.directory, dest / c.dir_guid)  # the GUID blob folder, verbatim
-    # Rebuild the index from just the picked records; build uses their dir_guid (not absolute
-    # paths), so the copied folders resolve under dest.
-    safety.atomic_write_bytes(dest / "containers.index", msstore.build_containers_index(info, picked))
+    files = [p for c in picked for p in _all_files(c.directory)]
 
-    lbl = label or f"slot {slot} from {source_dir.name}"
-    entry = vault.make_entry_from_dir(eid, KIND_EXTRACT, lbl, dest, managed=True, source=source_dir.name, slots=[slot])
-    vault.upsert(entry)
-    vault.append_oplog(_oplog("extract_slot", entry_id=eid, detail=f"xbox slot {slot}"))
+    def fill(dest: Path, copy: _Copier) -> None:
+        for c in picked:                          # each GUID blob folder, verbatim
+            shutil.copytree(c.directory, dest / c.dir_guid, copy_function=copy)
+        # Rebuild the index from just the picked records; build uses their dir_guid (not
+        # absolute paths), so the copied folders resolve under dest.
+        subset = replace(info, trailer=b"")      # the source's trailing bytes are not ours
+        safety.atomic_write_bytes(dest / "containers.index", msstore.build_containers_index(subset, picked))
+
+    entry = _new_managed_entry(
+        vault, KIND_EXTRACT, vault.extracts_dir, tag="xbox", source_root=source_dir, files=files, fill=fill,
+        label=label or f"slot {slot} from {source_dir.name}", source=source_dir.name, slots=[slot],
+        live=live,
+    )
+    _log_op(vault, _oplog("extract_slot", entry_id=entry.id, detail=f"xbox slot {slot}"), collected)
     return entry
 
 
-def _repopulate_slot_xbox(vault: Vault, source_dir: Path, source_slot: int, live_dir: Path, dest_slot: int, allow_game_running: bool) -> OpResult:
-    warnings: list[str] = []
-    _require_wgs(live_dir)
-    _guard_game(allow_game_running, warnings)
-    src_view = savedir.scan_any(source_dir)
-    src_sv = src_view.slots.get(source_slot)
-
-    planned = []  # (dest_identifier, data_bytes, meta_bytes, when)
-    for member in (0, 1):
-        sm = src_sv.members[member] if src_sv else None
-        if sm is None or not sm.exists or sm.xbox is None or sm.info is None:
-            warnings.append(f"source slot {source_slot}{'AB'[member]} missing or unreadable; skipped")
-            continue
-        data_bytes = Path(sm.data_path).read_bytes()
-        meta_bytes = Path(sm.meta_path).read_bytes()
-        ts = sm.effective_timestamp
-        when = float(ts) if ts else _now()    # 0 == unknown time -> stamp now
-        planned.append((_ms_identifier(dest_slot, member), data_bytes, meta_bytes, when))
-
-    if not planned:
-        raise OperationError(f"source slot {source_slot} has no readable saves in {source_dir}")
-
-    snap = snapshot_live(vault, live_dir, reason=f"pre-repopulate slot {dest_slot}")
-    changed: list[str] = []
-    for dest_ident, data_bytes, meta_bytes, when in planned:
-        msstore.write_save(live_dir, dest_ident, data_bytes, meta_bytes, when, create_if_missing=True)
-        changed.append(dest_ident)
-
-    _validate_xbox_slot(live_dir, dest_slot, warnings)
-    vault.append_oplog(_oplog("repopulate_slot", snapshot_id=snap.id, detail=f"xbox {Path(source_dir).name} slot {source_slot} -> slot {dest_slot}", changed=changed))
-    return OpResult(True, "repopulate_slot", f"slot {source_slot} -> {dest_slot}", snapshot_id=snap.id, changed=changed, warnings=warnings)
-
-
-def _restore_full_xbox(vault: Vault, entry: CatalogEntry, src: Path, live_dir: Path, warnings: list[str]) -> OpResult:
-    _require_wgs(live_dir)
-    if not (src / "containers.index").is_file():
-        raise OperationError(f"'{entry.id}' is not an Xbox/wgs backup")
-    if src.resolve() == live_dir.resolve():
-        # Restoring a folder onto itself is a no-op; the mirror below would otherwise wipe it.
-        return OpResult(True, "restore_full", f"'{entry.id}' is the live folder; nothing to do", warnings=warnings)
-
-    snap = snapshot_live(vault, live_dir, reason=f"pre-restore of {entry.id}")
-    # Mirror the backup into the live folder (captured on this same account/machine, so its
-    # containers.index identity is valid here). Reconcile rather than clear-then-copy, so a
-    # mid-operation failure can't leave a half-emptied tree.
-    src_names = {c.name for c in src.iterdir()}
-    changed: list[str] = []
-    for child in list(live_dir.iterdir()):          # 1) drop live entries not in the backup
-        if child.name not in src_names:
-            if child.is_dir():
-                shutil.rmtree(child, ignore_errors=True)
-            else:
-                child.unlink()
-            changed.append(f"-{child.name}")
-    for child in src.iterdir():                      # 2) copy/overwrite the backup entries
-        dst = live_dir / child.name
-        if child.is_dir():
-            if dst.exists():
-                shutil.rmtree(dst, ignore_errors=True)
-            shutil.copytree(child, dst)
-        else:
-            shutil.copy2(child, dst)
-        changed.append(child.name)
-
-    msstore.mark_modified(live_dir)  # so the Xbox app re-syncs the restored tree
-    changed += msstore.mirror_xgs(live_dir)
-    _validate_xbox_dir(live_dir, warnings)
-    vault.append_oplog(_oplog("restore_full", entry_id=entry.id, snapshot_id=snap.id, changed=changed))
-    return OpResult(True, "restore_full", f"restored {entry.id}", snapshot_id=snap.id, changed=changed, warnings=warnings)
-
-
-# --- feature 2b: clear a slot ------------------------------------------------
-#
-# Emptying a live slot is the one operation whose whole point is to destroy a save, so it
-# is planned before it is done: plan_clear_slot() reports what the slot holds, the most
-# recent copy of it in the vault, and how much play time the live save has gained since --
-# i.e. exactly what would be lost. The front ends turn a non-empty ClearPlan.warning into
-# an "are you sure?".
-
-
-@dataclass
-class ClearPlan:
-    """What clearing one live slot would destroy, measured against the vault."""
-
-    slot: int
-    occupied: bool
-    live_name: str = ""
-    live_play_time: int = 0
-    entry_id: str | None = None
-    entry_label: str = ""
-    entry_kind: str = ""
-    entry_created: str = ""
-    backup_name: str = ""
-    backup_play_time: int = 0
-    steam_cloud: bool = False
-
-    @property
-    def backed_up(self) -> bool:
-        return self.entry_id is not None
-
-    @property
-    def progress_at_risk(self) -> int:
-        """Play-time seconds the live save has that the newest vault copy does not."""
-        if not self.backed_up:
-            return self.live_play_time
-        return max(0, self.live_play_time - self.backup_play_time)
-
-    @property
-    def warning(self) -> str:
-        """One sentence on what would be lost, or '' when the vault already has this save.
-
-        An unbacked slot warns even at zero play time: "nothing in the vault" is the fact
-        that matters there, not how far the save had got.
-        """
-        if not self.occupied:
-            return ""
-        if not self.backed_up:
-            return f"No copy of slot {self.slot} was found in the vault."
-        if self.progress_at_risk > 0:
-            return (
-                f"The live save has {format_duration(self.progress_at_risk)} more play time "
-                f"than the newest copy in the vault ('{self.entry_id}'), so that progress "
-                "would be lost."
-            )
-        return ""
-
-    @property
-    def cloud_warning(self) -> str:
-        """Why a Steam Cloud delete does not stick, and the procedure that makes it.
-
-        Steam restores a file that is merely MISSING locally -- its manifest still lists
-        it -- so deleting saves under Cloud is undone on the next launch. Overwrites are
-        not affected: a changed file is seen as a change.
-        """
-        if not self.steam_cloud:
-            return ""
-        return (
-            "Steam Cloud is syncing this folder, and Steam puts back files that are only "
-            "missing locally, so this slot can reappear the next time you launch the game. "
-            "To make the deletion stick: in Steam, No Man's Sky > Properties > General, "
-            "turn off 'Keep game saves in the Steam Cloud'; clear the slot; launch and quit "
-            "the game once; then turn Cloud back on and keep the local copy if Steam asks."
-        )
+# --- play time text ------------------------------------------------------------
 
 
 def format_duration(seconds: int) -> str:
-    """Play time as 'Nh MMm' (or 'Nm' under an hour), for the clear-slot messages."""
+    """Play time as 'Nh MMm' (or 'Nm' under an hour)."""
     h, m = divmod(max(0, int(seconds)) // 60, 60)
     return f"{h}h{m:02d}m" if h else f"{m}m"
-
-
-def _slot_play_time(summary: SlotSummary) -> int:
-    return max((m.play_time for m in summary.members if m.present), default=0)
-
-
-def _latest_vault_copy(
-    vault: Vault, live_dir: Path, slot: int
-) -> tuple[CatalogEntry, SlotSummary] | None:
-    """The most recently created catalog entry holding ``slot``, with that slot's summary.
-
-    The live folder itself is skipped even when it is catalogued: an in-place import of
-    the live folder would otherwise always answer "backed up" by pointing at the very save
-    about to be deleted. Entries whose folder has since gone away are skipped too.
-    """
-    live_resolved = Path(live_dir).resolve()
-    candidates: list[tuple[str, CatalogEntry, SlotSummary]] = []
-    for entry in vault.entries:
-        folder = Path(entry.path)
-        if not folder.is_dir() or folder.resolve() == live_resolved:
-            continue
-        summary = next((s for s in entry.slots if s.slot == slot and s.occupied), None)
-        if summary is not None:
-            candidates.append((entry.created, entry, summary))
-    if not candidates:
-        return None
-    _created, entry, summary = max(candidates, key=lambda c: c[0])
-    return entry, summary
-
-
-def plan_clear_slot(vault: Vault, live_dir: Path, slot: int) -> ClearPlan:
-    """Describe, without changing anything, what clearing ``slot`` would cost."""
-    _check_slot(slot)
-    live_dir = Path(live_dir)
-    view = savedir.scan_any(live_dir)
-    sv = view.slots.get(slot)
-    if sv is None or not sv.occupied:
-        return ClearPlan(slot=slot, occupied=False, steam_cloud=view.steam_cloud)
-
-    plan = ClearPlan(
-        slot=slot,
-        occupied=True,
-        steam_cloud=view.steam_cloud,
-        live_name=sv.display_name,
-        live_play_time=max(
-            (m.info.total_play_time for m in sv.present_members if m.info is not None), default=0
-        ),
-    )
-    found = _latest_vault_copy(vault, live_dir, slot)
-    if found is not None:
-        entry, summary = found
-        plan.entry_id = entry.id
-        plan.entry_label = entry.label
-        plan.entry_kind = entry.kind
-        plan.entry_created = entry.created
-        plan.backup_name = summary.name
-        plan.backup_play_time = _slot_play_time(summary)
-    return plan
-
-
-def clear_slot(
-    vault: Vault, live_dir: Path, slot: int, allow_game_running: bool = False
-) -> OpResult:
-    """Empty a live slot: delete both of its saves after snapshotting the live folder.
-
-    Destructive by design, so it is snapshot-backed like every other write and reversible
-    with ``undo``. Callers are expected to have shown :func:`plan_clear_slot` first; this
-    function does not ask, it only refuses to run on a slot that is already empty.
-    """
-    warnings: list[str] = []
-    live_dir = Path(live_dir)
-    _check_slot(slot)
-    if _is_xbox(live_dir):
-        return _clear_slot_xbox(vault, live_dir, slot, allow_game_running)
-    _guard_game(allow_game_running, warnings)
-
-    # Driven by what is on disk rather than by SlotView.occupied, so a half-present slot
-    # (a meta whose data file is gone) is cleared out too instead of being called empty.
-    doomed = [p for fno in slot_file_numbers(slot) for p in _member_paths(live_dir, fno) if p.is_file()]
-    if not doomed:
-        raise OperationError(f"slot {slot} is already empty")
-
-    snap = snapshot_live(vault, live_dir, reason=f"pre-clear slot {slot}")
-    changed: list[str] = []
-    for p in doomed:
-        p.unlink()
-        changed.append(f"-{p.name}")
-
-    if savedir.scan(live_dir).slots[slot].occupied:
-        raise ValidationError(f"slot {slot} still holds a save after clearing it")
-    vault.append_oplog(_oplog("clear_slot", snapshot_id=snap.id, detail=f"slot {slot}", changed=changed))
-    return OpResult(
-        True, "clear_slot", f"cleared slot {slot}", snapshot_id=snap.id, changed=changed, warnings=warnings
-    )
-
-
-def _clear_slot_xbox(vault: Vault, live_dir: Path, slot: int, allow_game_running: bool) -> OpResult:
-    warnings: list[str] = []
-    _require_wgs(live_dir)
-    _guard_game(allow_game_running, warnings)
-    sv = savedir.scan_any(live_dir).slots.get(slot)
-    if sv is None or not sv.occupied:
-        raise OperationError(f"slot {slot} is already empty")
-
-    snap = snapshot_live(vault, live_dir, reason=f"pre-clear slot {slot}")
-    when = _now()
-    changed: list[str] = []
-    for member in (0, 1):
-        identifier = _ms_identifier(slot, member)
-        if msstore.delete_save(live_dir, identifier, when):
-            changed.append(f"-{identifier}")
-
-    if savedir.scan_any(live_dir).slots[slot].occupied:
-        raise ValidationError(f"slot {slot} still holds a save after clearing it")
-    vault.append_oplog(
-        _oplog("clear_slot", snapshot_id=snap.id, detail=f"xbox slot {slot}", changed=changed)
-    )
-    return OpResult(
-        True, "clear_slot", f"cleared slot {slot}", snapshot_id=snap.id, changed=changed, warnings=warnings
-    )
 
 
 # --- feature 3: import -------------------------------------------------------
 
 
-def import_backup(vault: Vault, path: Path, label: str = "", copy_into_vault: bool = False) -> CatalogEntry:
+def import_backup(
+    vault: Vault, path: Path, label: str = "", copy_into_vault: bool = False,
+    warnings: list[str] | None = None,
+) -> CatalogEntry:
+    """Catalogue a backup folder, in place or copied in. ``warnings`` as in
+    :func:`create_full_backup`."""
     path = Path(path)
     if not savedir.looks_like_save_dir(path):
         raise OperationError(f"not an NMS save folder: {path}")
     plat = savedir.platform_of(path)
-    if copy_into_vault:
-        iid = vault.new_id(KIND_IMPORTED, tag=plat)
-        dest = vault.backups_dir / iid
-        shutil.copytree(path, dest)
-        entry = vault.make_entry_from_dir(iid, KIND_IMPORTED, label or path.name, dest, managed=True, source=path.name)
+    collected: list[str] = []
+    store = _store().store_of(vault) if copy_into_vault else None
+    if store is not None:
+        entry = _store().keep_folder(store, path, kind=KIND_IMPORTED, label=label or path.name,
+                                     scope=_store().CaptureScope(cache="include"))
+    elif copy_into_vault:
+        files = _all_files(path)
+        entry = _new_managed_entry(
+            vault, KIND_IMPORTED, vault.backups_dir, tag=plat, source_root=path, files=files,
+            fill=lambda dest, copy: shutil.copytree(path, dest, dirs_exist_ok=True, copy_function=copy),
+            label=label or path.name, source=path.name,
+        )
     else:
         iid = vault.new_id(KIND_INPLACE, tag=plat)
         entry = vault.make_entry_from_dir(iid, KIND_INPLACE, label or path.name, path, managed=False, source=path.name)
-    vault.upsert(entry)
-    vault.append_oplog(_oplog("import", entry_id=entry.id, detail=str(path)))
+        with _store().guarded_write(vault.root):
+            vault.upsert(entry)
+    _log_op(vault, _oplog("import", entry_id=entry.id, detail=str(path)), collected)
+    _hand_over(collected, warnings)
     return entry
 
 
@@ -799,6 +627,10 @@ def preview_vault_import(vault: Vault, source_dir: Path) -> dict:
         raise OperationError(f"not an NMS Save Vault folder (no catalog.json): {source_dir}")
     if source_dir.resolve() == vault.root.resolve():
         raise OperationError("that is the current vault; nothing to import")
+    if (source_dir / PRE_UPGRADE_COPY).is_file():
+        raise OperationError("This is the pre-upgrade copy of a vault; use Undo the vault upgrade (Tools > Vault upgrade... > Undo the vault upgrade, or nmsvault-cli store rollback).")
+    if _store().is_store_vault(source_dir):
+        return _preview_store_merge(vault, source_dir)
     src_entries = Vault(source_dir).load().entries
     have = {e.id for e in vault.entries}
     return {
@@ -808,6 +640,26 @@ def preview_vault_import(vault: Vault, source_dir: Path) -> dict:
     }
 
 
+def _preview_store_merge(vault: Vault, source_dir: Path) -> dict:
+    """A source with a version store of its own is merged into this vault's store (D3 4.8):
+    only possible once this vault is upgraded too. ``merge`` is True in the result."""
+    classic = _store()
+    target = classic.store_of(vault)
+    if target is None:
+        raise OperationError("Upgrade the vault first (Tools > Vault upgrade, or nmsvault-cli store upgrade) to import a "
+                             "vault that has a version store.")
+    try:
+        source = classic.open_source(source_dir)
+    except classic.StoreError as exc:
+        raise OperationError(str(exc)) from exc
+    src_entries = source.entries()
+    new, existing = [], []
+    for e in src_entries:
+        merged = target.merged_copy(e, source.store_id) is not None
+        (existing if merged else new).append(classic.as_catalog_entry(e))
+    return {"total": len(src_entries), "new": new, "existing": existing, "merge": True}
+
+
 def import_vault(vault: Vault, source_dir: Path, copy_into_vault: bool) -> OpResult:
     """Import the entries of another vault at ``source_dir`` into ``vault``. With
     ``copy_into_vault`` each managed entry's files are copied into this vault (self-contained);
@@ -815,20 +667,39 @@ def import_vault(vault: Vault, source_dir: Path, copy_into_vault: bool) -> OpRes
     entry whose id this vault already has is skipped, and an existing target folder is never
     overwritten."""
     source_dir = Path(source_dir)
-    total = preview_vault_import(vault, source_dir)["total"]  # also validates source_dir
-    vault.ensure()
+    preview = preview_vault_import(vault, source_dir)         # also validates source_dir
+    if preview.get("merge"):
+        return _merge_vault(vault, source_dir, copy_into_vault)
+    total = preview["total"]
+    store = _store().store_of(vault) if copy_into_vault else None
+    if store is None:
+        vault.ensure()
     src = Vault(source_dir).load()
 
     added: list[str] = []
     warnings: list[str] = []
     have = {e.id for e in vault.entries}
+    if store is not None:
+        have |= {e.id for e in store.entries()}
+    from .store.manifest import is_entry_id
+
     for e in src.entries:
+        if not is_entry_id(e.id):       # the id names a folder of this vault: never a path
+            warnings.append(f"{e.id!r}: not a valid backup id, skipped")
+            continue
         if e.id in have:
+            continue
+        if store is not None:
+            new_id = _fold_imported(vault, store, src, e, warnings)
+            if new_id is not None:
+                have.add(e.id)
+                added.append(new_id)
             continue
         new_entry = _relocate_entry(vault, src, e, copy_into_vault, warnings)
         if new_entry is None:
             continue
-        vault.upsert(new_entry)
+        with _store().guarded_write(vault.root):
+            vault.upsert(new_entry)
         have.add(e.id)
         added.append(e.id)
 
@@ -838,8 +709,64 @@ def import_vault(vault: Vault, source_dir: Path, copy_into_vault: bool) -> OpRes
         f"imported {len(added)} new entr{'y' if len(added) == 1 else 'ies'} ({mode}); "
         f"{skipped} already present"
     )
-    vault.append_oplog(_oplog("import_vault", detail=f"{source_dir} [{mode}] +{len(added)}"))
+    _log_op(vault, _oplog("import_vault", detail=f"{source_dir} [{mode}] +{len(added)}"), warnings)
     return OpResult(True, "import_vault", detail, changed=added, warnings=warnings)
+
+
+def _merge_vault(vault: Vault, source_dir: Path, copy_into_vault: bool) -> OpResult:
+    """Import a vault that has a version store: merge it into this one's store, once (D3 4.8).
+    Never indexed in place: a second store is not referenced, it is copied in."""
+    classic = _store()
+    if not copy_into_vault:
+        raise OperationError("A vault with a version store cannot be indexed in place; "
+                             "copy it in instead.")
+    target = classic.store_of(vault)
+    source = classic.open_source(source_dir)
+    report = classic.merge_store(target, source)
+    warnings: list[str] = [f"{old} already exists here with other contents; imported as {new}"
+                           for old, new in report.renamed]
+    warnings += [f"{eid}: not imported ({why})" for eid, why in report.failed]
+    # Entries the source still keeps as plain folders (never folded there) come in as folded.
+    src = Vault(source_dir, read_only=True).load()
+    stored = {e.id for e in source.entries()}
+    have = {e.id for e in vault.entries} | {e.id for e in target.entries()}
+    added = list(report.added)
+    from .store.manifest import is_entry_id
+
+    for e in src.entries:
+        if not is_entry_id(e.id):       # the id names a folder of the source: never a path
+            warnings.append(f"{e.id!r}: not a valid backup id, skipped")
+            continue
+        if e.id in stored or e.id in have or not e.managed or e.kind == KIND_INPLACE:
+            continue
+        new_id = _fold_imported(vault, target, src, e, warnings)
+        if new_id is not None:
+            added.append(new_id)
+    detail = (f"imported {len(added)} new entr{'y' if len(added) == 1 else 'ies'} "
+              f"(merged into the version store); {len(report.same)} already present")
+    if report.cancelled:
+        detail += "; stopped before the end"
+    _log_op(vault, _oplog("import_vault", detail=f"{source_dir} [merged] +{len(added)}"), warnings)
+    return OpResult(not report.failed, "import_vault", detail, changed=added, warnings=warnings)
+
+
+def _fold_imported(vault: Vault, store, src: Vault, entry: CatalogEntry,
+                   warnings: list[str]) -> str | None:
+    """Store mode, copying: an entry of another (old-layout) vault becomes a store entry of
+    this one under its own id, deduplicated and verified (D3 4.8). The caller skips ids this
+    vault already has, so importing the same vault again adds nothing."""
+    folder = _entry_folder(src, entry) if entry.managed and entry.kind != KIND_INPLACE \
+        else Path(entry.path)
+    if not folder.is_dir():
+        warnings.append(f"{entry.id}: its folder is missing ({folder.name}); not imported")
+        return None
+    classic = _store()
+    kind = entry.kind if entry.kind in (KIND_FULL, KIND_SNAPSHOT, KIND_EXTRACT) else KIND_IMPORTED
+    kept = classic.keep_folder(store, folder, kind=kind, label=entry.label, entry_id=entry.id,
+                               created_local=entry.created,
+                               scope=classic.CaptureScope(cache="include"),
+                               origin={"imported_entry": entry.id})
+    return kept.id
 
 
 def _entry_folder(vault: Vault, entry: CatalogEntry) -> Path:
@@ -868,55 +795,35 @@ def _relocate_entry(
     if copy_into_vault:
         dst_folder = _entry_folder(vault, entry)
         if not dst_folder.exists():  # idempotent: never re-copy over an existing folder
-            shutil.copytree(src_folder, dst_folder)
+            copier = _Copier()
+            try:
+                shutil.copytree(src_folder, dst_folder, copy_function=copier)
+                _verify_copy(src_folder, dst_folder, _all_files(src_folder), copier, False)
+                safety.fsync_tree(dst_folder)       # on disk before the catalog lists it
+            except BaseException:
+                _remove_partial(dst_folder)
+                raise
         return replace(entry, path=str(dst_folder), managed=True)
-    # In place: reference the source vault's folder, but do NOT manage it, so this vault's
-    # snapshot pruning never deletes files that belong to the other vault.
+    # In place: reference the source vault's folder, but do NOT manage it -- the files
+    # belong to the other vault.
     return replace(entry, path=str(src_folder), managed=False)
 
 
 # --- undo --------------------------------------------------------------------
 
 
-def undo_last(vault: Vault, live_dir: Path, allow_game_running: bool = False) -> OpResult:
-    """Restore the auto-snapshot taken before the last change to the live folder.
+@dataclass
+class UndoPlan:
+    """What :func:`undo_last` would undo in a folder now (see :func:`plan_undo`)."""
 
-    Only operations that *write into* the live folder take a snapshot. Backing up,
-    extracting and importing merely add to the vault, so there is nothing to put back --
-    and the message says so, rather than implying the op log is broken.
-    """
-    records = vault.read_oplog()
-    if not records:
-        raise OperationError("Nothing has been done yet, so there is nothing to undo.")
-
-    unusable: list[str] = []
-    for record in reversed(records):
-        sid = record.get("snapshot_id")
-        if not sid:
-            continue
-        snap = vault.get(sid)
-        if snap is None:
-            unusable.append(f"{sid} (not in the catalog)")
-            continue
-        if not Path(snap.path).is_dir():
-            unusable.append(f"{sid} (its folder is gone)")
-            continue
-        result = restore_full(vault, snap, live_dir, mirror=True, allow_game_running=allow_game_running)
-        vault.append_oplog(_oplog("undo", snapshot_id=sid, detail=f"undid {record.get('op')}"))
-        result.detail = f"undid {record.get('op')} (restored {sid})"
-        return result
-
-    if unusable:
-        raise OperationError(
-            "The auto-snapshot for the last change can no longer be found, so it cannot be "
-            f"undone: {'; '.join(unusable[:3])}."
-        )
-    last = records[-1].get("op", "the last operation")
-    raise OperationError(
-        f"There is nothing to undo. The last thing done was '{last}', and backing up, "
-        "extracting and importing only add to the vault -- they never change your live "
-        "saves, so there is nothing to put back."
-    )
+    op: str
+    ts: str
+    snapshot_id: str
+    token: str = ""                  # the record's identity: pass to undo_last(expected=...)
+    detail: str = ""
+    damaged_after: bool = False      # a damaged log line is newer: undo needs acknowledge_damage
+    log_warning: str = ""            # what the damaged lines are, when there are any
+    with_accountdata: bool = False   # the change was a restore that put the account data back
 
 
 # --- validation helpers ------------------------------------------------------
@@ -940,13 +847,6 @@ def _validate_pair(meta_bytes: bytes, ordinal: int, data_bytes: bytes) -> None:
         )
 
 
-def _validate_slot(live_dir: Path, slot: int, warnings: list[str]) -> None:
-    view = savedir.scan(live_dir)
-    for m in view.slots[slot].present_members:
-        if not m.valid:
-            raise ValidationError(f"post-write validation failed for slot {slot}{m.label}: {m.note}")
-
-
 def _validate_dir_metas(folder: Path, warnings: list[str]) -> None:
     view = savedir.scan(folder)
     for sv in view.slots.values():
@@ -955,8 +855,25 @@ def _validate_dir_metas(folder: Path, warnings: list[str]) -> None:
                 warnings.append(f"slot {sv.slot}{m.label}: {m.note}")
 
 
-def _oplog(op: str, *, entry_id=None, snapshot_id=None, detail="", changed=None) -> dict:
-    return {
+def _log_op(vault: Vault, record: dict, warnings: list[str]) -> None:
+    """Append ``record`` to the op log. The operation has already happened, so a failure
+    here does not make it a failed one: it is logged and reported in ``warnings`` -- Undo
+    cannot reach an operation the log does not hold."""
+    try:
+        with _store().guarded_write(vault.root):
+            vault.append_oplog(record)
+    except (OSError, OperationError) as exc:     # OperationError: the vault lock was busy
+        log.warning("the op-log record of '%s' could not be written: %s", record.get("op"), exc)
+        warnings.append(f"Done, but missing from the history: the undo log could not be written ({exc}).")
+
+
+def _oplog(
+    op: str, *, entry_id=None, snapshot_id=None, detail="", changed=None,
+    target: Path | None = None, undo_of: str | None = None,
+) -> dict:
+    """One op-log record. ``target`` (the live folder written) and ``undo_of`` (the snapshot
+    id of the record an undo reversed) are additive keys; older readers ignore them."""
+    record = {
         "ts": datetime.now().isoformat(timespec="seconds"),
         "op": op,
         "entry_id": entry_id,
@@ -964,3 +881,44 @@ def _oplog(op: str, *, entry_id=None, snapshot_id=None, detail="", changed=None)
         "detail": detail,
         "changed": changed or [],
     }
+    if target is not None:
+        record["target"] = str(Path(target).resolve())
+    if undo_of is not None:
+        record["undo_of"] = undo_of
+    return record
+
+
+# --- the whole-folder restore and undo: the panic restore (D5 4.3) -------------------------
+
+
+def restore_full(
+    vault: Vault, entry: CatalogEntry, live_dir: Path, mirror: bool = True, allow_game_running: bool = False,
+    *, undo_of: str | None = None, restore_accountdata: bool = False,
+) -> OpResult:
+    """Put a whole backup or snapshot back into the live folder, slot by slot, as one live
+    operation (the panic restore). The account data stays the live account's own unless
+    ``restore_accountdata``; ``steam_autocloud.vdf`` is never copied, an Xbox backup of
+    another account is refused, and nothing is deleted (``mirror`` is kept for callers)."""
+    from .liveops import classic
+
+    return classic.restore_full(vault, entry, live_dir, mirror, allow_game_running,
+                                undo_of=undo_of, restore_accountdata=restore_accountdata)
+
+
+def plan_undo(vault: Vault, live_dir: Path, other_live_dirs: Iterable[Path] = ()) -> UndoPlan:
+    """What :func:`undo_last` would restore now, changing nothing."""
+    from .liveops import classic
+
+    return classic.undo_plan(vault, live_dir)
+
+
+def undo_last(
+    vault: Vault, live_dir: Path, allow_game_running: bool = False, acknowledge_damage: bool = False,
+    other_live_dirs: Iterable[Path] = (), restore_accountdata: bool = False,
+    expected: str | None = None,
+) -> OpResult:
+    """Restore the newest snapshot taken of ``live_dir`` (the panic restore). Slot-scoped undo
+    of a live operation is the organizer's (``liveops.plan_undo``)."""
+    from .liveops import classic
+
+    return classic.undo_last(vault, live_dir, allow_game_running, restore_accountdata, expected)

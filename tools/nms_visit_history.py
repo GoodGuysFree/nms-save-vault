@@ -34,7 +34,7 @@ from pathlib import Path
 
 # Reuse the project's read-only core (verified LZ4 / wgs decoders).
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
-from nms_save_vault.core import lz4_block, locations, savedir  # noqa: E402
+from nms_save_vault.core import locations, savedir, savejson  # noqa: E402
 
 # --- obfuscated JSON keys we need (libNOM.map names in comments) -------------------------
 # Only the handful of keys this tool reads, so it stays self-contained (no mapping file).
@@ -165,11 +165,11 @@ def analyze(obj: dict) -> SaveReport | None:
 
 
 def decode_save(member) -> dict | None:
+    """The member's obfuscated JSON root. Text is decoded losslessly (invalid UTF-8 inside
+    procedural ids survives as surrogates); an old unframed Xbox save needs the meta's size."""
     data = Path(member.data_path).read_bytes()
-    raw = lz4_block.decompress(data)              # obfuscated JSON bytes
-    import json
-    txt = raw.split(b"\x00", 1)[0].decode("utf-8", errors="replace")
-    return json.loads(txt)
+    hint = getattr(member.info, "size_decompressed", None) or None
+    return savejson.decode_save(data, bare_size_hint=hint).root
 
 
 def iter_saves():

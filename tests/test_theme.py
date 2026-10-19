@@ -213,6 +213,31 @@ READABLE = [
     ("live", "field"),
     ("readonly", "field"),
     ("backup", "field"),
+    # The organizer (D6 3.12): coloured words in the table, the live lists and the cards.
+    ("steam", "field"),
+    ("xbox", "field"),
+    ("warn", "field"),
+    ("ok", "field"),
+    ("danger", "field"),
+    ("pending", "field"),
+    ("event", "field"),
+    ("muted", "field"),
+    ("muted", "bg"),
+    ("muted", "card"),
+    ("muted", "group_bg"),
+    ("fg", "group_bg"),
+    ("fg", "zebra"),
+    ("fg", "hl_bg"),
+    ("fg", "card"),
+    ("fg", "chip_on"),
+    ("fg", "slot_empty"),
+    ("fg", "callout_bg"),
+    ("fg", "warn_bg"),
+    ("warn", "warn_bg"),
+    ("fg", "diff_add"),
+    ("fg", "diff_del"),
+    ("in_fg", "in_bg"),
+    ("out_fg", "out_bg"),
 ]
 
 #: Deliberately quieter, but still legible -- disabled text says "not now", not "nothing
@@ -221,6 +246,18 @@ VISIBLE = [
     ("disabled_fg", "disabled_bg"),
     ("disabled_fg", "bg"),
     ("accent", "bg"),
+    # The other lines while one is expanded: duller on purpose, never unreadable.
+    ("dim", "field"),
+    ("dim", "zebra"),
+    ("dim", "group_bg"),
+    # Lane strokes and platform chips are graphics: WCAG's 3:1 for non-text.
+    ("lane0", "field"),
+    ("lane1", "field"),
+    ("lane2", "field"),
+    ("lane3", "field"),
+    ("lane0", "group_bg"),
+    ("steam", "slot_empty"),
+    ("xbox", "slot_empty"),
 ]
 
 
@@ -377,3 +414,102 @@ def test_zoom_stops_at_the_ends_of_the_range(gui_app, monkeypatch):
     finally:
         gui_app.state.font_scale = original
         gui_app._apply_theme()
+
+
+# --- the organizer's palette and styles (D6 3.12) ------------------------------
+
+
+def test_dim_is_quieter_than_muted_and_muted_than_text():
+    """De-emphasised lines must look duller than muted text, which is quieter than text."""
+    for name, p in theme.PALETTES.items():
+        assert contrast(p["dim"], p["field"]) < contrast(p["muted"], p["field"]), name
+        assert contrast(p["muted"], p["field"]) < contrast(p["fg"], p["field"]), name
+
+
+def test_four_distinct_lanes():
+    for p in theme.PALETTES.values():
+        assert len(set(theme.lanes(p))) == 4
+
+
+@pytest.mark.parametrize("choice", [theme.LIGHT, theme.DARK])
+def test_notebook_frames_and_separators_are_mapped(gui_app, choice):
+    """Unmapped, clam drew the notebook tabs light grey with light text in dark mode."""
+    original = gui_app.state.theme
+    try:
+        style, p = _apply(gui_app, choice)
+        if choice == theme.DARK:          # light keeps the native look on Windows
+            assert style.lookup("TNotebook.Tab", "background", ["selected"]) == p["field"]
+            assert style.lookup("TNotebook.Tab", "foreground") == p["fg"]
+            assert style.lookup("TNotebook", "background") == p["bg"]
+            assert style.lookup("TLabelframe.Label", "foreground") == p["fg"]
+            assert style.lookup("TSeparator", "background") == p["border"]
+        assert style.lookup("Card.TFrame", "background") == p["card"]
+        assert style.lookup("Muted.TLabel", "foreground") == p["muted"]
+        assert style.lookup("Info.TLabel", "background") == p["hl_bg"]
+        assert style.lookup("Toast.TLabel", "foreground") == p["banner_fg"]
+        assert style.lookup("Title.TLabel", "font") == theme.TITLE_FONT
+    finally:
+        gui_app.state.theme = original
+        gui_app._apply_theme()
+
+
+def test_the_app_fonts_zoom_with_the_rest(gui_app, monkeypatch):
+    from tkinter import font as tkfont
+
+    from nms_save_vault import gui
+
+    monkeypatch.setattr(gui.appstate, "save", lambda *a, **k: None)
+    original = gui_app.state.font_scale
+    try:
+        gui_app.state.font_scale = 1.0
+        gui_app._apply_theme()
+        title = abs(tkfont.nametofont(theme.TITLE_FONT, gui_app).cget("size"))
+        small = abs(tkfont.nametofont(theme.SMALL_FONT, gui_app).cget("size"))
+        assert title > small
+        assert tkfont.nametofont(theme.ITALIC_FONT, gui_app).cget("slant") == "italic"
+        gui_app._zoom(1)
+        assert abs(tkfont.nametofont(theme.TITLE_FONT, gui_app).cget("size")) > title
+    finally:
+        gui_app.state.font_scale = original
+        gui_app._apply_theme()
+
+
+def test_dark_mode_asks_for_a_dark_title_bar_on_every_window(gui_app, monkeypatch):
+    import tkinter as tk
+
+    calls = []
+    monkeypatch.setattr(theme, "dark_title_bar", lambda w, dark: calls.append((w, dark)))
+    original = gui_app.state.theme
+    dialog = tk.Toplevel(gui_app)
+    dialog.withdraw()
+    try:
+        _apply(gui_app, theme.DARK)
+        assert (gui_app, True) in calls and (dialog, True) in calls
+        calls.clear()
+        gui_app._on_window_mapped(type("E", (), {"widget": dialog})())   # opened later
+        assert calls == [(dialog, True)]
+        calls.clear()
+        _apply(gui_app, theme.LIGHT)
+        assert (gui_app, False) in calls
+        calls.clear()
+        gui_app._on_window_mapped(type("E", (), {"widget": dialog})())
+        assert calls == []                                               # light: left alone
+    finally:
+        dialog.destroy()
+        gui_app.state.theme = original
+        gui_app._apply_theme()
+
+
+def test_the_dark_title_bar_is_best_effort(gui_app, monkeypatch):
+    """Elsewhere than Windows, or where DWM refuses, nothing breaks."""
+    monkeypatch.setattr(theme.sys, "platform", "linux")
+    assert theme.dark_title_bar(gui_app, True) is False
+    monkeypatch.setattr(theme.sys, "platform", "win32")
+
+    class NoFrame:
+        def wm_frame(self):
+            raise tk_error("no frame")
+
+    import tkinter as tk
+    tk_error = tk.TclError
+    assert theme.dark_title_bar(NoFrame(), True) is False
