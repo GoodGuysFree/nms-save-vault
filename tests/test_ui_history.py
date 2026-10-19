@@ -425,6 +425,9 @@ class _Facts:
     def __init__(self, found):
         self.found, self.asked = found, []
 
+    def view(self, vid):
+        return None
+
     def changes(self, child, parent, *, edge_kind=None):
         self.asked.append((child, parent, edge_kind))
         return self.found

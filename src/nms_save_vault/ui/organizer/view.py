@@ -271,6 +271,9 @@ class OrganizerView(ttk.Frame):
         history = self.histories.history
         if history is not None and history.winfo_exists():
             history.on_index_events(events)
+        compare = self.histories.compare
+        if compare is not None and compare.winfo_exists():
+            compare.on_index_events(events)
         shown = self.detail.facts_head
         if shown is not None and any(e.vid == shown and e.kind in ("indexed", "deep-ready", "changes")
                                      for e in events):

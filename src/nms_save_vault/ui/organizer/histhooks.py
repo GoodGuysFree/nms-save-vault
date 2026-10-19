@@ -96,7 +96,7 @@ class HistoryHooks:
             self.compare.lift()
             return self.compare
         self.compare = CompareWindow(view.winfo_toplevel(), model=model, themed=view.themed,
-                                     pid=pid, a=a, b=b)
+                                     pid=pid, a=a, b=b, facts=lambda: view.facts)
         return self.compare
 
     # --- Correct --------------------------------------------------------------------------

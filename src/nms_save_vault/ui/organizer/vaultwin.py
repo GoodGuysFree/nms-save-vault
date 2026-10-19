@@ -47,8 +47,7 @@ class VaultEnv:
     app_version: str
 
 
-def _gb(n: int) -> str:
-    return f"{n / GB:.1f} GB"
+_gb = upgrade.human_size
 
 
 def _open(env: VaultEnv, *, read_only: bool = False, for_rollback: bool = False) -> VersionStore:

@@ -503,8 +503,15 @@ def _inside(path: Path, root: Path) -> bool:
     return True
 
 
-def _gb(n: int) -> str:
-    return f"{n / GIB:.1f} GB"
+def human_size(n: int) -> str:
+    if n >= GIB // 10:
+        return f"{n / GIB:.1f} GB"
+    if n >= 1 << 20:
+        return f"{n / (1 << 20):.1f} MB"
+    return f"{max(n, 0) / 1024:.0f} KB"
+
+
+_gb = human_size
 
 
 def _note_text(vault_name: str, info: dict) -> str:
@@ -513,8 +520,8 @@ def _note_text(vault_name: str, info: dict) -> str:
         f"This folder is a copy of the vault '{vault_name}' as it was before it was upgraded to\r\n"
         f"the version store, made and checked file by file at {info['verified_utc']}\r\n"
         f"({info['files']} files, {_gb(info['bytes'])}).\r\n\r\n"
-        "It is not a vault to open and not a backup folder to import. Vault > Undo the vault\r\n"
-        "upgrade uses it to put the vault back in the old layout. Keep it until you are happy\r\n"
+        "It is not a vault to open and not a backup folder to import. Tools > Vault upgrade... >\r\n"
+        "Undo the vault upgrade uses it to put the vault back in the old layout. Keep it until you are happy\r\n"
         "with the upgraded vault, then delete it yourself.\r\n")
 
 
@@ -522,7 +529,7 @@ def _done_text(info: dict, waiting: int) -> str:
     text = (f"Vault upgraded. A copy of the vault as it was is in {info['name']} next to it "
             f"({_gb(info['bytes'])}). Keep it until you are happy with the new version and "
             "delete it yourself when you no longer need it; Undo the vault upgrade "
-            "(Vault menu, or nmsvault store rollback) uses it.")
+            "(Tools > Vault upgrade... > Undo the vault upgrade, or nmsvault store rollback) uses it.")
     if waiting:
         text += (f" Your old backups were not read into the store yet: it needs {_gb(waiting)} "
                  "more free space on the vault drive.")

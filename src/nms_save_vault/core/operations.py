@@ -628,7 +628,7 @@ def preview_vault_import(vault: Vault, source_dir: Path) -> dict:
     if source_dir.resolve() == vault.root.resolve():
         raise OperationError("that is the current vault; nothing to import")
     if (source_dir / PRE_UPGRADE_COPY).is_file():
-        raise OperationError("This is the pre-upgrade copy of a vault; use Undo the vault upgrade (Vault menu, or nmsvault store rollback).")
+        raise OperationError("This is the pre-upgrade copy of a vault; use Undo the vault upgrade (Tools > Vault upgrade... > Undo the vault upgrade, or nmsvault store rollback).")
     if _store().is_store_vault(source_dir):
         return _preview_store_merge(vault, source_dir)
     src_entries = Vault(source_dir).load().entries

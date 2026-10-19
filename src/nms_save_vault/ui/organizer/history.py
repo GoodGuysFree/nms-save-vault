@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import tkinter as tk
 from collections.abc import Callable, Collection
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from tkinter import ttk
 
 from ... import theme
@@ -357,11 +357,22 @@ def panel_segments(model: ReadModel, pid: str, head: str, facts=None) -> list[Se
     if not row.locations:
         out.append(("no copy left anywhere\n", ("warn",)))
     out.append(("CONTENTS\n", ("h",)))
-    out += _contents(row)
+    out += _contents(row, facts)
     return out
 
 
-def _contents(row: VersionRow) -> list[Segment]:
+def fresh_row(row: VersionRow, facts=None) -> VersionRow:
+    """``row`` with the content index's current view when the scan-time one is still empty:
+    the rows are frozen at scan, the index finishes later."""
+    if row.facts is None and facts is not None:
+        view = facts.view(row.head)
+        if view is not None:
+            return replace(row, facts=view)
+    return row
+
+
+def _contents(row: VersionRow, facts=None) -> list[Segment]:
+    row = fresh_row(row, facts)
     view = row.facts
     if view is None:
         return [("not indexed yet\n", ("k",))]

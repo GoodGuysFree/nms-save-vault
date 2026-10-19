@@ -101,16 +101,39 @@ def card_lines(card) -> list[tuple[str, str]]:
     deep = getattr(card, "deep", None)
     if not deep:
         return []
-    out = []
+    out: list[tuple[str, str]] = []
     for key, value in deep.items():
-        if isinstance(value, (list, tuple)):
-            text = ", ".join(str(v) for v in value[:12]) + (" ..." if len(value) > 12 else "")
-        elif isinstance(value, dict):
-            text = ", ".join(f"{k} {v}" for k, v in list(value.items())[:12])
+        if key == "vid":
+            continue                                    # internal id, not something to read
+        if key == "contexts" and isinstance(value, dict):
+            out += [(f"Context {name}", _context_text(ctx)) for name, ctx in value.items()]
         else:
-            text = str(value)
-        out.append((str(key).replace("_", " ").capitalize(), text))
+            out.append((str(key).replace("_", " ").capitalize(), _plain(value)))
     return out
+
+
+def _count(n: int, noun: str) -> str:
+    return f"{n} {noun}" + ("" if n == 1 else "s")
+
+
+def _context_text(ctx) -> str:
+    if not isinstance(ctx, dict):
+        return _plain(ctx)
+    bases = ctx.get("bases") or []
+    parts = sum(sum(b.get("parts_by_id", {}).values()) for b in bases if isinstance(b, dict))
+    slots = sum(len(v) for v in (ctx.get("inventories") or {}).values() if isinstance(v, list))
+    loose = sum(v for v in (ctx.get("loose_objects") or {}).values() if isinstance(v, int))
+    return (f"{_count(len(bases), 'base')} ({parts:,} parts), {_count(slots, 'inventory slot')}, "
+            f"{_count(loose, 'loose object')}")
+
+
+def _plain(value) -> str:
+    """Never a Python repr: lists and mappings become short readable text."""
+    if isinstance(value, (list, tuple)):
+        return ", ".join(_plain(v) for v in value[:12]) + (" ..." if len(value) > 12 else "")
+    if isinstance(value, dict):
+        return ", ".join(f"{k} {_plain(v)}" for k, v in list(value.items())[:12])
+    return str(value)
 
 
 def change_lines(changes) -> list[str]:

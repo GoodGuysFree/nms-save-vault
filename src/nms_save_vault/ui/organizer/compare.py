@@ -11,6 +11,7 @@ here; D4's ``changes`` is not asked for two versions that are not neighbours (D4
 from __future__ import annotations
 
 import tkinter as tk
+from collections.abc import Callable
 from dataclasses import dataclass
 from tkinter import ttk
 
@@ -21,7 +22,7 @@ from ..dpi import fit_to_content, px, pxs
 from ..fmt import local_time, play_time
 from ..redact import RedactingTreeview, rtext, rtitle, set_label
 from ..themeaware import ThemeRegistry
-from .history import where_text
+from .history import fresh_row, where_text
 from .words import line_name, version_numbers
 
 NOT_INDEXED = "not indexed"
@@ -173,9 +174,10 @@ def card_text(model: ReadModel, pid: str, row: VersionRow) -> tuple[str, str]:
 
 class CompareWindow(tk.Toplevel):
     def __init__(self, master, *, model: ReadModel, themed: ThemeRegistry, pid: str, a: str,
-                 b: str) -> None:
+                 b: str, facts: Callable[[], object | None] | None = None) -> None:
         super().__init__(master)
         self.model, self.pid, self.a, self.b = model, pid, a, b
+        self.facts = facts
         self.only_differences = True
         self.transient(master)
         self._build()
@@ -256,7 +258,8 @@ class CompareWindow(tk.Toplevel):
         if pair is None:
             set_label(self.strip, "One of the versions is gone.")
             return
-        ra, rb = pair
+        service = self.facts() if self.facts is not None else None
+        ra, rb = fresh_row(pair[0], service), fresh_row(pair[1], service)
         for side, row in (("A", ra), ("B", rb)):
             title, sub = card_text(self.model, self.pid, row)
             set_label(self.cards[side][0], title)
@@ -295,6 +298,13 @@ class CompareWindow(tk.Toplevel):
         else:
             rtext(t, "end", f"A: {anc.a_since}\nB: {anc.b_since}\n")
         t.configure(state="disabled")
+
+    def on_index_events(self, events: list) -> None:
+        """Index events (already on the Tk thread): redraw when one is about a shown version."""
+        mine = {self.a, self.b}
+        if any(e.kind in ("changes", "indexed", "failed", "cleared", "warmed") and
+               (e.vid is None or e.vid in mine) for e in events):
+            self._fill()
 
     def set_only_differences(self, only: bool) -> None:
         self.only_differences = only

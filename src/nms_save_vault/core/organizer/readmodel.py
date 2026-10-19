@@ -388,7 +388,7 @@ class _Builder:
     # --- the whole build ------------------------------------------------------------------
 
     def build(self) -> ReadModel:
-        pairs = self._pairs()
+        pairs = _one_per_head(self._pairs())
         parent = self._parents()
         heads = {p.head for p in pairs.values()}
         children = Counter(parent.values())
@@ -579,7 +579,7 @@ class _Builder:
         parent_vid = display.get(p.head)
         edge = self.edge_of.get(p.head)
         direct = bool(edge and parent_vid and edge.parent == parent_vid)   # else an ancestor, not that edge
-        live_in = tuple(t for t, lp in live.items() if lp.pair == p.pair)
+        live_in = tuple(t for t, lp in live.items() if lp.head == p.head)
         note = self.notes.versions.get(p.head)
         flags = set()
         if live_in:
@@ -625,7 +625,7 @@ class _Builder:
             play_time=meta.play_time if meta else 0, saved_at=meta.meta_ts if meta else 0,
             difficulty=formats.difficulty_label(meta.difficulty, meta.game_mode) if meta else "",
             mode=_mode(meta), platform=self.platform(p.head),
-            locations=tuple(self._summary(loc) for loc in head_locations),
+            locations=_distinct(self._summary(loc) for loc in head_locations),
             live_in=live_in,
             durable_copies=sum(1 for loc in head_locations if _durable(loc)),
             flags=frozenset(flags), parent=parent_vid,
@@ -1177,6 +1177,24 @@ def _mode(meta: MetaSnap | None) -> str:
 
 #: What keeps a version from being folded away: it is worth a row of its own.
 _UNFOLDABLE = frozenset({"live", "fork", "noted", "locked", "placed", "evicted"})
+
+
+def _one_per_head(pairs: dict[PairKey, _Pair]) -> dict[PairKey, _Pair]:
+    """One pair per head: a version is its head. The same head can sit in two pairs (a one-member
+    source placed into a slot fills both members; the other platform's copy has no partner), and
+    two rows for one version would list it twice."""
+    out: dict[Vid, _Pair] = {}
+    for p in pairs.values():
+        out.setdefault(p.head, p)
+    return {p.pair: p for p in out.values()}
+
+
+def _distinct(locations) -> tuple[LocationSummary, ...]:
+    """The same place once: both members of one slot hold the same save."""
+    seen: dict[tuple, LocationSummary] = {}
+    for loc in locations:
+        seen.setdefault((loc.kind, loc.label), loc)
+    return tuple(seen.values())
 
 
 def _fold(rows: list[VersionRow]) -> list[VersionRow]:
