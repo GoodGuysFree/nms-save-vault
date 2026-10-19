@@ -340,6 +340,7 @@ class OrganizerView(ttk.Frame):
         """The vault changed mode (upgrade, fold, undo of the upgrade): the organizer and its
         context were made for the old mode, so the rescan opens new ones."""
         self.sources_changed()
+        self._recovery_checked = False       # the new vault's interrupted moves are looked for
         self.rescan()
 
     def rescan(self, *, record: bool = True) -> None:
@@ -492,6 +493,11 @@ class OrganizerView(ttk.Frame):
     # --- the selection hub -------------------------------------------------------------------
 
     def _selected(self, pid: str | None, head: str | None) -> None:
+        board = getattr(self, "live", None)
+        aimed = board.drawn.get(board.focus_token) if board and board.focus_token else None
+        if aimed is not None and aimed.slot.pid != pid:
+            board.focus_token = None         # the selection moved off the slot menus aimed at
+            board.redraw()
         self._update_actions()
         if pid is None or self.model is None:
             return
@@ -750,8 +756,9 @@ class OrganizerView(ttk.Frame):
             self.alert("recovery", "No interrupted move is waiting.")
             return None
         organizer = self.organizer
+        top = self.winfo_toplevel()
         self.recovery_dialog = RecoveryDialog(
-            self.winfo_toplevel(), worker=self.worker, themed=self.themed,
+            top.grab_current() or top, worker=self.worker, themed=self.themed,
             make_context=lambda: self.make_context(organizer), items=items,
             on_changed=lambda: self.rescan())
         return self.recovery_dialog

@@ -65,6 +65,7 @@ def closing(app, monkeypatch):
     seen = SimpleNamespace(destroyed=0, withdrawn=0, asked=[], answer=True, shown=[])
     monkeypatch.setattr(app, "destroy", lambda: setattr(seen, "destroyed", seen.destroyed + 1))
     monkeypatch.setattr(app, "withdraw", lambda: setattr(seen, "withdrawn", seen.withdrawn + 1))
+    monkeypatch.setattr(app, "deiconify", lambda: None)
     monkeypatch.setattr(gui, "_askyesno", lambda t, m, **k: seen.asked.append((m, k)) or seen.answer)
     monkeypatch.setattr(gui, "_showinfo", lambda t, m, **k: seen.shown.append(m))
     return seen
@@ -105,10 +106,49 @@ def test_a_classic_operation_cannot_be_walked_away_from(app, closing):
 
 
 def test_a_journaled_job_may_finish_after_the_window_is_gone(app, closing, monkeypatch):
-    monkeypatch.setattr(UiWorker, "working", property(lambda self: True))
+    working = [True]
+    monkeypatch.setattr(UiWorker, "working", property(lambda self: working[0]))
     closing.answer = False
     app.request_close()
-    assert closing.withdrawn == 1 and closing.destroyed == 1
+    try:
+        assert closing.withdrawn == 1 and closing.destroyed == 0
+        assert app._finishing is not None and app._finishing.winfo_exists()   # cannot be lost
+        app._finish_poll()
+        assert closing.destroyed == 0                # still running: no timeout, no kill
+        working[0] = False
+        app._finish_poll()
+        assert closing.destroyed == 1 and app._finishing is None
+    finally:
+        if app._finishing is not None:
+            app._finishing.destroy()
+            app._finishing = None
+
+
+def test_an_unsaved_note_is_asked_about_before_the_window_is_hidden(app, closing, monkeypatch):
+    monkeypatch.setattr(UiWorker, "working", property(lambda self: True))
+    monkeypatch.setattr(app.organizer_view, "confirm_close", lambda: False)
+    closing.answer = False
+    app.request_close()
+    assert closing.withdrawn == 0 and closing.destroyed == 0 and app._finishing is None
+
+
+def test_a_refused_close_shows_the_window_again(app, closing, monkeypatch):
+    shown = []
+    monkeypatch.setattr(app, "deiconify", lambda: shown.append(1))
+    app._finishing = tk.Toplevel(app)
+    monkeypatch.setattr(UiWorker, "working", property(lambda self: False))
+    app._finish_poll()
+    assert shown == [1] and closing.destroyed == 1
+
+
+def test_the_result_box_of_an_operation_counts_as_the_operation(app, monkeypatch, dialogs):
+    seen = []
+    monkeypatch.setattr(app, "_run_worker", lambda fn, force, msg: {"result": None})
+    monkeypatch.setattr(app, "vault_changed", lambda *a, **k: None)
+    monkeypatch.setattr(app, "_present_result",
+                        lambda *a, **k: seen.append(app._running_work()))
+    app._run(lambda force: None, success="Done.")
+    assert seen == ["classic"] and app._running_work() is None
 
 
 def test_the_worker_counts_only_foreground_jobs_and_can_be_joined(tk_root_worker=None):
@@ -597,3 +637,114 @@ def test_the_copy_dialog_takes_its_grab_back_after_the_nested_chooser(app, tmp_p
         assert not dialog.winfo_exists()
     finally:
         app.state.sources[:] = [s for s in app.state.sources if s.id != "steam-7"]
+
+
+# --- the vault chooser's guards, start-up checks, selection and keyboard -----------------------------
+
+
+def test_the_pre_upgrade_copy_is_refused_as_a_vault(app, chooser, tmp_path, dialogs):
+    dialogs.expect()
+    copy = tmp_path / "vault.pre-upgrade"
+    copy.mkdir()
+    (copy / gui.catalog.PRE_UPGRADE_COPY).write_text("{}")
+    before = app.vault
+    assert not app.switch_vault(copy)
+    assert app.vault is before and "pre-upgrade copy" in dialogs.take()[-1][2]
+    with pytest.raises(gui.OperationError, match="pre-upgrade copy"):
+        gui._refuse_pre_upgrade_copy(copy)
+
+
+def test_a_vault_cannot_be_nested_in_the_one_in_use_or_hold_it(app, chooser, tmp_path, dialogs):
+    dialogs.expect()
+    inside = app.vault.root / "nested"
+    inside.mkdir()
+    assert not app.switch_vault(inside)
+    assert not app.switch_vault(app.vault.root.parent)
+    assert [m[2].startswith("That folder is inside the vault") for m in dialogs.take()] == [True, True]
+
+
+def test_a_folder_that_cannot_be_prepared_is_said_not_swallowed(app, chooser, tmp_path, dialogs, monkeypatch):
+    dialogs.expect()
+    target = tmp_path / "locked"
+    target.mkdir()
+
+    def denied(self):
+        raise PermissionError(13, "Access is denied", str(target))
+    monkeypatch.setattr(Vault, "ensure", denied)
+    assert not app.switch_vault(target)
+    assert "Access is denied" in dialogs.take()[-1][2]
+
+
+def test_a_switched_vault_gets_the_start_up_checks(app, chooser, tmp_path, monkeypatch):
+    ran = []
+    monkeypatch.setattr(app, "_vault_start_checks", lambda root, *a: ran.append(root))
+    target = tmp_path / "another"
+    target.mkdir()
+    assert app.switch_vault(target)
+    assert ran == [target]
+
+
+def test_the_organizer_looks_for_interrupted_moves_in_the_new_vault(app, monkeypatch):
+    view = app.organizer_view
+    monkeypatch.setattr(view, "rescan", lambda *a, **k: None)
+    view._recovery_checked = True
+    view.vault_changed()
+    assert view._recovery_checked is False
+
+
+def test_selecting_another_save_clears_the_slot_the_menus_aimed_at(app, monkeypatch):
+    view = app.organizer_view
+    board = view.live
+    saved = (dict(board.drawn), board.focus_token)
+    monkeypatch.setattr(board, "redraw", lambda: None)
+    board.drawn = {"t": SimpleNamespace(slot=SimpleNamespace(pid="P1"))}
+    try:
+        board.focus_token = "t"
+        view._selected("P1", None)                   # the save in that very slot: kept
+        assert board.focus_token == "t"
+        view._selected("P2", None)                   # another save: the target goes
+        assert board.focus_token is None
+    finally:
+        board.drawn, board.focus_token = saved
+
+
+def test_shift_f10_posts_the_context_menu_of_the_focused_row(app, monkeypatch):
+    posted = []
+    monkeypatch.setattr(app, "_post_menu", lambda menu, x, y: posted.append(menu))
+    tree = app.backup_tree
+    row = tree.get_children("")[0]
+    tree.focus(row)
+    monkeypatch.setattr(tree, "bbox", lambda r: (0, 0, 100, 20))
+    assert any("F10" in seq for seq in tree.bind())
+    assert app._on_menu_key(SimpleNamespace(widget=tree)) == "break"
+    assert len(posted) == 1
+    labels = [posted[0].entrycget(i, "label") for i in range(posted[0].index("end") + 1)
+              if posted[0].type(i) != "separator"]
+    assert "Refresh" in labels and "Help" in labels
+
+
+def test_the_undo_question_focuses_no(app, monkeypatch):
+    monkeypatch.setattr(tk.Misc, "wait_window", lambda self, w=None: None)
+    focused = []
+    monkeypatch.setattr(gui.ttk.Button, "focus_set", lambda self: focused.append(self.cget("text")))
+    for default, expected in (("no", "No"), ("yes", "Yes")):
+        focused.clear()
+        gui.ConfirmDialog(app, "Undo", "Sure?", default=default).destroy()
+        assert focused == [expected]
+
+
+def test_a_dialog_opened_from_a_modal_one_hands_the_grab_back(app):
+    from nms_save_vault.ui.organizer.ops import _Dialog
+
+    outer = tk.Toplevel(app)
+    regrabbed = []
+    outer.grab_set = lambda: regrabbed.append(1)
+    holder = tk.Toplevel(app)
+    holder.grab_current = lambda: outer
+    try:
+        dialog = _Dialog(holder, app.themed, "Inner")
+        dialog.destroy()
+        assert regrabbed == [1]
+    finally:
+        holder.destroy()
+        outer.destroy()

@@ -484,7 +484,7 @@ def _install_dialog_stubs() -> None:
                        ("_askyesnocancel", "askyesnocancel")):
         setattr(gui, name, stub(kind))
 
-    def confirm(master, title, message, check=None):
+    def confirm(master, title, message, check=None, default="yes"):
         _REC.record("confirm", title, message)
         if not _REC.expecting:
             raise AssertionError(f"unexpected confirm dialog: {title!r}")

@@ -93,8 +93,10 @@ class _Dialog(tk.Toplevel):
         rtitle(self, title)
         self.transient(master)
         self._themed = themed
+        self._outer_grab = None
         if modal:
             try:
+                self._outer_grab = master.grab_current()    # a dialog this one is opened from
                 self.grab_set()
             except tk.TclError:
                 pass
@@ -108,7 +110,13 @@ class _Dialog(tk.Toplevel):
 
     def destroy(self) -> None:
         release_tk_variables(self)
+        outer, self._outer_grab = self._outer_grab, None
         super().destroy()
+        try:
+            if outer is not None and outer.winfo_exists():
+                outer.grab_set()         # the grab went with this window: the opener has it back
+        except tk.TclError:
+            pass
 
     def _ready(self) -> None:
         """Last line of every constructor: the widgets exist, so the theme can reach them."""

@@ -229,6 +229,13 @@ def _free_text(plan, head: str) -> str:
     return "\n".join(lines)
 
 
+def _refuse_pre_upgrade_copy(root: Path) -> None:
+    """The copy an upgrade keeps aside is not a vault to use (the CLI refuses it as well)."""
+    if (Path(root) / catalog.PRE_UPGRADE_COPY).is_file():
+        raise OperationError("This folder is the pre-upgrade copy of a vault, not a vault to "
+                             "use. To go back to it, run: nmsvault store rollback")
+
+
 def _gui_text(message) -> str:
     """A core message for this window: where it says to change the vault with ``--vault`` or
     by editing state.json, the window has a menu item for that."""
@@ -275,7 +282,8 @@ _askyesnocancel = _filtered(messagebox.askyesnocancel)
 class ConfirmDialog(tk.Toplevel):
     """A yes/no question with an optional checkbox, which starts unticked."""
 
-    def __init__(self, master, title: str, message: str, check: str | None = None):
+    def __init__(self, master, title: str, message: str, check: str | None = None,
+                 default: str = "yes"):
         super().__init__(master)
         self.title(title)
         self.transient(master)
@@ -287,7 +295,8 @@ class ConfirmDialog(tk.Toplevel):
         # them out of the window.
         buttons = ttk.Frame(self, padding=pxs(14, 0, 14, 12))
         buttons.pack(side=tk.BOTTOM, fill=tk.X)
-        ttk.Button(buttons, text="No", command=self.destroy).pack(side=tk.RIGHT)
+        no = ttk.Button(buttons, text="No", command=self.destroy)
+        no.pack(side=tk.RIGHT)
         yes = ttk.Button(buttons, text="Yes", command=self._yes)
         yes.pack(side=tk.RIGHT, padx=px(6))
         if check:
@@ -305,7 +314,7 @@ class ConfirmDialog(tk.Toplevel):
         x = master.winfo_rootx() + (master.winfo_width() - self.winfo_width()) // 2
         y = master.winfo_rooty() + (master.winfo_height() - self.winfo_height()) // 3
         self.geometry(f"+{max(x, 0)}+{max(y, 0)}")
-        yes.focus_set()
+        (no if default == "no" else yes).focus_set()
         try:
             if master.winfo_viewable():
                 self.wait_visibility()             # a grab needs a mapped window
@@ -320,10 +329,12 @@ class ConfirmDialog(tk.Toplevel):
         self.destroy()
 
 
-def _confirm(master, title: str, message: str, check: str | None = None) -> tuple[bool, bool]:
+def _confirm(master, title: str, message: str, check: str | None = None,
+             default: str = "yes") -> tuple[bool, bool]:
     """Ask yes/no, with an optional checkbox. Returns (yes, ticked). The message passes
-    through the account-alias filter, like every other dialog's."""
-    dialog = ConfirmDialog(master, title, aliases.redact(message), check)
+    through the account-alias filter, like every other dialog's. ``default``: the button with
+    the focus, which Return presses - "no" for anything that overwrites."""
+    dialog = ConfirmDialog(master, title, aliases.redact(message), check, default)
     return dialog.answer, dialog.ticked
 
 
@@ -412,28 +423,22 @@ class App(tk.Tk):
         vault_root =Path(vault) if vault else (self.state.vault or locations.default_vault_dir())
         self.vault = Vault(vault_root)
         try:
+            _refuse_pre_upgrade_copy(vault_root)
             self.vault.ensure()
             self.vault.load()
-        except OperationError as exc:
+        except (OperationError, OSError) as exc:
             # A vault that cannot be reached or read is never overwritten, emptied or rebuilt:
             # the app opens with the vault shown empty and read-only, and says why.
             log.warning("the vault cannot be used: %s", exc.__cause__ or exc)
             self.vault = Vault(vault_root, read_only=True)
             self.vault.mark_unreadable()
-            appstate._notices.append(f"{_gui_text(exc)} The vault is shown empty and cannot be "
+            text = _gui_text(exc) if isinstance(exc, OperationError) else _plain_error(exc)
+            appstate._notices.append(f"{text} The vault is shown empty and cannot be "
                                      "changed until you pick another with File > "
                                      f"{CHOOSE_VAULT_LABEL}")
         for n, text in enumerate(appstate.take_notices()):
             self.after(300 + 150 * n, lambda text=text: _showinfo("Settings", text, parent=self))
-        # D3 4.1: an upgrade interrupted by a crash is cleaned up (its own leftovers only).
-        from .core.store.upgrade import startup_notice
-
-        notice = startup_notice(vault_root)
-        if notice:
-            self.after(400, lambda: _showinfo("Vault upgrade", notice, parent=self))
-        # D3 4.4: an undo of the upgrade that was interrupted asks, at this start, to finish it
-        # or to keep the upgrade (the vault refuses writes until the owner chooses).
-        self.after(700, self._offer_interrupted_undo)
+        self._vault_start_checks(vault_root, 400, 700)
 
         # The active *writable* live source is the target of write operations. An
         # explicit --live wins; otherwise the first writable (Steam) source.
@@ -448,6 +453,7 @@ class App(tk.Tk):
         self._meta: dict[str, dict] = {}
         self._classic_ops = 0                # operations running behind the wait dialog
         self._closing = False                # a close waits for the running operation
+        self._finishing: tk.Toplevel | None = None
         self._refresh_gen = 0                # the newest listing asked for in the worker
         self._entries: list | None = None    # the BACKUPS pane's rows as last listed
         self._store_problem: str | None = None   # why the store could not be listed
@@ -768,28 +774,55 @@ class App(tk.Tk):
         if folder:
             self.switch_vault(Path(folder))
 
+    def _vault_start_checks(self, vault_root: Path, notice_ms: int, offer_ms: int) -> None:
+        """What opening a vault does first: an upgrade interrupted by a crash is cleaned up
+        (its own leftovers only, D3 4.1) and said; an interrupted undo of the upgrade asks to
+        finish it or to keep the upgrade (the vault refuses writes until the owner chooses,
+        D3 4.4)."""
+        from .core.store.upgrade import startup_notice
+
+        notice = startup_notice(vault_root)
+        if notice:
+            self.after(notice_ms, lambda: _showinfo("Vault upgrade", notice, parent=self))
+        self.after(offer_ms, self._offer_interrupted_undo)
+
     def switch_vault(self, root: Path) -> bool:
         """Make ``root`` the vault of this window and of the next start. False (and a message)
         when it cannot be used; the vault in use then stays as it is."""
         title = "Choose vault folder"
         root = Path(root)
-        if root.resolve() == self.vault.root.resolve() and not self.vault.read_only:
+        here, there = root.resolve(), self.vault.root.resolve()
+        if here == there and not self.vault.read_only:
             return True
+        if here != there and (here in there.parents or there in here.parents):
+            _showerror(title, "That folder is inside the vault in use, or holds it. A vault "
+                              "cannot be nested in another.")
+            return False
         for folder in discover.all_live_paths(self.state):
             if root.resolve() == Path(folder).resolve() or Path(folder).resolve() in root.resolve().parents:
                 _showerror(title, "That is a live save folder (or inside one). A vault must be "
                                   "kept apart from the saves it protects.")
                 return False
+        try:
+            _refuse_pre_upgrade_copy(root)
+        except OperationError as exc:
+            _showerror(title, str(exc))
+            return False
         if root.is_dir() and any(root.iterdir()) and not catalog.looks_like_vault_dir(root):
             _showerror(title, "That folder is not empty and does not hold a vault. Choose an "
                               "empty folder to start a new vault, or a vault folder.")
             return False
         fresh = Vault(root)
         try:
+            _refuse_pre_upgrade_copy(root)
             fresh.ensure()
             fresh.load()
         except OperationError as exc:
             _showerror(title, _gui_text(exc))
+            return False
+        except OSError as exc:
+            log.warning("the folder cannot be used as a vault: %s", exc)
+            _showerror(title, f"That folder cannot be used as a vault: {_plain_error(exc)}")
             return False
         self.vault = fresh
         self.state.vault = str(root)
@@ -800,6 +833,7 @@ class App(tk.Tk):
                                 f"for the next start:\n{_plain_error(exc)}")
         self._history_key, self._report, self._entries = None, None, None
         self.vault_changed(mode_changed=True)
+        self._vault_start_checks(root, 100, 300)
         return True
 
     def _free_menu_label(self) -> str:
@@ -944,6 +978,8 @@ class App(tk.Tk):
                 board_selected(token, slot)
             self._sync_slot_menus()
         live_board.on_slot = slot_selected
+        self.organizer_view.table.tree.bind("<<TreeviewSelect>>", lambda _e: self._sync_slot_menus(),
+                                            add="+")
         self.notebook.add(self.classic_view, text=VIEW_TITLES[CLASSIC])
         self.notebook.add(self.organizer_view, text=VIEW_TITLES[ORGANIZER])
         self._build_classic_view(self.classic_view)
@@ -1120,6 +1156,11 @@ class App(tk.Tk):
 
         for tree in (self.live_tree, self.backup_tree):
             tree.bind("<Button-3>", self._on_right_click)
+            for key in ("<Shift-F10>", "<App>"):
+                try:
+                    tree.bind(key, self._on_menu_key)
+                except tk.TclError:
+                    pass                     # a keysym this platform does not have
             tree.bind("<<TreeviewSelect>>", self._on_tree_select)
             Tooltip(tree, self._tip_for_row)
 
@@ -1187,10 +1228,48 @@ class App(tk.Tk):
                       "This operation cannot be stopped safely, so the window stays open. "
                       "Close it again once the operation has finished.", parent=self)
         else:
-            # What the job writes is journaled and put right at the next start; the window goes
-            # now and the process waits for the job (destroy joins the worker).
-            self.withdraw()
-            self.destroy()
+            view = self.__dict__.get("organizer_view")
+            if view is not None and not view.confirm_close():
+                return                   # an unsaved note: asked before anything is hidden
+            self._finish_then_exit()
+
+    def _finish_then_exit(self) -> None:
+        """What the job writes is journaled and put right at the next start, but it is allowed
+        to end: the window goes, a small one that cannot be closed says the program is finishing,
+        and the process exits when the job has ended - however long that takes."""
+        log.info("closing while a job runs: waiting for it to end")
+        self.withdraw()
+        note = tk.Toplevel(self)
+        note.title("NMS Save Vault")
+        note.transient("")
+        ttk.Label(note, padding=pxs(24, 18), justify="left",
+                  text="Finishing the operation that was running.\n"
+                       "NMS Save Vault closes by itself as soon as it has ended.").pack()
+        note.protocol("WM_DELETE_WINDOW", lambda: None)
+        note.update_idletasks()
+        note.deiconify()
+        self._finishing = note
+        self.after(200, self._finish_poll)
+
+    def _finish_poll(self) -> None:
+        if self.__dict__.get("_finishing") is None:
+            return
+        if self.worker.working:
+            self.after(200, self._finish_poll)
+            return
+        log.info("the job has ended: closing")
+        note, self._finishing = self.__dict__.get("_finishing"), None
+        if note is not None:
+            try:
+                note.destroy()
+            except tk.TclError:
+                pass
+        self.destroy()
+        try:
+            if self.winfo_exists():
+                self.deiconify()         # the close was refused after all: never an invisible app
+        except tk.TclError:
+            pass
 
     def _close_when_idle(self) -> None:
         self._closing = True
@@ -1215,7 +1294,7 @@ class App(tk.Tk):
         if view is not None:
             view.index_strip.stop()
         if worker is not None:
-            worker.shutdown(wait=True, timeout=JOIN_WORKER_SECONDS)   # a write in flight ends
+            worker.shutdown(wait=True)       # a job still running ends first
         organizer = getattr(view, "organizer", None) if view is not None else None
         service = getattr(organizer, "facts", None)
         if service is not None and hasattr(service, "close"):
@@ -2054,8 +2133,27 @@ class App(tk.Tk):
         """Build a context menu offering exactly what makes sense for the row clicked."""
         tree = event.widget
         row = tree.identify_row(event.y)
-        if not row:
-            return
+        if row:
+            self._context_menu(tree, row, event.x_root, event.y_root)
+
+    def _on_menu_key(self, event) -> str:
+        """Shift+F10 / the Menu key: the right-click menu of the focused row, beside it."""
+        tree = event.widget
+        row = tree.focus() or (tree.selection() or ("",))[0]
+        box = tree.bbox(row) if row else None
+        if box:
+            self._context_menu(tree, row, tree.winfo_rootx() + box[0] + px(40),
+                               tree.winfo_rooty() + box[1] + box[3])
+        return "break"
+
+    def _post_menu(self, menu: tk.Menu, x_root: int, y_root: int) -> None:
+        """Posting blocks until the menu closes; tests replace this."""
+        try:
+            menu.tk_popup(x_root, y_root)
+        finally:
+            menu.grab_release()
+
+    def _context_menu(self, tree, row: str, x_root: int, y_root: int) -> None:
         tree.selection_set(row)  # fires <<TreeviewSelect>>, which clears the other tree
         meta = self._meta_for(tree, row)
         if not meta:
@@ -2075,10 +2173,7 @@ class App(tk.Tk):
         menu.add_command(label="Account display names...", command=self.on_accounts)
         menu.add_command(label="Check for updates...", command=self.on_check_updates)
         menu.add_command(label="Help", command=self.on_help)
-        try:
-            menu.tk_popup(event.x_root, event.y_root)
-        finally:
-            menu.grab_release()
+        self._post_menu(menu, x_root, y_root)
 
     # A live save folder: back it up, aim writes at it, or pull a backup into it.
     def _menu_for_live_folder(self, menu, meta: dict) -> None:
@@ -2187,6 +2282,13 @@ class App(tk.Tk):
         """Run a core operation on a worker thread behind a modal wait dialog, prompting to
         override the game-running guard if the op reports the game is open. ``warnings`` is
         the list an operation without an OpResult (backup, extract, import) fills."""
+        self._classic_ops += 1             # the result box too: a close waits for it
+        try:
+            self._run_and_show(fn, success=success, message=message, warnings=warnings)
+        finally:
+            self._classic_ops -= 1
+
+    def _run_and_show(self, fn, *, success: str, message: str, warnings) -> None:
         holder = self._run_worker(fn, False, message)
         if isinstance(holder.get("error"), ops.GameRunningError):
             if not _askyesno("Game running", "No Man's Sky appears to be running.\nProceed anyway (risky)?",
@@ -2728,7 +2830,8 @@ class App(tk.Tk):
         # the question says so, and offers no choice that would not be honoured.
         check = None if plan.with_accountdata or savedir.platform_of(directory) == "xbox" \
             else ACCOUNT_DATA_CHOICE
-        ok, with_account = _confirm(self, "Undo", _undo_question(plan, directory), check=check)
+        ok, with_account = _confirm(self, "Undo", _undo_question(plan, directory), check=check,
+                                    default="no")
         if not ok:
             return
         self._run(
@@ -3182,8 +3285,6 @@ _OS_ALT_KEYS = ("<Alt-Key-F4>", "<Alt-Key-space>")
 _CHECKING = "checking"                  # the game probe has not answered yet
 FREE_LABEL = "Free old backup folders..."
 FINISH_FREE_LABEL = "Finish freeing old backup folders..."
-#: How long closing waits for a job still writing (a move of the largest saves takes seconds).
-JOIN_WORKER_SECONDS = 120
 CHOOSE_VAULT_LABEL = "Choose vault folder..."
 AUTO_UPDATE_LABEL = "Check for updates automatically"
 UNDO_CLASSIC_LABEL = "Undo the last change to the active live folder"

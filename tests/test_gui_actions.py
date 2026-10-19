@@ -345,7 +345,7 @@ def test_undo_names_the_folder_and_passes_every_choice(app, live_target, monkeyp
     monkeypatch.setattr(ops, "plan_undo", lambda vault, directory, **kw: _undo_plan())
     asked = {}
 
-    def confirm(master, title, message, check=None):
+    def confirm(master, title, message, check=None, **kw):
         asked.update(message=message, check=check)
         return True, True
 
@@ -651,7 +651,7 @@ def test_undoing_a_restore_with_account_data_states_it_and_offers_no_checkbox(ap
     monkeypatch.setattr(ops, "plan_undo", lambda *a, **k: _undo_plan(with_accountdata=True))
     asked = {}
 
-    def confirm(master, title, message, check=None):
+    def confirm(master, title, message, check=None, **kw):
         asked.update(message=message, check=check)
         return False, False
 
