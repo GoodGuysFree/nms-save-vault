@@ -21,6 +21,7 @@ from __future__ import annotations
 import tkinter as tk
 from collections.abc import Callable, MutableMapping
 from dataclasses import dataclass
+from types import SimpleNamespace
 from tkinter import font as tkfont
 from tkinter import ttk
 
@@ -130,6 +131,9 @@ def slot_tip(slot: BoardSlot, source: LiveSource, labels: dict) -> str:
     return "\n".join(out)
 
 
+CONTEXT_KEYS = ("<Shift-F10>", "<App>")      # the keyboard's way to the right-click menu
+
+
 @dataclass
 class _Drawn:
     token: str
@@ -199,6 +203,11 @@ class LiveArea(ttk.Frame):
         self.canvas.bind("<Leave>", lambda _e: self._hover(None), add="+")
         self.canvas.bind("<Button-1>", self._on_click)
         self.canvas.bind("<Button-3>", self._on_right_click)
+        for key in CONTEXT_KEYS:
+            try:
+                self.canvas.bind(key, self._on_menu_key)
+            except tk.TclError:                  # a keysym this platform does not have
+                pass
         for key, step in (("<Up>", -1), ("<Down>", 1), ("<Left>", -15), ("<Right>", 15)):
             self.canvas.bind(key, lambda _e, s=step: self.move_focus(s))
         self.canvas.bind("<Return>", lambda _e: self._activate(self.focus_token))
@@ -529,6 +538,27 @@ class LiveArea(ttk.Frame):
         token = self.token_at(event.x, event.y)
         if token is not None and self.on_context is not None:
             self.on_context(token, self.drawn[token].slot, event)
+
+    def context_position(self, token: str | None = None) -> tuple[str, int, int] | None:
+        """(token, x_root, y_root) where the keyboard's context menu opens: the focused slot
+        (the first when none has the focus), just inside its left edge."""
+        token = token if token in self.drawn else (
+            self.focus_token if self.focus_token in self.drawn else next(iter(self.drawn), None))
+        if token is None:
+            return None
+        x0, y0, x1, y1 = self.drawn[token].box
+        return (token, self.canvas.winfo_rootx() + int(x0 + px(40)),
+                self.canvas.winfo_rooty() + int((y0 + y1) / 2))
+
+    def _on_menu_key(self, _event=None) -> str:
+        """Shift+F10 / the Menu key: the same menu as the right click, at the focused slot."""
+        where = self.context_position()
+        if where is not None and self.on_context is not None:
+            token, x, y = where
+            self.on_context(token, self.drawn[token].slot,
+                            SimpleNamespace(x_root=x, y_root=y, x=x - self.canvas.winfo_rootx(),
+                                            y=y - self.canvas.winfo_rooty()))
+        return "break"
 
     def _activate(self, token: str | None) -> None:
         if token is not None and token in self.drawn and self.on_activate is not None:

@@ -32,7 +32,11 @@ class Tooltip:
         self._after: str | None = None
         widget.bind("<Motion>", self._on_motion, add="+")
         widget.bind("<Leave>", self.hide, add="+")
-        widget.bind("<Button>", self.hide, add="+")
+        # Tk runs only the most specific binding of a tag, so a widget's own <Button-1>
+        # would hide this one: name the buttons.
+        for number in (1, 2, 3):
+            widget.bind(f"<ButtonPress-{number}>", self.hide, add="+")
+        widget.bind("<Destroy>", self._on_destroy, add="+")
 
     def _on_motion(self, event) -> None:
         row = self.key_at(event)
@@ -43,13 +47,24 @@ class Tooltip:
         self._cancel()
         if row:
             x, y = event.x_root, event.y_root
-            self._after = self.widget.after(self.DELAY_MS, lambda: self._show(row, x, y))
+            try:
+                self._after = self.widget.after(self.DELAY_MS, lambda: self._show(row, x, y))
+            except tk.TclError:                     # the widget is going away
+                self._after = None
 
     def _show(self, row: str, x: int, y: int) -> None:
         self._after = None
-        text = self.text_for(self.widget, row)
-        if not text or row != self.row:
-            return
+        try:
+            if not self.widget.winfo_exists():
+                return
+            text = self.text_for(self.widget, row)
+            if not text or row != self.row:
+                return
+            self._build(text, x, y)
+        except tk.TclError:                         # destroyed between the timer and now
+            self.window = None
+
+    def _build(self, text: str, x: int, y: int) -> None:
         self.window = tk.Toplevel(self.widget)
         self.window.wm_overrideredirect(True)  # no title bar / border
         self.window.configure(background=TOOLTIP_STYLE["border"])
@@ -73,12 +88,23 @@ class Tooltip:
         self._cancel()
         self._close()
 
+    def _on_destroy(self, event=None) -> None:
+        if event is not None and event.widget is not self.widget:
+            return                                   # a child's Destroy bubbles up the tags
+        self.hide()
+
     def _cancel(self) -> None:
-        if self._after is not None:
-            self.widget.after_cancel(self._after)
-            self._after = None
+        after, self._after = self._after, None
+        if after is not None:
+            try:
+                self.widget.after_cancel(after)
+            except tk.TclError:
+                pass
 
     def _close(self) -> None:
-        if self.window is not None:
-            self.window.destroy()
-            self.window = None
+        window, self.window = self.window, None
+        if window is not None:
+            try:
+                window.destroy()
+            except tk.TclError:
+                pass

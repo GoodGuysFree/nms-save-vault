@@ -27,6 +27,7 @@ from ...core.liveops import (
 from ...core.organizer.locator import Location
 from ...core.organizer.model import LiveRef, StoreRef
 from ...core.organizer.readmodel import BoardSlot, ReadModel
+from ..dialogs import bind_escape, cap_minsize, focus_first, keep_on_screen, tab_last
 from ..dpi import px, pxs
 from ..fmt import local_time, play_time
 from ..redact import rtext, rtitle, set_label, shown
@@ -160,12 +161,15 @@ class MoveDialog(tk.Toplevel):
         themed.register(self)
         rtitle(self, "Replace with" if fixed else "Move to live")
         self.transient(master)
-        self.minsize(px(860), px(640))
+        cap_minsize(self, 860, 640)
+        keep_on_screen(self)
+        tab_last(self.foot)
+        focus_first(self, self.tree)
         try:
             self.grab_set()
         except tk.TclError:
             pass
-        self.bind("<Escape>", lambda _e: self.cancel())
+        bind_escape(self, self.cancel, lambda: self.executing)
         self.protocol("WM_DELETE_WINDOW", self.cancel)
         if fixed is not None:
             self._start_replace(fixed)
@@ -178,6 +182,7 @@ class MoveDialog(tk.Toplevel):
         pad = px(10)
         foot = ttk.Frame(self, padding=(pad, pxs(4, 8)[0], pad, pxs(4, 8)[1]))
         foot.pack(side=tk.BOTTOM, fill=tk.X)
+        self.foot = foot
         self.status = ttk.Label(foot, text="", style="Muted.TLabel", anchor="w")
         self.bar = ttk.Progressbar(foot, mode="determinate", length=px(200))
         self.recover_button = ttk.Button(foot, text="Recover...", command=self._recover)

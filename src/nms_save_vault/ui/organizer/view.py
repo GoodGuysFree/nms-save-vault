@@ -29,6 +29,7 @@ from ..dpi import px, pxs
 from ..menuhint import bind_menu_hints
 from ..redact import set_label
 from ..themeaware import ThemeRegistry
+from ..tooltip import Tooltip
 from ..worker import UiWorker
 from .detail import DetailPane
 from .histhooks import HistoryHooks
@@ -62,6 +63,8 @@ def summary_text(model: ReadModel, organizer: Organizer | None) -> str:
         if unreadable:
             part += f", {unreadable} unreadable"
         bits.append(part)
+    if organizer is not None and getattr(organizer, "store_error", None):
+        bits.append("Vault store cannot be opened - backups are not shown")
     running = organizer.scan.game_running if organizer and organizer.scan else False
     if running is True:
         bits.append("Game: RUNNING - live saves are not recorded")
@@ -83,6 +86,8 @@ def scan_alerts(organizer: Organizer) -> dict[str, str]:
                 out[f"live:{ref.platform}:{ref.account_key}:{ref.instance}"] = (
                     f"A {name} live folder could not be read; its slots are shown as they "
                     f"were. {why}".strip())
+    if getattr(organizer, "store_error", None):
+        out["store:open"] = organizer.store_error
     for n, problem in enumerate(organizer.problems):
         out[f"store:{n}"] = f"Organizer: {problem}"
     return {key: aliases.scrub(text) for key, text in out.items()}
@@ -142,6 +147,7 @@ class OrganizerView(ttk.Frame):
         self._pending_scan: bool | None = None
         self.alerts: dict[str, ttk.Frame] = {}
         self._build()
+        self.winfo_toplevel().bind("<Control-f>", self._ctrl_f, add="+")
 
     # --- building ---------------------------------------------------------------------------
 
@@ -154,6 +160,11 @@ class OrganizerView(ttk.Frame):
         self.move_button.pack(side=tk.LEFT, padx=pxs(6, 0))
         self.history_button = ttk.Button(bar, text="History...", command=self.open_history)
         self.history_button.pack(side=tk.LEFT, padx=pxs(6, 0))
+        self.action_why: dict[ttk.Button, str] = {}      # a disabled button's reason (its tooltip)
+        for button in (self.notes_button, self.move_button, self.history_button):
+            self.action_why[button] = ""
+            Tooltip(button, lambda _w, _k, b=button: self.action_why.get(b, ""),
+                    key_at=lambda _e: "button")
         self.log_button = ttk.Button(bar, text="Operations...", command=lambda: self.open_log())
         self.log_button.pack(side=tk.LEFT, padx=pxs(6, 0))
         self.rescan_button = ttk.Button(bar, text="Rescan", command=lambda: self.rescan())
@@ -197,6 +208,35 @@ class OrganizerView(ttk.Frame):
         self._drag = None
         self._dragging = False
         self._bind_drag()
+        self._update_actions()
+
+    def _update_actions(self) -> None:
+        """Notes, Move and History need a selected save file (Move also an idle scan): a button
+        that cannot act is disabled, and its tooltip says why."""
+        pid, _head = self.table.selection_ref()
+        for button, needs_idle in ((self.notes_button, False), (self.move_button, True),
+                                   (self.history_button, False)):
+            if self.model is None or self.organizer is None:
+                why = "The vault has not been read yet."
+            elif pid is None:
+                why = "Select a save file in the table first."
+            elif needs_idle and self.scanning:
+                why = "Wait for the scan to finish."
+            else:
+                why = ""
+            self.action_why[button] = why
+            button.state(["disabled" if why else "!disabled"])
+
+    def focus_find(self) -> None:
+        """Ctrl+F: the table's Find box."""
+        self.table.find.focus_set()
+        self.table.find.selection_range(0, tk.END)
+
+    def _ctrl_f(self, _event=None) -> str | None:
+        if not self.winfo_exists() or not self.winfo_ismapped():
+            return None                          # another tab has the keyboard
+        self.focus_find()
+        return "break"
 
     # --- the content index (D4) -------------------------------------------------------------------
 
@@ -309,6 +349,7 @@ class OrganizerView(ttk.Frame):
             self._pending_scan = bool(self._pending_scan) or record
             return
         self.scanning = True
+        self._update_actions()
         self.rescan_button.state(["disabled"])
         self.progress.pack(side=tk.RIGHT, padx=pxs(0, 8))
         self.progress.start(15)
@@ -384,6 +425,7 @@ class OrganizerView(ttk.Frame):
         self.progress.stop()
         self.progress.pack_forget()
         self.rescan_button.state(["!disabled"])
+        self._update_actions()
         if self._pending_scan is not None:
             record, self._pending_scan = self._pending_scan, None
             self.after_idle(lambda: self.rescan(record=record))
@@ -401,6 +443,7 @@ class OrganizerView(ttk.Frame):
         self.model = model
         self.table.set_model(model)
         self.live.set_model(model)
+        self._update_actions()
         pid, head = self.table.selection_ref()
         if pid is not None and model.line(pid) is not None:
             self._show(pid, head)
@@ -449,6 +492,7 @@ class OrganizerView(ttk.Frame):
     # --- the selection hub -------------------------------------------------------------------
 
     def _selected(self, pid: str | None, head: str | None) -> None:
+        self._update_actions()
         if pid is None or self.model is None:
             return
         self._show(pid, head)
@@ -499,8 +543,12 @@ class OrganizerView(ttk.Frame):
         """The Move to live dialog for a line (its newest version) or one version; the plan
         and the write run in the worker, and a finished move rescans and says so."""
         organizer = self.organizer
-        if self.model is None or organizer is None or self.scanning:
+        if self.model is None or organizer is None:
             return None
+        if self.scanning:
+            self.alert("busy", "The vault is being scanned - try again in a moment.")
+            return None
+        self.clear_alert("busy")
         if self.move_dialog is not None and self.move_dialog.winfo_exists():
             self.move_dialog.lift()
             return self.move_dialog
@@ -519,8 +567,12 @@ class OrganizerView(ttk.Frame):
 
     def open_replace_for(self, slot: BoardSlot) -> MoveDialog | None:
         """Replace with...: the live slot is fixed, the version is picked in the dialog."""
-        if self.model is None or self.organizer is None or self.scanning:
+        if self.model is None or self.organizer is None:
             return None
+        if self.scanning:
+            self.alert("busy", "The vault is being scanned - try again in a moment.")
+            return None
+        self.clear_alert("busy")
         if self.move_dialog is not None and self.move_dialog.winfo_exists():
             self.move_dialog.lift()
             return self.move_dialog
@@ -744,9 +796,13 @@ class OrganizerView(ttk.Frame):
         return menu
 
     def _slot_context(self, token: str, slot: BoardSlot, event) -> None:
-        menu = self.slot_menu(slot)
+        self._post(self.slot_menu(slot), event.x_root, event.y_root)
+
+    @staticmethod
+    def _post(menu: tk.Menu, x_root: int, y_root: int) -> None:
+        """Posting blocks (modal) until the menu closes; tests replace this."""
         try:
-            menu.tk_popup(event.x_root, event.y_root)
+            menu.tk_popup(x_root, y_root)
         finally:
             menu.grab_release()
 

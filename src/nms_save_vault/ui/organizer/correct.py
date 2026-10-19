@@ -18,6 +18,7 @@ from typing import Any
 
 from ...core.organizer.lineage import Corrections
 from ...core.organizer.readmodel import ReadModel
+from ..dialogs import bind_escape, focus_first
 from ..dpi import fit_to_content, px, pxs
 from ..fmt import local_time, play_time
 from ..redact import RedactingTreeview, rtitle, set_label
@@ -135,10 +136,14 @@ class CorrectDialog(tk.Toplevel):
         self._parents: dict[str, str | None] = {}
         self._current_parent: str | None = None
         self._into: dict[str, str] = {}
+        self.transient(master)
         self._build()
         themed.register(self)
         self.show(pid, head)
         fit_to_content(self, 620, 520)
+        bind_escape(self, self.destroy, lambda: self._busy)
+        self.protocol("WM_DELETE_WINDOW", lambda: None if self._busy else self.destroy())
+        focus_first(self, self.parent_box)
 
     # --- building ----------------------------------------------------------------------
 

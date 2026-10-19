@@ -16,6 +16,7 @@ from tkinter import ttk
 
 from ... import theme
 from ...core.organizer.readmodel import ReadModel, VersionRow
+from ..dialogs import bind_escape, bind_return, focus_first
 from ..dpi import fit_to_content, px, pxs
 from ..fmt import local_time, play_time
 from ..redact import RedactingTreeview, rtext, rtitle, set_label
@@ -176,10 +177,13 @@ class CompareWindow(tk.Toplevel):
         super().__init__(master)
         self.model, self.pid, self.a, self.b = model, pid, a, b
         self.only_differences = True
+        self.transient(master)
         self._build()
         themed.register(self)
         self._fill()
         fit_to_content(self, 900, 560)
+        bind_escape(self, self.destroy)
+        focus_first(self, self.tree)
 
     def _build(self) -> None:
         top = ttk.Frame(self, padding=pxs(12, 10, 12, 4))
@@ -342,6 +346,9 @@ class PickDialog(tk.Toplevel):
         ttk.Button(row, text="Cancel", command=self.destroy).pack(side=tk.RIGHT)
         ttk.Button(row, text="Compare", command=self.ok).pack(side=tk.RIGHT, padx=pxs(0, 6))
         self.transient(owner)
+        bind_escape(self, self.destroy)
+        bind_return(self, self.ok)             # Compare only opens a read-only view
+        focus_first(self, self.boxes[0])
 
     def ok(self) -> None:
         a, b = (self.labels.get(box.get()) for box in self.boxes)

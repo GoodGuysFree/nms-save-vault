@@ -19,6 +19,7 @@ from ...core.liveops import (
     EmptySlotGuide, OpContext, OpOutcome, OpSummary, PlacePlan, RecoveryItem, Warning, execute,
     op_history, resolve_recovery)
 from ...core.organizer.model import LiveTarget
+from ..dialogs import bind_escape, cap_minsize, keep_on_screen
 from ..dpi import px, pxs
 from ..fmt import play_time
 from ..redact import rtitle, set_label, shown
@@ -97,7 +98,7 @@ class _Dialog(tk.Toplevel):
                 self.grab_set()
             except tk.TclError:
                 pass
-        self.bind("<Escape>", lambda _e: self.cancel())
+        bind_escape(self, self.cancel, lambda: getattr(self, "busy", False))
         self.protocol("WM_DELETE_WINDOW", self.cancel)
 
     def cancel(self) -> None:
@@ -161,7 +162,8 @@ class PlanDialog(_Dialog):
         self.summary.pack(side=tk.TOP, anchor="w", pady=pxs(6, 4))
         self.warnings = ttk.Frame(body)
         self.warnings.pack(side=tk.TOP, fill=tk.X)
-        self.minsize(px(520), px(220))
+        cap_minsize(self, 520, 220)
+        keep_on_screen(self)
         self._render()
         self._ready()
 
@@ -353,7 +355,8 @@ class RecoveryDialog(_Dialog):
         self.rows.pack(fill=tk.BOTH, expand=True)
         for item in self.items:
             self._item(item)
-        self.minsize(px(560), px(200))
+        cap_minsize(self, 560, 200)
+        keep_on_screen(self)
         self._ready()
 
     def _item(self, item: RecoveryItem) -> None:
@@ -499,7 +502,8 @@ class OpsLogWindow(_Dialog):
             self.tree.column(key, width=px(width), stretch=key == "what")
         self.tree.pack(fill=tk.BOTH, expand=True, padx=pad, pady=pad)
         self.tree.bind("<<TreeviewSelect>>", self._selected)
-        self.minsize(px(640), px(300))
+        cap_minsize(self, 640, 300)
+        keep_on_screen(self)
         self._ready()
         worker.submit(_read_log(make_context, list(targets)), on_done=weak(self._loaded),
                       on_error=weak(self._failed))

@@ -432,6 +432,7 @@ class _Facts:
 
 def test_the_explanation_wraps_to_the_width_it_has(host, gui_app, forked):
     w, _, _ = forked
+    host.deiconify()                   # a window transient to a hidden one stays hidden
     win = H.HistoryWindow(host, model=w.refresh(), themed=gui_app.themed, pid=PID)
     try:
         win.geometry("700x500")

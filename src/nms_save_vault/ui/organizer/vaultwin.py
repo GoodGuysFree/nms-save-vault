@@ -21,10 +21,11 @@ from typing import Any, Callable
 
 from ...core import aliases
 from ...core.store import (
-    VersionStore, copy_in, not_copied_in, plan_upgrade, run_fold, run_upgrade, store_status,
+    StoreError, VersionStore, copy_in, not_copied_in, plan_upgrade, run_fold, run_upgrade, store_status,
     vault_lock, vault_mode)
 from ...core.store import rollback, upgrade
 from ...core.store.migrate import fold_failed, fold_pending, unfolded
+from ..dialogs import cap_minsize, keep_on_screen
 from ..dpi import px, pxs
 from ..redact import set_label, shown
 from ..themeaware import ThemeRegistry
@@ -77,13 +78,19 @@ def read_state(env: VaultEnv, dest_parent: Path | None = None) -> SimpleNamespac
     out = SimpleNamespace(mode=mode, plan=None, status=None, fold_pending=False, unfolded=0,
                           fold_failed=[],
                           new_vault=False,
-                          interrupted_undo=False, not_copied=[], eligible=upgrade.upgrade_needed(root))
+                          interrupted_undo=False, not_copied=[], unopenable=None, eligible=upgrade.upgrade_needed(root))
     if mode == "legacy" and out.eligible:
         out.plan = plan_upgrade(root, dest_parent=dest_parent, live_roots=list(env.live_roots))
     elif mode == "upgrading":
         out.interrupted_undo = rollback.rollback_interrupted(root)
     elif mode == "store":
-        store = _open(env, read_only=True)
+        try:
+            store = _open(env, read_only=True)
+        except StoreError as exc:
+            from ...core.organizer import store_open_error_text
+
+            out.unopenable = store_open_error_text(exc, root)
+            return out
         out.status = store_status(root, store, live_roots=list(env.live_roots),
                                   app_state=env.app_state)
         out.fold_pending = fold_pending(root)
@@ -117,14 +124,14 @@ def copy_in_job(env: VaultEnv, ids: list[str], cancel):
     return copy_in(_open(env), ids, live_roots=list(env.live_roots), cancel=cancel)
 
 
-def rollback_plan_job(env: VaultEnv, interrupted: bool):
+def rollback_plan_job(env: VaultEnv, interrupted: bool, copy: Path | None = None):
     store = _open(env, for_rollback=interrupted)
-    return rollback.plan_rollback(env.vault_root, store)
+    return rollback.plan_rollback(env.vault_root, store, copy=copy)
 
 
-def rollback_run_job(env: VaultEnv, interrupted: bool, cancel):
+def rollback_run_job(env: VaultEnv, interrupted: bool, cancel, copy: Path | None = None):
     store = _open(env, for_rollback=interrupted)
-    plan = rollback.plan_rollback(env.vault_root, store, cancel=cancel)
+    plan = rollback.plan_rollback(env.vault_root, store, copy=copy, cancel=cancel)
     return rollback.run_rollback(plan, store, cancel=cancel)
 
 
@@ -150,6 +157,7 @@ class VaultWindow(_Dialog):
         self._cancel = threading.Event()
         self._rollback_plan = None
         self.dest: Path | None = None
+        self.copy_folder: Path | None = None        # where the owner says the pre-upgrade copy is
         self.confirm_var = tk.BooleanVar(value=False)
         self.dest_var = tk.StringVar(value="")
         self.copy_vars: dict[str, tk.BooleanVar] = {}
@@ -163,9 +171,14 @@ class VaultWindow(_Dialog):
         self.bar = ttk.Progressbar(foot, mode="determinate", length=px(200))
         self.error = tk.Label(self, text="", anchor="w", justify="left", wraplength=px(640))
         self.error.pack(side=tk.BOTTOM, fill=tk.X, padx=pad)
+        self.result = ttk.Label(self, text="", justify="left", wraplength=px(640))
+        self.result.pack(side=tk.BOTTOM, fill=tk.X, padx=pad)
+        self.result.bind("<Configure>", lambda e: self.result.configure(
+            wraplength=max(px(200), e.width - px(4))))
         self.body = ttk.Frame(self, padding=pad)
         self.body.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
-        self.minsize(px(600), px(320))
+        cap_minsize(self, 600, 320)
+        keep_on_screen(self)
         self._ready()
         self.refresh()
 
@@ -214,7 +227,11 @@ class VaultWindow(_Dialog):
         ttk.Label(self.body, text="Vault upgrade", style="Title.TLabel").pack(anchor="w")
         if s is None:
             return
-        if self._rollback_plan is not None:
+        if s.unopenable:
+            tk.Label(self.body, text=shown(self, s.unopenable), anchor="w", justify="left",
+                     wraplength=px(600), foreground=self._pal["danger"] if self._pal else "red"
+                     ).pack(anchor="w")
+        elif self._rollback_plan is not None:
             self._render_rollback(self._rollback_plan)
         elif s.mode == "legacy":
             self._render_legacy(s)
@@ -338,6 +355,10 @@ class VaultWindow(_Dialog):
             tk.Label(self.body, text=shown(self, text), anchor="w", justify="left",
                      wraplength=px(600), foreground=self._pal["danger"] if self._pal else "red"
                      ).pack(anchor="w")
+        if any(code in ("migration-missing", "copy-missing", "copy-mismatch")
+               for code, _text in plan.problems):
+            ttk.Button(self.body, text="Choose the folder the copy is in...",
+                       command=self.choose_copy).pack(anchor="w", pady=px(4))
         self.rollback_button = ttk.Button(self.body, text="Undo the upgrade now",
                                           command=self.run_undo)
         self.rollback_button.pack(anchor="w", pady=px(4))
@@ -367,6 +388,16 @@ class VaultWindow(_Dialog):
         if chosen:
             self.set_dest(Path(chosen))
 
+    def choose_copy(self) -> None:
+        chosen = filedialog.askdirectory(parent=self, title="The copy made before the upgrade")
+        if chosen:
+            self.set_copy(Path(chosen))
+
+    def set_copy(self, folder: Path) -> None:
+        """Plan the undo again with the copy in ``folder`` (the record of it is gone or wrong)."""
+        self.copy_folder = folder
+        self.plan_undo()
+
     def set_dest(self, folder: Path) -> None:
         self.dest = folder
         self.refresh()
@@ -394,14 +425,16 @@ class VaultWindow(_Dialog):
         if self.busy:
             return
         interrupted = bool(self.state and self.state.interrupted_undo)
-        self._start(lambda env, box, cancel: rollback_plan_job(env, interrupted),
+        copy = self.copy_folder
+        self._start(lambda env, box, cancel: rollback_plan_job(env, interrupted, copy),
                     "Checking the copy made before the upgrade...", self._undo_planned)
 
     def run_undo(self) -> None:
         if self.busy or self.rollback_button.instate(["disabled"]):
             return
         interrupted = bool(self.state and self.state.interrupted_undo)
-        self._start(lambda env, box, cancel: rollback_run_job(env, interrupted, cancel),
+        copy = self.copy_folder
+        self._start(lambda env, box, cancel: rollback_run_job(env, interrupted, cancel, copy),
                     "Undoing the upgrade...", self._undone)
 
     def finish_undo(self) -> None:
@@ -415,6 +448,7 @@ class VaultWindow(_Dialog):
 
     def _back(self) -> None:
         self._rollback_plan = None
+        self.copy_folder = None
         self._render()
 
     def _start(self, job, text: str, done) -> None:
@@ -423,6 +457,7 @@ class VaultWindow(_Dialog):
         self._box.progress = None
         self._set_busy(text)
         self.error.configure(text="")
+        set_label(self.result, "")
         self.stop_button.pack(side=tk.LEFT, padx=px(6))
         self.bar.pack(side=tk.LEFT, padx=px(6))
         self.bar.configure(value=0, maximum=1)
@@ -482,13 +517,13 @@ class VaultWindow(_Dialog):
         self._changed()
         self.refresh()
         if notes:
-            set_label(self.status, " ".join(n for n in notes if n)[:200])
+            set_label(self.result, " ".join(n for n in notes if n))
 
     def _copied(self, report) -> None:
         self._set_idle()
         self._changed()
         self.refresh()
-        set_label(self.status, report.message[:200])
+        set_label(self.result, report.message)
 
     def _undo_planned(self, plan) -> None:
         self._set_idle()
@@ -500,7 +535,7 @@ class VaultWindow(_Dialog):
         self._rollback_plan = None
         self._changed()
         self.refresh()
-        set_label(self.status, result.message[:200])
+        set_label(self.result, result.message)
 
     def _kept(self, _result=None) -> None:
         self._set_idle()

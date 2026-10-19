@@ -29,6 +29,7 @@ from ...core.organizer.readmodel import (
 )
 from ... import theme
 from .. import dpi, raster
+from ..dialogs import bind_escape, bind_return, focus_first
 from ..dpi import px, pxs
 from ..fmt import local_time, play_time
 from ..redact import RedactingTreeview
@@ -325,6 +326,9 @@ def version_tip(row: VersionRow) -> str:
     return "\n".join(out)
 
 
+CONTEXT_KEYS = ("<Shift-F10>", "<App>")      # the keyboard's way to the right-click menu
+
+
 # --- the widget ------------------------------------------------------------------------
 
 
@@ -424,6 +428,11 @@ class OrganizerTable(ttk.Frame):
         self.tree.bind("<Button-1>", self._on_click, add="+")
         self.tree.bind("<<TreeviewSelect>>", self._on_select)
         self.tree.bind("<Button-3>", self._context_menu)
+        for key in CONTEXT_KEYS:
+            try:
+                self.tree.bind(key, self._context_key)
+            except tk.TclError:
+                pass
         self.tree.bind("<ButtonRelease-1>", self._remember_widths, add="+")
         self._dragging = False
         self.tree.bind("<ButtonPress-1>", lambda e: setattr(
@@ -758,7 +767,30 @@ class OrganizerTable(ttk.Frame):
     def _context_menu(self, event) -> None:
         """Right click: select the row under the pointer; "Move to live..." for its line or
         version."""
-        iid = self.tree.identify_row(event.y)
+        self.show_menu(self.tree.identify_row(event.y), event.x_root, event.y_root)
+
+    def context_position(self) -> tuple[str, int, int] | None:
+        """(iid, x_root, y_root) for the keyboard's menu: the focused row, else the first."""
+        iid = self.tree.focus() or next(iter(self.tree.get_children("")), "")
+        if not iid:
+            return None
+        box = self.tree.bbox(iid)
+        if not box:
+            self.tree.see(iid)
+            box = self.tree.bbox(iid)
+        if not box:
+            return None
+        x, y, _w, h = box
+        return iid, self.tree.winfo_rootx() + x + px(40), self.tree.winfo_rooty() + y + h // 2
+
+    def _context_key(self, _event=None) -> str:
+        """Shift+F10 / the Menu key: the right-click menu at the focused row."""
+        where = self.context_position()
+        if where is not None:
+            self.show_menu(*where)
+        return "break"
+
+    def show_menu(self, iid: str, x_root: int, y_root: int) -> None:
         if not iid or self.on_move is None:
             return
         self.tree.selection_set(iid)
@@ -767,8 +799,13 @@ class OrganizerTable(ttk.Frame):
         pid, head = self.selection_ref()
         if pid is not None:
             menu.add_command(label="Move to live...", command=lambda: self.on_move(pid, head))
+        self._post(menu, x_root, y_root)
+
+    @staticmethod
+    def _post(menu: tk.Menu, x_root: int, y_root: int) -> None:
+        """Posting blocks (modal) until the menu closes; tests replace this."""
         try:
-            menu.tk_popup(event.x_root, event.y_root)
+            menu.tk_popup(x_root, y_root)
         finally:
             menu.grab_release()
 
@@ -830,6 +867,7 @@ class ColumnChooser(tk.Toplevel):
         self.on = {key: tk.BooleanVar(value=key in shown) for key in self.order}
         self.body = ttk.Frame(self, padding=px(10))
         self.body.pack(fill=tk.BOTH, expand=True)
+        self.moves: dict[tuple[str, int], ttk.Button] = {}
         buttons = ttk.Frame(self, padding=pxs(10, 0, 10, 10))
         buttons.pack(fill=tk.X)
         ttk.Button(buttons, text="Reset", command=self.reset).pack(side=tk.LEFT)
@@ -837,24 +875,34 @@ class ColumnChooser(tk.Toplevel):
         ttk.Button(buttons, text="OK", command=self.ok).pack(side=tk.RIGHT, padx=pxs(0, 6))
         self._rows()
         dpi.fit_to_content(self, 280, 300)
+        bind_escape(self, self.destroy)
+        bind_return(self, self.ok)           # OK only changes which columns show
+        focus_first(self, self.first_check)
 
     def _rows(self) -> None:
         for child in self.body.winfo_children():
             child.destroy()
         ttk.Label(self.body, text="Save file (always shown)").grid(row=0, column=0, sticky="w")
+        self.moves = {}
         for n, key in enumerate(self.order, start=1):
-            ttk.Checkbutton(self.body, text=BY_KEY[key].title,
-                            variable=self.on[key]).grid(row=n, column=0, sticky="w")
-            ttk.Button(self.body, text="Up", width=5,
-                       command=lambda k=key: self.move(k, -1)).grid(row=n, column=1)
-            ttk.Button(self.body, text="Down", width=5,
-                       command=lambda k=key: self.move(k, 1)).grid(row=n, column=2)
+            check = ttk.Checkbutton(self.body, text=BY_KEY[key].title, variable=self.on[key])
+            check.grid(row=n, column=0, sticky="w")
+            if n == 1:
+                self.first_check = check
+            for step, text, column in ((-1, "Up", 1), (1, "Down", 2)):
+                button = ttk.Button(self.body, text=text, width=5,
+                                    command=lambda k=key, s=step: self.move(k, s))
+                button.grid(row=n, column=column)
+                self.moves[(key, step)] = button
 
     def move(self, key: str, step: int) -> None:
         i = self.order.index(key)
         j = min(max(0, i + step), len(self.order) - 1)
         self.order[i], self.order[j] = self.order[j], self.order[i]
         self._rows()
+        focus = self.moves.get((key, step))      # the focus follows the row that moved
+        if focus is not None:
+            focus.focus_set()
 
     def reset(self) -> None:
         self.order = [c.key for c in COLUMNS]

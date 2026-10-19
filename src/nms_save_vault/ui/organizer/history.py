@@ -20,6 +20,7 @@ from tkinter import ttk
 from ... import theme
 from ...core.organizer.readmodel import Line, ReadModel, VersionRow
 from .. import dpi, raster
+from ..dialogs import bind_escape, focus_first, tab_last
 from ..dpi import fit_to_content, px, pxs
 from ..fmt import local_time, play_time
 from ..redact import RedactingTreeview, rtext, rtitle, set_label
@@ -398,10 +399,13 @@ class HistoryWindow(tk.Toplevel):
         self._images: dict = {}
         self._palette: dict = {}
         self.head: str | None = None
+        self.transient(master)
         self._build()
         themed.register(self)
         self.show(pid, head)
         fit_to_content(self, 1180, 640)
+        bind_escape(self, self.destroy)
+        focus_first(self, self.tree)
 
     # --- building ---------------------------------------------------------------------
 
@@ -452,6 +456,7 @@ class HistoryWindow(tk.Toplevel):
             self._tips_window, width=e.width))
         wrap = ttk.Frame(left)
         wrap.pack(fill=tk.BOTH, expand=True)
+        tab_last(tips)                 # built first to keep its room: Tab still visits the list first
         keys = [c[0] for c in COLUMNS]
         self.tree = RedactingTreeview(wrap, columns=keys, show="tree headings",
                                       selectmode="extended", style=STYLE)

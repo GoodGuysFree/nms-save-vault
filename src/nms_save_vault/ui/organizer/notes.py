@@ -21,6 +21,7 @@ from tkinter import messagebox, ttk
 from ... import theme
 from ...core.organizer.notes import COMMENT_MAX, LABEL_MAX, NoteConflict, Notes
 from ...core.organizer.readmodel import ReadModel, VersionRow
+from ..dialogs import bind_escape, focus_first
 from ..dpi import fit_to_content, px, pxs
 from ..fmt import local_time, play_time
 from ..redact import RedactingTreeview, needs_latin1, rtext, rtitle, set_label, shown
@@ -108,10 +109,13 @@ class NotesWindow(tk.Toplevel):
         self._sent: str | None = None      # the text of the save in flight
         self.ask = messagebox.askyesnocancel   # Save / Discard / Cancel (tests replace it)
         self.protocol("WM_DELETE_WINDOW", self.close)
+        self.transient(master)
         self._build()
         themed.register(self)
         self.show(pid, head)
         fit_to_content(self, 980, 640)
+        bind_escape(self, self.close)          # close() asks first when a note is unsaved
+        focus_first(self, self.editor)
 
     # --- building ----------------------------------------------------------------------
 
