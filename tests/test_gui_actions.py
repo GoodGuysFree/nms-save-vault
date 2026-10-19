@@ -21,6 +21,7 @@ pytest.importorskip("tkinter")
 
 @pytest.fixture
 def app(gui_app):
+    gui_app._populate_backups()      # the listing a refresh reads in the worker, now
     return gui_app
 
 
@@ -272,7 +273,7 @@ def test_direct_copy_confirms_then_writes_the_named_slot(app, live_target, tmp_p
     from nms_save_vault.core import operations as ops
 
     asked = {}
-    monkeypatch.setattr(gui, "_askyesno", lambda title, msg: asked.setdefault("msg", msg) or True)
+    monkeypatch.setattr(gui, "_askyesno", lambda title, msg, **k: asked.setdefault("msg", msg) or True)
     recorded = {}
     monkeypatch.setattr(
         ops, "repopulate_slot",
@@ -374,7 +375,7 @@ def test_undo_over_a_damaged_history_asks_first(app, live_target, monkeypatch, a
         ops, "plan_undo", lambda *a, **k: _undo_plan(damaged_after=True, log_warning="1 damaged line")
     )
     questions = []
-    monkeypatch.setattr(gui, "_askyesno", lambda title, msg: questions.append(msg) or accept)
+    monkeypatch.setattr(gui, "_askyesno", lambda title, msg, **k: questions.append(msg) or accept)
     monkeypatch.setattr(gui, "_confirm", lambda *a, **k: (True, False))
     recorded = {}
     monkeypatch.setattr(ops, "undo_last", lambda vault, directory, **kw: recorded.update(kw))
@@ -518,6 +519,7 @@ def test_another_accounts_backup_is_named_as_such(app, monkeypatch):
 
 
 def test_promote_acts_on_the_clicked_rows_folder_not_the_active_one(app, live_target, tmp_path, monkeypatch):
+    from nms_save_vault import gui as app_module
     from nms_save_vault.core import operations as ops
     from nms_save_vault.core import state as appstate
 
@@ -532,6 +534,7 @@ def test_promote_acts_on_the_clicked_rows_folder_not_the_active_one(app, live_ta
         lambda vault, directory, slot, member, **kw: recorded.update(directory=Path(directory), slot=slot, member=member),
     )
     _capture_run(app, monkeypatch)
+    monkeypatch.setattr(app_module, "_askyesno", lambda *a, **k: True)     # Promote confirms first
     meta = {"type": "member", "dir": str(other), "slot": 3, "live": True, "member": 1}
 
     assert _invoke_menu_entry(app, app._menu_for_slot, meta, "Make the Restore-Point")
@@ -926,7 +929,7 @@ def test_the_steps_are_shown_after_offering_to_keep_a_copy(app, live_target, mon
 
     monkeypatch.setattr(classic, "empty_guide", lambda vault, directory, slot: _guide())
     asked, shown, kept = [], [], {}
-    monkeypatch.setattr(gui, "_askyesno", lambda title, msg: asked.append(msg) or True)
+    monkeypatch.setattr(gui, "_askyesno", lambda title, msg, **k: asked.append(msg) or True)
     monkeypatch.setattr(gui, "StepsWindow", lambda master, **kw: shown.append(kw["guide"]))
     monkeypatch.setattr(classic, "keep_copy",
                         lambda vault, directory, slot: kept.update(slot=slot, directory=str(directory)))

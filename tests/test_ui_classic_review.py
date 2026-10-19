@@ -226,7 +226,7 @@ def test_undo_into_an_empty_slot_offers_a_copy_before_the_steps_built_in_the_wor
         threads.append(threading.current_thread() is threading.main_thread())
         return real(v, d, s)
     monkeypatch.setattr(classic, "empty_guide", guide)
-    monkeypatch.setattr(gui, "_askyesno", lambda t, m: order.append("ask") or True)
+    monkeypatch.setattr(gui, "_askyesno", lambda t, m, **k: order.append("ask") or True)
     monkeypatch.setattr(classic, "keep_copy", lambda *a, **k: order.append("keep"))
     monkeypatch.setattr(gui, "StepsWindow", lambda master, **kw: order.append("steps"))
     gui_app.on_undo_slot(world.live, 3)
@@ -255,12 +255,12 @@ def test_per_slot_undo_after_a_whole_folder_restore_asks_and_never_rolls_back_si
     ops.restore_full(world.vault, world.backup, world.live, allow_game_running=True)
     plans, asked, whole = [], [], []
     monkeypatch.setattr(gui, "PlanDialog", lambda master, **kw: plans.append(kw))
-    monkeypatch.setattr(gui, "_askyesno", lambda t, m: asked.append(m) or False)
+    monkeypatch.setattr(gui, "_askyesno", lambda t, m, **k: asked.append(m) or False)
     monkeypatch.setattr(gui_app, "on_undo", lambda d=None: whole.append(d))
     gui_app.on_undo_slot(world.live, 1)
     _wait(gui_app, lambda: asked)
     assert "whole-folder restore" in asked[0] and plans == [] and whole == []   # declined
-    monkeypatch.setattr(gui, "_askyesno", lambda t, m: True)
+    monkeypatch.setattr(gui, "_askyesno", lambda t, m, **k: True)
     gui_app.on_undo_slot(world.live, 1)
     _wait(gui_app, lambda: whole)
     assert plans == [] and whole[0] == world.live             # explicit, as the whole-folder undo

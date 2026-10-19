@@ -23,12 +23,13 @@ from . import __version__, theme, updates
 from .core import aliases, catalog, discover, locations, slotmap
 from .core import operations as ops
 from .core import liveops
-from .core.liveops import classic
+from .core.liveops import classic, plan_promote
 from .core import platform as host_platform
 from .core import playtime, savedir
 from .core import state as appstate
 from .core.catalog import OperationError, Vault
 from .ui import dpi, logfile
+from .ui.dialogs import bind_escape, bind_return, focus_first, tab_last
 from .core.organizer import Organizer
 from .ui.fmt import local_time as _fmt_ts
 from .ui.fmt import play_time as _fmt_play
@@ -228,6 +229,20 @@ def _free_text(plan, head: str) -> str:
     return "\n".join(lines)
 
 
+def _gui_text(message) -> str:
+    """A core message for this window: where it says to change the vault with ``--vault`` or
+    by editing state.json, the window has a menu item for that."""
+    return str(message).replace(
+        catalog.HOW_TO_CHANGE_VAULT, f"To use another folder, choose File > {CHOOSE_VAULT_LABEL}")
+
+
+def _plain_error(exc: BaseException) -> str:
+    """An unforeseen error as one plain phrase for the owner (the full detail is logged)."""
+    if isinstance(exc, OSError) and exc.strerror:
+        return exc.strerror + (f" ({Path(str(exc.filename)).name})" if exc.filename else "")
+    return str(exc) or type(exc).__name__
+
+
 def _flow_rows(widths: list[int], available: int) -> list[int]:
     """The row each item lands on when laid out left to right and wrapped at ``available``
     pixels; an item wider than a whole row still gets a row of its own."""
@@ -405,8 +420,9 @@ class App(tk.Tk):
             log.warning("the vault cannot be used: %s", exc.__cause__ or exc)
             self.vault = Vault(vault_root, read_only=True)
             self.vault.mark_unreadable()
-            appstate._notices.append(f"{exc} The vault is shown empty and cannot be changed "
-                                     "in this session.")
+            appstate._notices.append(f"{_gui_text(exc)} The vault is shown empty and cannot be "
+                                     "changed until you pick another with File > "
+                                     f"{CHOOSE_VAULT_LABEL}")
         for n, text in enumerate(appstate.take_notices()):
             self.after(300 + 150 * n, lambda text=text: _showinfo("Settings", text, parent=self))
         # D3 4.1: an upgrade interrupted by a crash is cleaned up (its own leftovers only).
@@ -430,6 +446,13 @@ class App(tk.Tk):
             self.live_dir = Path(first[0].path) if first else locations.default_live_save_dir()
 
         self._meta: dict[str, dict] = {}
+        self._classic_ops = 0                # operations running behind the wait dialog
+        self._closing = False                # a close waits for the running operation
+        self._refresh_gen = 0                # the newest listing asked for in the worker
+        self._entries: list | None = None    # the BACKUPS pane's rows as last listed
+        self._store_problem: str | None = None   # why the store could not be listed
+        self._game_running: object = _CHECKING
+        self._sources_shown = 0
         self._report: playtime.PlaytimeReport | None = None
         self._history_key: str | None = None  # the save file the backups are narrowed to
         self._history_choices: dict[str, str] = {}  # dropdown label -> playthrough key
@@ -443,6 +466,7 @@ class App(tk.Tk):
         for window_class in ("Toplevel", self.winfo_class()):
             self.bind_class(window_class, "<Map>", self._on_window_mapped, add="+")
         self._build_widgets()
+        self.protocol("WM_DELETE_WINDOW", self.request_close)
         self._apply_theme()
         self._open_last_view()
         if scan_on_start:          # the organizer's first look, in the worker (D6 U12)
@@ -561,11 +585,12 @@ class App(tk.Tk):
         file.add_command(label="Import...", command=self.on_import, underline=0)
         file.add_command(label="Discover backups", command=self.on_discover, underline=0)
         file.add_separator()
-        file.add_command(label="Exit", command=self.destroy, underline=1)
+        file.add_command(label=CHOOSE_VAULT_LABEL, command=self.on_choose_vault, underline=7)
+        file.add_separator()
+        file.add_command(label="Exit", command=self.request_close, underline=1)
 
         edit = menu("Edit")
-        edit.add_command(label="Undo the last change to the active live folder",
-                         command=self.on_edit_undo,
+        edit.add_command(label=UNDO_CLASSIC_LABEL, command=self.on_edit_undo,
                          accelerator="Ctrl+Z", underline=0)
 
         view = menu("View")
@@ -588,13 +613,14 @@ class App(tk.Tk):
         live = menu("Live")
         live.add_command(label="Accounts...", command=self.on_accounts, underline=0)
         live.add_command(label="Rescan live folders", command=self.on_rescan, underline=0)
-        live.add_command(label="Extract a slot", command=self.on_extract, underline=0)
+        live.add_command(label="Extract a slot", command=self.on_extract, underline=1)
         live.add_command(label="Empty a slot (steps)...", command=self.on_clear, underline=0)
         live.add_command(label="Copy into a live slot...", command=self.on_copy_slot,
                          underline=5)
         live.add_command(label="Promote", command=self.on_promote, underline=0)
 
-        bind_menu_hints(live, {"Promote": PROMOTE_TIP}, self._menu_hint)
+        bind_menu_hints(live, {"Promote": PROMOTE_TIP, "Extract a slot": SLOT_MENU_TIP,
+                               "Empty a slot (steps)...": SLOT_MENU_TIP}, self._menu_hint)
 
         tools = menu("Tools")
         self._tools_menu = tools
@@ -604,6 +630,9 @@ class App(tk.Tk):
         tools.add_command(label="Play time...", command=self.on_playtime, underline=0)
         tools.add_command(label="Check for updates...", command=self.on_check_updates,
                           underline=0)
+        self.update_check_var = tk.BooleanVar(value=self.state.update_check == updates.ON)
+        tools.add_checkbutton(label=AUTO_UPDATE_LABEL, variable=self.update_check_var,
+                              command=self._on_toggle_update_check, underline=18)
         bind_menu_hints(tools, {"Vault upgrade...": VAULT_UPGRADE_TIP,
                                 FREE_LABEL: FREE_OLD_TIP,
                                 FINISH_FREE_LABEL: FREE_OLD_TIP}, self._menu_hint)
@@ -630,8 +659,8 @@ class App(tk.Tk):
         self.bind_all("<F1>", self._shortcut(self.on_help))
         self.bind_all("<F5>", self._shortcut(self.refresh))
         self.bind_all("<Control-Key-0>", self._shortcut(self._zoom_reset))
-        self.bind_all("<Control-Key-z>", self._shortcut(self._undo_shortcut))
-        self.bind_all("<Control-Key-Z>", self._shortcut(self._undo_shortcut))
+        self.bind_all("<Control-Key-z>", self._shortcut(self._undo_shortcut, main_only=True))
+        self.bind_all("<Control-Key-Z>", self._shortcut(self._undo_shortcut, main_only=True))
 
     def _place_menubar(self, strip: bool) -> None:
         """Show the in-window bar (``strip``) or the native one, and the keys that go with it.
@@ -707,13 +736,71 @@ class App(tk.Tk):
         env = VaultEnv(self.vault.root, [Path(s.path) for s in self.state.live_sources],
                        self.state, __version__)
         return VaultWindow(self, worker=self.worker, themed=self.themed, env=env,
-                           on_changed=self._vault_changed)
+                           on_changed=lambda: self.vault_changed(mode_changed=True))
 
-    def _vault_changed(self) -> None:
-        """The vault window changed the vault (upgrade, undo, fold, copy-in): the Organizer and
-        the classic panes read it again (the catalog is re-read when its file changed)."""
-        self.organizer_view.vault_changed()
+    def vault_changed(self, *, mode_changed: bool = False) -> None:
+        """The one hook after anything changed the vault, the saves or the account names: both
+        tabs read it again (the catalog is re-read when its file changed). ``mode_changed``:
+        the vault changed layout (upgrade, fold, undo of the upgrade, another vault), so the
+        Organizer opens a new read model instead of scanning the old one again."""
+        if mode_changed:
+            self.organizer_view.vault_changed()
+        else:
+            self.organizer_view.rescan()
         self.refresh()
+
+    def _organizer_changed(self, text: str) -> None:
+        """The Organizer finished a move or an undo (it rescans itself): the classic panes
+        look again, and the status line names the change."""
+        self.last_change.set(text)
+        self.refresh()
+
+    def on_choose_vault(self) -> None:
+        """File > Choose vault folder...: use another vault (or start a new one in an empty
+        folder). The folder passes the checks the start-up makes; nothing is switched while an
+        operation runs."""
+        if self._running_work() is not None:
+            _showinfo("Choose vault folder",
+                      "An operation is running. Choose the vault folder once it has finished.")
+            return
+        folder = filedialog.askdirectory(title="Choose the vault folder", mustexist=True,
+                                         initialdir=str(self.vault.root))
+        if folder:
+            self.switch_vault(Path(folder))
+
+    def switch_vault(self, root: Path) -> bool:
+        """Make ``root`` the vault of this window and of the next start. False (and a message)
+        when it cannot be used; the vault in use then stays as it is."""
+        title = "Choose vault folder"
+        root = Path(root)
+        if root.resolve() == self.vault.root.resolve() and not self.vault.read_only:
+            return True
+        for folder in discover.all_live_paths(self.state):
+            if root.resolve() == Path(folder).resolve() or Path(folder).resolve() in root.resolve().parents:
+                _showerror(title, "That is a live save folder (or inside one). A vault must be "
+                                  "kept apart from the saves it protects.")
+                return False
+        if root.is_dir() and any(root.iterdir()) and not catalog.looks_like_vault_dir(root):
+            _showerror(title, "That folder is not empty and does not hold a vault. Choose an "
+                              "empty folder to start a new vault, or a vault folder.")
+            return False
+        fresh = Vault(root)
+        try:
+            fresh.ensure()
+            fresh.load()
+        except OperationError as exc:
+            _showerror(title, _gui_text(exc))
+            return False
+        self.vault = fresh
+        self.state.vault = str(root)
+        try:
+            appstate.save(self.state, self.state_path)
+        except OSError as exc:
+            _showwarning(title, f"The vault is in use now, but the choice could not be saved "
+                                f"for the next start:\n{_plain_error(exc)}")
+        self._history_key, self._report, self._entries = None, None, None
+        self.vault_changed(mode_changed=True)
+        return True
 
     def _free_menu_label(self) -> str:
         """An interrupted freeing of old folders is resumed by the same item (D3 4.5 step 4)."""
@@ -757,7 +844,8 @@ class App(tk.Tk):
             lambda _f: freeing.plan_free(Vault(self.vault.root).load(), store), False,
             "Checking the old folders - please wait...")
         if holder.get("error") is not None:
-            _showerror(title, str(holder["error"]) or repr(holder["error"]))
+            log.error("checking the old folders failed", exc_info=holder["error"])
+            _showerror(title, _plain_error(holder["error"]))
             return
         plan = holder["result"]
         if not plan.entries:
@@ -779,10 +867,12 @@ class App(tk.Tk):
         self._refresh_free_label()
         err = holder.get("error")
         if err is not None:
-            _showerror(title, str(err) if isinstance(err, ops.OperationError) else repr(err))
+            if not isinstance(err, ops.OperationError):
+                log.error("freeing the old folders failed", exc_info=err)
+            _showerror(title, _gui_text(err) if isinstance(err, ops.OperationError)
+                       else _plain_error(err))
             return
-        self.refresh()
-        self.organizer_view.vault_changed()
+        self.vault_changed(mode_changed=True)
         _showinfo(title, holder["result"].message)
 
     def _offer_interrupted_undo(self) -> None:
@@ -845,7 +935,15 @@ class App(tk.Tk):
         self.organizer_view = OrganizerView(
             self.notebook, worker=self.worker, themed=self.themed, prefs=self.state.ui,
             save_prefs=self._save_state_quietly, make_organizer=self._make_organizer,
-            on_last_change=self.last_change.set, on_hint=self._menu_hint)
+            on_last_change=self._organizer_changed, on_hint=self._menu_hint)
+        live_board = self.organizer_view.live
+        board_selected = live_board.on_slot
+
+        def slot_selected(token, slot) -> None:
+            if board_selected is not None:
+                board_selected(token, slot)
+            self._sync_slot_menus()
+        live_board.on_slot = slot_selected
         self.notebook.add(self.classic_view, text=VIEW_TITLES[CLASSIC])
         self.notebook.add(self.organizer_view, text=VIEW_TITLES[ORGANIZER])
         self._build_classic_view(self.classic_view)
@@ -883,11 +981,53 @@ class App(tk.Tk):
         name = self.current_view()
         self.view_var.set(name)
         self.title(f"NMS Save Vault v{__version__} - {VIEW_TITLES[name]}")
+        self._entry_options("Edit", (UNDO_CLASSIC_LABEL, UNDO_ORGANIZER_LABEL),
+                            label=UNDO_ORGANIZER_LABEL if name == ORGANIZER else UNDO_CLASSIC_LABEL)
+        self._sync_slot_menus()
+        self.after_idle(self._focus_main_list)
         if self.state.ui.get("last_view") != name:
             self.state.ui["last_view"] = name
             self._save_state_quietly()
             if name == ORGANIZER:           # back on the tab: look again unless fresh
                 self.organizer_view.shown()
+
+    def _focus_main_list(self) -> None:
+        """The list of the tab in front has the keyboard focus (arrows work at once)."""
+        try:
+            if self.grab_current() is not None:
+                return
+            tree = (self.organizer_view.table.tree if self.current_view() == ORGANIZER
+                    else self.live_tree)
+            tree.focus_set()
+        except tk.TclError:
+            pass
+
+    def _menus_titled(self, title: str) -> list[tk.Menu]:
+        """A top-level menu as the native bar has it and as the in-window bar copied it."""
+        found = []
+        bar = self.menubar
+        for i in range(bar.index("end") + 1):
+            if bar.type(i) == "cascade" and bar.entrycget(i, "label") == title:
+                found.append(bar.nametowidget(bar.entrycget(i, "menu")))
+        found += [self.menu_strip.dropdown(b) for b in self.menu_strip.buttons
+                  if b.cget("text") == title]
+        return found
+
+    def _entry_options(self, title: str, labels: tuple, **options) -> None:
+        """Configure the entries of a menu whose label is one of ``labels``, in both bars."""
+        for menu in self._menus_titled(title):
+            last = menu.index("end")
+            for i in range(0 if last is None else last + 1):
+                if menu.type(i) != "separator" and menu.entrycget(i, "label") in labels:
+                    menu.entryconfigure(i, **options)
+
+    def _sync_slot_menus(self) -> None:
+        """On the Organizer tab the slot actions work on the live slot selected on its board;
+        with none selected they are off (their hint says where to pick one)."""
+        if "menu_strip" not in self.__dict__:
+            return
+        usable = self.current_view() == CLASSIC or self._organizer_slot() is not None
+        self._entry_options("Live", SLOT_MENU_LABELS, state="normal" if usable else "disabled")
 
     def _make_organizer(self) -> Organizer:
         """The organizer over this vault and the configured live folders (worker thread)."""
@@ -1017,6 +1157,55 @@ class App(tk.Tk):
             except OSError as exc:
                 _showwarning("Theme", f"Could not save your theme choice:\n{exc}")
 
+    # --- closing -------------------------------------------------------------
+
+    def _running_work(self) -> str | None:
+        """What a close would cut off: ``"classic"`` (an operation behind the wait dialog,
+        which cannot be left half way), ``"worker"`` (a job of the Organizer or the vault
+        window, which journals what it writes and is recovered at the next start), or None."""
+        if self._classic_ops:
+            return "classic"
+        worker = self.__dict__.get("worker")
+        return "worker" if worker is not None and worker.working else None
+
+    def request_close(self) -> None:
+        """The window's X, Alt+F4 and File > Exit: an operation under way is waited for, never
+        killed in the middle of a write."""
+        if self._closing:
+            return
+        running = self._running_work()
+        if running is None:
+            self.destroy()
+            return
+        if _askyesno("An operation is running",
+                     "An operation is still running. Wait for it to finish?\n\n"
+                     "Yes closes the window as soon as it has finished.",
+                     default="yes", parent=self):
+            self._close_when_idle()
+        elif running == "classic":
+            _showinfo("An operation is running",
+                      "This operation cannot be stopped safely, so the window stays open. "
+                      "Close it again once the operation has finished.", parent=self)
+        else:
+            # What the job writes is journaled and put right at the next start; the window goes
+            # now and the process waits for the job (destroy joins the worker).
+            self.withdraw()
+            self.destroy()
+
+    def _close_when_idle(self) -> None:
+        self._closing = True
+        self.status.set("Closing as soon as the running operation has finished...")
+        self.after(200, self._close_poll)
+
+    def _close_poll(self) -> None:
+        if not self._closing:
+            return
+        if self._running_work() is None and self.grab_current() is None:
+            self._closing = False
+            self.destroy()
+            return
+        self.after(200, self._close_poll)
+
     def destroy(self) -> None:
         view = self.__dict__.get("organizer_view")
         if view is not None and not view.confirm_close():
@@ -1026,7 +1215,7 @@ class App(tk.Tk):
         if view is not None:
             view.index_strip.stop()
         if worker is not None:
-            worker.shutdown()
+            worker.shutdown(wait=True, timeout=JOIN_WORKER_SECONDS)   # a write in flight ends
         organizer = getattr(view, "organizer", None) if view is not None else None
         service = getattr(organizer, "facts", None)
         if service is not None and hasattr(service, "close"):
@@ -1124,10 +1313,20 @@ class App(tk.Tk):
             "you or your saves is sent, and nothing is downloaded unless you press "
             "Install update on that bar.\n\n"
             "This is the only thing the app uses the network for. You can change this "
-            "later from any right-click menu.",
+            f"later with Tools > {AUTO_UPDATE_LABEL}.",
         )
-        self.state.update_check = updates.ON if wants else updates.OFF
+        self._set_update_check(wants)
+
+    def _set_update_check(self, on: bool) -> None:
+        self.state.update_check = updates.ON if on else updates.OFF
+        self.update_check_var.set(bool(on))
         self._save_state_quietly()
+
+    def _on_toggle_update_check(self) -> None:
+        """Tools > Check for updates automatically: the daily check on or off."""
+        self._set_update_check(bool(self.update_check_var.get()))
+        self.status.set("Update checks are on: once a day, at startup." if self.state.update_check
+                        == updates.ON else "Update checks are off.")
 
     def on_check_updates(self) -> None:
         """Check now, regardless of the daily throttle."""
@@ -1138,8 +1337,7 @@ class App(tk.Tk):
                 "daily check on startup.\n\nContact GitHub now?",
             ):
                 return
-            self.state.update_check = updates.ON
-            self._save_state_quietly()
+            self._set_update_check(True)
         self._check_for_updates(quiet=False)
 
     def _check_for_updates(self, *, quiet: bool) -> None:
@@ -1395,42 +1593,92 @@ class App(tk.Tk):
             })
             self._add_view(node, view, writable=s.writable)
 
-        self._populate_backups()
         self._refresh_source_combo()
-        running = ops.safety.is_game_running()
-        game = {True: "RUNNING (writes blocked)", False: "closed", None: "unknown"}[running]
+        self._sources_shown = len(sources)
+        self._game_running = _CHECKING
+        self._show_status()
+        # The vault listing (a store's manifests) and the game probe (tasklist) take as long
+        # as the vault is big: the window does not wait for them.
+        self._refresh_gen += 1
+        gen, vault = self._refresh_gen, self.vault
+        try:
+            self.worker.submit(
+                self._read_vault, vault, background=True,
+                on_done=lambda result: self._listing_ready(gen, result),
+                on_error=lambda exc: self._listing_failed(gen, exc))
+        except RuntimeError:
+            pass                                   # the window is closing
+
+    def _read_vault(self, vault) -> tuple:
+        """(entries, what is wrong with the store or None, is the game running) - worker."""
+        entries, problem = self._list_entries(vault)
+        return entries, problem, ops.safety.is_game_running()
+
+    def _listing_ready(self, gen: int, result: tuple) -> None:
+        if gen != self._refresh_gen:
+            return                                 # a newer refresh is on its way
+        entries, problem, running = result
+        self._game_running = running
+        self._populate_backups(entries, problem)
+        self._show_status()
+
+    def _listing_failed(self, gen: int, exc: BaseException) -> None:
+        if gen != self._refresh_gen:
+            return
+        log.error("the vault could not be listed", exc_info=exc)
+        self._game_running = None
+        self._populate_backups([], _plain_error(exc))
+        self._show_status()
+
+    def _show_status(self) -> None:
+        game = {True: "RUNNING (writes blocked)", False: "closed", None: "unknown",
+                _CHECKING: "checking..."}[self._game_running]
         active = self._active_source()
         active_txt = active.label if active else (str(self.live_dir) if self.live_dir else "none")
+        problem = f"{self._store_problem}   |   " if self._store_problem else ""
         self.status.set(
             aliases.scrub(      # the home folder and account ids, not only the aliased accounts
-                f"Active live: {active_txt}   |   Sources: {len(sources)}   |   "
+                f"{problem}Active live: {active_txt}   |   Sources: {self._sources_shown}   |   "
                 f"Vault: {self.vault.root}   |   Game: {game}"
             )
         )
 
-    def _backup_entries(self):
-        """The BACKUPS pane's rows: every entry of the vault through D3's one listing
-        (catalog and store, a folded entry once, a live folder never), catalog-shaped."""
+    def _list_entries(self, vault) -> tuple[list, str | None]:
+        """Every entry of the vault through D3's one listing (catalog and store, a folded entry
+        once, a live folder never), catalog-shaped; and, when a store could not be read, the
+        plain reason (the catalog entries are still listed)."""
+        from .core.organizer import store_open_error_text
         from .core.store import classic as store_classic
 
         try:
-            return store_classic.list_entries(self.vault)
-        except Exception:  # noqa: BLE001 - the pane must still show the catalog
+            return store_classic.list_entries(vault), None
+        except Exception as exc:  # noqa: BLE001 - the pane must still show the catalog
             log.exception("the Backups pane could not read the vault listing (vault %s); "
-                          "showing the catalog entries only", self.vault.root.name)
-            return list(self.vault.entries)
+                          "showing the catalog entries only", vault.root.name)
+            problem = (store_open_error_text(exc, vault.root)
+                       if store_classic.is_store_vault(vault.root) else None)
+            return list(vault.entries), problem
 
-    def _populate_backups(self) -> None:
+    def _backup_entries(self):
+        """The BACKUPS pane's rows (see :meth:`_list_entries`)."""
+        return self._list_entries(self.vault)[0]
+
+    def _populate_backups(self, entries=None, problem: str | None = None) -> None:
         """BACKUPS pane: catalog entries, sortable by any column, optionally narrowed to
-        the backups holding one save file -- and within each, to the slot(s) holding it."""
+        the backups holding one save file -- and within each, to the slot(s) holding it.
+        Without ``entries`` the vault is listed now."""
+        if entries is None:
+            entries, problem = self._list_entries(self.vault)
+        self._entries, self._store_problem = entries, problem
         tree = self.backup_tree
         tree.delete(*tree.get_children())
         self._meta = {k: v for k, v in self._meta.items() if k[0] != str(tree)}
         shown = self._history_playthrough()
-        for e in self._backup_entries():
+        for e in entries:
             only = None
             if shown is not None:
-                only = {slot for folder, slot in shown.locations if folder == str(Path(e.path))}
+                where = playtime.entry_location(e.id, e.path)
+                only = {slot for folder, slot in shown.locations if folder == where}
                 if not only:
                     continue
             node = tree.insert(
@@ -1583,7 +1831,7 @@ class App(tk.Tk):
             self.update_idletasks()
             try:
                 live = [s.path for s in self.state.live_sources if s.exists]
-                self._report = playtime.collect(self.vault, live)
+                self._report = playtime.collect(self.vault, live, app_state=self.state)
             finally:
                 self.config(cursor="")
         return self._report
@@ -1623,10 +1871,11 @@ class App(tk.Tk):
 
     def _on_history_changed(self, _event=None) -> None:
         self._history_key = self._history_choices.get(self.history_var.get())
-        self._populate_backups()
+        self._populate_backups(self._entries, self._store_problem)
 
     def _show_history_of(self, folder: str, slot: int) -> None:
-        """Right-click: narrow the backups to every copy of the save in this slot."""
+        """Right-click: narrow the backups to every copy of the save in this slot (``folder``:
+        a live folder, a backup's folder, or ``playtime.entry_location`` of a store entry)."""
         p = self._playthrough_report().find(folder, slot)
         if p is None or not p.backups:
             _showinfo("Save file history", f"There is no backup of the save in slot {slot} yet.")
@@ -1736,8 +1985,48 @@ class App(tk.Tk):
 
     # --- selection helpers ---------------------------------------------------
 
+    def _folder_of(self, ref) -> Path | None:
+        """The live folder an Organizer board reference stands for."""
+        import hashlib
+
+        for source in self.state.live_sources:
+            folder = Path(source.path)
+            if source.platform != ref.platform or folder.name != ref.account_key:
+                continue
+            if ref.instance:
+                digest = hashlib.sha1(str(folder.resolve().parent).encode("utf-8")).hexdigest()[:8]
+                if digest != ref.instance:
+                    continue
+            return folder
+        return None
+
+    def _organizer_slot(self) -> dict | None:
+        """The live slot selected on the Organizer's board, as the row the classic actions
+        take: ``type "slot"``, its folder, slot number and whether it is writable."""
+        board = self.organizer_view.live
+        drawn = board.drawn.get(board.focus_token) if board.focus_token else None
+        if drawn is None:
+            return None
+        folder = self._folder_of(drawn.slot.target.ref)
+        if folder is None:
+            return None
+        source = next((x for x in self.state.live_sources if Path(x.path) == folder), None)
+        return {"type": "slot", "dir": str(folder), "slot": drawn.slot.target.slot,
+                "live": bool(source and source.writable and source.exists),
+                "source_id": source.id if source else None, "board": drawn.slot}
+
+    def _where_to_pick(self) -> str:
+        """Where the owner is to select a slot, for the tab in front."""
+        if self.current_view() == ORGANIZER:
+            return "on the live board of the Organizer tab (or in the Live saves and backups tab)"
+        return "in the LIVE SAVES pane"
+
     def _selected(self) -> dict | None:
-        """The row the toolbar acts on: the selection in whichever tree was last used."""
+        """The row the menus and the toolbar act on: on the Organizer tab the live slot
+        selected on its board (the classic panes are hidden there), otherwise the selection in
+        whichever tree was last used."""
+        if self.current_view() == ORGANIZER:
+            return self._organizer_slot()
         for tree in (self._active_tree, self.live_tree, self.backup_tree):
             sel = tree.selection()
             if sel:
@@ -1884,7 +2173,9 @@ class App(tk.Tk):
         menu.add_separator()
         menu.add_command(
             label="Show this save's history (every backup of it)",
-            command=lambda: self._show_history_of(meta["dir"], slot),
+            command=lambda: self._show_history_of(
+                playtime.entry_location(meta["entry"].id, meta["dir"])
+                if meta.get("entry") is not None else meta["dir"], slot),
         )
 
     # --- actions -------------------------------------------------------------
@@ -1898,7 +2189,8 @@ class App(tk.Tk):
         the list an operation without an OpResult (backup, extract, import) fills."""
         holder = self._run_worker(fn, False, message)
         if isinstance(holder.get("error"), ops.GameRunningError):
-            if not _askyesno("Game running", "No Man's Sky appears to be running.\nProceed anyway (risky)?"):
+            if not _askyesno("Game running", "No Man's Sky appears to be running.\nProceed anyway (risky)?",
+                             default="no"):
                 return
             holder = self._run_worker(fn, True, message)
 
@@ -1907,7 +2199,7 @@ class App(tk.Tk):
             _showinfo("Use the Organizer", str(err))
             return
         if isinstance(err, ops.WrittenButInvalidError):
-            self.refresh()                         # the live folder WAS changed
+            self.vault_changed()                   # the live folder WAS changed
             _showerror(
                 "Only partly done - the live folder was changed",
                 _with_warnings(str(err) + _undo_note(err.result.snapshot_id), err.result.warnings),
@@ -1917,12 +2209,15 @@ class App(tk.Tk):
             _showerror("Another account's backup - refused", str(err))
             return
         if isinstance(err, ops.OperationError):
-            _showerror("Operation failed", str(err))
+            _showerror("Operation failed", _gui_text(err))
             return
         if err is not None:
-            _showerror("Unexpected error", repr(err))
+            log.error("an operation failed unexpectedly", exc_info=err)
+            _showerror("Something went wrong",
+                       f"The operation could not be completed: {_plain_error(err)}\n\n"
+                       "The full detail is in the log.")
             return
-        self.refresh()
+        self.vault_changed()
         self._present_result(holder.get("result"), success, warnings or [])
 
     def _present_result(self, result, success: str, warnings: list[str] = ()) -> None:
@@ -1965,12 +2260,14 @@ class App(tk.Tk):
                 holder["error"] = exc
 
         t = threading.Thread(target=worker, daemon=True)
+        self._classic_ops += 1
         t.start()
         try:
             while t.is_alive():
                 self.update()  # keep the bar animating / window responsive
                 time.sleep(0.02)
         finally:
+            self._classic_ops -= 1
             win.grab_release()
             win.destroy()
         return holder
@@ -2002,6 +2299,9 @@ class App(tk.Tk):
         )
 
     def on_restore(self, target: dict | None = None) -> None:
+        if target is None and self.current_view() == ORGANIZER:
+            self.open_panic_restore()           # no backup row is on this tab: the dialog picks
+            return
         sel = target or self._selected()
         if not sel or sel.get("type") != "entry":
             _showinfo(
@@ -2052,8 +2352,7 @@ class App(tk.Tk):
             if notes:
                 _showinfo("Restored", "\n\n".join(notes))
             self.last_change.set("Last change: whole folder restored")
-            self.refresh()
-            self.organizer_view.rescan()
+            self.vault_changed()
         self.panic_dialog = PanicDialog(
             self, worker=self.worker, themed=self.themed,
             open_context=lambda: classic.open_context(vault, live_dir),
@@ -2067,8 +2366,8 @@ class App(tk.Tk):
         if not sel or sel.get("type") not in ("slot", "member"):
             _showinfo(
                 "Select a slot",
-                "Select a slot - or either of the two saves inside it - in the LIVE SAVES "
-                "pane or inside a backup, then press Extract slot.",
+                "Select a slot - or either of the two saves inside it - "
+                f"{self._where_to_pick()}, then choose Extract.",
             )
             return
         warns: list[str] = []
@@ -2096,7 +2395,7 @@ class App(tk.Tk):
             _showinfo(
                 "Select a live slot",
                 "Emptying a slot needs a LIVE one: select a slot - or either of the two "
-                "saves inside it - in the LIVE SAVES pane.",
+                f"saves inside it - {self._where_to_pick()}.",
             )
             return
         self._empty_steps(Path(sel["dir"]), sel["slot"])
@@ -2188,6 +2487,9 @@ class App(tk.Tk):
 
     def on_promote(self, target: dict | None = None) -> None:
         sel = target or self._selected()
+        if target is None and self.current_view() == ORGANIZER:
+            self._promote_on_board(sel)
+            return
         if not sel or sel.get("type") != "member" or not sel.get("live"):
             _showinfo(
                 "Select a live save",
@@ -2204,11 +2506,29 @@ class App(tk.Tk):
                 "or a live folder that is switched off), so its saves cannot be promoted.",
             )
             return
+        label = slotmap.save_type_label(sel["member"])
+        if not _askyesno(
+                "Promote",
+                f"Make the {label} of live slot {sel['slot']} the save the game loads?\n\n"
+                "The current state is auto-snapshotted first, so Undo puts it back."):
+            return
         self._run(
             lambda force: ops.promote_member(self.vault, directory, sel["slot"], sel["member"], allow_game_running=force),
             success="Promoted.",
             message="Promoting - please wait...",
         )
+
+    def _promote_on_board(self, sel: dict | None) -> None:
+        """Promote on the Organizer tab: the other save of the selected slot becomes the one
+        the game loads, through the Organizer's own plan (which it shows and confirms)."""
+        slot = sel["board"] if sel else None
+        if slot is None or slot.state not in ("occupied", "partial") or slot.member_loaded is None:
+            _showinfo("Select a live save",
+                      "Promote changes WHICH of a slot's two saves the game loads, so it needs "
+                      "an occupied live slot: select one on the live board of the Organizer tab.")
+            return
+        other = "B" if slot.member_loaded == "A" else "A"
+        self.organizer_view.run_plan("Promote", plan_promote, slot.target, other)
 
     def on_import(self) -> None:
         folder = filedialog.askdirectory(title="Select a save-folder backup to import")
@@ -2329,7 +2649,7 @@ class App(tk.Tk):
                 except Exception as exc:  # noqa: BLE001 - one folder must not stop the rest
                     failures.append(f"{d}: {exc}")
         finally:
-            self.refresh()
+            self.vault_changed()
         lines = [f"Added {added} newly found backup(s) to the catalog."]
         if failures:
             lines.append("Could not add:\n - " + "\n - ".join(failures))
@@ -2382,9 +2702,9 @@ class App(tk.Tk):
                 self, worker=self.worker, themed=self.themed,
                 make_context=lambda: classic.open_context(vault, directory)[0], plan=plan,
                 title=f"Undo the last move into live slot {slot}",
-                on_done=lambda o: (self.refresh(), self.organizer_view.rescan()))
+                on_done=lambda o: self.vault_changed())
         self.worker.submit(job, on_done=planned, on_error=lambda e: _showerror(
-            "Cannot undo", str(e)))
+            "Cannot undo", _gui_text(e) if isinstance(e, ops.OperationError) else _plain_error(e)))
 
     def on_undo(self, directory=None) -> None:
         """Undo the last change to a live folder: the one whose menu was used, else the
@@ -2401,7 +2721,8 @@ class App(tk.Tk):
         except ops.OperationError as exc:
             _showerror("Cannot undo", str(exc))
             return
-        if plan.damaged_after and not _askyesno("Undo - damaged history", _undo_damage_question(plan)):
+        if plan.damaged_after and not _askyesno("Undo - damaged history", _undo_damage_question(plan),
+                                                default="no"):
             return
         # When the change was a restore that put the account data back, undoing it does too:
         # the question says so, and offers no choice that would not be honoured.
@@ -2445,7 +2766,9 @@ class App(tk.Tk):
     def on_help(self) -> None:
         win = tk.Toplevel(self)
         win.title("NMS Save Vault - Help")
-        ttk.Button(win, text="Close", command=win.destroy).pack(side=tk.BOTTOM, pady=px(6))
+        win.transient(self)
+        close = ttk.Button(win, text="Close", command=win.destroy)
+        close.pack(side=tk.BOTTOM, pady=px(6))
         vsb = ttk.Scrollbar(win, orient="vertical")
         vsb.pack(side=tk.RIGHT, fill=tk.Y)
         p = theme.palette(self.state.theme)  # tk.Text is a classic widget: no ttk style
@@ -2458,7 +2781,16 @@ class App(tk.Tk):
         txt.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         vsb.config(command=txt.yview)
         txt.insert("1.0", HELP_TEXT)
-        txt.configure(state="disabled")
+        txt.configure(state="disabled", takefocus=True)
+        # A read-only Text keeps the keyboard focus, and these keys scroll it.
+        for key, args in (("<Up>", (-1, "units")), ("<Down>", (1, "units")),
+                          ("<Prior>", (-1, "pages")), ("<Next>", (1, "pages"))):
+            txt.bind(key, lambda _e, a=args: (txt.yview_scroll(*a), "break")[1])
+        txt.bind("<Home>", lambda _e: (txt.yview_moveto(0), "break")[1])
+        txt.bind("<End>", lambda _e: (txt.yview_moveto(1), "break")[1])
+        bind_escape(win, win.destroy)
+        tab_last(close)
+        focus_first(win, txt)
         dpi.fit_to_content(win, 760, 620)
 
 
@@ -2489,7 +2821,8 @@ class PlaytimeDialog(tk.Toplevel):
             padding=pxs(12, 0, 12, 8),
         ).pack(side=tk.TOP, anchor="w")
 
-        ttk.Button(self, text="Close", command=self.destroy).pack(side=tk.BOTTOM, pady=px(8))
+        close = ttk.Button(self, text="Close", command=self.destroy)
+        close.pack(side=tk.BOTTOM, pady=px(8))
         if report.unidentified:
             ttk.Label(
                 self,
@@ -2524,6 +2857,9 @@ class PlaytimeDialog(tk.Toplevel):
                 "", "end",
                 values=(ops.format_duration(row.play_time), ", ".join(row.platforms), row.copies, name),
             )
+        bind_escape(self, self.destroy)
+        tab_last(close)
+        focus_first(self, tree)
         dpi.fit_to_content(self, 720, 460)
 
 
@@ -2558,6 +2894,7 @@ class AccountsDialog(tk.Toplevel):
         grid = ttk.Frame(self, padding=pxs(14, 0, 14, 8))
         grid.pack(fill=tk.X)
         accounts = self._known_accounts()
+        first_entry = None
         if not accounts:
             ttk.Label(grid, text="No accounts found yet -- use Rescan first.").grid(sticky="w")
         for column, heading in enumerate(("Platform", "Real account id", "Shows as")):
@@ -2572,12 +2909,17 @@ class AccountsDialog(tk.Toplevel):
             real.grid(row=row, column=1, sticky="w", padx=pxs(0, 10), pady=px(2))
             var = tk.StringVar(value=self.amap.alias_for(account))
             self._vars[account] = var
-            ttk.Entry(grid, textvariable=var, width=26).grid(row=row, column=2, sticky="w", pady=px(2))
+            alias_entry = ttk.Entry(grid, textvariable=var, width=26)
+            alias_entry.grid(row=row, column=2, sticky="w", pady=px(2))
+            first_entry = first_entry or alias_entry
 
         buttons = ttk.Frame(self, padding=pxs(14, 0, 14, 12))
         buttons.pack(fill=tk.X)
         ttk.Button(buttons, text="Cancel", command=self.destroy).pack(side=tk.RIGHT)
         ttk.Button(buttons, text="Save", command=self._save).pack(side=tk.RIGHT, padx=px(6))
+        bind_escape(self, self.destroy)
+        if first_entry is not None:
+            focus_first(self, first_entry)
 
         self.update_idletasks()
         x = app.winfo_rootx() + (app.winfo_width() - self.winfo_width()) // 2
@@ -2601,18 +2943,18 @@ class AccountsDialog(tk.Toplevel):
             return
         aliases.set_active(self.amap)
         self.destroy()
-        self.app.refresh()
+        self.app.vault_changed()
 
 
 class ChooseSourceDialog(tk.Toplevel):
     """Pick which slot to copy from: any occupied slot, in a live folder or any backup."""
 
-    def __init__(self, app: App):
-        super().__init__(app)
+    def __init__(self, app: App, parent: tk.Misc | None = None):
+        super().__init__(parent or app)
         self.app = app
         self.result: SlotSource | None = None
         self.title("Choose the save to copy from")
-        self.transient(app)
+        self.transient(parent or app)
 
         ttk.Label(
             self, padding=pxs(14, 12, 14, 6), justify="left",
@@ -2642,6 +2984,9 @@ class ChooseSourceDialog(tk.Toplevel):
         buttons.pack(fill=tk.X)
         ttk.Button(buttons, text="Cancel", command=self.destroy).pack(side=tk.RIGHT)
         ttk.Button(buttons, text="Use this slot", command=self._accept).pack(side=tk.RIGHT, padx=px(6))
+        bind_escape(self, self.destroy)
+        bind_return(self, self._accept)         # choosing changes nothing yet
+        focus_first(self, self.tree)
 
         dpi.fit_to_content(self, 760, 460)
         self.grab_set()
@@ -2664,7 +3009,7 @@ class ChooseSourceDialog(tk.Toplevel):
                 )
                 self._sources[row] = SlotSource(str(view.path), sv.slot, caption)
 
-        for entry in self.app.vault.entries:
+        for entry in self.app._backup_entries():
             if not entry.occupied_slots:
                 continue
             node = self.tree.insert("", "end", text=f"[{entry.kind}] {entry.id}", open=False)
@@ -2768,6 +3113,8 @@ class CopySlotDialog(tk.Toplevel):
         self.target_var.set(_source_caption(chosen))
         self._reload_slots(select=dest_slot or (source.slot if source else None))
         self._show_source()
+        bind_escape(self, self.destroy)
+        focus_first(self, self.slots)
 
         # Big enough for what it holds at the current font size, at least the old 700x540,
         # and never wider or taller than the screen.
@@ -2782,7 +3129,13 @@ class CopySlotDialog(tk.Toplevel):
         )
 
     def _choose_source(self) -> None:
-        picked = ChooseSourceDialog(self.app).result
+        picked = ChooseSourceDialog(self.app, parent=self).result
+        if not self.winfo_exists():
+            return
+        try:
+            self.grab_set()                     # the nested dialog's grab ended with it
+        except tk.TclError:
+            pass
         if picked is not None:
             self.source = picked
             self._show_source()
@@ -2826,8 +3179,20 @@ class CopySlotDialog(tk.Toplevel):
 
 #: The bindings Tk puts on every window for its native menu bar (Alt, Alt+letter, F10).
 _OS_ALT_KEYS = ("<Alt-Key-F4>", "<Alt-Key-space>")
+_CHECKING = "checking"                  # the game probe has not answered yet
 FREE_LABEL = "Free old backup folders..."
 FINISH_FREE_LABEL = "Finish freeing old backup folders..."
+#: How long closing waits for a job still writing (a move of the largest saves takes seconds).
+JOIN_WORKER_SECONDS = 120
+CHOOSE_VAULT_LABEL = "Choose vault folder..."
+AUTO_UPDATE_LABEL = "Check for updates automatically"
+UNDO_CLASSIC_LABEL = "Undo the last change to the active live folder"
+UNDO_ORGANIZER_LABEL = "Undo the last move (as the Done bar's Undo)"
+#: The Live menu entries that need a slot, and what they say about it on the Organizer tab
+#: while none is selected there.
+SLOT_MENU_LABELS = ("Extract a slot", "Empty a slot (steps)...", "Promote")
+SLOT_MENU_TIP = ("Needs a live slot: pick one on the Organizer's live board, or use the "
+                 "Live saves and backups tab.")
 _MENU_KEYS = ("<Alt-Key>", "<Alt-KeyRelease>", "<Key-Alt_L>", "<Key-Alt_R>",
               "<KeyRelease-Alt_L>", "<KeyRelease-Alt_R>", "<Key-F10>", "<KeyRelease-F10>")
 
@@ -2980,9 +3345,13 @@ BUTTONS
   move keep it. The "No backup yet" chip lists such save files.
 
 MENUS
-Every button is also in the menu bar (File, Edit, View, Live, Tools, Help), so Alt and
-the underlined letter reach it whatever the window size. In the dark theme on Windows the
-menu bar is drawn inside the window; Alt, F10 and Alt+letter work the same.
+Every button of the Live saves and backups tab is also in the menu bar (File, Edit, View,
+Live, Tools, Help), so Alt and the underlined letter reach it whatever the window size. On
+the Organizer tab the Live menu's Extract, Empty and Promote work on the live slot selected
+on its board (they are off while none is), and File > Restore opens the whole-folder
+restore. File > Choose vault folder... picks another vault, or starts a new one in an empty
+folder. In the dark theme on Windows the menu bar is drawn inside the window; Alt, F10 and
+Alt+letter work the same.
 
 KEYBOARD
 - Ctrl+plus / Ctrl+minus make every font in the window bigger or smaller, from 70% to
@@ -3034,8 +3403,8 @@ The first time you run it, the app asks whether it may check for new versions. I
 say yes it asks GitHub once a day, on startup, whether a newer release exists, and shows
 a bar at the top when there is one. Nothing about you or your saves is ever sent, and
 nothing is downloaded until you ask for it. This is the only thing the app uses the
-network for. Right-click anywhere and choose "Check for updates..." to check straight
-away, or to turn the daily check back on.
+network for. Tools > Check for updates... checks straight away, and Tools > Check for
+updates automatically turns the daily check on or off.
 
 "Install update" on that bar does the whole thing: it downloads the release from GitHub,
 checks that the program inside it is a validly signed Python Software Foundation binary,

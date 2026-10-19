@@ -40,6 +40,7 @@ class UiWorker:
         self._thread.start()
         self._done: queue.Queue = queue.Queue()
         self._pending = 0
+        self._foreground = 0      # queued or running jobs that are not background ones
         self._after: str | None = None
         self._closed = False
 
@@ -47,6 +48,12 @@ class UiWorker:
     def busy(self) -> bool:
         """A job is queued or running, or its result is not delivered yet."""
         return self._pending > 0
+
+    @property
+    def working(self) -> bool:
+        """A job that is not a background one (a scan, a refresh) is queued or running: what
+        closing the window must not cut off."""
+        return self._foreground > 0
 
     def _loop(self) -> None:
         while True:
@@ -64,17 +71,20 @@ class UiWorker:
     def submit(self, fn: Callable[..., Any], *args,
                on_done: Callable[[Any], None] | None = None,
                on_error: Callable[[BaseException], None] | None = None,
-               low: bool = False, **kwargs) -> Future:
+               low: bool = False, background: bool = False, **kwargs) -> Future:
         """Run ``fn(*args, **kwargs)`` in the worker; ``on_done(result)`` or
         ``on_error(exception)`` is then called on the Tk thread. Without ``on_error`` a
-        failure is logged."""
+        failure is logged. A ``low`` or ``background`` job only reads and is not counted in
+        :attr:`working`."""
         assert on_tk_thread(), "UiWorker.submit is called from the Tk thread"
         if self._closed:
             raise RuntimeError("the UI worker is shut down")
         future = Future()
         self._jobs.put((1 if low else 0, next(self._seq), (future, fn, args, kwargs)))
         self._pending += 1
-        future.add_done_callback(lambda f: self._done.put((f, on_done, on_error)))
+        counted = not (low or background)
+        self._foreground += counted
+        future.add_done_callback(lambda f: self._done.put((f, on_done, on_error, counted)))
         self._schedule()
         return future
 
@@ -87,10 +97,11 @@ class UiWorker:
         self._after = None
         while True:
             try:
-                future, on_done, on_error = self._done.get_nowait()
+                future, on_done, on_error, counted = self._done.get_nowait()
             except queue.Empty:
                 break
             self._pending -= 1
+            self._foreground -= counted
             if future.cancelled():
                 continue
             error = future.exception()
@@ -107,9 +118,9 @@ class UiWorker:
         if self._pending > 0:
             self._schedule()
 
-    def shutdown(self) -> None:
-        """Stop delivering; a running job finishes in the background, queued ones are
-        dropped."""
+    def shutdown(self, wait: bool = False, timeout: float | None = None) -> None:
+        """Stop delivering; queued jobs are dropped. A running job finishes: in the background,
+        or, with ``wait``, before this returns (at most ``timeout`` seconds)."""
         self._closed = True
         if self._after is not None:
             try:
@@ -125,6 +136,8 @@ class UiWorker:
             if item is not None:
                 item[0].cancel()
         self._jobs.put((2, next(self._seq), None))     # the running job finishes, then it stops
+        if wait and threading.current_thread() is not self._thread:
+            self._thread.join(timeout)
 
 
 def weak(method: Callable[..., Any], *lead) -> Callable[..., None]:

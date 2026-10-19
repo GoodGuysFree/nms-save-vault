@@ -354,7 +354,7 @@ Save folders are named after the account that owns them, so the raw id would oth
 up in folder names, paths, source labels and operation messages throughout both front-ends.
 Map each account to a name of your choosing and the app shows only that name — everywhere:
 
-* **GUI:** **Accounts…** on the toolbar (or right-click any row → *Account display names…*).
+* **GUI:** **Accounts…** on the toolbar of the *Live saves and backups* tab, or *Live → Accounts…* in the menu bar on either tab (right-clicking a row on the *Live saves and backups* tab offers it too).
 * **CLI:** `nmsvault accounts` lists them; `nmsvault accounts --set <id>="Main"` sets one and
   `--clear <id>` removes it.
 
@@ -465,8 +465,8 @@ Help), so the keyboard reaches it at any window size.
 If you say yes, it asks GitHub **once a day, on startup**, whether a newer release exists and
 shows a bar at the top when there is one. Nothing about you or your saves is sent, and nothing
 is downloaded until you ask for it — this is the only thing the app uses the network for.
-Right-click anywhere → **Check for updates…** to check immediately, or to turn the daily check
-back on. The answer lives in `state.json` as `update_check` (`ask` / `on` / `off`).
+**Tools → Check for updates…** checks immediately; **Tools → Check for updates automatically**
+turns the daily check on or off. The answer lives in `state.json` as `update_check` (`ask` / `on` / `off`).
 
 **Installing an update.** The bar's **Install update** button does the whole thing: it
 downloads the release zip from GitHub, checks that the program inside it is a validly signed
@@ -488,7 +488,8 @@ offered, and **Open download page** is there instead.
 
 Both front-ends share the same safety-checked core. The live folder and a vault folder
 (default: a `_SaveVault` sibling of `st_<id>`) come from the config (or are auto-detected);
-override with `--live`/`--vault`. Put them after the command
+override with `--live`/`--vault`. In the GUI, **File → Choose vault folder…** picks another vault (or
+starts a new one in an empty folder) and remembers it. Put them after the command
 (`nmsvault.exe saves --vault D:\Vault`): the packaged `nmsvault.exe` is Python's own launcher,
 which rejects an option placed before the command.
 
@@ -618,7 +619,7 @@ The vault lives outside `st_<id>`, so it is never scanned by the game or synced 
 ## Status
 
 Working. Core format/crypto and all operations are verified against the real save files and
-in a temp sandbox (2517 tests). Xbox / Game Pass saves are supported for reading **and**
+in a temp sandbox (2659 tests). Xbox / Game Pass saves are supported for reading **and**
 writing, including Steam ↔ Xbox moves (validated in the real game) — verified against a real install (reads) and synthetic `wgs` fixtures
 (writes). A full file-copy safety backup of the live folder was made before development
 (`C:\Devel\NMS-SaveBackup-SAFETY-2026-06-24`). The Organizer is in (see above); a
