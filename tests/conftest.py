@@ -283,8 +283,7 @@ def xbox_meta(name: str = "", summary: str = "", *, play: int = 0, size: int = 0
     return bytes(b)
 
 
-@pytest.fixture
-def make_wgs_account():
+def wgs_account_factory():
     """Factory building a spec-accurate wgs account folder, for Xbox read/write tests.
 
     Call ``make_wgs_account(parent, saves)`` where each save is
@@ -341,23 +340,31 @@ def make_wgs_account():
     return build
 
 
+@pytest.fixture
+def make_wgs_account():
+    return wgs_account_factory()
+
+
 # --- synthetic Steam saves ---------------------------------------------------------------
 
 
 def steam_save(folder: Path, slot: int, member: int, name: str, play: int, ident: int, ts: int,
                *, extra: str = "", data_ident: int | None = None, base_version: int = 0,
-               meta_format: int = formats.META_FORMAT_4) -> None:
+               meta_format: int = formats.META_FORMAT_4, payload: bytes | None = None,
+               difficulty: int = 2) -> None:
     """Write one Steam save pair (data + encrypted meta) into ``folder``. ``extra`` goes into
     the data, so two saves alike in every meta field still differ in bytes; ``data_ident`` is
-    the id the data carries when it differs from the meta's (None: the same; 0: none)."""
+    the id the data carries when it differs from the meta's (None: the same; 0: none);
+    ``payload`` replaces the generated save JSON (a richer save, as the demo vault builds); ``difficulty`` is the meta's preset number."""
     folder.mkdir(parents=True, exist_ok=True)
     fno = slotmap.slot_file_numbers(slot)[member]
     if data_ident is None:
         id_field = b',"WmU":"0x%X"' % ident
     else:
         id_field = b',"WmU":"0x%X"' % data_ident if data_ident else b""
-    payload = (b'{"F2P":4737,"<h0":{"Pk4":"' + name.encode("utf-8") + b'"' + id_field + b"}"
-               + (b',"x":"' + extra.encode("utf-8") + b'"' if extra else b"") + b"}")
+    if payload is None:
+        payload = (b'{"F2P":4737,"<h0":{"Pk4":"' + name.encode("utf-8") + b'"' + id_field + b"}"
+                   + (b',"x":"' + extra.encode("utf-8") + b'"' if extra else b"") + b"}")
     (folder / slotmap.data_filename(fno)).write_bytes(chunked(payload))
 
     plain = bytearray(formats.META_LEN_WORLDS_II)
@@ -370,7 +377,7 @@ def steam_save(folder: Path, slot: int, member: int, name: str, play: int, ident
     struct.pack_into("<Q", plain, formats.OFF_TOTAL_PLAY_TIME, play)
     nm = name.encode("utf-8")
     plain[formats.OFF_SAVE_NAME : formats.OFF_SAVE_NAME + len(nm)] = nm
-    struct.pack_into("<I", plain, formats.OFF_DIFFICULTY, 2)
+    struct.pack_into("<I", plain, formats.OFF_DIFFICULTY, difficulty)
     struct.pack_into("<Q", plain, formats.OFF_SLOT_IDENTIFIER, ident)
     struct.pack_into("<I", plain, formats.OFF_TIMESTAMP, ts)
     struct.pack_into("<I", plain, formats.OFF_META_FORMAT_TAIL, meta_format)

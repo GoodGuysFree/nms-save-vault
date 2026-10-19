@@ -303,6 +303,11 @@ uv run --extra dev pytest -n 12   # parallel (pytest-xdist), about 1 minute; -n 
 uv run pytest -m slow      # the long ones: real-data read-only smoke, time budget
 ```
 
+`uv run --extra dev python tools/make_demo_vault.py <empty folder>` builds a fake NMS world
+(Steam and Xbox saves, a vault with six weeks of history, notes, a branch) for screenshots
+and demos, and prints the environment variables that make the app see only that world. It
+refuses to run inside any real save, package or app folder.
+
 The tests never touch this machine's own folders: each runs with %LOCALAPPDATA%, %APPDATA%,
 HOME, the XDG folders and the install folder (state.json, accounts.ini) pointed at temp
 folders, and any write under the real ones (Windows, Linux or macOS user folders, the
