@@ -4,6 +4,22 @@ Safe backup, catalog, and slot management for **No Man's Sky** (PC — Steam and
 Game Pass; GOG / Epic use the same format) save files — designed to give you effectively
 unlimited save slots beyond the game's 15. See [Platform support](#platform-support).
 
+## Screenshots
+
+All data below is invented (a demo world, not anyone's saves).
+
+[![Organizer: every save file on one line, its versions and branches, live slots and what is inside](docs/img/organizer.png)](docs/img/organizer.png)
+*The Organizer: one line per save file, versions and a branch, both platforms' live slots, and the facts read from inside the save.*
+
+[![Move to live: the replace preview](docs/img/move-to-live.png)](docs/img/move-to-live.png)
+*Move to live: what goes in, what goes to the vault first, and what the slot will hold.*
+
+[![History of one save with a branch and what changed](docs/img/history.png)](docs/img/history.png)
+*History: the recorded branches of one save, and what changed since the version it comes from.*
+
+[![Live saves and backups](docs/img/live-and-backups.png)](docs/img/live-and-backups.png)
+*Live saves and backups: the classic tab, with every backup in the vault.*
+
 ## QuickStart
 
 **Just want to run it? No Python needed.** Download the ready-to-use Windows kit from the

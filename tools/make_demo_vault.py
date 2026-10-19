@@ -502,7 +502,8 @@ def _build(target: Path, env: dict[str, str], log) -> Demo:
     last_steam: dict[str, Stage] = {}
     last_xbox: dict[str, Stage] = {}
     written: dict[tuple[str, int], Stage] = {}
-    state = appstate.AppState(vault=str(vault_root), theme="light", update_check="off")
+    state = appstate.AppState(vault=str(vault_root), theme="light", update_check="off",
+                              ui={"index_banner_done": True})
     appstate.save(state)
     state_ready = False
 
