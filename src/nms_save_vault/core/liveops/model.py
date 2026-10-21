@@ -16,7 +16,7 @@ from ..organizer.locator import Location
 from ..organizer.model import LiveRef, LiveTarget, Platform, target_to_json
 
 Position = Literal["A", "B"]          # A = auto-save (file 2k-1), B = restore point (file 2k)
-CloudMode = Literal["steam-cloud", "steam-local", "xbox"]
+CloudMode = Literal["steam-cloud", "steam-local", "gog", "xbox"]
 Severity = Literal["info", "warn", "confirm", "block"]
 SlotState = Literal["empty", "occupied", "mixed", "partial", "unreadable"]
 PlanKind = Literal["place", "place_into_empty", "restore_older", "swap", "promote", "undo",

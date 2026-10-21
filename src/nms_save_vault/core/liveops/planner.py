@@ -85,8 +85,8 @@ TEXTS = {
     "ALREADY_LIVE": ("block", "This version is already in {slot}."),
     "ALREADY_LOADS": ("block", "That save already loads in {slot}."),
     "NOTHING_TO_PROMOTE": ("block", "{slot} has no readable save in that position."),
-    "CROSS_PLATFORM_GATED": ("block", "Moving a save in this direction between Steam and Xbox "
-                             "is not available yet."),
+    "CROSS_PLATFORM_GATED": ("block", "Moving a save in this direction, to or from Xbox, is "
+                             "not available yet."),
     "CONVERT_UNSUPPORTED": ("block", "This save cannot be converted for the other platform "
                             "with certainty, so it was not touched. Nothing was changed."),
     "UNSUPPORTED_META": ("block", "This save's file layout is not supported for the other "

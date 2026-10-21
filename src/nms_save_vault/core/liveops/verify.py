@@ -256,17 +256,17 @@ def _item(ctx: OpContext, rec: opjournal.OpRecord, target: LiveTarget, facts: di
           detail: str) -> VerifyItem:
     label = _labels(rec)[rec.targets.index(target)]
     name = facts["name"] or "<unnamed>"
-    steam_cloud = False
+    synced = False                       # a cloud may put its own copy back
     try:
         rt = resolve_target(ctx, target)
-        label, steam_cloud = rt.label, rt.cloud_mode == "steam-cloud"
+        label, synced = rt.label, rt.cloud_mode in ("steam-cloud", "gog")
     except TargetError:
         pass
     who = sync_name(target.platform, target.account_key)
     text = TEXTS[state].format(who=who, label=label, name=name)
     actions: tuple = ()
     if state == "reverted":
-        actions = ("place_again", "show_steps", "dismiss") if steam_cloud else \
+        actions = ("place_again", "show_steps", "dismiss") if synced else \
             ("place_again", "dismiss")
     elif state == "deleted":
         actions = ("place_again", "dismiss")

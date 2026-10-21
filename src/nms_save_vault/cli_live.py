@@ -263,6 +263,15 @@ def parse_target(ctx, text: str) -> LiveTarget:
     return refs[0].target(slot)
 
 
+def target_text(ctx, target: LiveTarget) -> str:
+    """The slot as the organizer's badge (``G5``, ``S2.7``), which :func:`parse_target` reads
+    back to the same slot."""
+    kind = platform_name(target.platform, target.account_key)
+    refs = _refs_of(ctx, kind)
+    number = f"{refs.index(target.ref) + 1}." if len(refs) > 1 and target.ref in refs else ""
+    return f"{kind[0]}{number}{target.slot}"
+
+
 def _refs_of(ctx, kind: str) -> list:
     """The enabled live accounts of one kind (Steam, GOG or Xbox), in source order."""
     return [r for r in live_refs(ctx.sources) if platform_name(r.platform, r.account_key) == kind]
@@ -471,7 +480,7 @@ def cmd_clear(args) -> int:
         print("  it is already empty.")
         return 0
     if not guide.durable:
-        print(f"  First keep a copy in the vault:  nmsvault-cli keep {text or target.platform + ':' + str(target.slot)}")
+        print(f"  First keep a copy in the vault:  nmsvault-cli keep {text or target_text(ctx, target)}")
     if guide.refill is not None:
         print(f"  Note: {guide.refill.text}")
     for n, step in enumerate(guide.steps, 1):

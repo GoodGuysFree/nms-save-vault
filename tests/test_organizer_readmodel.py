@@ -129,6 +129,21 @@ def test_a_gog_folder_beside_steam_has_its_own_badges_and_name(tmp_path):
     assert [s.label for s in model.versions(OTHER_PID)[0].locations] == ["Live: GOG slot 4"]
 
 
+def test_one_save_live_in_steam_and_gog_is_live_elsewhere_not_a_twin(tmp_path):
+    w = World(tmp_path)
+    gog = tmp_path / "NMS" / "DefaultUser"
+    w.sources.append(Source(id="gog", platform="steam", account="", path=str(gog)))
+    steam_save(w.steam, 9, 0, "Main Save", 5000, MAIN, T0, extra="a")
+    steam_save(gog, 4, 0, "Main Save", 4000, MAIN, T0 - 900, extra="b")
+    model = w.refresh()
+
+    assert "twin" not in model.line(PID).flags
+    board = model.live_board()
+    s9, g4 = board.sources[0].slots[8], board.sources[1].slots[3]
+    assert (g4.twin, g4.other_platform) == (False, (s9.target,))
+    assert (s9.twin, s9.other_platform) == (False, (g4.target,))
+
+
 def _date(summary) -> str:
     from datetime import datetime, timezone
     return datetime.fromtimestamp(summary.location.seen_at, timezone.utc).strftime("%Y-%m-%d")

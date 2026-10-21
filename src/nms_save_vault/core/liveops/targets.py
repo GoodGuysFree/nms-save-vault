@@ -62,6 +62,8 @@ def resolve_account(ctx: OpContext, account: LiveRef) -> ResolvedAccount:
     else:
         _check_steam(folder)
         cloud = "steam-cloud" if (folder / formats.STEAM_AUTOCLOUD).is_file() else "steam-local"
+        if platform_name(account.platform, account.account_key) == "GOG":
+            cloud = "gog"            # GOG Galaxy's cloud saves leave no file to tell by
         twin = None
     if not source.writable:
         raise TargetError("NOT_WRITABLE", "the live source is set read-only")

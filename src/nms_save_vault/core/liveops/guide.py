@@ -14,6 +14,8 @@ from .targets import resolve_account, resolve_target
 REFILL = {
     "steam-cloud": "While this slot is empty, Steam Cloud may put a save back into it at the "
                    "next game start.",
+    "gog": "While this slot is empty, cloud sync may put a save back into it at the next game "
+           "start.",
     "xbox": "While this slot is empty, Xbox sync may put a save back into it.",
 }
 
@@ -40,6 +42,13 @@ def steps(cloud_mode: str, slot: int) -> tuple[str, ...]:
                 delete,
                 "Start the game once and quit.",
                 "Turn Steam Cloud back on; if Steam asks, keep the copy on this PC.")
+    if cloud_mode == "gog":
+        return ("Close No Man's Sky.",
+                "In GOG Galaxy: No Man's Sky > Manage installation > Configure, turn off "
+                "cloud saves.",
+                delete,
+                "Start the game once and quit.",
+                "Turn cloud saves back on; if GOG Galaxy asks, keep the copy on this PC.")
     if cloud_mode == "steam-local":
         return ("Close No Man's Sky.", delete)
     return ("Start No Man's Sky.",

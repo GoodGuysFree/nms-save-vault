@@ -33,7 +33,7 @@ from ..fmt import local_time, play_time
 from ..redact import ctext, shown
 from ..themeaware import ThemeRegistry
 from ..tooltip import Tooltip
-from .words import NO_BACKUP_TIP
+from .words import NO_BACKUP_TIP, slot_words
 
 ONE, TWO = "one", "two"
 SLOT, GAME = "slot", "game"
@@ -89,6 +89,13 @@ def _is_gog(source: LiveSource) -> bool:
     return platform_name(source.ref.platform, source.ref.account_key) == "GOG"
 
 
+def _where(target, labels: dict) -> str:
+    """``Steam slot 9``, or from its badge ``Steam 2 slot 9`` when there are two accounts."""
+    if labels.get(target):
+        return slot_words(labels[target])
+    return f"{platform_name(target.platform, target.account_key)} slot {target.slot}"
+
+
 def game_order(slots) -> list[BoardSlot]:
     """The game's load-screen order: newest save time first (the clock of "Last played");
     empty and unreadable slots last, in slot order."""
@@ -127,9 +134,9 @@ def slot_tip(slot: BoardSlot, source: LiveSource, labels: dict) -> str:
         return f"{where} - cannot be read right now (the game may be writing it)."
     out = [f"{where}: {slot.name or '(unnamed)'}",
            f"Played {play_time(slot.play_time) or '0h00'}, saved {local_time(slot.saved_at)}"]
-    others = [labels.get(t, "") for t in slot.other_platform]
-    if others:
-        out.append("Also live on the other platform: " + ", ".join(o for o in others if o))
+    if slot.other_platform:
+        out.append("Also live in " + ", ".join(_where(t, labels) for t in slot.other_platform)
+                   + ".")
     if slot.twin:
         out.append("Also live in another slot of this folder.")
     for marker in slot_markers(slot, source):
@@ -447,7 +454,7 @@ class LiveArea(ttk.Frame):
         others = " ".join(labels.get(t, "") for t in slot.other_platform).strip()
         if others:
             other = "+" + others.replace(" ", " +")
-            colour = p["steam"] if source.platform == "xbox" else p["xbox"]
+            colour = p["xbox"] if slot.other_platform[0].platform == "xbox" else p["steam"]
             ctext(canvas, right, cy, text=other, anchor="e", font=bold, fill=colour,
                   tags=(tag,))
             right -= bold.measure(other) + px(8)

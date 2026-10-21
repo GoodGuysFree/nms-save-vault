@@ -61,6 +61,24 @@ def test_a_cloud_revert_is_an_alert_until_dismissed(world):
     assert state(world, op_id) == "reverted"                                    # kept in history
 
 
+def test_a_revert_on_gog_names_its_cloud_and_offers_the_steps(tmp_path):
+    """GOG keeps no cloud marker in the folder, so its cloud is never ruled out."""
+    world = steam_world(tmp_path, cloud=False, other_name="DefaultUser")
+    target = LiveRef("steam", "DefaultUser").target(1)
+    before = {n: ((world.other / n).read_bytes(), (world.other / n).stat().st_mtime_ns)
+              for n in SLOT1}
+    plan = plan_place(world.ctx, world.polestar(), target)
+    assert execute(world.ctx, plan, plan.confirmations).status == "done"
+    for name, (data, mtime) in before.items():
+        (world.other / name).write_bytes(data)
+        os.utime(world.other / name, ns=(mtime, mtime))
+    world.refresh()
+    (item,) = update_verification(world.ctx)
+    assert (item.state, item.label) == ("reverted", "GOG slot 1")
+    assert item.text.startswith("Cloud sync put the old save back in GOG slot 1")
+    assert item.actions == ("place_again", "show_steps", "dismiss")
+
+
 def test_playing_on_the_placed_save_confirms_it(world):
     """VR2."""
     op_id, _ = place(world)

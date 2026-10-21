@@ -522,8 +522,8 @@ class MoveDialog(tk.Toplevel):
                             state="disabled" if blocked else "normal").pack(side=tk.LEFT, padx=px(2))
             if blocked:
                 notes.append(f"{label}: " + (
-                    "moving a save in this direction between Steam and Xbox is not "
-                    "available yet." if blocked == "CROSS_PLATFORM_GATED"
+                    "moving a save in this direction, to or from Xbox, is not available "
+                    "yet." if blocked == "CROSS_PLATFORM_GATED"
                     else f"not available: {plain(blocked)}"))
         set_label(self.account_note, " ".join(notes))
         if len(self.accounts) == 1:

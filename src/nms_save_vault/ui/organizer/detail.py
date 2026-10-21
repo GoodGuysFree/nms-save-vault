@@ -26,7 +26,7 @@ from ..themeaware import ThemeRegistry
 from ..tooltip import Tooltip
 from .live import NEVER_EMPTIES, refill_text
 from .words import (METHOD_WORDS, NO_BACKUP, NO_BACKUP_TIP, OUTSIDE_ONLY_TIP, PIN_TIP, find_row,
-                    line_name, slot_words, version_numbers)
+                    line_name, slot_words, tip_name, version_numbers)
 
 #: A segment of a page: its text and its tags. ``("link", head)`` makes a link to a version
 #: of the shown save file, ``("link", head, pid)`` to one of another.
@@ -108,16 +108,17 @@ def line_summary(model: ReadModel, pid: str) -> list[Segment]:
 
 def _platform_sentence(line) -> str:
     tips = {t.platform: t for t in line.platform_tips}
+    steam = tip_name(tips["steam"]) if "steam" in tips else "Steam"
     if line.cross_platform == "xbox-behind":
         return (f"the Xbox copy is behind ({play_time(tips['xbox'].behind_by)} less play than "
-                "the Steam copy); each platform's copy is its own tip")
+                f"the {steam} copy); each platform's copy is its own tip")
     if line.cross_platform == "steam-behind":
-        return (f"the Steam copy is behind ({play_time(tips['steam'].behind_by)} less play "
+        return (f"the {steam} copy is behind ({play_time(tips['steam'].behind_by)} less play "
                 "than the Xbox copy); each platform's copy is its own tip")
     if line.cross_platform == "diverged":
         return "both copies were played since they were last the same: two branches"
     if line.cross_platform == "same":
-        return "the Steam and Xbox copies have the same play time"
+        return f"the {steam} and Xbox copies have the same play time"
     return ""
 
 

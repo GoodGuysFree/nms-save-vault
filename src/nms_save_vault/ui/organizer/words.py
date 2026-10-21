@@ -8,6 +8,7 @@ from collections import defaultdict
 
 from ...core import aliases
 from ...core.liveops.planner import TEXTS
+from ...core.organizer.model import platform_letter, platform_name
 from ...core.organizer.readmodel import Line, ReadModel, VersionRow
 
 #: The warning on a version only the live folder holds, and what it means (hover text).
@@ -78,6 +79,18 @@ def slot_words(label: str) -> str:
         folder, slot = rest.split(".", 1)
         return f"{word} {folder} slot {slot}"
     return f"{word} slot {rest}"
+
+
+def tip_name(tip) -> str:
+    """The kind of account of a platform tip: ``Steam``, ``GOG`` or ``Xbox`` (the tips are
+    compared by save format, so the Steam-format tip may be GOG's)."""
+    return platform_name(tip.target.platform, tip.target.account_key)
+
+
+def tips_letters(line: Line) -> str:
+    """``S/X`` or ``G/X``: the letters of a line's platform tips."""
+    return "/".join(platform_letter(t.target.platform, t.target.account_key)
+                    for t in line.platform_tips)
 
 
 #: What a placeholder reads as when a code is shown without the slot or save it was made for.

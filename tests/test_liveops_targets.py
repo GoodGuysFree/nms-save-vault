@@ -154,7 +154,7 @@ def test_a_gog_folder_is_named_gog_and_counts_apart_from_steam(tmp_path):
     ctx = make_ctx(tmp_path, [live_source(steam), live_source(gog, label="GOG")])
 
     rt = resolve_target(ctx, LiveTarget("steam", "DefaultUser", 4))
-    assert (rt.folder, rt.label, rt.cloud_mode) == (gog, "GOG slot 4", "steam-local")
+    assert (rt.folder, rt.label, rt.cloud_mode) == (gog, "GOG slot 4", "gog")
     assert resolve_target(ctx, LiveTarget("steam", STEAM_ACCOUNT, 4)).label == "Steam slot 4"
     assert account_label(ctx, LiveRef("steam", "DefaultUser")) == "GOG"
     assert account_label(ctx, LiveRef("steam", STEAM_ACCOUNT)) == "Steam"

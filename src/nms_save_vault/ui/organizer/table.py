@@ -38,7 +38,7 @@ from ..tooltip import Tooltip
 from . import factsui
 from .lanes import lane_cells, lane_width
 from .words import (NO_BACKUP, NO_BACKUP_TIP, NOT_LINKED_TIP, OUTSIDE_ONLY_TIP, line_name,
-                    version_numbers)
+                    tip_name, tips_letters, version_numbers)
 
 STYLE = "Organizer.Treeview"
 FIND_DELAY_MS = 150
@@ -109,9 +109,9 @@ def state_words(line: Line) -> str:
     if line.cross_platform == "xbox-behind" and "xbox" in tips:
         words.append(f"Xbox behind {play_time(tips['xbox'].behind_by)}")
     elif line.cross_platform == "steam-behind" and "steam" in tips:
-        words.append(f"Steam behind {play_time(tips['steam'].behind_by)}")
+        words.append(f"{tip_name(tips['steam'])} behind {play_time(tips['steam'].behind_by)}")
     elif line.cross_platform == "diverged":
-        words.append("two branches S/X")
+        words.append(f"two branches {tips_letters(line)}")
     if not line.live:
         words.append("vault only")
     if "unreadable" in line.flags:

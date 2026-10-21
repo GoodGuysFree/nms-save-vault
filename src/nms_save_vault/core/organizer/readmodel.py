@@ -187,8 +187,8 @@ class BoardSlot:
     saved_at: int
     vault_copy: Literal["durable", "partial", "outside-vault", "none"]
     pinned: bool
-    twin: bool
-    other_platform: tuple[LiveTarget, ...]
+    twin: bool                              # also live in another slot of this folder
+    other_platform: tuple[LiveTarget, ...]  # where else it is live: the other live folders
     cloud: str
     pending_op: str | None
     last_event: JournalEvent | None
@@ -735,7 +735,7 @@ class _Builder:
         branch_count = sum(1 for r in rows if "tip" in r.flags) + sum(
             1 for _, p, _ in live_heads if p.head not in heads_in_tree)
         locked_count = sum(1 for r in rows if r.locked)
-        live_platforms = Counter(t.platform for t, _ in live)
+        live_folders = Counter(t.ref for t, _ in live)
         at_risk = any(self._vault_copy(p) != "durable" for _, p in live)
         flags = set()
         if live:
@@ -744,7 +744,7 @@ class _Builder:
             flags.add("cross-platform")
         if state == "diverged":
             flags.add("diverged")
-        if any(n > 1 for n in live_platforms.values()):
+        if any(n > 1 for n in live_folders.values()):
             flags.add("twin")
         if at_risk:
             flags.add("at-risk")
@@ -915,9 +915,9 @@ class _Builder:
         pid = live_pids.get(target) if p else None
         meta = self.meta(p.head) if p else None
         twin = pid is not None and any(
-            t != target and t.platform == target.platform and q == pid for t, q in live_pids.items())
+            t != target and t.ref == target.ref and q == pid for t, q in live_pids.items())
         others = tuple(t for t, q in live_pids.items()
-                       if pid is not None and q == pid and t.platform != target.platform)
+                       if pid is not None and q == pid and t.ref != target.ref)
         if target.platform == "steam":
             cloud = "cloud on" if folder is not None and folder.steam_cloud else "cloud off"
         else:

@@ -622,7 +622,7 @@ The vault lives outside `st_<id>`, so it is never scanned by the game or synced 
 ## Status
 
 Working. Core format/crypto and all operations are verified against the real save files and
-in a temp sandbox (2713 tests). Xbox / Game Pass saves are supported for reading **and**
+in a temp sandbox (2719 tests). Xbox / Game Pass saves are supported for reading **and**
 writing, including Steam ↔ Xbox moves (validated in the real game) — verified against a real install (reads) and synthetic `wgs` fixtures
 (writes). A full file-copy safety backup of the live folder was made before development
 (`C:\Devel\NMS-SaveBackup-SAFETY-2026-06-24`). The Organizer is in (see above); a
@@ -637,7 +637,7 @@ does the same.
 
 | Version | Date | Highlights |
 |---|---|---|
-| **0.3.1** | 2026-10-21 | **GOG.** The `DefaultUser` folder GOG writes (the Steam format) is found automatically as a live source named **GOG**: its slots read G1-G15 (`gog:7` or `G7` on the command line), and moves between GOG, Steam and Xbox work like moves between two Steam accounts, with the same "another account" confirmation. |
+| **0.3.1** | 2026-10-21 | **GOG.** The `DefaultUser` folder GOG writes (the Steam format) is found automatically as a live source named **GOG**: its slots read G1-G15 (`gog:7` or `G7` on the command line), and moves between GOG, Steam and Xbox work like moves between two Steam accounts, with the same "another account" confirmation. Emptying a GOG slot gives GOG Galaxy's steps and warns that its cloud saves may put a save back. |
 | **0.3.0** | 2026-10-19 | **The Organizer.** A new tab that shows every save file as one line with its versions, live markers and facts; Move to live, Replace with, Swap, Keep a copy and Undo (the replaced save always goes to the vault first); Steam <-> Xbox moves; History, Compare, Notes, Pins and corrections; new vaults start in the version store, and **Tools > Vault upgrade** moves an older one (older app versions cannot open a vault made or upgraded by 0.3.0); **Free old backup folders** gives the old folders' disk space back; importing a copied vault in the new format merges only what is new; the dark theme now draws the menu bar in the window; `nmsvault-cli selftest`; and the matching CLI commands. |
 | **0.2.8** | 2026-10-02 | **Xbox: keep the game's new `xgs` save copy in step.** The game now also keeps a plain copy of each Xbox save in `SystemAppData\xgs`, beside `wgs`. The vault only wrote `wgs`, so a promote, clear, repopulate, restore or undo left the game a stale `xgs` copy; every write now updates both. An account that has only `xgs` is shown read-only. |
 | **0.2.7** | 2026-09-26 | **Filter backups by save file.** A save's history was scattered: the same run sits in a different slot in one backup than in the next, and a rename makes its old copies look like somebody else's. The new **Save file** dropdown above the backups lists every save that has a backup, under its current name and the names it had before (here, *SHIPSTOGIVE-1400QS - was: ShipsToGive-2400qs*), with its platforms, play time and backup count. Pick one, or right-click any slot or save in either pane and choose **Show this save's history**, and the backups narrow to every copy of that run - renamed, moved, or carried to another platform by the NMS cloud - each opened to just the slot holding it, newest first. **All saves** clears it. It uses the same game-written save id as **Play time**, so it costs no extra decoding. |
