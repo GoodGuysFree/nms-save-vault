@@ -115,6 +115,24 @@ def test_place_into_an_empty_slot_and_from_a_one_member_source(tmp_path):
     assert savedir.scan_slot(world.live, 3).newest.save_name == "Polestar"
 
 
+def test_moves_between_steam_and_gog_name_the_gog_slot(tmp_path):
+    """GOG's DefaultUser folder takes the same Steam-format writes, as another account."""
+    world = steam_world(tmp_path, cloud=False, other_name="DefaultUser")
+    gog = LiveRef("steam", "DefaultUser")
+    second = savedir.scan_slot(world.live, 2).a
+    source = PairSource(_sha(Path(second.data_path)), None, "A",
+                        Location(_sha(Path(second.data_path)), "live", LIVE, 2, "A", "steam",
+                                 False))
+    plan = plan_place(world.ctx, source, gog.target(1))
+    assert "OTHER_ACCOUNT" in plan.confirmations
+    outcome = run(world, plan)
+    assert outcome.status == "done", outcome
+    assert "into GOG slot 1" in outcome.outcome
+    assert savedir.scan_slot(world.other, 1).newest.save_name == "Second"
+    back = run(world, plan_place(world.ctx, world.polestar(), LIVE.target(1)))
+    assert back.status == "done" and back.outcome.startswith("Moved 'Polestar' into Steam slot 1.")
+
+
 def test_restore_older_and_promote(tmp_path):
     world = steam_world(tmp_path)
     steam_save(world.other, 3, 0, "Polestar", 5000, 0x7E57AB1E00000001, T0 + 900,

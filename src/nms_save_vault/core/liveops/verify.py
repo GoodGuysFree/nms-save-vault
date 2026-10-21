@@ -17,7 +17,7 @@ from pathlib import Path
 
 from .. import aliases, msstore, safety, savedir
 from ..organizer.cache import cache_dir
-from ..organizer.model import LiveTarget, target_from_json
+from ..organizer.model import LiveTarget, sync_name, target_from_json
 from ..organizer.store import StoreBusy as OrganizerBusy
 from ..organizer.store import StoreReadOnly
 from . import opjournal, steamcloud
@@ -262,7 +262,7 @@ def _item(ctx: OpContext, rec: opjournal.OpRecord, target: LiveTarget, facts: di
         label, steam_cloud = rt.label, rt.cloud_mode == "steam-cloud"
     except TargetError:
         pass
-    who = "Steam Cloud" if target.platform == "steam" else "Xbox sync"
+    who = sync_name(target.platform, target.account_key)
     text = TEXTS[state].format(who=who, label=label, name=name)
     actions: tuple = ()
     if state == "reverted":

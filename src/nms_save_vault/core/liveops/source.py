@@ -79,7 +79,8 @@ def load_source(ctx: OpContext, source: PairSource) -> LoadedSource:
                              "instance": ref.instance, "slot": source.prefer.slot})
         platform = ref.platform
         capture = LiveRef(ref.platform, ref.account_key)
-        where = "live: " + slot_label(ref.platform, source.prefer.slot)
+        where = "live: " + slot_label(ref.platform, source.prefer.slot,
+                                        account_key=ref.account_key)
     else:
         read, platform = _read_located(ctx, source, wanted)
         capture, where = _capture_of(ctx, source.prefer, platform)
@@ -184,7 +185,8 @@ def _capture_of(ctx: OpContext, prefer: Location | None,
         return account, "vault: " + str(aliases.redact(entry.label or entry.kind))
     if isinstance(prefer.ref, LiveRef):
         return (LiveRef(prefer.ref.platform, prefer.ref.account_key),
-                "live: " + slot_label(prefer.ref.platform, prefer.slot))
+                "live: " + slot_label(prefer.ref.platform, prefer.slot,
+                                       account_key=prefer.ref.account_key))
     return None, "vault"
 
 

@@ -24,6 +24,7 @@ from ...core.liveops import (
     OpContext, OpOutcome, PlacePlan, dismiss_verification, empty_slot_guide, execute,
     pending_recovery, plan_keep, plan_promote, plan_swap, plan_undo, update_verification)
 from ...core.organizer import Organizer
+from ...core.organizer.model import platform_name
 from ...core.organizer.readmodel import BoardSlot, LiveSource, ReadModel
 from ..dialogs import grab_owner
 from ..dpi import px, pxs
@@ -83,7 +84,7 @@ def scan_alerts(organizer: Organizer) -> dict[str, str]:
         for ref, folder in scan.live.items():
             if not folder.readable:
                 why = next((p.detail for p in scan.problems if p.where == ref), "")
-                name = "Xbox" if ref.platform == "xbox" else "Steam"
+                name = platform_name(ref.platform, ref.account_key)
                 out[f"live:{ref.platform}:{ref.account_key}:{ref.instance}"] = (
                     f"A {name} live folder could not be read; its slots are shown as they "
                     f"were. {why}".strip())

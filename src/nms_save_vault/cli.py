@@ -945,9 +945,9 @@ def cmd_organizer_bootstrap(args) -> int:
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="nmsvault-cli", description="NMS Save Vault",
-        epilog="A live slot is written steam:7 or S7, xbox:4 or X4 (S2.7 for the second "
-               "account's slot 7); every command that takes a slot accepts both forms.")
-    p.add_argument("--live", help="path to the live st_<id> save folder")
+        epilog="A live slot is written steam:7 or S7, gog:7 or G7, xbox:4 or X4 (S2.7 for the "
+               "second account's slot 7); every command that takes a slot accepts both forms.")
+    p.add_argument("--live", help="path to the live st_<id> (or GOG DefaultUser) save folder")
     p.add_argument("--vault", help="path to the vault folder")
     sub = p.add_subparsers(dest="command", required=True)
     from . import cli_live, cli_store

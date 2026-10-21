@@ -26,6 +26,7 @@ from tkinter import font as tkfont
 from tkinter import ttk
 
 from ... import theme
+from ...core.organizer.model import platform_name
 from ...core.organizer.readmodel import BoardSlot, LiveSource, ReadModel
 from ..dpi import px, pxs
 from ..fmt import local_time, play_time
@@ -65,9 +66,12 @@ def source_key(source: LiveSource) -> str:
 
 def refill_text(source: LiveSource) -> str | None:
     """D5's EMPTY_SLOT_MAY_REFILL for this folder: Steam Cloud (on, or not known to be
-    off) or Xbox sync may put a save back into an empty slot."""
+    off), GOG's cloud sync or Xbox sync may put a save back into an empty slot."""
     if source.platform == "xbox":
         return "While this slot is empty, Xbox sync may put a save back into it."
+    if _is_gog(source):
+        return ("While this slot is empty, cloud sync may put a save back into it at the next "
+                "game start.")
     if source.steam_cloud is False:
         return None
     return ("While this slot is empty, Steam Cloud may put a save back into it at the next "
@@ -75,8 +79,14 @@ def refill_text(source: LiveSource) -> str | None:
 
 
 def refill_inline(source: LiveSource) -> str:
-    return ("Xbox sync may put a save back here" if source.platform == "xbox"
-            else "Steam Cloud may put a save back here at the next game start")
+    if source.platform == "xbox":
+        return "Xbox sync may put a save back here"
+    sync = "Cloud sync" if _is_gog(source) else "Steam Cloud"
+    return f"{sync} may put a save back here at the next game start"
+
+
+def _is_gog(source: LiveSource) -> bool:
+    return platform_name(source.ref.platform, source.ref.account_key) == "GOG"
 
 
 def game_order(slots) -> list[BoardSlot]:
@@ -109,7 +119,7 @@ def slot_markers(slot: BoardSlot, source: LiveSource) -> list[str]:
 
 def slot_tip(slot: BoardSlot, source: LiveSource, labels: dict) -> str:
     """The hover text of a slot: every marker in words (D6 3.2, accessibility)."""
-    where = f"{'Xbox' if source.platform == 'xbox' else 'Steam'} slot {slot.target.slot}"
+    where = f"{platform_name(source.ref.platform, source.ref.account_key)} slot {slot.target.slot}"
     if slot.state == "empty":
         refill = refill_text(source)
         return f"{where} - empty.\n" + (f"{refill}\n{NEVER_EMPTIES}" if refill else NEVER_EMPTIES)

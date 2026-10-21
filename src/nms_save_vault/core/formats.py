@@ -130,6 +130,10 @@ ACCOUNT_DATA_NAME = "accountdata.hg"
 ACCOUNT_META_NAME = "mf_accountdata.hg"
 ACCOUNT_STORAGE_ORDINAL = 1  # cTkStoragePersistent::Slot.AccountData
 
+# GOG writes the Steam format, byte for byte, into this folder under the NMS root instead
+# of st_<steamid64> (libNOM.io PlatformGog).
+GOG_ACCOUNT_DIR = "DefaultUser"
+
 # Other files that belong to a save folder.
 STEAM_AUTOCLOUD = "steam_autocloud.vdf"
 CACHE_DIR = "cache"

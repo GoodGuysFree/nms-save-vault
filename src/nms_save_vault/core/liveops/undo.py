@@ -22,7 +22,7 @@ from .model import Estimate, OpSummary, PairSource, PlacePlan, Warning
 from .planner import _live_pair, _plan, _plan_warnings, _refusal, _summary, duration, durable, warning
 from .slots import SlotNow, read_account
 from .source import load_source
-from .targets import resolve_account, resolve_target
+from .targets import resolve_account, resolve_target, slot_label
 
 VERIFY_ORDER = ("reverted", "deleted", "replaced", "pending", "expired", "superseded",
                 "confirmed")
@@ -208,7 +208,7 @@ def _text(rec, line: dict | None) -> str:
 
 
 def _labels(rec) -> list[str]:
-    return [f"{'Steam' if t.platform == 'steam' else 'Xbox'} slot {t.slot}" for t in rec.targets]
+    return [slot_label(t.platform, t.slot, account_key=t.account_key) for t in rec.targets]
 
 
 def _local(utc: str) -> str:

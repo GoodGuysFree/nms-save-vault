@@ -3,8 +3,8 @@ operations (D5 4.5). Kept apart from ``cli.py`` like ``cli_store.py``. Every com
 plan's warnings and the outcome text from core; a non-interactive run needs ``--yes`` plus
 ``--confirm CODE`` for each confirmation the plan asks.
 
-Targets are written ``steam:7``, ``xbox:4``, or ``steam:<account>:7`` when a platform has more
-than one live account; sources are ``--from <entry-id> --src-slot N [--member A|B]``,
+Targets are written ``steam:7``, ``gog:7``, ``xbox:4``, or ``steam:<account>:7`` when a platform
+has more than one live account; sources are ``--from <entry-id> --src-slot N [--member A|B]``,
 ``--from live:steam:4`` or ``--from vid:<prefix>``.
 """
 from __future__ import annotations
@@ -41,7 +41,7 @@ from .core.liveops.planner import _live_pair
 from .core.liveops.slots import read_account
 from .core.liveops.targets import resolve_account
 from .core.organizer import Organizer
-from .core.organizer.model import LiveRef, LiveTarget
+from .core.organizer.model import LiveRef, LiveTarget, platform_name
 from .core.organizer.scanner import live_refs
 
 _print = builtins.print
@@ -107,8 +107,8 @@ def debugging() -> bool:
     return os.environ.get("NMSVAULT_DEBUG", "").strip().lower() in ("1", "true", "yes")
 
 
-_SLOT_HELP = ("the live slot: steam:7 or S7, xbox:4 or X4 (S2.7 / steam:<account>:7 "
-              "when a platform has several accounts)")
+_SLOT_HELP = ("the live slot: steam:7 or S7, gog:7 or G7, xbox:4 or X4 (S2.7 / "
+              "steam:<account>:7 when a platform has several accounts)")
 
 
 def add_commands(sub: argparse._SubParsersAction) -> None:
@@ -213,53 +213,59 @@ def _context(args):
         _die(f"error: the vault cannot be opened for live operations: {explain(exc)}")
 
 
-_BADGE = re.compile(r"([SX])(\d+)(?:\.(\d+))?", re.IGNORECASE)
+_BADGE = re.compile(r"([SGX])(\d+)(?:\.(\d+))?", re.IGNORECASE)
+_KINDS = {"S": "Steam", "G": "GOG", "X": "Xbox"}           # badge letter -> kind of account
+_WORDS = {"steam": "Steam", "gog": "GOG", "xbox": "Xbox"}  # typed word -> kind of account
 
 
 def badge_ref(text: str) -> str:
-    """``steam:7`` / ``xbox:4`` as the organizer commands write a live slot (``S7`` / ``X4``);
-    anything else is returned as it is."""
+    """``steam:7`` / ``gog:7`` / ``xbox:4`` as the organizer commands write a live slot
+    (``S7`` / ``G7`` / ``X4``); anything else is returned as it is."""
     parts = text.strip().split(":")
-    if len(parts) == 2 and parts[0].lower() in ("steam", "xbox") and parts[1].isdigit():
-        return f"{'S' if parts[0].lower() == 'steam' else 'X'}{parts[1]}"
+    if len(parts) == 2 and parts[0].lower() in _WORDS and parts[1].isdigit():
+        return f"{_WORDS[parts[0].lower()][0]}{parts[1]}"
     return text
 
 
 def parse_target(ctx, text: str) -> LiveTarget:
-    """``steam:7``, ``xbox:4``, ``steam:<account>:7``, or the organizer's own ``S7``, ``X4``,
-    ``S2.7`` (the second Steam account's slot 7)."""
+    """``steam:7``, ``gog:7``, ``xbox:4``, ``steam:<account>:7``, or the organizer's own ``S7``,
+    ``G7``, ``X4``, ``S2.7`` (the second Steam account's slot 7)."""
     text = text.strip()
     badge = _BADGE.fullmatch(text)
     if badge:
-        platform = "steam" if badge.group(1).upper() == "S" else "xbox"
-        refs = [r for r in live_refs(ctx.sources) if r.platform == platform]
+        kind = _KINDS[badge.group(1).upper()]
+        refs = _refs_of(ctx, kind)
         if badge.group(3):
             number, slot = int(badge.group(2)), int(badge.group(3))
             if not 1 <= number <= len(refs):
-                _die(f"error: there is no {platform} account {number}: {len(refs)} live "
-                     f"{platform} account{'' if len(refs) == 1 else 's'}")
+                _die(f"error: there is no {kind} account {number}: {len(refs)} live "
+                     f"{kind} account{'' if len(refs) == 1 else 's'}")
             refs = [refs[number - 1]]
         else:
             slot = int(badge.group(2))
     else:
         parts = text.split(":")
-        if len(parts) not in (2, 3) or parts[0] not in ("steam", "xbox") \
-                or not parts[-1].isdigit():
-            _die(f"error: {text!r} is not a slot: write steam:7 or S7, xbox:4 or X4, "
-                 "steam:<account>:7")
-        platform, slot = parts[0], int(parts[-1])
-        refs = [r for r in live_refs(ctx.sources) if r.platform == platform]
+        if len(parts) not in (2, 3) or parts[0] not in _WORDS or not parts[-1].isdigit():
+            _die(f"error: {text!r} is not a slot: write steam:7 or S7, gog:7 or G7, xbox:4 or "
+                 "X4, steam:<account>:7")
+        kind, slot = _WORDS[parts[0]], int(parts[-1])
+        refs = _refs_of(ctx, kind)
         if len(parts) == 3:
             refs = [r for r in refs if parts[1] in (r.account_key, aliases.redact(r.account_key))
                     or r.account_key.startswith(parts[1])]
     if not refs:
-        _die(f"error: no live {platform} account matches {text!r}")
+        _die(f"error: no live {kind} account matches {text!r}")
     if len(refs) > 1:
-        _die(f"error: {len(refs)} live {platform} accounts: write {platform}:<account>:{slot} "
-             f"or S<n>.{slot}")
+        _die(f"error: {len(refs)} live {kind} accounts: write {kind.lower()}:<account>:{slot} "
+             f"or {kind[0]}<n>.{slot}")
     if not 1 <= slot <= 15:
         _die("error: a slot is 1 to 15")
     return refs[0].target(slot)
+
+
+def _refs_of(ctx, kind: str) -> list:
+    """The enabled live accounts of one kind (Steam, GOG or Xbox), in source order."""
+    return [r for r in live_refs(ctx.sources) if platform_name(r.platform, r.account_key) == kind]
 
 
 def _source(ctx, args) -> PairSource:
@@ -454,7 +460,7 @@ def cmd_clear(args) -> int:
     text = args.target if (":" in args.target or _BADGE.fullmatch(args.target.strip())) else None
     if text is None:
         if not args.target.isdigit():
-            _die("error: write the slot as steam:7 or S7, xbox:4 or X4")
+            _die("error: write the slot as steam:7 or S7, gog:7 or G7, xbox:4 or X4")
         live = _live_ref(ctx, args)
         target = live.target(int(args.target))
     else:
@@ -480,7 +486,8 @@ def _live_ref(ctx, args) -> LiveRef:
             if Path(source.path) == Path(args.live):
                 return ref
     if len(refs) != 1:
-        _die("error: more than one live account: write the slot as steam:7 or S7, xbox:4 or X4")
+        _die("error: more than one live account: write the slot as steam:7 or S7, gog:7 or G7, "
+             "xbox:4 or X4")
     return refs[0]
 
 

@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .. import aliases, formats, msstore, savedir
-from ..organizer.model import LiveRef, LiveTarget
+from ..organizer.model import LiveRef, LiveTarget, platform_name
 from ..organizer.scanner import instance_of, live_refs
 from ..state import ROLE_LIVE, Source
 from .context import OpContext
@@ -20,7 +20,7 @@ from .model import CloudMode, ResolvedTarget
 
 #: What an empty Steam account folder must be called to count as one (no saves to tell by).
 _STEAM_ACCOUNT_NAME = re.compile(r"st_[0-9]+|DefaultUser")
-_PLATFORM_NAMES = {"steam": "Steam", "xbox": "Xbox"}
+_PLATFORMS = ("steam", "xbox")
 
 
 @dataclass(frozen=True)
@@ -41,14 +41,14 @@ def resolve_target(ctx: OpContext, target: LiveTarget) -> ResolvedTarget:
     if isinstance(slot, bool) or not isinstance(slot, int) or not 1 <= slot <= formats.MAX_SAVE_SLOTS:
         raise TargetError("BAD_TARGET", f"slot {slot!r} is not 1..{formats.MAX_SAVE_SLOTS}")
     acct = resolve_account(ctx, target.ref)
-    label = slot_label(target.platform, slot, acct.label)
+    label = slot_label(target.platform, slot, acct.label, target.account_key)
     return ResolvedTarget(target, acct.source_id, acct.folder, acct.cloud_mode, acct.xgs_twin,
                           label)
 
 
 def resolve_account(ctx: OpContext, account: LiveRef) -> ResolvedAccount:
     """The folder of one live account; raises :class:`TargetError`."""
-    if account.platform not in _PLATFORM_NAMES:
+    if account.platform not in _PLATFORMS:
         raise TargetError("BAD_TARGET", f"no platform {account.platform!r}")
     source = _the_source(ctx.sources, account)
     folder = Path(source.path)
@@ -70,10 +70,11 @@ def resolve_account(ctx: OpContext, account: LiveRef) -> ResolvedAccount:
 
 
 def account_label(ctx: OpContext, account: LiveRef) -> str:
-    """A live account's name in the app: "Steam" / "Xbox" when it is its platform's only
-    one, else its own name (aliases applied, never an account id)."""
+    """A live account's name in the app: "Steam" / "GOG" / "Xbox" when it is the only one of
+    its kind, else its own name (aliases applied, never an account id)."""
     source = _the_source(ctx.sources, account)
-    return _account_label(ctx.sources, source, account) or _PLATFORM_NAMES[account.platform]
+    return (_account_label(ctx.sources, source, account)
+            or platform_name(account.platform, account.account_key))
 
 
 def live_accounts(ctx: OpContext) -> list[LiveRef]:
@@ -82,9 +83,10 @@ def live_accounts(ctx: OpContext) -> list[LiveRef]:
     return live_refs(live)
 
 
-def slot_label(platform: str, slot: int, account_label: str = "") -> str:
-    """``Steam slot 7``, or ``Steam slot 7 (<account>)`` when the platform has several."""
-    text = f"{_PLATFORM_NAMES[platform]} slot {slot}"
+def slot_label(platform: str, slot: int, account_label: str = "", account_key: str = "") -> str:
+    """``Steam slot 7`` / ``GOG slot 7``, or ``Steam slot 7 (<account>)`` when there are several
+    of that kind."""
+    text = f"{platform_name(platform, account_key)} slot {slot}"
     return f"{text} ({account_label})" if account_label else text
 
 
@@ -134,13 +136,16 @@ def _check_steam(folder: Path) -> None:
 
 
 def _account_label(sources, source: Source, account: LiveRef) -> str:
-    """The account's name in the app, only needed when its platform has several. The
-    owner's aliases apply; a label holding the account id falls back to "Steam 2"."""
-    same = _live(sources, account.platform)
+    """The account's name in the app, only needed when there are several of its kind (Steam,
+    GOG or Xbox). The owner's aliases apply; a label holding the account id falls back to
+    "Steam 2"."""
+    name = platform_name(account.platform, account.account_key)
+    same = [s for s in _live(sources, account.platform)
+            if platform_name(account.platform, Path(s.path).name) == name]
     if len(same) < 2:
         return ""
     label = str(aliases.redact(source.label)) if source.label else ""
     ids = {account.account_key, account.account_key.removeprefix("st_"), source.account} - {""}
     if not label or any(i in label for i in ids):
-        label = f"{_PLATFORM_NAMES[account.platform]} {same.index(source) + 1}"
+        label = f"{name} {same.index(source) + 1}"
     return label

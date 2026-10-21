@@ -113,6 +113,22 @@ def test_a_save_file_line_with_its_versions_and_live_badges(tmp_path):
     assert "at-risk" not in other.flags and other.version_count == 1
 
 
+def test_a_gog_folder_beside_steam_has_its_own_badges_and_name(tmp_path):
+    w = World(tmp_path)
+    gog = tmp_path / "NMS" / "DefaultUser"
+    w.sources.append(Source(id="gog", platform="steam", account="", path=str(gog)))
+    steam_save(w.steam, 9, 0, "Main Save", 5000, MAIN, T0)
+    steam_save(gog, 4, 0, "Other Run", 100, OTHER, T0 - 900)
+    model = w.refresh()
+
+    assert [b.label for b in model.line(PID).live] == ["S9"]
+    assert [b.label for b in model.line(OTHER_PID).live] == ["G4"]
+    board = model.live_board()
+    assert [s.label for s in board.sources] == ["Main account", "GOG"]
+    assert board.sources[1].slots[3].label == "G4"
+    assert [s.label for s in model.versions(OTHER_PID)[0].locations] == ["Live: GOG slot 4"]
+
+
 def _date(summary) -> str:
     from datetime import datetime, timezone
     return datetime.fromtimestamp(summary.location.seen_at, timezone.utc).strftime("%Y-%m-%d")

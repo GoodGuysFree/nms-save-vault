@@ -57,7 +57,7 @@ from .model import OpOutcome, PairSource, RecoveryItem, TargetPlan
 from .pairmeta import PlannedMember, SourcePair
 from .slots import MemberNow, SlotNow, read_account
 from .source import LoadedSource, load_source
-from .targets import resolve_account, resolve_target
+from .targets import resolve_account, resolve_target, slot_label
 
 log = logging.getLogger(__name__)
 
@@ -531,7 +531,7 @@ def _labels(rec: opjournal.OpRecord) -> str:
 
 
 def _target_labels(rec: opjournal.OpRecord) -> list[str]:
-    return [f"{'Steam' if t.platform == 'steam' else 'Xbox'} slot {t.slot}" for t in rec.targets]
+    return [slot_label(t.platform, t.slot, account_key=t.account_key) for t in rec.targets]
 
 
 def _local(utc: str) -> str:

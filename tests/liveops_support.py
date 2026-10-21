@@ -102,15 +102,16 @@ class World:
                           Location(a.vid, "store", StoreRef(self.backup_id), 3, "A", "steam", True))
 
 
-def steam_world(tmp_path: Path, *, cloud: bool = True) -> World:
-    """Two configured Steam accounts and a vault in store mode holding a backup of the
-    second one ('Polestar' in its slot 3, played more on A)."""
+def steam_world(tmp_path: Path, *, cloud: bool = True, other_name: str = STEAM_ACCOUNT_2) -> World:
+    """Two configured Steam-format accounts and a vault in store mode holding a backup of the
+    second one ('Polestar' in its slot 3, played more on A). ``other_name="DefaultUser"``
+    makes the second one GOG's folder."""
     from nms_save_vault.core import store as vstore
 
     from .conftest import steam_save
 
     live = steam_account(tmp_path / "NMS", cloud=cloud)
-    other = steam_account(tmp_path / "NMS", STEAM_ACCOUNT_2, cloud=cloud)
+    other = steam_account(tmp_path / "NMS", other_name, cloud=cloud)
     steam_save(other, 3, 0, "Polestar", 4000, POLESTAR, T0 + 300, extra="pole-a")
     steam_save(other, 3, 1, "Polestar", 3900, POLESTAR, T0 + 200, extra="pole-b")
     vault_root = tmp_path / "vault"

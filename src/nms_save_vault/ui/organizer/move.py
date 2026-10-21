@@ -25,7 +25,7 @@ from ...core.liveops import (
     EvictionPicker, OpContext, OpOutcome, PairSource, PlacePlan, Progress,
     SlotCandidate, Warning, eviction_picker, execute, plan_place)
 from ...core.organizer.locator import Location
-from ...core.organizer.model import LiveRef, StoreRef
+from ...core.organizer.model import LiveRef, StoreRef, platform_letter, platform_name
 from ...core.organizer.readmodel import BoardSlot, ReadModel
 from ..dialogs import bind_escape, cap_minsize, focus_first, keep_on_screen, tab_last
 from ..dpi import px, pxs
@@ -92,7 +92,7 @@ def candidate_values(c: SlotCandidate, *, in_banner: bool = False) -> tuple[str,
         notes.append("pinned - not suggested")
     if c.blocked and not in_banner:
         notes.append(f"not possible: {plain(c.blocked)}")
-    return (f"{'X' if c.target.platform == 'xbox' else 'S'}{c.target.slot}", now, play_time(c.play_time), local_time(c.last_played),
+    return (f"{platform_letter(c.target.platform, c.target.account_key)}{c.target.slot}", now, play_time(c.play_time), local_time(c.last_played),
             "-" if c.state == "empty" else VAULT_WORDS[c.vault_copy], "; ".join(notes))
 
 
@@ -530,7 +530,7 @@ class MoveDialog(tk.Toplevel):
             self.account_bar.pack_configure(padx=px(2))
 
     def _label(self, ref: LiveRef) -> str:
-        return self.labels.get(ref) or ("Xbox" if ref.platform == "xbox" else "Steam")
+        return self.labels.get(ref) or platform_name(ref.platform, ref.account_key)
 
     def _account_picked(self, ref: LiveRef) -> None:
         if self.executing:

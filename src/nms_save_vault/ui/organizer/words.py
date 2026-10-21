@@ -64,11 +64,15 @@ def platform_word(platform: str) -> str:
     return "Xbox" if platform == "xbox" else "Steam"
 
 
+#: A live badge's first letter (S9, G9, X2.4) and the kind of account it names.
+BADGE_WORDS = {"S": "Steam", "G": "GOG", "X": "Xbox"}
+
+
 def slot_words(label: str) -> str:
-    """``S9`` -> ``Steam slot 9``; ``X2.4`` -> ``Xbox 2 slot 4``."""
+    """``S9`` -> ``Steam slot 9``; ``G9`` -> ``GOG slot 9``; ``X2.4`` -> ``Xbox 2 slot 4``."""
     if not label:
         return ""
-    word = "Xbox" if label[0].upper() == "X" else "Steam"
+    word = BADGE_WORDS.get(label[0].upper(), "Steam")
     rest = label[1:]
     if "." in rest:
         folder, slot = rest.split(".", 1)

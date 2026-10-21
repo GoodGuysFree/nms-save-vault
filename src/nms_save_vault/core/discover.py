@@ -7,6 +7,8 @@ a backup into a live target:
   directly under ``%APPDATA%\\HelloGames\\NMS`` and looks like a save dir. Each
   distinct steamid64 is its own account (so a machine with two Steam accounts gets
   two live sources).
+* **GOG live** -- a folder named *exactly* ``DefaultUser`` directly under an NMS root that
+  looks like a save dir: GOG writes the Steam format there.
 * **Xbox live** -- each Game Pass account folder under the ``wgs`` root (writable; a Steam<->Xbox
   move goes through the Organizer).
 * **In-place backup** -- anything else under the NMS root that still contains save
@@ -23,7 +25,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import catalog, locations, msstore, savedir, state
+from . import catalog, formats, locations, msstore, savedir, state
 from .state import (
     ORIGIN_AUTO,
     ORIGIN_MANUAL,
@@ -49,8 +51,21 @@ def steam_account_id(path: str | Path) -> str | None:
 def is_canonical_steam_live(path: str | Path, nms_root: str | Path) -> bool:
     """True for an exactly-named ``st_<id>`` folder directly under the NMS root."""
     p = Path(path)
-    if _CANONICAL_STEAM.match(p.name) is None:
-        return False
+    return _CANONICAL_STEAM.match(p.name) is not None and _live_save_dir_in(p, nms_root)
+
+
+def is_canonical_gog_live(path: str | Path, nms_root: str | Path) -> bool:
+    """True for GOG's ``DefaultUser`` folder directly under the NMS root."""
+    p = Path(path)
+    return p.name == formats.GOG_ACCOUNT_DIR and _live_save_dir_in(p, nms_root)
+
+
+def is_canonical_live(path: str | Path, nms_root: str | Path) -> bool:
+    """True for a folder the game itself writes, by its name and place (Steam or GOG)."""
+    return is_canonical_steam_live(path, nms_root) or is_canonical_gog_live(path, nms_root)
+
+
+def _live_save_dir_in(p: Path, nms_root: str | Path) -> bool:
     try:
         same_parent = p.parent.resolve() == Path(nms_root).resolve()
     except OSError:
@@ -61,6 +76,10 @@ def is_canonical_steam_live(path: str | Path, nms_root: str | Path) -> bool:
 def _steam_label(account: str, index: int) -> str:
     suffix = "" if index == 0 else f" #{index + 1}"
     return f"Steam ({account}){suffix}" if account else f"Steam save{suffix}"
+
+
+def _gog_label(index: int) -> str:
+    return "GOG" if index == 0 else f"GOG #{index + 1}"
 
 
 def _xbox_label(account: str, index: int) -> str:
@@ -88,20 +107,27 @@ def discover_live_sources(
     sources: list[Source] = []
 
     steam_dirs: list[Path] = []
+    gog_dirs: list[Path] = []
     seen: set[Path] = set()
+
+    def keep(folder: Path, into: list[Path]) -> None:
+        try:
+            key = folder.resolve()
+        except OSError:
+            return
+        if key not in seen:
+            seen.add(key)
+            into.append(folder)
+
     for root in _search_roots(nms_root):
         if not root.is_dir():
             continue
         for child in sorted(root.glob("st_*")):
-            if not (child.is_dir() and is_canonical_steam_live(child, root)):
-                continue
-            try:
-                key = child.resolve()
-            except OSError:
-                continue
-            if key not in seen:
-                seen.add(key)
-                steam_dirs.append(child)
+            if child.is_dir() and is_canonical_steam_live(child, root):
+                keep(child, steam_dirs)
+        gog = root / formats.GOG_ACCOUNT_DIR
+        if gog.is_dir() and is_canonical_gog_live(gog, root):
+            keep(gog, gog_dirs)
     used_ids: set[str] = set()
     for i, d in enumerate(steam_dirs):
         account = steam_account_id(d) or ""
@@ -118,6 +144,19 @@ def discover_live_sources(
                 account=account,
                 path=str(d),
                 label=_steam_label(account, i),
+                role=ROLE_LIVE,
+                writable=True,
+                origin=ORIGIN_AUTO,
+            )
+        )
+    for i, d in enumerate(gog_dirs):
+        sources.append(
+            Source(
+                id=f"{PLATFORM_STEAM}-{formats.GOG_ACCOUNT_DIR}" + (f"-{i}" if i else ""),
+                platform=PLATFORM_STEAM,
+                account="",
+                path=str(d),
+                label=_gog_label(i),
                 role=ROLE_LIVE,
                 writable=True,
                 origin=ORIGIN_AUTO,
@@ -227,9 +266,9 @@ def find_backups(
     live folders among them (P9: a live folder catalogued as a backup of itself shows every
     one of its saves twice).
 
-    A canonical ``st_<id>`` folder directly under a root is the game's own by name and not
-    a candidate at all. Any other folder is live when it is, or lies inside, one of the
-    ``live`` source folders or the xgs twin of one (:func:`live_folders`).
+    A canonical ``st_<id>`` or ``DefaultUser`` folder directly under a root is the game's own
+    by name and not a candidate at all. Any other folder is live when it is, or lies inside,
+    one of the ``live`` source folders or the xgs twin of one (:func:`live_folders`).
     """
     folders = live_folders(live)
     excluded = list(exclude)
@@ -244,7 +283,7 @@ def find_backups(
                 rd = d.resolve()
             except OSError:
                 continue
-            if rd in seen or is_canonical_steam_live(d, root):
+            if rd in seen or is_canonical_live(d, root):
                 continue
             seen.add(rd)
             (search.skipped_live if is_inside(rd, folders) else search.backups).append(d)

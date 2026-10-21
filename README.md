@@ -1,7 +1,7 @@
 # NMS Save Vault
 
-Safe backup, catalog, and slot management for **No Man's Sky** (PC — Steam and Xbox /
-Game Pass; GOG / Epic use the same format) save files — designed to give you effectively
+Safe backup, catalog, and slot management for **No Man's Sky** (PC — Steam, GOG and Xbox /
+Game Pass) save files — designed to give you effectively
 unlimited save slots beyond the game's 15. See [Platform support](#platform-support).
 
 ## Screenshots
@@ -24,7 +24,7 @@ All data below is invented (a demo world, not anyone's saves).
 
 **Just want to run it? No Python needed.** Download the ready-to-use Windows kit from the
 [**latest release**](https://github.com/GoodGuysFree/nms-save-vault/releases/latest) — grab
-`NMSSaveVault-Setup-v0.3.0.zip` under **Assets**.
+`NMSSaveVault-Setup-v0.3.1.zip` under **Assets**.
 
 Extract the zip, open the `NMSSaveVault` folder and run **`NMSSaveVault.exe`**. That is the
 whole thing — Python and Tkinter are bundled, nothing is installed, and because the app
@@ -165,18 +165,17 @@ See [DESIGN.md](DESIGN.md) for the architecture and the verified save-format det
 | Platform | Status |
 |---|---|
 | **Steam** (Windows) | **Supported and tested** — the primary target. |
-| **GOG.com** (Windows) | **Should work — untested.** GOG uses the *identical* Steam save format, just in a `DefaultUser` folder instead of `st_<steamid>`. |
-| **Epic Games Store** (Windows) | **Should work — untested.** Same as GOG: Epic and GOG share the exact same `DefaultUser` folder and save format. |
+| **GOG.com** (Windows) | **Supported since 0.3.1 — not yet tried on a real GOG install.** GOG writes the *identical* Steam save format into `%AppData%\HelloGames\NMS\DefaultUser`; the app finds that folder by itself and calls it **GOG** (its slots read G1-G15). |
+| **Epic Games Store** | **No release known.** No Epic version of No Man's Sky could be found, and neither libNOM.io nor NomNom knows one. A PC build that writes the Steam format into `DefaultUser` is picked up as GOG. |
 | **Microsoft Store / Xbox Game Pass** (Windows) | **Supported** — read *and* write, and Steam ↔ Xbox moves in the Organizer; see [Xbox / Game Pass](#xbox--game-pass-read-and-write). |
 | **Steam Deck / Linux** (Proton) | **Runs on real hardware.** The portable Linux kit has been launched on a Linux desktop and finds the Proton prefix in every Steam library (Flatpak, Snap and a Deck's SD card included). Not yet exercised across the full backup / restore round-trip by anyone but the author. |
 | **macOS** (native, Apple Silicon) | **Should work — untested.** A portable `.app` kit now builds, and auto-discovery finds `~/Library/Application Support/HelloGames/NMS`. Nobody has run it on a real Mac yet. |
 
-**GOG & Epic — testers wanted.** The on-disk files are byte-for-byte the same Steam format
-this tool already reads and writes, so everything *should* just work. But nobody has confirmed
-it on a real GOG or Epic install yet, and auto-discovery does not yet recognise the
-`DefaultUser` folder as a live source — for now, point commands at it explicitly, e.g.
-`nmsvault-cli status --live "%AppData%\HelloGames\NMS\DefaultUser"`. **If you play on GOG or Epic,
-we'd love your help:** try it against a *copy* of your save first, then
+**GOG — testers wanted.** The on-disk files are byte-for-byte the same Steam format this tool
+already reads and writes, and since 0.3.1 the `DefaultUser` folder is found automatically (an
+existing install picks it up with **Rescan**). Nobody has confirmed it on a real GOG install yet.
+If GOG Galaxy's cloud saves are on, treat them like Steam Cloud: use the app with the game closed.
+**If you play on GOG, we'd love your help:** try it against a *copy* of your save first, then
 [open an issue or discussion](https://github.com/GoodGuysFree/nms-save-vault/issues) with how it
 went. Both success testimonials and bug reports move these from "untested" to officially supported.
 
@@ -187,8 +186,8 @@ Both platforms have a portable kit on the
 
 | Platform | Asset |
 |---|---|
-| Linux / Steam Deck (x86_64) | `NMSSaveVault-v0.3.0-linux-x86_64.tar.gz` |
-| macOS (Apple Silicon) | `NMSSaveVault-v0.3.0-macos-arm64.tar.gz` |
+| Linux / Steam Deck (x86_64) | `NMSSaveVault-v0.3.1-linux-x86_64.tar.gz` |
+| macOS (Apple Silicon) | `NMSSaveVault-v0.3.1-macos-arm64.tar.gz` |
 
 ### Read this first: back up your saves by hand
 
@@ -220,7 +219,7 @@ saw last. It is not a substitute for the copy above.
 ### Then run it
 
 ```sh
-tar -xzf NMSSaveVault-v0.3.0-linux-x86_64.tar.gz
+tar -xzf NMSSaveVault-v0.3.1-linux-x86_64.tar.gz
 cd NMSSaveVault
 ./NMSSaveVault          # the app;  ./nmsvault-cli status  for the command line
 ```
@@ -249,7 +248,7 @@ and can only draw ISO8859-1. Every string the app displays is therefore plain AS
 
 ## Run it (Windows, no Python needed)
 
-Download **`NMSSaveVault-Setup-v0.3.0.zip`** from the
+Download **`NMSSaveVault-Setup-v0.3.1.zip`** from the
 [**Releases**](https://github.com/GoodGuysFree/nms-save-vault/releases) page (under the
 release's **Assets**) and extract it. Open the `NMSSaveVault` folder and run
 **`NMSSaveVault.exe`** — that is all. Everything (Python + Tkinter) is bundled, nothing is
@@ -338,6 +337,8 @@ small config file, `state.json`, kept **in the install directory next to the exe
 
 * Each canonical `st_<steamid64>` folder directly under the NMS root is a **live** source
   (writable). Two Steam accounts → two live sources.
+* GOG's `DefaultUser` folder directly under the NMS root is a **live** source too (writable),
+  named **GOG**.
 * Each Xbox / Game Pass `wgs` account folder is a **live** source, writable within Xbox.
 * Any *other* save folder under the NMS root — a hand-pasted `st_… - Copy`, a renamed or
   dated folder — is treated as an **in-place backup**, not a live target.
@@ -544,7 +545,7 @@ nmsvault-cli index status                    # the content index; also build, sh
 nmsvault-cli selftest                        # read-only: does the app understand every save?
 ```
 
-A live slot is `steam:7` or `S7`, `xbox:4` or `X4` (the organizer's own badges), or
+A live slot is `steam:7` or `S7`, `gog:7` or `G7`, `xbox:4` or `X4` (the organizer's own badges), or
 `steam:<account>:7` / `S2.7` when there is more than one account; every command takes both
 forms. `--live` and `--vault` must name something that exists (a new vault is started only by
 `backup`, `import` and `extract`); errors print one plain line on stderr (set
@@ -621,7 +622,7 @@ The vault lives outside `st_<id>`, so it is never scanned by the game or synced 
 ## Status
 
 Working. Core format/crypto and all operations are verified against the real save files and
-in a temp sandbox (2698 tests). Xbox / Game Pass saves are supported for reading **and**
+in a temp sandbox (2713 tests). Xbox / Game Pass saves are supported for reading **and**
 writing, including Steam ↔ Xbox moves (validated in the real game) — verified against a real install (reads) and synthetic `wgs` fixtures
 (writes). A full file-copy safety backup of the live folder was made before development
 (`C:\Devel\NMS-SaveBackup-SAFETY-2026-06-24`). The Organizer is in (see above); a
@@ -636,6 +637,7 @@ does the same.
 
 | Version | Date | Highlights |
 |---|---|---|
+| **0.3.1** | 2026-10-21 | **GOG.** The `DefaultUser` folder GOG writes (the Steam format) is found automatically as a live source named **GOG**: its slots read G1-G15 (`gog:7` or `G7` on the command line), and moves between GOG, Steam and Xbox work like moves between two Steam accounts, with the same "another account" confirmation. |
 | **0.3.0** | 2026-10-19 | **The Organizer.** A new tab that shows every save file as one line with its versions, live markers and facts; Move to live, Replace with, Swap, Keep a copy and Undo (the replaced save always goes to the vault first); Steam <-> Xbox moves; History, Compare, Notes, Pins and corrections; new vaults start in the version store, and **Tools > Vault upgrade** moves an older one (older app versions cannot open a vault made or upgraded by 0.3.0); **Free old backup folders** gives the old folders' disk space back; importing a copied vault in the new format merges only what is new; the dark theme now draws the menu bar in the window; `nmsvault-cli selftest`; and the matching CLI commands. |
 | **0.2.8** | 2026-10-02 | **Xbox: keep the game's new `xgs` save copy in step.** The game now also keeps a plain copy of each Xbox save in `SystemAppData\xgs`, beside `wgs`. The vault only wrote `wgs`, so a promote, clear, repopulate, restore or undo left the game a stale `xgs` copy; every write now updates both. An account that has only `xgs` is shown read-only. |
 | **0.2.7** | 2026-09-26 | **Filter backups by save file.** A save's history was scattered: the same run sits in a different slot in one backup than in the next, and a rename makes its old copies look like somebody else's. The new **Save file** dropdown above the backups lists every save that has a backup, under its current name and the names it had before (here, *SHIPSTOGIVE-1400QS - was: ShipsToGive-2400qs*), with its platforms, play time and backup count. Pick one, or right-click any slot or save in either pane and choose **Show this save's history**, and the backups narrow to every copy of that run - renamed, moved, or carried to another platform by the NMS cloud - each opened to just the slot holding it, newest first. **All saves** clears it. It uses the same game-written save id as **Play time**, so it costs no extra decoding. |

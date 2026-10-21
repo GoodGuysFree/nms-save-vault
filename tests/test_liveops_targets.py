@@ -8,7 +8,7 @@ import pytest
 
 from nms_save_vault.core import aliases
 from nms_save_vault.core.liveops import TargetError
-from nms_save_vault.core.liveops.targets import resolve_account, resolve_target
+from nms_save_vault.core.liveops.targets import account_label, resolve_account, resolve_target
 from nms_save_vault.core.organizer.model import LiveRef, LiveTarget
 from nms_save_vault.core.organizer.scanner import instance_of
 
@@ -146,3 +146,15 @@ def test_account_labels_use_the_owners_alias_and_never_an_account_id(tmp_path, m
     assert resolve_account(ctx, LiveRef("steam", STEAM_ACCOUNT)).label == "Steam (Main PC)"
     alone = make_ctx(tmp_path, [live_source(one)])
     assert resolve_target(alone, LiveTarget("steam", STEAM_ACCOUNT, 2)).label == "Steam slot 2"
+
+
+def test_a_gog_folder_is_named_gog_and_counts_apart_from_steam(tmp_path):
+    steam = steam_dir(tmp_path / "NMS")
+    gog = steam_dir(tmp_path / "NMS", "DefaultUser")
+    ctx = make_ctx(tmp_path, [live_source(steam), live_source(gog, label="GOG")])
+
+    rt = resolve_target(ctx, LiveTarget("steam", "DefaultUser", 4))
+    assert (rt.folder, rt.label, rt.cloud_mode) == (gog, "GOG slot 4", "steam-local")
+    assert resolve_target(ctx, LiveTarget("steam", STEAM_ACCOUNT, 4)).label == "Steam slot 4"
+    assert account_label(ctx, LiveRef("steam", "DefaultUser")) == "GOG"
+    assert account_label(ctx, LiveRef("steam", STEAM_ACCOUNT)) == "Steam"

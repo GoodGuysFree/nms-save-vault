@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from . import savedir
+from . import formats, savedir
 from . import platform as host_platform
 from .platform import Host
 
@@ -29,11 +29,11 @@ def nms_roots() -> list[Path]:
 
 
 def find_live_save_dirs() -> list[Path]:
-    """All st_<id> folders, under every NMS root, that contain saves."""
+    """All st_<id> folders, then GOG's DefaultUser, under every NMS root, that contain saves."""
     out: list[Path] = []
     seen: set[Path] = set()
     for root in nms_roots():
-        for child in sorted(root.glob("st_*")):
+        for child in [*sorted(root.glob("st_*")), root / formats.GOG_ACCOUNT_DIR]:
             if not (child.is_dir() and savedir.looks_like_save_dir(child)):
                 continue
             try:

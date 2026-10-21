@@ -47,6 +47,9 @@ from .model import (
     Vid,
     head_of,
     is_identified,
+    platform_letter,
+    platform_name,
+    sync_name,
 )
 from .notes import NotesState
 from .scanner import ScanResult, live_refs
@@ -86,7 +89,7 @@ class FactsProvider(Protocol):
 @dataclass(frozen=True)
 class LiveBadge:
     target: LiveTarget
-    label: str              # "S9", "X8"; "S2.7" when a platform has several live folders
+    label: str              # "S9", "G9", "X8"; "S2.7" when there are several Steam folders
     head: Vid
     member_loaded: Member
     is_tip: bool            # the live head has no drawn child
@@ -343,8 +346,8 @@ class _Builder:
         self.graph = LineageGraph.build(journal.edges, lineage)
         self.refs = live_refs(self.sources)
         self.tokens = {ref: i for i, ref in enumerate(self.refs)}
-        per_platform = Counter(r.platform for r in self.refs)
-        self.several = {p for p, n in per_platform.items() if n > 1}
+        per_name = Counter(_name(r) for r in self.refs)
+        self.several = {n for n, count in per_name.items() if count > 1}
 
     # --- per version --------------------------------------------------------------------
 
@@ -682,18 +685,20 @@ class _Builder:
     def _slot_words(self, ref: Any, slot: int) -> str:
         if not isinstance(ref, LiveRef):
             return f"slot {slot}"
-        name = "Steam" if ref.platform == "steam" else "Xbox"
-        if ref.platform in self.several and ref in self.tokens:
-            same = [r for r in self.refs if r.platform == ref.platform]
-            name += f" {same.index(ref) + 1}"
+        name = _name(ref)
+        if name in self.several and ref in self.tokens:
+            name += f" {self._same(ref).index(ref) + 1}"
         return f"{name} slot {slot}"
 
     def _badge(self, target: LiveTarget) -> str:
-        letter = "S" if target.platform == "steam" else "X"
-        if target.platform in self.several and target.ref in self.tokens:
-            same = [r for r in self.refs if r.platform == target.platform]
-            return f"{letter}{same.index(target.ref) + 1}.{target.slot}"
+        letter = platform_letter(target.platform, target.account_key)
+        if _name(target.ref) in self.several and target.ref in self.tokens:
+            return f"{letter}{self._same(target.ref).index(target.ref) + 1}.{target.slot}"
         return f"{letter}{target.slot}"
+
+    def _same(self, ref: LiveRef) -> list[LiveRef]:
+        """The live folders of ``ref``'s kind (Steam, GOG or Xbox), in source order."""
+        return [r for r in self.refs if _name(r) == _name(ref)]
 
     # --- lines --------------------------------------------------------------------------
 
@@ -890,10 +895,9 @@ class _Builder:
         label = str(aliases.redact(source.label)) if source.label else ""
         ids = {ref.account_key, ref.account_key.removeprefix("st_"), source.account} - {""}
         if not label or any(i in label for i in ids):
-            label = "Steam" if ref.platform == "steam" else "Xbox"
-            if ref.platform in self.several:
-                same = [r for r in self.refs if r.platform == ref.platform]
-                label += f" {same.index(ref) + 1}"
+            label = _name(ref)
+            if label in self.several:
+                label += f" {self._same(ref).index(ref) + 1}"
         return label
 
     def _slot(self, target, folder, p, live_pids, pinned, event, pending) -> BoardSlot:
@@ -985,7 +989,7 @@ class _Builder:
 
     def _event_text(self, e: JournalEvent) -> str:
         where = self._slot_words(e.target.ref, e.target.slot)
-        sync = "Steam Cloud" if e.target.platform == "steam" else "Xbox sync"
+        sync = sync_name(e.target.platform, e.target.account_key)
         text = {
             "reverted": f"{sync} put the replaced save back: {where}",
             "deleted": f"Deleted outside the app: {where}",
@@ -999,7 +1003,11 @@ class _Builder:
 
 # --- references (the CLI's <save> and <version>) -------------------------------
 
-_BADGE = re.compile(r"[SX][0-9]+(?:\.[0-9]+)?", re.IGNORECASE)
+_BADGE = re.compile(r"[SGX][0-9]+(?:\.[0-9]+)?", re.IGNORECASE)
+
+
+def _name(ref: LiveRef) -> str:
+    return platform_name(ref.platform, ref.account_key)
 _HEX = re.compile(r"[0-9a-fA-F]+")
 
 

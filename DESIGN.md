@@ -318,7 +318,7 @@ hardcode a bundle id.
 | D9 | macOS ships as "should work — untested", in the same words the README already uses for GOG and Epic. |
 | D10 | Linux v1 ships CLI and GUI together. Tripwire: if the screenshot loop (below, T3) does not work on the real box within its first session, split the GUI to v2 rather than spend console time on it. |
 | D11 | `catalog.json` stores **managed** entries' paths relative to the vault root, so a vault on a USB drive or NAS opens in place from either OS. In-place entries stay absolute — they point outside the vault and are genuinely machine-specific — and surface as missing elsewhere. Needs a catalog version bump and migration. |
-| D12 | GOG / Epic `DefaultUser` discovery is in scope, folded into the multi-root loop. |
+| D12 | GOG / Epic `DefaultUser` discovery is in scope, folded into the multi-root loop. Done in 0.3.1: `DefaultUser` directly under an NMS root is a live Steam-format source named GOG (badges G1-G15). No Epic release of NMS is known (none in libNOM.io or NomNom). |
 | D13 | **No PyPI — GitHub Releases only.** Consequence: the self-contained kits are the *only* way anyone on Linux or macOS gets the app, so packaging is release-blocking rather than optional polish, and a source checkout is the interim. |
 
 ### Verification ladder

@@ -17,6 +17,7 @@ from collections.abc import Callable
 from tkinter import ttk
 
 from ... import theme
+from ...core.organizer.model import sync_name
 from ...core.organizer.readmodel import BoardSlot, LiveSource, ReadModel, VersionRow
 from ..dpi import px, pxs
 from ..fmt import local_time, play_time
@@ -211,7 +212,7 @@ def slot_card(model: ReadModel, source: LiveSource, slot: BoardSlot) -> list[Seg
     out: list[Segment] = [("This slot is empty.\n", ("h",))]
     refill = refill_text(source)
     if refill:
-        sync = "Xbox sync" if source.platform == "xbox" else "Steam Cloud"
+        sync = sync_name(source.ref.platform, source.ref.account_key)
         out += [(f"{sync} may fill it again: ", ("warn",)), (refill + " ", ()),
                 (NEVER_EMPTIES + "\n", ())]
     else:

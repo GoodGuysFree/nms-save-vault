@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Literal, get_args
 
-from ..formats import MAX_SAVE_SLOTS
+from ..formats import GOG_ACCOUNT_DIR, MAX_SAVE_SLOTS
 
 Pid = str   # playthrough id: one line of the organizer (pid_kind lists the forms)
 Vid = str   # version id: lower-case hex sha256 of one member's data file as stored
@@ -200,6 +200,25 @@ class LiveTarget:
     @property
     def ref(self) -> LiveRef:
         return LiveRef(self.platform, self.account_key, self.instance)
+
+
+def platform_name(platform: str, account_key: str = "") -> str:
+    """A live account's platform as the owner knows it: "Xbox", "Steam", or "GOG" for the
+    Steam-format folder GOG writes (formats.GOG_ACCOUNT_DIR)."""
+    if platform == "xbox":
+        return "Xbox"
+    return "GOG" if account_key == GOG_ACCOUNT_DIR else "Steam"
+
+
+def platform_letter(platform: str, account_key: str = "") -> str:
+    """The first letter of :func:`platform_name`: a live slot's badge reads S7, G7 or X7."""
+    return platform_name(platform, account_key)[0]
+
+
+def sync_name(platform: str, account_key: str = "") -> str:
+    """What can put a save back into a live folder behind the app's back."""
+    return {"Xbox": "Xbox sync", "Steam": "Steam Cloud"}.get(
+        platform_name(platform, account_key), "Cloud sync")
 
 
 @dataclass(frozen=True)

@@ -77,6 +77,46 @@ def test_two_accounts_yield_two_live_sources(tmp_path):
     assert len({s.id for s in sources}) == 2  # ids are stable + distinct
 
 
+def test_gog_default_user_is_a_live_source_next_to_steam(tmp_path):
+    root = _make_nms_root(tmp_path)
+    _make_steam_dir(root, f"st_{ACCT_A}")
+    gog = _make_steam_dir(root, "DefaultUser")
+    sources = {Path(s.path).name: s for s in discover.discover_live_sources(root, ms_dirs=[])}
+    assert set(sources) == {f"st_{ACCT_A}", "DefaultUser"}
+    found = sources["DefaultUser"]
+    assert (found.id, found.platform, found.account, found.label) == \
+        ("steam-DefaultUser", state.PLATFORM_STEAM, "", "GOG")
+    assert found.role == state.ROLE_LIVE and found.writable
+    assert discover.is_canonical_gog_live(gog, root)
+
+
+def test_gog_copies_empty_folders_and_nested_ones_are_not_live(tmp_path):
+    root = _make_nms_root(tmp_path)
+    (root / "DefaultUser").mkdir()                  # empty: nothing says it holds saves
+    copy = _make_steam_dir(root, "DefaultUser - Copy")
+    nested = _make_steam_dir(root / "old", "DefaultUser")
+    assert discover.discover_live_sources(root, ms_dirs=[]) == []
+    assert not discover.is_canonical_gog_live(copy, root)
+    assert not discover.is_canonical_gog_live(nested, root)
+    found = discover.discover_inplace_backups(root, live=[])
+    assert sorted(p.name for p in found) == ["DefaultUser", "DefaultUser - Copy"]
+    assert nested in found and copy in found
+
+
+def test_the_gog_folder_is_never_catalogued_as_a_backup_of_itself(tmp_path):
+    root = _make_nms_root(tmp_path)
+    _make_steam_dir(root, "DefaultUser")
+    assert discover.discover_inplace_backups(root, live=[]) == []
+
+
+def test_live_save_dirs_list_gog_after_the_steam_accounts(tmp_path, monkeypatch):
+    root = _make_nms_root(tmp_path)
+    gog = _make_steam_dir(root, "DefaultUser")
+    steam = _make_steam_dir(root, f"st_{ACCT_A}")
+    monkeypatch.setattr(locations, "nms_roots", lambda: [root])
+    assert locations.find_live_save_dirs() == [steam, gog]
+
+
 def test_inplace_backups_exclude_live_and_vault(tmp_path):
     root = _make_nms_root(tmp_path)
     live = _make_steam_dir(root, f"st_{ACCT_A}")

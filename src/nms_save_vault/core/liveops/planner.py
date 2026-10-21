@@ -778,14 +778,14 @@ def _line(ctx: OpContext, pid: str | None):
 
 
 def _slot_label(acct: ResolvedAccount, slot: int) -> str:
-    return slot_label(acct.account.platform, slot, acct.label)
+    return slot_label(acct.account.platform, slot, acct.label, acct.account.account_key)
 
 
 def _where(ctx: OpContext, target: LiveTarget) -> str:
     try:
         return resolve_target(ctx, target).label
     except TargetError:
-        return f"{'Steam' if target.platform == 'steam' else 'Xbox'} slot {target.slot}"
+        return slot_label(target.platform, target.slot, account_key=target.account_key)
 
 
 def _unique(warnings: Iterable[Warning]) -> list[Warning]:

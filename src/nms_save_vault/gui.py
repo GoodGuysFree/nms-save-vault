@@ -31,6 +31,7 @@ from .core.catalog import OperationError, Vault
 from .ui import dpi, logfile
 from .ui.dialogs import bind_escape, bind_return, focus_first, grab_held, tab_last
 from .core.organizer import Organizer
+from .core.organizer.model import platform_name
 from .ui.fmt import local_time as _fmt_ts
 from .ui.fmt import play_time as _fmt_play
 from .ui.redact import RedactingTreeview
@@ -141,6 +142,11 @@ def _source_caption(source) -> str:
     label = aliases.redact(source.label)
     folder = aliases.redact(Path(source.path).name)
     return label if folder in label else f"{label}  ({folder})"
+
+
+def _platform_long(platform: str, account_key: str) -> str:
+    name = platform_name(platform, account_key)
+    return "Xbox / Game Pass" if name == "Xbox" else name
 
 
 def _extract_slot_number(entry) -> int | None:
@@ -1971,7 +1977,7 @@ class App(tk.Tk):
     def _source_tip(self, source, view: savedir.SaveDirView) -> str:
         lines = [
             f"{aliases.redact(source.label)}",
-            f"Platform: {'Xbox / Game Pass' if source.platform == 'xbox' else 'Steam'}",
+            f"Platform: {_platform_long(source.platform, Path(source.path).name)}",
             f"Folder:   {aliases.redact(source.path)}",
             f"Writes:   {'allowed' if source.writable else 'read-only'}",
             f"Slots in use: {len(view.occupied_slots)} of {len(view.slots)}",
@@ -2387,7 +2393,7 @@ class App(tk.Tk):
 
     def _backup_dir(self, directory) -> None:
         platform = savedir.platform_of(directory)
-        prefix = "Xbox" if platform == "xbox" else "Steam"
+        prefix = platform_name(platform, Path(directory).name)
         suggested = f"{prefix}{datetime.now():%Y%m%d-%H%M}"
         label = simpledialog.askstring("Backup", "Optional label:", initialvalue=suggested)
         if label is None:  # user cancelled
