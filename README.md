@@ -4,6 +4,11 @@ Safe backup, catalog, and slot management for **No Man's Sky** (PC — Steam, GO
 Game Pass) save files — designed to give you effectively
 unlimited save slots beyond the game's 15. See [Platform support](#platform-support).
 
+## Video
+
+[![Watch the video on YouTube](https://img.youtube.com/vi/j2Rs282A-wA/maxresdefault.jpg)](https://youtu.be/j2Rs282A-wA)
+*The Organizer in action: [watch on YouTube](https://youtu.be/j2Rs282A-wA).*
+
 ## Screenshots
 
 All data below is invented (a demo world, not anyone's saves).
