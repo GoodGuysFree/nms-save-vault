@@ -824,6 +824,10 @@ class OrganizerTable(ttk.Frame):
             return self._version_of[iid]
         return None, None
 
+    def selected_versions(self) -> list[tuple[str, str]]:
+        """(pid, head) of every selected version row (Ctrl+click adds one)."""
+        return [self._version_of[iid] for iid in self.tree.selection() if iid in self._version_of]
+
     def select(self, pid: str, head: str | None = None) -> None:
         if head is not None:
             self.set_open(pid, True)

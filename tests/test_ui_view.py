@@ -93,6 +93,34 @@ def test_a_link_in_the_detail_selects_that_version(view, gui_app):
     assert view.detail.title.cget("text") == "Main Save #1"
 
 
+def test_two_versions_selected_in_the_table_open_compare_older_first(view, gui_app):
+    pid = PIDS["main"]
+    rows = view.model.versions(pid)
+    newest, oldest = rows[0].head, rows[-1].head
+    view.table.select(pid)
+    gui_app.update()
+    assert view.compare_button.instate(["disabled"]) and "two" in view.action_why[view.compare_button]
+    view.table.select(pid, newest)
+    gui_app.update()
+    assert view.compare_button.instate(["disabled"])        # one version is not a pair
+    iids = {ref: iid for iid, ref in view.table._version_of.items()}
+    view.table.tree.selection_set((iids[(pid, newest)], iids[(pid, oldest)]))
+    gui_app.update()
+    assert view.compare_button.instate(["!disabled"]) and view.action_why[view.compare_button] == ""
+    view.compare_button.invoke()
+    cmp = view.histories.compare
+    try:
+        assert cmp is not None and (cmp.pid, cmp.a, cmp.b) == (pid, oldest, newest)
+    finally:
+        cmp.destroy()
+    other = next(l.pid for l in view.model.lines() if l.pid != pid)
+    view.table.select(other, view.model.versions(other)[0].head)
+    gui_app.update()
+    view.table.tree.selection_add(iids[(pid, oldest)])      # two save files: no pair
+    gui_app.update()
+    assert view.compare_pair() is None and view.compare_button.instate(["disabled"])
+
+
 def test_the_notes_window_follows_the_selection(view, gui_app):
     view.table.select(PIDS["main"])
     gui_app.update()

@@ -162,8 +162,11 @@ class OrganizerView(ttk.Frame):
         self.move_button.pack(side=tk.LEFT, padx=pxs(6, 0))
         self.history_button = ttk.Button(bar, text="History...", command=self.open_history)
         self.history_button.pack(side=tk.LEFT, padx=pxs(6, 0))
+        self.compare_button = ttk.Button(bar, text="Compare...", command=self.open_compare)
+        self.compare_button.pack(side=tk.LEFT, padx=pxs(6, 0))
         self.action_why: dict[ttk.Button, str] = {}      # a disabled button's reason (its tooltip)
-        for button in (self.notes_button, self.move_button, self.history_button):
+        for button in (self.notes_button, self.move_button, self.history_button,
+                       self.compare_button):
             self.action_why[button] = ""
             Tooltip(button, lambda _w, _k, b=button: self.action_why.get(b, ""),
                     key_at=lambda _e: "button")
@@ -213,8 +216,9 @@ class OrganizerView(ttk.Frame):
         self._update_actions()
 
     def _update_actions(self) -> None:
-        """Notes, Move and History need a selected save file (Move also an idle scan): a button
-        that cannot act is disabled, and its tooltip says why."""
+        """Notes, Move and History need a selected save file (Move also an idle scan), Compare
+        two selected versions of one save file: a button that cannot act is disabled, and its
+        tooltip says why."""
         pid, _head = self.table.selection_ref()
         for button, needs_idle in ((self.notes_button, False), (self.move_button, True),
                                    (self.history_button, False)):
@@ -228,6 +232,29 @@ class OrganizerView(ttk.Frame):
                 why = ""
             self.action_why[button] = why
             button.state(["disabled" if why else "!disabled"])
+        if self.model is None or self.organizer is None:
+            why = "The vault has not been read yet."
+        elif self.compare_pair() is None:
+            why = "Open a save file and Ctrl+click two of its versions."
+        else:
+            why = ""
+        self.action_why[self.compare_button] = why
+        self.compare_button.state(["disabled" if why else "!disabled"])
+
+    def compare_pair(self) -> tuple[str, str, str] | None:
+        """(pid, older, newer) when exactly two versions of one save file are selected."""
+        picked = self.table.selected_versions()
+        if len(picked) != 2 or picked[0][0] != picked[1][0] or self.model is None:
+            return None
+        pid = picked[0][0]
+        saved = {r.head: r.saved_at for r in self.model.versions(pid)}
+        a, b = sorted((h for _, h in picked), key=lambda h: saved.get(h, 0))
+        return pid, a, b
+
+    def open_compare(self) -> None:
+        pair = self.compare_pair()
+        if pair is not None:
+            self.histories.open_compare(*pair)
 
     def focus_find(self) -> None:
         """Ctrl+F: the table's Find box."""
