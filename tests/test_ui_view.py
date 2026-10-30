@@ -127,10 +127,14 @@ def test_search_finds_names_and_notes_without_the_index(view, gui_app):
     window.run()
     _wait(gui_app, lambda: window.result is not None)
     rows = window.rows()
-    assert ("Main Save", "Save file", "Main Save", "", "") in rows
-    assert ("Main Save", "Note", "Main run.", "", "") in rows
+    assert ("Main Save", "S9", "Save file", "Main Save", "", "") in rows
+    assert ("Main Save", "S9", "Note", "Main run.", "", "") in rows
     assert "content index is off" in window.status.cget("text")
     assert view.open_search() is window
+    window.text_var.set("old run")                 # only in the vault: that is where to look
+    window.run()
+    _wait(gui_app, lambda: window.rows() and window.rows()[0][0] == "Old Run")
+    assert ("Old Run", "Vault", "Save name", "Old Run", "", "#1 (newest)") in window.rows()
 
 
 def test_search_finds_bases_in_a_galaxy_and_shows_the_version_in_the_table(view, gui_app):
@@ -148,8 +152,9 @@ def test_search_finds_bases_in_a_galaxy_and_shows_the_version_in_the_table(view,
     window.run()
     _wait(gui_app, lambda: window.result is not None)
     newest = f"#{len(versions)} (newest)"
-    assert window.rows() == [("Main Save", "Base galaxy", "10-Eissentam", "Synth Home", newest),
-                             ("Main Save", "Base galaxy", "10-Eissentam", "Synth Outpost", newest)]
+    assert window.rows() == [
+        ("Main Save", "S9", "Base galaxy", "10-Eissentam", "Synth Home", newest),
+        ("Main Save", "S9", "Base galaxy", "10-Eissentam", "Synth Outpost", newest)]
     assert "not read by the content index yet" in window.status.cget("text")
     view.table.set_chips(("xbox",))                 # Main Save is hidden: the list comes back
     gui_app.update()

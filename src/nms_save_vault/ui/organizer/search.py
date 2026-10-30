@@ -3,7 +3,8 @@ the content index read from the saves (bases and their galaxies, ships, companio
 
 The search itself is the core's (``core.index.search``) and runs in the UI worker, since the
 index's facts are a cache read; the window shows one row per save file, field and value, says
-which versions it is in, and how much the index had read. Double-click (or Enter) shows the
+where to look (a live slot such as S9, else Vault), which versions it is in, and how much the
+index had read. Double-click (or Enter) shows the
 newest of those versions in the table.
 """
 from __future__ import annotations
@@ -13,18 +14,20 @@ from collections.abc import Callable
 from tkinter import ttk
 
 from ...core.index import search as core_search
-from ...core.index.search import SearchResult
+from ...core.index.search import Hit, SearchResult
 from ...core.organizer.readmodel import ReadModel
 from ..dialogs import bind_escape, focus_first
 from ..dpi import fit_to_content, px, pxs
 from ..redact import RedactingTreeview, rtitle, set_label
 from ..themeaware import ThemeRegistry
 from ..worker import UiWorker
-from .words import line_name, version_numbers
+from .history import where_text
+from .words import find_row, line_name, version_numbers
 
 EVERYTHING = "Everything"
-COLUMNS = (("field", "Found in", 100, "w"), ("value", "Text", 220, "w"),
-           ("detail", "Detail", 200, "w"), ("versions", "Versions", 130, "w"))
+COLUMNS = (("where", "Where", 90, "w"), ("field", "Found in", 100, "w"),
+           ("value", "Text", 220, "w"), ("detail", "Detail", 200, "w"),
+           ("versions", "Versions", 130, "w"))
 MAX_GROUPS = 6           # version ranges a row lists before "+n more"
 
 
@@ -67,6 +70,21 @@ def status_text(result: SearchResult, index_on: bool) -> str:
     return text
 
 
+def where_found(model: ReadModel, hit: Hit) -> str:
+    """Where to look: the live slots holding one of the versions it is in (S9, X4), else where
+    the newest of them is kept (Vault); for the save file itself, its live slots or Vault."""
+    line = model.line(hit.pid)
+    if line is None:
+        return ""
+    if not hit.heads:
+        return " ".join(b.label for b in line.live) or "Vault"
+    live = [b.label for b in line.live if b.head in hit.heads]
+    if live:
+        return " ".join(live)
+    row = find_row(model, hit.pid, hit.heads[0])
+    return where_text(row, line) if row is not None else ""
+
+
 def result_rows(model: ReadModel, result: SearchResult) -> list[tuple[str, str | None, str, tuple]]:
     """(pid, head to show, save file name, the row's values), by save file name."""
     out = []
@@ -77,7 +95,8 @@ def result_rows(model: ReadModel, result: SearchResult) -> list[tuple[str, str |
             continue
         nums = numbers.setdefault(hit.pid, version_numbers(model, hit.pid))
         out.append((hit.pid, hit.heads[0] if hit.heads else None, line_name(line),
-                    (hit.field, hit.value, hit.detail, versions_text(hit.heads, nums))))
+                    (where_found(model, hit), hit.field, hit.value, hit.detail,
+                     versions_text(hit.heads, nums))))
     out.sort(key=lambda r: r[2].casefold())
     return out
 

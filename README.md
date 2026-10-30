@@ -60,7 +60,8 @@ shown for each version. Chips, Find, sorting and a column chooser narrow the lis
 * **Search...** finds text anywhere in the vault: save file names, notes, labels and comments,
   and what the saves hold - bases and the galaxy each is in, ships, companions, the freighter,
   multi-tools, settlements, expeditions. Pick **In: Base galaxy** and type a galaxy to see
-  which save files have bases there. Double-click a result to show it in the table.
+  which save files have bases there. Each result says where to look (a live slot such as S9
+  or X4, else Vault); double-click it to show it in the table.
 * **Corrections.** If the app linked two saves wrongly, say where a version **comes from**,
   **Combine** two save files into one, or **Split** one apart. Each can be undone, and none
   touches a save file.
