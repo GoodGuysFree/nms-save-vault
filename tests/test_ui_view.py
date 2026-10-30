@@ -121,6 +121,55 @@ def test_two_versions_selected_in_the_table_open_compare_older_first(view, gui_a
     assert view.compare_pair() is None and view.compare_button.instate(["disabled"])
 
 
+def test_search_finds_names_and_notes_without_the_index(view, gui_app):
+    window = view.open_search()
+    window.text_var.set("main")
+    window.run()
+    _wait(gui_app, lambda: window.result is not None)
+    rows = window.rows()
+    assert ("Main Save", "Save file", "Main Save", "", "") in rows
+    assert ("Main Save", "Note", "Main run.", "", "") in rows
+    assert "content index is off" in window.status.cget("text")
+    assert view.open_search() is window
+
+
+def test_search_finds_bases_in_a_galaxy_and_shows_the_version_in_the_table(view, gui_app):
+    from types import SimpleNamespace
+
+    from .index.test_derive import facts_for
+
+    pid = PIDS["main"]
+    versions = view.model.versions(pid)
+    stored = {versions[0].head: facts_for("rich_base")}
+    window = view.open_search()
+    window.facts = lambda: SimpleNamespace(facts=stored.get)
+    window.field_var.set("Base galaxy")
+    window.text_var.set("Eissentam")
+    window.run()
+    _wait(gui_app, lambda: window.result is not None)
+    newest = f"#{len(versions)} (newest)"
+    assert window.rows() == [("Main Save", "Base galaxy", "10-Eissentam", "Synth Home", newest),
+                             ("Main Save", "Base galaxy", "10-Eissentam", "Synth Outpost", newest)]
+    assert "not read by the content index yet" in window.status.cget("text")
+    view.table.set_chips(("xbox",))                 # Main Save is hidden: the list comes back
+    gui_app.update()
+    window.show_selected()
+    gui_app.update()
+    assert view.table.selection_ref() == (pid, versions[0].head) and not view.table.chips
+
+
+def test_a_search_result_names_its_versions_in_ranges():
+    from nms_save_vault.ui.organizer.search import versions_text
+
+    numbers = {f"v{n}": n for n in range(1, 15)}
+    assert versions_text((), numbers) == ""                       # the save file itself
+    assert versions_text(tuple(numbers), numbers) == "all 14"
+    assert versions_text(("v14",), numbers) == "#14 (newest)"
+    assert versions_text(("v5", "v3", "v2", "v1", "v9"), numbers) == "#1-#3, #5, #9"
+    odd = tuple(f"v{n}" for n in range(1, 15, 2))
+    assert versions_text(odd, numbers) == "#1, #3, #5, #7, #9, #11 +1 more"
+
+
 def test_the_notes_window_follows_the_selection(view, gui_app):
     view.table.select(PIDS["main"])
     gui_app.update()

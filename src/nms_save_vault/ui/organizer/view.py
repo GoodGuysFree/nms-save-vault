@@ -40,8 +40,9 @@ from .move import MoveDialog, source_for
 from .notes import NotesWindow, toggle_pin
 from . import factsui
 from .ops import DoneBar, OpsLogWindow, PlanDialog, RecoveryDialog, StepsWindow
+from .search import SearchWindow
 from .table import OrganizerTable
-from .words import PROMOTE_TIP
+from .words import PROMOTE_TIP, find_row
 
 #: Coming back to the tab rescans when the last look is older than this (seconds).
 STALE_AFTER = 5.0
@@ -143,6 +144,7 @@ class OrganizerView(ttk.Frame):
         self._reopen_organizer = False
         self.model: ReadModel | None = None
         self.notes_window: NotesWindow | None = None
+        self.search_window: SearchWindow | None = None
         self.histories = HistoryHooks(self)
         self.scanning = False
         self.scanned_at = 0.0
@@ -164,9 +166,11 @@ class OrganizerView(ttk.Frame):
         self.history_button.pack(side=tk.LEFT, padx=pxs(6, 0))
         self.compare_button = ttk.Button(bar, text="Compare...", command=self.open_compare)
         self.compare_button.pack(side=tk.LEFT, padx=pxs(6, 0))
+        self.search_button = ttk.Button(bar, text="Search...", command=self.open_search)
+        self.search_button.pack(side=tk.LEFT, padx=pxs(6, 0))
         self.action_why: dict[ttk.Button, str] = {}      # a disabled button's reason (its tooltip)
         for button in (self.notes_button, self.move_button, self.history_button,
-                       self.compare_button):
+                       self.compare_button, self.search_button):
             self.action_why[button] = ""
             Tooltip(button, lambda _w, _k, b=button: self.action_why.get(b, ""),
                     key_at=lambda _e: "button")
@@ -217,8 +221,8 @@ class OrganizerView(ttk.Frame):
 
     def _update_actions(self) -> None:
         """Notes, Move and History need a selected save file (Move also an idle scan), Compare
-        two selected versions of one save file: a button that cannot act is disabled, and its
-        tooltip says why."""
+        two selected versions of one save file, Search a read vault: a button that cannot act
+        is disabled, and its tooltip says why."""
         pid, _head = self.table.selection_ref()
         for button, needs_idle in ((self.notes_button, False), (self.move_button, True),
                                    (self.history_button, False)):
@@ -240,6 +244,9 @@ class OrganizerView(ttk.Frame):
             why = ""
         self.action_why[self.compare_button] = why
         self.compare_button.state(["disabled" if why else "!disabled"])
+        why = "The vault has not been read yet." if self.model is None else ""
+        self.action_why[self.search_button] = why
+        self.search_button.state(["disabled" if why else "!disabled"])
 
     def compare_pair(self) -> tuple[str, str, str] | None:
         """(pid, older, newer) when exactly two versions of one save file are selected."""
@@ -255,6 +262,35 @@ class OrganizerView(ttk.Frame):
         pair = self.compare_pair()
         if pair is not None:
             self.histories.open_compare(*pair)
+
+    def open_search(self) -> SearchWindow | None:
+        if self.model is None:
+            return None
+        window = self.search_window
+        if window is not None and window.winfo_exists():
+            window.set_model(self.model)
+            window.deiconify()
+            window.lift()
+            window.entry.focus_set()
+            return window
+        self.search_window = SearchWindow(
+            self.winfo_toplevel(), model=self.model, worker=self.worker, themed=self.themed,
+            facts=lambda: self.facts, on_show=self.show_found)
+        return self.search_window
+
+    def show_found(self, pid: str, head: str | None) -> None:
+        """A search result in the table: a re-save folded into another version shows as that
+        one, and a save file the chips or Find hide brings the whole list back."""
+        if self.model is None or self.model.line(pid) is None:
+            return
+        row = find_row(self.model, pid, head) if head is not None else None
+        if row is not None and row.folded_into:
+            head = row.folded_into
+        if pid not in {line.pid for line in self.table.shown}:
+            self.table.find_var.set("")
+            self.table.set_chips(())
+        self.table.select(pid, head)
+        self._selected(pid, head)
 
     def focus_find(self) -> None:
         """Ctrl+F: the table's Find box."""
@@ -482,6 +518,8 @@ class OrganizerView(ttk.Frame):
             self._show(pid, head)
         if self.notes_window is not None and self.notes_window.winfo_exists():
             self.notes_window.set_model(model)
+        if self.search_window is not None and self.search_window.winfo_exists():
+            self.search_window.set_model(model)
         self.histories.set_model(model)
 
     # --- alerts --------------------------------------------------------------------------------

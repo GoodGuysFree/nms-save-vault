@@ -57,6 +57,10 @@ shown for each version. Chips, Find, sorting and a column chooser narrow the lis
   in History or under a save file in the table, then **Compare...**); **Notes** keeps a note
   per save file and a label, comment and lock per version (in the vault, never in the save);
   a **Pin** stops the app suggesting that save's slot for another save.
+* **Search...** finds text anywhere in the vault: save file names, notes, labels and comments,
+  and what the saves hold - bases and the galaxy each is in, ships, companions, the freighter,
+  multi-tools, settlements, expeditions. Pick **In: Base galaxy** and type a galaxy to see
+  which save files have bases there. Double-click a result to show it in the table.
 * **Corrections.** If the app linked two saves wrongly, say where a version **comes from**,
   **Combine** two save files into one, or **Split** one apart. Each can be undone, and none
   touches a save file.
@@ -629,7 +633,7 @@ The vault lives outside `st_<id>`, so it is never scanned by the game or synced 
 ## Status
 
 Working. Core format/crypto and all operations are verified against the real save files and
-in a temp sandbox (2717 tests). Xbox / Game Pass saves are supported for reading **and**
+in a temp sandbox (2729 tests). Xbox / Game Pass saves are supported for reading **and**
 writing, including Steam ↔ Xbox moves (validated in the real game) — verified against a real install (reads) and synthetic `wgs` fixtures
 (writes). A full file-copy safety backup of the live folder was made before development
 (`C:\Devel\NMS-SaveBackup-SAFETY-2026-06-24`). The Organizer is in (see above); a
