@@ -355,6 +355,47 @@ def create_full_backup(
     return entry
 
 
+@dataclass(frozen=True)
+class FolderBackup:
+    """What :func:`back_up_folders` did with one folder: ``entry`` made, else ``skipped``
+    (no saves in it) or ``error``."""
+    folder: Path
+    entry: CatalogEntry | None = None
+    skipped: str = ""
+    error: str = ""
+
+
+def back_up_folders(
+    vault: Vault, folders: Iterable[Path], label_for: Callable[[Path], str] = lambda _f: "",
+    include_cache: bool = True, warnings: list[str] | None = None,
+) -> list[FolderBackup]:
+    """A full backup of each folder, one after another (a folder named twice once). A folder
+    without saves is skipped; one that fails is reported and the others are still backed up."""
+    out: list[FolderBackup] = []
+    seen: set[str] = set()
+    for folder in folders:
+        folder = Path(folder)
+        key = _path_key(folder)
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            if not savedir.scan_any(folder).occupied_slots:
+                out.append(FolderBackup(folder, skipped="it holds no saves"))
+                continue
+            entry = create_full_backup(vault, folder, label=label_for(folder),
+                                       include_cache=include_cache, warnings=warnings)
+        except (OperationError, OSError) as exc:
+            log.warning("backing up %s failed: %s", folder.name, exc)
+            out.append(FolderBackup(folder, error=str(exc)))
+        except Exception as exc:  # noqa: BLE001 - one folder must not stop the others
+            log.exception("backing up %s failed unexpectedly", folder.name)
+            out.append(FolderBackup(folder, error=f"{type(exc).__name__}: {exc}"))
+        else:
+            out.append(FolderBackup(folder, entry))
+    return out
+
+
 def _hand_over(collected: list[str], warnings: list[str] | None) -> None:
     """Give a backup's, extract's or import's messages to the caller's list, or -- with no
     list to return them in -- issue them as :class:`OplogNotWrittenWarning`. Called by the

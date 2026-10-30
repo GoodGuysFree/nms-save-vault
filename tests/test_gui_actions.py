@@ -12,6 +12,7 @@ Two things are covered here:
 from __future__ import annotations
 
 import tkinter as tk
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -444,6 +445,70 @@ def test_a_history_that_could_not_be_written_is_shown(app, live_target, monkeypa
         app._import_dir(live_target)
 
     assert shown and message in shown[-1]
+
+
+def _two_live_sources(app, tmp_path, monkeypatch):
+    from nms_save_vault.core import state as appstate
+
+    sources = []
+    for n, enabled in ((1, True), (2, True), (3, False)):
+        folder = tmp_path / f"st_{n}"
+        folder.mkdir()
+        sources.append(appstate.Source(id=f"s{n}", platform="steam", account=str(n),
+                                       path=str(folder), label=f"Steam {n}", enabled=enabled))
+    monkeypatch.setattr(app.state, "sources", sources)
+    monkeypatch.setattr(app, "refresh", lambda: None)
+    return [Path(s.path) for s in sources[:2]]
+
+
+def test_back_up_all_live_folders_asks_nothing_and_reports_each_folder(app, tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from nms_save_vault import gui
+    from nms_save_vault.core import operations as ops
+
+    enabled = _two_live_sources(app, tmp_path, monkeypatch)
+    seen = {}
+
+    def back_up(vault, folders, *, label_for, warnings=None, **kw):
+        seen["folders"] = list(folders)
+        seen["labels"] = [label_for(f) for f in folders]
+        warnings.append("the undo log could not be written")
+        return [ops.FolderBackup(enabled[0], SimpleNamespace(id="full-1", occupied_slots=[1, 2])),
+                ops.FolderBackup(enabled[1], error="disk full")]
+
+    monkeypatch.setattr(ops, "back_up_folders", back_up)
+    monkeypatch.setattr(gui.simpledialog, "askstring", lambda *a, **k: pytest.fail("no label asked"))
+    shown = []
+    monkeypatch.setattr(gui, "_showinfo", lambda title, msg: shown.append(msg))
+    _sync_worker(app, monkeypatch)
+
+    _invoke(_menus(app)["File"], gui.BACKUP_ALL_LABEL)
+
+    assert seen["folders"] == enabled                     # the disabled source is left out
+    stamp = f"{datetime.now():%Y%m%d}"
+    assert all(label.startswith("Steam") and stamp in label for label in seen["labels"])
+    text = shown[-1]
+    assert text.startswith("Backed up 1 of 2 live folders.")
+    assert "Steam 1  (st_1): 2 slots, backup 'full-1'" in text
+    assert "Steam 2  (st_2): NOT backed up - disk full" in text
+    assert "the undo log could not be written" in text
+
+
+def test_back_up_all_live_folders_is_an_error_when_none_was_backed_up(app, tmp_path, monkeypatch):
+    from nms_save_vault import gui
+    from nms_save_vault.core import operations as ops
+
+    _two_live_sources(app, tmp_path, monkeypatch)
+    monkeypatch.setattr(ops, "back_up_folders", lambda vault, folders, **kw: [
+        ops.FolderBackup(f, error="disk full") for f in folders])
+    errors = []
+    monkeypatch.setattr(gui, "_showerror", lambda title, msg: errors.append((title, msg)))
+    _sync_worker(app, monkeypatch)
+
+    app.on_backup_all()
+
+    assert errors and errors[0][0] == "Operation failed" and "Backed up 0 of 2" in errors[0][1]
 
 
 # --- step 11: the account data is a choice, unticked by default -------------------------------

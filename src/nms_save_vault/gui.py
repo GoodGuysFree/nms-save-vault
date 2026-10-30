@@ -218,6 +218,21 @@ def _with_warnings(message: str, warnings) -> str:
     return message + ("\n\nWarnings:\n - " + "\n - ".join(warnings) if warnings else "")
 
 
+def _backup_all_text(done, captions: dict) -> str:
+    """File > Back up all live folders now: one line per folder (``captions`` by folder)."""
+    made = sum(1 for d in done if d.entry is not None)
+    lines = [f"Backed up {made} of {len(done)} live folder{'s' if len(done) != 1 else ''}."]
+    for d in done:
+        name = captions.get(d.folder) or aliases.redact(d.folder.name)
+        if d.entry is not None:
+            lines.append(f" - {name}: {len(d.entry.occupied_slots)} slots, backup '{d.entry.id}'")
+        elif d.skipped:
+            lines.append(f" - {name}: skipped, {d.skipped}")
+        else:
+            lines.append(f" - {name}: NOT backed up - {d.error}")
+    return aliases.scrub("\n".join(lines))
+
+
 def _free_text(plan, head: str) -> str:
     """The dry-run of freeing old folders for a dialog: the headline, what stays as it is and
     why, and where the pre-upgrade copy is."""
@@ -592,6 +607,7 @@ class App(tk.Tk):
 
         file = menu("File")
         file.add_command(label="Back up live folder now", command=self.on_backup, underline=0)
+        file.add_command(label=BACKUP_ALL_LABEL, command=self.on_backup_all, underline=8)
         file.add_command(label="Restore whole folder from a backup...", command=self.on_restore,
                          underline=0)
         file.add_command(label="Import...", command=self.on_import, underline=0)
@@ -2406,6 +2422,31 @@ class App(tk.Tk):
             warnings=warns,
         )
 
+    def on_backup_all(self) -> None:
+        """A full backup of every enabled live folder at once, each under a dated label:
+        nothing to answer first."""
+        folders = {Path(s.path): _source_caption(s) for s in self.state.live_sources if s.exists}
+        if not folders and self.live_dir and Path(self.live_dir).is_dir():
+            folders = {Path(self.live_dir): aliases.redact(Path(self.live_dir).name)}
+        if not folders:
+            _showerror("No live folder", "Could not locate any live save folder.")
+            return
+        stamp = f"{datetime.now():%Y%m%d-%H%M}"
+        vault = self.vault
+
+        def run(_force) -> ops.OpResult:
+            warns: list[str] = []
+            done = ops.back_up_folders(
+                vault, folders, warnings=warns,
+                label_for=lambda f: f"{platform_name(savedir.platform_of(f), f.name)}{stamp}")
+            text = _backup_all_text(done, folders)
+            if any(d.error for d in done) and not any(d.entry for d in done):
+                raise OperationError(text)
+            return ops.OpResult(not any(d.error for d in done), "backup_all", text,
+                                warnings=warns)
+
+        self._run(run, success="", message="Backing up every live folder - please wait...")
+
     def on_restore(self, target: dict | None = None) -> None:
         if target is None and self.current_view() == ORGANIZER:
             self.open_panic_restore()           # no backup row is on this tab: the dialog picks
@@ -3292,6 +3333,7 @@ _CHECKING = "checking"                  # the game probe has not answered yet
 FREE_LABEL = "Free old backup folders..."
 FINISH_FREE_LABEL = "Finish freeing old backup folders..."
 CHOOSE_VAULT_LABEL = "Choose vault folder..."
+BACKUP_ALL_LABEL = "Back up all live folders now"
 AUTO_UPDATE_LABEL = "Check for updates automatically"
 UNDO_CLASSIC_LABEL = "Undo the last change to the active live folder"
 UNDO_ORGANIZER_LABEL = "Undo the last move (as the Done bar's Undo)"

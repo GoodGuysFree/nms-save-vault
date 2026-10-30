@@ -70,6 +70,31 @@ def test_full_backup_and_restore_mirror(sandbox):
     assert [s.slot for s in savedir.scan(live).occupied_slots] == occupied_before
 
 
+def test_back_up_folders_backs_up_each_folder_once_and_goes_on_past_a_failure(tmp_path, monkeypatch):
+    first, second, empty = tmp_path / "st_1", tmp_path / "st_2", tmp_path / "st_3"
+    steam_save(first, 1, 0, "Alpha", 3600, 0x11, 1_700_000_000)
+    steam_save(first, 2, 0, "Beta", 7200, 0x12, 1_700_000_100)
+    steam_save(second, 1, 0, "Gamma", 60, 0x21, 1_700_000_000)
+    empty.mkdir()
+    vault = _vault(tmp_path)
+    real = ops.create_full_backup
+
+    def flaky(vault, folder, **kw):
+        if folder == second:
+            raise ops.SourceChangedError("save.hg", vanished=False, live=True)
+        return real(vault, folder, **kw)
+
+    monkeypatch.setattr(ops, "create_full_backup", flaky)
+    done = ops.back_up_folders(vault, [first, empty, second, first],
+                               label_for=lambda f: f"label-{f.name}")
+    assert [d.folder for d in done] == [first, empty, second]
+    assert done[0].entry is not None and done[0].entry.label == "label-st_1"
+    assert sorted(s.slot for s in done[0].entry.occupied_slots) == [1, 2]
+    assert done[1].entry is None and done[1].skipped == "it holds no saves"
+    assert done[2].entry is None and "changed while it was being copied" in done[2].error
+    assert [e.id for e in store_classic.list_entries(vault)] == [done[0].entry.id]
+
+
 def test_repopulate_cross_slot_rekeys_and_preserves_data(sandbox):
     live, vault = sandbox
     view = savedir.scan(live)

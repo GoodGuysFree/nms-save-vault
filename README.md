@@ -91,7 +91,8 @@ The full list is under [Usage](#usage).
 ## What it does
 
 1. **Full backup / restore** — snapshot the entire live save folder, and restore any
-   snapshot (always auto-backing-up the current state first).
+   snapshot (always auto-backing-up the current state first). **File → Back up all live
+   folders now** backs up every enabled live folder (Steam, GOG, Xbox) in one go, no questions.
 2. **Catalog + per-slot operations** — browse every backup and the saves inside it by
    name/mode/play-time/date; lift a single slot aside; and repopulate any live slot from
    any save in any cataloged backup (re-keying the meta when the slot number differs).
@@ -628,7 +629,7 @@ The vault lives outside `st_<id>`, so it is never scanned by the game or synced 
 ## Status
 
 Working. Core format/crypto and all operations are verified against the real save files and
-in a temp sandbox (2714 tests). Xbox / Game Pass saves are supported for reading **and**
+in a temp sandbox (2717 tests). Xbox / Game Pass saves are supported for reading **and**
 writing, including Steam ↔ Xbox moves (validated in the real game) — verified against a real install (reads) and synthetic `wgs` fixtures
 (writes). A full file-copy safety backup of the live folder was made before development
 (`C:\Devel\NMS-SaveBackup-SAFETY-2026-06-24`). The Organizer is in (see above); a
