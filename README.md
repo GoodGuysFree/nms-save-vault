@@ -29,7 +29,7 @@ All data below is invented (a demo world, not anyone's saves).
 
 **Just want to run it? No Python needed.** Download the ready-to-use Windows kit from the
 [**latest release**](https://github.com/GoodGuysFree/nms-save-vault/releases/latest) — grab
-`NMSSaveVault-Setup-v0.3.1.zip` under **Assets**.
+`NMSSaveVault-Setup-v0.3.2.zip` under **Assets**.
 
 Extract the zip, open the `NMSSaveVault` folder and run **`NMSSaveVault.exe`**. That is the
 whole thing — Python and Tkinter are bundled, nothing is installed, and because the app
@@ -198,8 +198,8 @@ Both platforms have a portable kit on the
 
 | Platform | Asset |
 |---|---|
-| Linux / Steam Deck (x86_64) | `NMSSaveVault-v0.3.1-linux-x86_64.tar.gz` |
-| macOS (Apple Silicon) | `NMSSaveVault-v0.3.1-macos-arm64.tar.gz` |
+| Linux / Steam Deck (x86_64) | `NMSSaveVault-v0.3.2-linux-x86_64.tar.gz` |
+| macOS (Apple Silicon) | `NMSSaveVault-v0.3.2-macos-arm64.tar.gz` |
 
 ### Read this first: back up your saves by hand
 
@@ -231,7 +231,7 @@ saw last. It is not a substitute for the copy above.
 ### Then run it
 
 ```sh
-tar -xzf NMSSaveVault-v0.3.1-linux-x86_64.tar.gz
+tar -xzf NMSSaveVault-v0.3.2-linux-x86_64.tar.gz
 cd NMSSaveVault
 ./NMSSaveVault          # the app;  ./nmsvault-cli status  for the command line
 ```
@@ -260,7 +260,7 @@ and can only draw ISO8859-1. Every string the app displays is therefore plain AS
 
 ## Run it (Windows, no Python needed)
 
-Download **`NMSSaveVault-Setup-v0.3.1.zip`** from the
+Download **`NMSSaveVault-Setup-v0.3.2.zip`** from the
 [**Releases**](https://github.com/GoodGuysFree/nms-save-vault/releases) page (under the
 release's **Assets**) and extract it. Open the `NMSSaveVault` folder and run
 **`NMSSaveVault.exe`** — that is all. Everything (Python + Tkinter) is bundled, nothing is
@@ -634,7 +634,7 @@ The vault lives outside `st_<id>`, so it is never scanned by the game or synced 
 ## Status
 
 Working. Core format/crypto and all operations are verified against the real save files and
-in a temp sandbox (2729 tests). Xbox / Game Pass saves are supported for reading **and**
+in a temp sandbox (2735 tests). Xbox / Game Pass saves are supported for reading **and**
 writing, including Steam ↔ Xbox moves (validated in the real game) — verified against a real install (reads) and synthetic `wgs` fixtures
 (writes). A full file-copy safety backup of the live folder was made before development
 (`C:\Devel\NMS-SaveBackup-SAFETY-2026-06-24`). The Organizer is in (see above); a
@@ -649,6 +649,7 @@ does the same.
 
 | Version | Date | Highlights |
 |---|---|---|
+| **0.3.2** | 2026-10-30 | **Search, Compare from the table, back up everything.** **Search...** in the Organizer finds text anywhere in the vault - save file names, notes, labels, and what the saves hold (bases and the galaxy each is in, ships, companions, freighter, multi-tools, settlements, expeditions) - and says where each result is (S9, X4 or Vault); **In: Base galaxy** answers which save files have bases in a galaxy. Ctrl+click two versions under a save file and press **Compare...**. **File > Back up all live folders now** backs up every live folder at once, no questions. |
 | **0.3.1** | 2026-10-21 | **GOG.** The `DefaultUser` folder GOG writes (the Steam format) is found automatically as a live source named **GOG**: its slots read G1-G15 (`gog:7` or `G7` on the command line), and moves between GOG, Steam and Xbox work like moves between two Steam accounts, with the same "another account" confirmation. Emptying a GOG slot gives GOG Galaxy's steps and warns that its cloud saves may put a save back. |
 | **0.3.0** | 2026-10-19 | **The Organizer.** A new tab that shows every save file as one line with its versions, live markers and facts; Move to live, Replace with, Swap, Keep a copy and Undo (the replaced save always goes to the vault first); Steam <-> Xbox moves; History, Compare, Notes, Pins and corrections; new vaults start in the version store, and **Tools > Vault upgrade** moves an older one (older app versions cannot open a vault made or upgraded by 0.3.0); **Free old backup folders** gives the old folders' disk space back; importing a copied vault in the new format merges only what is new; the dark theme now draws the menu bar in the window; `nmsvault-cli selftest`; and the matching CLI commands. |
 | **0.2.8** | 2026-10-02 | **Xbox: keep the game's new `xgs` save copy in step.** The game now also keeps a plain copy of each Xbox save in `SystemAppData\xgs`, beside `wgs`. The vault only wrote `wgs`, so a promote, clear, repopulate, restore or undo left the game a stale `xgs` copy; every write now updates both. An account that has only `xgs` is shown read-only. |
