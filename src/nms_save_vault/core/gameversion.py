@@ -29,7 +29,7 @@ class KnownFormat:
 
 #: Raise these (and only these) after the maintenance steps pass for a new game version.
 KNOWN = {
-    "steam": KnownFormat(formats.META_FORMAT_4, 4228, ("saveN.hg chunked LZ4 (HGSAVEV1)",)),
+    "steam": KnownFormat(formats.META_FORMAT_4, 4231, ("saveN.hg chunked LZ4 (HGSAVEV1)",)),
     "xbox": KnownFormat(formats.META_FORMAT_4, 4228, ("containers.index blob (GameSaveBlob)",)),
 }
 #: A container kind not listed here stays refused (never decoded): lz4_block.UnsupportedContainer.

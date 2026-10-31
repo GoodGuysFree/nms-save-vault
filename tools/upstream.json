@@ -1,4 +1,10 @@
 {
-  "zencq/libNOM.io": {"tag": "0.14.2", "published": "2025-09-06"},
-  "monkeyman192/MBINCompiler": {"tag": "v7.07.0-pre1", "published": "2026-10-08"}
+  "zencq/libNOM.io": {
+    "tag": "0.14.2",
+    "published": "2025-09-06"
+  },
+  "monkeyman192/MBINCompiler": {
+    "tag": "v7.10.0-pre1",
+    "published": "2026-10-28"
+  }
 }

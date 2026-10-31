@@ -55,8 +55,9 @@ def test_the_known_format_is_recorded_per_platform_with_the_container_kind():
         known = gameversion.KNOWN[platform]
         assert known.meta_format == formats.META_FORMAT_4 and known.base_version >= 4228
         assert known.containers
-    assert not gameversion.newer("steam", formats.META_FORMAT_4, 4228)
-    assert gameversion.newer("steam", formats.META_FORMAT_4, 4229)
+    steam = gameversion.KNOWN["steam"].base_version
+    assert not gameversion.newer("steam", formats.META_FORMAT_4, steam)
+    assert gameversion.newer("steam", formats.META_FORMAT_4, steam + 1)
     assert gameversion.newer("steam", formats.META_FORMAT_4 + 1, 0)
     assert not gameversion.newer("unknown-platform", 9999, 9999)
 
