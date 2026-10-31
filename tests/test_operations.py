@@ -1,7 +1,7 @@
 """Integration tests for the write operations, run entirely in a temp sandbox.
 
-A throwaway "live" folder is built from the real save files (read-only source); the real
-save directory is never modified.
+A throwaway "live" folder is built from synthetic saves: a copy of the real ones would make
+these tests fail whenever a game update outruns the app's known game version.
 """
 from __future__ import annotations
 
@@ -22,21 +22,12 @@ from nms_save_vault.core import catalog, formats, savedir, slotmap
 from nms_save_vault.core.catalog import CatalogEntry, Vault
 
 from .conftest import steam_save
+from .liveops_support import steam_account
 
 
 @pytest.fixture
-def sandbox(live_save_dir, tmp_path):
-    live = tmp_path / "live"
-    live.mkdir()
-    for p in live_save_dir.glob("*.hg"):
-        shutil.copy2(p, live / p.name)
-    vdf = live_save_dir / "steam_autocloud.vdf"
-    if vdf.is_file():
-        shutil.copy2(vdf, live / vdf.name)
-    vault = Vault(tmp_path / "vault")
-    vault.ensure()
-    vstore.create_store(vault.root)          # live operations need the version store (D3)
-    return live, vault
+def sandbox(tmp_path):
+    return steam_account(tmp_path, "live"), _vault(tmp_path)
 
 
 def _vault(tmp_path: Path) -> Vault:
@@ -165,9 +156,9 @@ def test_undo_restores_previous_slot(sandbox):
     assert savedir.scan(live).slots[dest].display_name == name_dest_before
 
 
-def test_import_inplace(sandbox, live_save_dir):
-    _live, vault = sandbox
-    entry = ops.import_backup(vault, live_save_dir, label="real", copy_into_vault=False)
+def test_import_inplace(sandbox):
+    live, vault = sandbox
+    entry = ops.import_backup(vault, live, label="real", copy_into_vault=False)
     assert entry.kind == "inplace" and not entry.managed
     assert vault.get(entry.id) is not None
 

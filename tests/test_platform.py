@@ -242,7 +242,9 @@ def test_linux_symlinked_steam_roots_are_not_double_counted(tmp_path):
         pytest.skip("this machine does not permit creating symlinks")
 
     assert len(host_platform.steam_roots(host(LINUX, home))) == 1
-    assert host_platform.nms_roots(host(LINUX, home)) == [proton_nms(native)]
+    # one entry under whichever name was found first; it is the native folder
+    roots = host_platform.nms_roots(host(LINUX, home))
+    assert [p.resolve() for p in roots] == [proton_nms(native).resolve()]
 
 
 def test_linux_without_steam_finds_nothing(tmp_path):

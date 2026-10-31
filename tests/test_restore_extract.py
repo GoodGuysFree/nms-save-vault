@@ -8,7 +8,6 @@ data as well.
 from __future__ import annotations
 
 import hashlib
-import shutil
 from pathlib import Path
 
 import pytest
@@ -18,17 +17,13 @@ from nms_save_vault.core import savedir, slotmap
 from nms_save_vault.core import store as vstore
 from nms_save_vault.core.catalog import KIND_EXTRACT, SlotSummary, Vault
 
+from .liveops_support import steam_account
+
 
 @pytest.fixture
-def sandbox(live_save_dir, tmp_path):
-    """A throwaway live folder copied from the real one (read-only source)."""
-    live = tmp_path / "live"
-    live.mkdir()
-    for p in live_save_dir.glob("*.hg"):
-        shutil.copy2(p, live / p.name)
-    vdf = live_save_dir / "steam_autocloud.vdf"
-    if vdf.is_file():
-        shutil.copy2(vdf, live / vdf.name)
+def sandbox(tmp_path):
+    """A throwaway live folder of synthetic saves: two slots, account data, the cloud marker."""
+    live = steam_account(tmp_path, "live")
     vault = Vault(tmp_path / "vault")
     vault.ensure()
     vstore.create_store(vault.root)          # live operations need the version store (D3)
