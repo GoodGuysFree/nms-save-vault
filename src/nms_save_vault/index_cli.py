@@ -193,7 +193,7 @@ def cmd_build(args) -> int:
     return 0
 
 
-def _follow(service: IndexService, timeout: float, *, stuck_s: float = STUCK_S) -> str | None:
+def _follow(service: IndexService, timeout: float) -> str | None:
     """Print progress until the queue is empty. Returns why it stopped early, or None."""
     end = time.monotonic() + timeout
     last = ""
@@ -209,7 +209,7 @@ def _follow(service: IndexService, timeout: float, *, stuck_s: float = STUCK_S) 
             return "Stopped: the content index is paused."
         if p.running == 0 and p.queued > 0:
             blocked_since = blocked_since or time.monotonic()
-            if time.monotonic() - blocked_since >= stuck_s:
+            if time.monotonic() - blocked_since >= STUCK_S:
                 if service.dispatcher is not None and service.dispatcher.playing:
                     return (f"Stopped: the game is running, so {p.queued} older versions wait until it is closed "
                             "(live saves are indexed; use --live-only, or close the game and build again).")

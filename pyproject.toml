@@ -27,4 +27,7 @@ packages = ["src/nms_save_vault"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q -m 'not slow'"
+# A passed test's tmp_path goes when it ends, on its own worker: the default keeps every one
+# and deletes a whole run's tree (tens of thousands of files) three runs later, in one process.
+tmp_path_retention_policy = "failed"
 markers = ["slow: long checks (the real-data smoke test, the time budget); run with -m slow"]

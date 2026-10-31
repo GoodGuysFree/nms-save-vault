@@ -7,6 +7,7 @@ import json
 import os
 import re
 import struct
+import subprocess
 import sys
 import tempfile
 import uuid
@@ -169,6 +170,26 @@ def _no_configured_live_folders(monkeypatch):
     ``recorder._configured_sources`` themselves."""
     from nms_save_vault.core.organizer import recorder
     monkeypatch.setattr(recorder, "_configured_sources", lambda: [], raising=False)
+
+
+def _install_game_not_running() -> None:
+    """The game probe asks ``tasklist``: 0.1 s and a console host a time, hundreds of times a
+    run. Patching ``safety.is_game_running`` misses the calls that reach it through default
+    arguments bound at import, and the App's worker thread probes between tests too, so
+    ``tasklist`` itself answers, for the whole session: the game is not running. A test that
+    wants it running patches the probe; test_safety_live patches ``subprocess.run`` over this
+    to drive the real one."""
+    real_run = subprocess.run
+
+    def run(args, *a, **kw):
+        if isinstance(args, (list, tuple)) and list(args[:1]) == ["tasklist"]:
+            return subprocess.CompletedProcess(args, 0, stdout=b"INFO: No tasks are running "
+                                               b"which match the specified criteria.\r\n", stderr=b"")
+        return real_run(args, *a, **kw)
+    subprocess.run = run
+
+
+_install_game_not_running()
 
 
 @pytest.fixture(autouse=True)
@@ -495,6 +516,35 @@ def _install_dialog_stubs() -> None:
 _install_dialog_stubs()
 
 
+def _off_screen() -> tuple[int, int] | None:
+    """A spot right of and below every monitor, on Windows (None elsewhere). Tests that need
+    a mapped window still map one, but it never shows on, or steals space from, the owner's
+    screens - whichever of them is the primary."""
+    if sys.platform != "win32":
+        return None
+    import ctypes
+
+    metric = ctypes.windll.user32.GetSystemMetrics
+    # SM_XVIRTUALSCREEN + SM_CXVIRTUALSCREEN, SM_YVIRTUALSCREEN + SM_CYVIRTUALSCREEN
+    return metric(76) + metric(78) + 100, metric(77) + metric(79) + 100
+
+
+_OFF_SCREEN = _off_screen()
+
+
+def _off_screen_after(init):
+    def placed(self, *args, **kw):
+        init(self, *args, **kw)
+        self.wm_geometry("+{}+{}".format(*_OFF_SCREEN))   # before the first map; a later geometry wins
+    return placed
+
+
+if _OFF_SCREEN is not None:
+    import tkinter as _tk
+
+    _tk.Toplevel.__init__ = _off_screen_after(_tk.Toplevel.__init__)
+
+
 @pytest.fixture(autouse=True)
 def dialogs():
     """The recorder of every dialog a test shows (see :class:`Dialogs`): unexpected ones raise,
@@ -572,6 +622,13 @@ def gui_app(tmp_path_factory):
     mp.setenv("NMSVAULT_PORTABLE_ROOT", str(tmp_path / "install"))
     mp.setenv("LOCALAPPDATA", str(tmp_path / "Local"))
     mp.setenv("APPDATA", str(tmp_path / "Roaming"))
+    if _OFF_SCREEN is not None:
+        # The root maps while the App is built, before it places itself: both off screen.
+        import tkinter as tk
+
+        mp.setattr(tk.Tk, "__init__", _off_screen_after(tk.Tk.__init__))
+        work_area = gui._work_area_rect
+        mp.setattr(gui, "_work_area_rect", lambda root: (*_OFF_SCREEN, *work_area(root)[2:]))
     try:
         application = _build_app(gui, tmp_path)
     finally:
