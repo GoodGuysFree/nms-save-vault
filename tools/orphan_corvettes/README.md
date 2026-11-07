@@ -50,6 +50,9 @@ number of a ship slot that has a corvette in it. Older tools (and older versions
 Vault) treated `UserData` as the link. The tool **keeps these by default** and says so in its
 report. `--include-ud-linked` removes them as well. **Do not use that flag** unless you have
 checked in the game that every corvette in that save still has its full interior without them.
+In one of the author's saves the game itself added a part to such a record while the record
+claimed by time stayed untouched. So when both kinds exist for one corvette, the game may
+use the `UserData` one.
 
 ## What it does NOT do
 
