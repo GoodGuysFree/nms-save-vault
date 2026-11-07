@@ -3,6 +3,19 @@
 How to cut a new versioned release of NMS Save Vault. Windows + PowerShell, with `uv` and
 the GitHub CLI (`gh`) on PATH.
 
+## 0. Check which game is installed
+
+```pwsh
+F:\NMS-Unpack\.venv\Scripts\python.exe F:\NMS-Unpack\scripts\installed.py --check
+```
+
+This is the owner's game-files workspace. It is read-only towards both game installs. Exit 0
+means `F:\NMS-Unpack\builds\INSTALLED.json` is current. Exit 1 means an install changed: run
+it again without `--check` (about 2 minutes) to refresh it. The file gives the Steam build, the
+Xbox package version and `same_release`, which says whether both installs are the same game
+release (the pak contents are compared file by file). A release note about either platform's
+game version comes from this file, not from which saves happen to exist.
+
 ## 1. Bump the version
 
 Update the version in all three places (keep them identical):

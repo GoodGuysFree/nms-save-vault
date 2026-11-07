@@ -382,6 +382,13 @@ stays readable, but no live write may read from it or replace it until the app i
 4. Bump the guard's known version in `core/gameversion.py` (`KNOWN`), run the full suite and
    `nmsvault-cli selftest` once more, then `python tools/check_upstream.py --record`.
 
+Which game each platform runs comes from the owner's game-files workspace, not from the saves
+that happen to exist. `F:\NMS-Unpack\builds\INSTALLED.json` is rewritten after every ingest;
+`F:\NMS-Unpack\scripts\installed.py --check` exits 0 while it is current. It records the Steam
+build, the Xbox package version, and `same_release`: true when every file in the Xbox paks
+matches the Steam build's. The Xbox `NMS.exe` cannot be read on disk, so its version fields are
+null, each with a `_why` note.
+
 `tools/check_upstream.py` is a development tool: the app never imports it and never calls the
 network for this.
 
