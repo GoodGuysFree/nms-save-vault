@@ -299,13 +299,8 @@ def vault_root(given: Path | None) -> Path:
 
 
 def slot_ref(folder: Path, slot: int) -> str:
-    """The slot as the app's CLI names it: the configured account's id, else the folder name
-    (the CLI adds a folder it was not configured with as an extra account named after it)."""
-    st = appstate.load()
-    key = os.path.normcase(os.path.realpath(folder))
-    for s in (st.sources if st else []) or []:
-        if getattr(s, "platform", "") == "steam" and os.path.normcase(os.path.realpath(s.path)) == key:
-            return f"steam:{s.account}:{slot}"
+    """The slot as the app's CLI names it: a live account is named by its folder name
+    (``st_<id>``), configured or not."""
     return f"steam:{folder.name}:{slot}"
 
 
