@@ -387,7 +387,9 @@ that happen to exist. `F:\NMS-Unpack\builds\INSTALLED.json` is rewritten after e
 `F:\NMS-Unpack\scripts\installed.py --check` exits 0 while it is current. It records the Steam
 build, the Xbox package version, and `same_release`: true when every file in the Xbox paks
 matches the Steam build's. The Xbox `NMS.exe` cannot be read on disk, so its version fields are
-null, each with a `_why` note.
+null, each with a `_why` note. **Owner decision (2026-11-07):** that evidence is trusted as it
+is. While `same_release` is true, the Xbox guard is raised with the Steam guard, without
+waiting for an Xbox save from the new game.
 
 `tools/check_upstream.py` is a development tool: the app never imports it and never calls the
 network for this.
