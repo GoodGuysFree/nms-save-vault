@@ -29,7 +29,7 @@ All data below is invented (a demo world, not anyone's saves).
 
 **Just want to run it? No Python needed.** Download the ready-to-use Windows kit from the
 [**latest release**](https://github.com/GoodGuysFree/nms-save-vault/releases/latest) — grab
-`NMSSaveVault-Setup-v0.3.4.zip` under **Assets**.
+`NMSSaveVault-Setup-v0.3.5.zip` under **Assets**.
 
 Extract the zip, open the `NMSSaveVault` folder and run **`NMSSaveVault.exe`**. That is the
 whole thing — Python and Tkinter are bundled, nothing is installed, and because the app
@@ -202,8 +202,8 @@ Both platforms have a portable kit on the
 
 | Platform | Asset |
 |---|---|
-| Linux / Steam Deck (x86_64) | `NMSSaveVault-v0.3.4-linux-x86_64.tar.gz` |
-| macOS (Apple Silicon) | `NMSSaveVault-v0.3.4-macos-arm64.tar.gz` |
+| Linux / Steam Deck (x86_64) | `NMSSaveVault-v0.3.5-linux-x86_64.tar.gz` |
+| macOS (Apple Silicon) | `NMSSaveVault-v0.3.5-macos-arm64.tar.gz` |
 
 ### Read this first: back up your saves by hand
 
@@ -235,7 +235,7 @@ saw last. It is not a substitute for the copy above.
 ### Then run it
 
 ```sh
-tar -xzf NMSSaveVault-v0.3.4-linux-x86_64.tar.gz
+tar -xzf NMSSaveVault-v0.3.5-linux-x86_64.tar.gz
 cd NMSSaveVault
 ./NMSSaveVault          # the app;  ./nmsvault-cli status  for the command line
 ```
@@ -264,7 +264,7 @@ and can only draw ISO8859-1. Every string the app displays is therefore plain AS
 
 ## Run it (Windows, no Python needed)
 
-Download **`NMSSaveVault-Setup-v0.3.4.zip`** from the
+Download **`NMSSaveVault-Setup-v0.3.5.zip`** from the
 [**Releases**](https://github.com/GoodGuysFree/nms-save-vault/releases) page (under the
 release's **Assets**) and extract it. Open the `NMSSaveVault` folder and run
 **`NMSSaveVault.exe`** — that is all. Everything (Python + Tkinter) is bundled, nothing is
@@ -653,6 +653,7 @@ does the same.
 
 | Version | Date | Highlights |
 |---|---|---|
+| **0.3.5** | 2026-11-07 | **Xbox saves from the early-November game update.** Xbox / Game Pass saves written by the game since its early-November update can be moved again. The Xbox install was checked to be the same game release as the Steam one that 0.3.4 already handles. |
 | **0.3.4** | 2026-11-07 | **The early-November game update, and orphan corvette layouts.** Steam saves written by the game since its early-November update can be moved again; 0.3.3 refused them as "written by a newer game version". The Organizer now says **orphan corvette layouts** on a save that holds a corvette interior no corvette owns, usually left behind when a save editor deleted a corvette. It only reports this and never changes the save. The facts of every version are read once more in the background after updating. |
 | **0.3.3** | 2026-10-31 | **The latest game update.** Steam saves written by the game since its late-October update can be moved, restored, swapped and undone again; 0.3.2 refused them as "written by a newer game version". Xbox saves from that update stay refused until one has been checked. |
 | **0.3.2** | 2026-10-30 | **Search, Compare from the table, back up everything.** **Search...** in the Organizer finds text anywhere in the vault - save file names, notes, labels, and what the saves hold (bases and the galaxy each is in, ships, companions, freighter, multi-tools, settlements, expeditions) - and says where each result is (S9, X4 or Vault); **In: Base galaxy** answers which save files have bases in a galaxy. Ctrl+click two versions under a save file and press **Compare...**. **File > Back up all live folders now** backs up every live folder at once, no questions. |
