@@ -24,6 +24,7 @@ from ..fmt import local_time, play_time
 from ..redact import rtext, set_label
 from ..themeaware import ThemeRegistry
 from ..tooltip import Tooltip
+from . import factsui
 from .live import NEVER_EMPTIES, refill_text
 from .words import (METHOD_WORDS, NO_BACKUP, NO_BACKUP_TIP, OUTSIDE_ONLY_TIP, PIN_TIP, find_row,
                     line_name, slot_words, tip_name, version_numbers)
@@ -192,6 +193,9 @@ def _version_state(row: VersionRow) -> str:
         words.append("unreadable - cannot be a source")
     if "newer" in row.flags:
         words.append(NEWER_NOTICE)
+    orphans = factsui.orphan_corvettes(row.facts)
+    if orphans:
+        words.append(factsui.ORPHAN_NOTICE.format(n=orphans, s="" if orphans == 1 else "s"))
     if "gone" in row.flags:
         words.append("no copy left")
     return "; ".join(words)

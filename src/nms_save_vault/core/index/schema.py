@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from typing import Any, Literal, TypedDict
 
 SCHEMA_VERSION = 1       # layout of the facts below
-EXTRACTOR_VERSION = 1    # bumped by any change to extractor output (rows go stale, re-queued)
+EXTRACTOR_VERSION = 2    # bumped by any change to extractor output (rows go stale, re-queued)
 DECODER_VERSION = 1      # bumped when the decoder learns a format (failed rows re-queued)
 
 Status = Literal["ok", "partial", "corrupt", "unsupported", "error"]

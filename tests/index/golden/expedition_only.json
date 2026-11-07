@@ -167,7 +167,7 @@
   }
  },
  "errors": [],
- "extractor": 1,
+ "extractor": 2,
  "primary": "expedition",
  "save": {
   "active_context": "Season",

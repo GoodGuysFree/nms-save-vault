@@ -26,7 +26,7 @@ def obj(oid: str, ts: int = 1, user: int = 0) -> dict:
 def base(btype: str, name: str, objects=(), address="0x0000000500000001", position=(1.0, 2.0, 3.0), **extra) -> dict:
     b = {"BaseType": {"PersistentBaseTypes": btype}, "Name": name, "GalacticAddress": address,
          "Position": list(position), "Objects": list(objects), "OriginalBaseVersion": 8,
-         "Owner": {"UID": "SENTINEL-UID", "USN": "SENTINEL_USER", "PTK": "ST", "LID": "", "TS": 1}}
+         "Owner": {"UID": "SENTINEL-UID", "USN": "SENTINEL_USER", "PTK": "ST", "LID": "", "TS": 1_700_000_000}}
     b.update(extra)
     return b
 

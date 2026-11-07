@@ -548,9 +548,15 @@ the vault: median 8.4 KB, max 26 KB per version, 2.27 MB for all 195.
 
 - **Own bases** = types `HomePlanetBase`, `FreighterBase`, `PlayerShipBase`, `PlayerSpaceBase`,
   `PlayerSpaceStationBase` (R6 2.3). `External*` (other players' bases, up to 228 cached) are
-  only counted; `UITempShipBase` (corvette editor scratch) is ignored; corvette layouts whose
-  `UserData` slot does not hold a corvette in `ShipOwnership` are orphans (13 of 35 in R6) and
-  only counted.
+  only counted; `UITempShipBase` (corvette editor scratch) is ignored; a corvette layout that no
+  corvette in `ShipOwnership` claims is an orphan and only counted. A corvette claims the layout
+  whose `Owner.TS` is its `Resource.Seed` (the unix second it was made) or one second later
+  (VERIFIED 2026-11-07: 36 of 36 corvettes on the owner's Steam account), or, as older tools
+  assume, the one whose `UserData` is its ship slot. `UserData` alone is wrong: a corvette that
+  moved slot keeps its old `UserData` (R6's "13 of 35 orphans" was mostly such false orphans).
+  `Owner.TS` is read through `privacy.owner_time` (a time, never an id). The Organizer says
+  "orphan corvette layouts" on a version that has any; the app never removes them (the
+  experimental remover is `tools/orphan_corvettes/`).
 - **Identity** (needed by "what changed"; VERIFIED necessary on 64 real lineage steps): the
   freighter base and corvette layouts move with the vehicle, so their address changes every
   save. `id` = `"freighter"` for `FreighterBase`; `"corvette:<ship slot>"` for

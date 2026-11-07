@@ -55,7 +55,7 @@ def test_not_linked_section_has_a_tip_in_the_history_window(host, gui_app, forke
 
 def _row(**kw):
     base = dict(name="A", saved_at=0, locations=[], parent=None, label="", durable_copies=0,
-                flags=frozenset({"outside-only"}))
+                flags=frozenset({"outside-only"}), facts=None)
     base.update(kw)
     return SimpleNamespace(**base)
 

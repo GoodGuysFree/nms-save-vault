@@ -67,6 +67,10 @@ shown for each version. Chips, Find, sorting and a column chooser narrow the lis
   touches a save file.
 * **No backup yet** marks a version that exists only in a live folder; hover any chip, marker
   or column title for a plain-words explanation.
+* **Orphan corvette layouts** marks a save that holds a corvette interior no corvette owns. That
+  usually happens when a save editor deleted a corvette but left its interior behind. The app
+  only reports it and never changes what is inside a save. An experimental, unsupported
+  remover with its own warnings is in [`tools/orphan_corvettes/`](tools/orphan_corvettes/README.md).
 * **One-time vault upgrade.** Moves in the Organizer need the version store. **Tools > Vault
   upgrade** (or `nmsvault-cli store upgrade`) does it once: the vault is copied aside first, and
   **Undo the vault upgrade** goes back. Older app versions cannot read an upgraded vault.
@@ -634,7 +638,7 @@ The vault lives outside `st_<id>`, so it is never scanned by the game or synced 
 ## Status
 
 Working. Core format/crypto and all operations are verified against the real save files and
-in a temp sandbox (2735 tests). Xbox / Game Pass saves are supported for reading **and**
+in a temp sandbox (2741 tests). Xbox / Game Pass saves are supported for reading **and**
 writing, including Steam ↔ Xbox moves (validated in the real game) — verified against a real install (reads) and synthetic `wgs` fixtures
 (writes). A full file-copy safety backup of the live folder was made before development
 (`C:\Devel\NMS-SaveBackup-SAFETY-2026-06-24`). The Organizer is in (see above); a

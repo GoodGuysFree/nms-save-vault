@@ -27,6 +27,19 @@ BANNER_TEXT = ("The organizer is reading what is inside your saves (story and At
                "read; the save file you select and the live saves go first. Nothing waits for it.")
 
 
+ORPHAN_WORDS = "orphan corvette layouts"
+ORPHAN_NOTICE = ("holds {n} corvette layout{s} that no corvette owns, most likely left behind when a "
+                 "corvette was deleted outside the game. The app never changes what is inside a save; "
+                 "the project's tools/orphan_corvettes folder has an experimental remover.")
+
+
+def orphan_corvettes(view) -> int:
+    """Corvette layouts no corvette owns, from up-to-date facts only (0 while stale or unread)."""
+    if view is None or getattr(view, "stale", True):
+        return 0
+    return getattr(view, "orphan_corvettes", 0) or 0
+
+
 def facts_cell(view, field: str, *, active: bool) -> str:
     """One facts cell: the number, "..." while not read, "unreadable" when the read failed."""
     if view is None:

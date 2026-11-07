@@ -224,9 +224,10 @@ Breach, 45 Remnant, 46 Swarm, 47 Our Journey Continues). **VERIFIED**
   7,156 parts, largest "Nani Mela Farm Outpost" 1,948; "All Parts Building" 23 bases / 4,302;
   Xbox Survival slot 5 10 / 1,874; fresh saves 0. **VERIFIED**
 - Pitfalls: (1) external bases dwarf own bases (Steam s02: 101 external with 10,395 parts vs
-  5 own with 232) - never sum without filtering; (2) 13 of 35 `PlayerShipBase` records are
-  orphans whose `UserData` points to a slot that no longer holds a corvette, so corvette parts
-  should count only when `ShipOwnership[UserData]` is a corvette; (3) `Objects` does not
+  5 own with 232) - never sum without filtering; (2) 13 of 35 `PlayerShipBase` records have a
+  `UserData` slot that no longer holds a corvette. **Superseded 2026-11-07:** `UserData` is not
+  the link; a corvette owns the layout whose `Owner.TS` is its seed second (or the next), so most
+  of those were not orphans (see D4 2.5.2); (3) `Objects` does not
   distinguish complexity: only 2 of 15,016 parts in the main have
   `DoesNotCountTowardsComplexity`; the per-base limit itself lives in the globals file (not in
   the metadata index - not verified); the account setting `BaseComplexityLimitsEnabled` is in

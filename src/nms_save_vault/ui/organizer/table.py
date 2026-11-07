@@ -100,8 +100,9 @@ CHIP = {c.name: c for c in CHIPS}
 # --- what a row says (pure) ----------------------------------------------------------
 
 
-def state_words(line: Line) -> str:
-    """The State column (D6 2.2): words, because a Tk 8.6 cell cannot be coloured."""
+def state_words(line: Line, view=None) -> str:
+    """The State column (D6 2.2): words, because a Tk 8.6 cell cannot be coloured. ``view``:
+    the facts of the line's representative, when the index is on."""
     words = []
     if "at-risk" in line.flags:
         words.append(NO_BACKUP)
@@ -120,6 +121,8 @@ def state_words(line: Line) -> str:
         words.append("NEWER GAME VERSION")
     if "edited" in line.flags:
         words.append("edited")
+    if factsui.orphan_corvettes(view):
+        words.append(factsui.ORPHAN_WORDS)
     if line.pinned:
         words.append("pinned")
     return "; ".join(words)
@@ -137,7 +140,7 @@ def line_values(line: Line, view=None, active: bool = False) -> dict[str, str]:
         "play": play_time(line.play_time),
         "last": local_time(line.last_played),
         "mode": _mode(line.mode, line.difficulty),
-        "state": state_words(line),
+        "state": state_words(line, view),
         "platforms": ", ".join("Steam" if p == "steam" else "Xbox" for p in line.platforms),
         "branches": str(line.branch_count) if line.branch_count else "",
         "note": line.note_preview,
@@ -161,6 +164,8 @@ def version_values(row: VersionRow, live_labels: dict, view=None, active: bool =
         words.append("unreadable")
     if "newer" in row.flags:
         words.append("NEWER GAME VERSION")
+    if factsui.orphan_corvettes(view):
+        words.append(factsui.ORPHAN_WORDS)
     if "gone" in row.flags:
         words.append("no copy left")
     if row.locked:

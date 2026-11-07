@@ -3,8 +3,9 @@
 Base ``Owner`` blocks, discovery ``OWS``, pet ``SenderData``, ``UsedDiscoveryOwnersV2`` and the
 ``LastEditedBy*`` fields hold other people's (and the owner's) platform ids and names. The
 index processes none of them (owner decision: no ownership ids), so none can be cached.
-:func:`nodes.get` refuses any path through a :data:`DENIED` name; the one exception is
-:func:`owner_platform`, which reads a base's platform code ("ST", "XB", ...) and nothing else.
+:func:`nodes.get` refuses any path through a :data:`DENIED` name; the two exceptions are
+:func:`owner_platform`, which reads a base's platform code ("ST", "XB", ...) and nothing else,
+and :func:`owner_time`, which reads the owner block's timestamp and nothing else.
 """
 from __future__ import annotations
 
@@ -41,3 +42,15 @@ def owner_platform(base: object) -> str | None:
     if isinstance(code, str) and _PLATFORM_CODE.fullmatch(code):
         return code
     return None
+
+
+def owner_time(base: object) -> int | None:
+    """When a base's owner block was made (``Owner.TS``, unix seconds), or None. A time, never
+    an id or a name; it ties a corvette layout to its corvette and is not kept in the facts."""
+    if not isinstance(base, dict):
+        return None
+    owner = base.get(key("Owner"))
+    if not isinstance(owner, dict):
+        return None
+    ts = owner.get(key("TS"))
+    return ts if isinstance(ts, int) and not isinstance(ts, bool) else None

@@ -317,6 +317,9 @@ def _print_view(v: derive.FactsView) -> None:
     _out(f"  Legacy parts: {v.legacy_placed} placed in {v.legacy_placed_bases} bases; buildable "
          f"{v.legacy_buildable[0]} of 69 structures, {v.legacy_buildable[1]} of 20 freighter modules")
     _out(f"  Ships: {derive.fleet_text(v)}" + (f" - {', '.join(v.ship_names)}" if v.ship_names else ""))
+    if v.orphan_corvettes and not v.stale:
+        _out(f"  Orphan corvette layouts: {v.orphan_corvettes} (no corvette owns them; "
+             "see tools/orphan_corvettes/README.md)")
     _out(f"  Companions: {v.companions}" + (f" - {', '.join(v.companion_names)}" if v.companion_names else "")
          + (f"; {v.eggs} eggs" if v.eggs else ""))
     if v.expedition:

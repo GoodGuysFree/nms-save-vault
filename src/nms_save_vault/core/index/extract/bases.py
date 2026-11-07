@@ -2,9 +2,10 @@
 
 Only the player's own base types count (``lookups.parts.OWN_BASE_TYPES``). Other players'
 ``External*`` bases are cached by the game in the same list and only counted;
-``UITempShipBase`` (the corvette editor's scratch) is ignored; a corvette layout whose
-``UserData`` ship slot holds no corvette is an orphan and only counted. Owner blocks are read
-through :func:`privacy.owner_platform` alone (the platform code, never an id).
+``UITempShipBase`` (the corvette editor's scratch) is ignored; a corvette layout that no
+corvette claims (:func:`claimed`) is an orphan and only counted. Owner blocks are read through
+:func:`privacy.owner_platform` and :func:`privacy.owner_time` alone (a platform code and a
+time, never an id).
 """
 from __future__ import annotations
 
@@ -17,7 +18,7 @@ from ...hashname import key
 from ..lookups._overrides import OWN_BASE_TYPES
 from ..lookups.parts import LEGACY_FREIGHTER, LEGACY_STRUCTURES
 from ..nodes import galaxy_of, get, gid, hex64, integer, items, seed, text, u64
-from ..privacy import owner_platform
+from ..privacy import owner_platform, owner_time
 from . import CtxInput, context_extractor
 
 _OBJECT_ID = key("ObjectID")      # read once per placed part: up to ~15,000 per save
@@ -25,8 +26,25 @@ IGNORED_TYPES = frozenset({"UITempShipBase"})
 CORVETTE_FOLDER = "/BIGGS/"       # corvette ship models live under MODELS/.../BIGGS/
 
 
-def corvette_slots(ctx: CtxInput) -> set[int]:
-    return {s.index for s in ctx.ships if CORVETTE_FOLDER in s.model}
+def corvette_seeds(ctx: CtxInput) -> dict[int, int | None]:
+    """Ship slot -> seed of each corvette. A corvette's seed is the unix time it was made."""
+    out: dict[int, int | None] = {}
+    for s in ctx.ships:
+        if CORVETTE_FOLDER in s.model:
+            value = seed(get(s.node, "Resource", "Seed"))
+            out[s.index] = int(value, 16) if value else None
+    return out
+
+
+def claimed(base: dict, corvettes: dict[int, int | None]) -> bool:
+    """Whether a corvette owns this layout: its owner block was made in the corvette's seed second
+    or the next one (36 of 36 corvettes on a real account, 2026-11), or - the link older tools
+    assume - its ``UserData`` is the corvette's ship slot. ``UserData`` alone misses layouts
+    whose corvette moved to another slot."""
+    if integer(get(base, "UserData")) in corvettes:
+        return True
+    ts = owner_time(base)
+    return ts is not None and any(s is not None and 0 <= ts - s <= 1 for s in corvettes.values())
 
 
 def _digest(value: object, n: int) -> str:
@@ -69,7 +87,7 @@ class BaseWalk:
 
 def walk_bases(ctx: CtxInput) -> BaseWalk:
     walk = BaseWalk()
-    corvettes = corvette_slots(ctx)
+    corvettes = corvette_seeds(ctx)
     used: set[str] = set()
     for index, base in enumerate(items(ctx.psd, "PersistentPlayerBases")):
         base_type = get(base, "BaseType", "PersistentBaseTypes")
@@ -81,7 +99,7 @@ def walk_bases(ctx: CtxInput) -> BaseWalk:
             else:
                 walk.unknown[text(base_type, 64)] += 1
             continue
-        if base_type == "PlayerShipBase" and integer(get(base, "UserData")) not in corvettes:
+        if base_type == "PlayerShipBase" and not claimed(base, corvettes):
             walk.orphans += 1
             continue
         ids = Counter(gid(o.get(_OBJECT_ID)) for o in items(base, "Objects") if isinstance(o, dict))

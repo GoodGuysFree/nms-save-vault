@@ -66,6 +66,7 @@ class FactsView:
     deaths: int | None
     systems_discovered: int | None
     last_played: int | None
+    orphan_corvettes: int = 0          # corvette layouts no corvette claims, every context
     numbers: Mapping[str, float] = field(default_factory=dict)
     chips: tuple[str, ...] = ()
     lookups: str = lookups.LOOKUP_VERSION
@@ -201,6 +202,8 @@ def view(vid: str, facts: Mapping) -> FactsView:
         frigates=ctx.get("frigates", 0), words=sum(words.values()),
         deaths=_int(stats.get("DEATHS")), systems_discovered=_int(stats.get("DISC_SYSTEMS")),
         last_played=ctx.get("timestamp"),
+        orphan_corvettes=sum((c.get("bases") or {}).get("orphan_corvette_layouts") or 0
+                             for c in (facts.get("contexts") or {}).values() if isinstance(c, Mapping)),
     )
     return FactsView(**fields, numbers=_numbers(fields), chips=_chips(fields))
 
@@ -226,7 +229,7 @@ NUMBER_FIELDS = (
     "story", "atlas", "glyphs", "own_bases", "base_parts", "planet_bases", "planet_base_parts", "largest_base",
     "galaxies_with_bases", "legacy_placed", "legacy_placed_bases", "legacy_buildable", "ships", "corvettes",
     "archived_ships", "companions", "eggs", "expedition", "quicksilver", "nanites", "units", "frigates", "words",
-    "deaths", "systems_discovered", "last_played",
+    "deaths", "systems_discovered", "last_played", "orphan_corvettes",
 )
 
 
