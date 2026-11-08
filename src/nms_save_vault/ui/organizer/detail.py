@@ -26,8 +26,9 @@ from ..themeaware import ThemeRegistry
 from ..tooltip import Tooltip
 from . import factsui
 from .live import NEVER_EMPTIES, refill_text
-from .words import (METHOD_WORDS, NO_BACKUP, NO_BACKUP_TIP, OUTSIDE_ONLY_TIP, PIN_TIP, find_row,
-                    line_name, slot_words, tip_name, version_numbers)
+from .words import (METHOD_WORDS, NO_BACKUP, NO_BACKUP_TIP, OUTSIDE_ONLY_TIP, PIN_TIP,
+                    edited_by_words, find_row, line_name, slot_words, tip_name,
+                    version_numbers)
 
 #: A segment of a page: its text and its tags. ``("link", head)`` makes a link to a version
 #: of the shown save file, ``("link", head, pid)`` to one of another.
@@ -189,6 +190,8 @@ def _version_state(row: VersionRow) -> str:
                      else NO_BACKUP)
     if "edited" in row.flags:
         words.append("edited outside the game")
+    if row.edited_by:
+        words.append(edited_by_words(row.edited_by))
     if "unreadable" in row.flags:
         words.append("unreadable - cannot be a source")
     if "newer" in row.flags:

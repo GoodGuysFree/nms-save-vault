@@ -278,3 +278,31 @@ def test_a_vault_without_a_journal_has_an_empty_history(tmp_path):
     assert history.changes_by(SC) == [] and history.made_by(SC) == set()
     with pytest.raises(api.StoreUnavailable):
         api.open_history(tmp_path / "missing")
+
+
+def test_nms_save_vaults_own_view_marks_what_savecraft_made_and_nothing_it_only_copied(
+        tmp_path):
+    """CL1.6: the organizer's rows and lines say "edited by NMS Savecraft" for a version an
+    operation of it made, with or without Savecraft installed (only the records are read)."""
+    from nms_save_vault.ui.organizer import table, words
+
+    world = steam_world(tmp_path)
+    _place_as_savecraft(world)                                     # a copy: no mark
+    world.refresh()
+    model = world.organizer.model
+    assert not any(r.edited_by for line in model.lines() for r in model.versions(line.pid))
+
+    target = LIVE.target(2)
+    row = next(r for line in model.lines() for r in model.versions(line.pid)
+               if target in r.live_in)
+    with world.ctx.store.transaction() as tx:
+        tx.append(op_fields("app", new_op_id(lambda: 1_792_600_000.0), "place", target,
+                            row.pair, None, app=SC_STAMP, made=(row.head,)), at=1_792_600_000)
+    world.refresh()
+    model = world.organizer.model
+    marked = next(r for r in model.versions(row.pid) if r.head == row.head)
+    assert marked.edited_by == ("nms-savecraft",) and "app-edited" in marked.flags
+    line = model.line(row.pid)
+    assert line.edited_by == ("nms-savecraft",)
+    assert "edited by NMS Savecraft" in table.state_words(line)
+    assert words.edited_by_words(("nms-other",)) == "edited by nms-other"

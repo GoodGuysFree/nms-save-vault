@@ -37,8 +37,8 @@ from ..themeaware import ThemeRegistry
 from ..tooltip import Tooltip
 from . import factsui
 from .lanes import lane_cells, lane_width
-from .words import (NO_BACKUP, NO_BACKUP_TIP, NOT_LINKED_TIP, OUTSIDE_ONLY_TIP, line_name,
-                    tip_name, tips_letters, version_numbers)
+from .words import (NO_BACKUP, NO_BACKUP_TIP, NOT_LINKED_TIP, OUTSIDE_ONLY_TIP, edited_by_words,
+                    line_name, tip_name, tips_letters, version_numbers)
 
 STYLE = "Organizer.Treeview"
 FIND_DELAY_MS = 150
@@ -121,6 +121,8 @@ def state_words(line: Line, view=None) -> str:
         words.append("NEWER GAME VERSION")
     if "edited" in line.flags:
         words.append("edited")
+    if line.edited_by:
+        words.append(edited_by_words(line.edited_by))
     if factsui.orphan_corvettes(view):
         words.append(factsui.ORPHAN_WORDS)
     if line.pinned:
@@ -160,6 +162,8 @@ def version_values(row: VersionRow, live_labels: dict, view=None, active: bool =
         words.append("branch tip")
     if "edited" in row.flags:
         words.append("edited outside game")
+    if row.edited_by:
+        words.append(edited_by_words(row.edited_by))
     if "unreadable" in row.flags:
         words.append("unreadable")
     if "newer" in row.flags:

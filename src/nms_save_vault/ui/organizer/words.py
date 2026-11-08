@@ -32,6 +32,22 @@ FREE_OLD_TIP = ("Delete the old backup folders that are now in the version store
 SLOT_MARKERS_TIP = ("* = the save the game loads. / moved = the file was moved here from "
                     "another slot.")
 
+#: Apps that share the vault, by the name their records carry (core.appinfo), as people know
+#: them. An app not listed is shown by its record name.
+APP_NAMES = {"nms-savecraft": "NMS Savecraft"}
+APP_EDITED_TIP = ("Another app that shares this vault made this version, or the game saved it "
+                  "from one that app made. The vault keeps the version from before the change.")
+
+
+def app_name(app: str) -> str:
+    return APP_NAMES.get(app, app)
+
+
+def edited_by_words(apps) -> str:
+    """'edited by NMS Savecraft' (CL1.6); empty when no other app edited it."""
+    return f"edited by {', '.join(app_name(a) for a in apps)}" if apps else ""
+
+
 #: How a drawn parent was seen (D1 EdgeMethod); nothing else draws a link.
 METHOD_WORDS = {
     "op": "put live by the app",

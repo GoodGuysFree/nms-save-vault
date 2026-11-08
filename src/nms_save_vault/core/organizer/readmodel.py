@@ -131,6 +131,7 @@ class Line:
     flags: frozenset[str]
     representative: Vid
     facts: object | None = None
+    edited_by: tuple[str, ...] = ()     # other apps that made or touched one of its versions
 
 
 @dataclass(frozen=True)
@@ -171,6 +172,7 @@ class VersionRow:
     note_rev: int | None
     folded_into: Vid | None = None
     facts: object | None = None
+    edited_by: tuple[str, ...] = ()     # other apps (appinfo names) that made or touched it
 
 
 @dataclass(frozen=True)
@@ -343,6 +345,7 @@ class _Builder:
         self.sources = list(sources)
         self.now = now
         self._effective: dict[Vid, Pid] | None = None
+        self._by_app: dict[Vid, tuple[str, ...]] | None = None
         self.graph = LineageGraph.build(journal.edges, lineage)
         self.refs = live_refs(self.sources)
         self.tokens = {ref: i for i, ref in enumerate(self.refs)}
@@ -350,6 +353,22 @@ class _Builder:
         self.several = {n for n, count in per_name.items() if count > 1}
 
     # --- per version --------------------------------------------------------------------
+
+    def edited_by(self, vid: Vid) -> tuple[str, ...]:
+        """The apps other than NMS Save Vault that made ``vid`` or that it was saved from
+        (CL1.6, :mod:`.provenance`): shown whether or not that app is installed."""
+        if self._by_app is None:
+            from .. import appinfo
+            from . import provenance
+
+            apps = {appinfo.app_of(rec.app) for rec in self.journal.records
+                    if isinstance(rec, OpRecord)} - {appinfo.VAULT, appinfo.UNKNOWN}
+            found: dict[Vid, set[str]] = {}
+            for app in sorted(apps):
+                for v in provenance.touched_by(self.journal, app):
+                    found.setdefault(v, set()).add(app)
+            self._by_app = {v: tuple(sorted(a)) for v, a in found.items()}
+        return self._by_app.get(vid, ())
 
     def meta(self, vid: Vid) -> MetaSnap | None:
         info = self.scan.versions.get(vid)
@@ -602,6 +621,9 @@ class _Builder:
             flags.add("touch")
         if any(v in edited for v in vids):
             flags.add("edited")
+        edited_by = tuple(sorted({a for v in vids for a in self.edited_by(v)}))
+        if edited_by:
+            flags.add("app-edited")
         if locations and all(loc.entry_kind == "live" for loc in locations):
             flags.add("only-live")
         outside = [loc for loc in locations if loc.entry_kind != "live"]
@@ -638,7 +660,7 @@ class _Builder:
             children=n_children, in_tree=in_tree, key=False,
             label=note.label if note else "", comment=note.comment if note else "",
             locked=bool(note and note.locked), note_rev=self.journal.note_rev.get(p.head),
-            facts=self._view(p.head),
+            facts=self._view(p.head), edited_by=edited_by,
         )
 
     def _mark_keys(self, rows: list[VersionRow]) -> list[VersionRow]:
@@ -750,6 +772,9 @@ class _Builder:
             flags.add("at-risk")
         if any("edited" in r.flags for r in rows):
             flags.add("edited")
+        line_edited_by = tuple(sorted({a for r in rows for a in r.edited_by}))
+        if line_edited_by:
+            flags.add("app-edited")
         if rep_meta is not None and rep_meta.game_mode == EXPEDITION_MODE:
             flags.add("expedition")
         if not is_identified(pid):
@@ -778,6 +803,7 @@ class _Builder:
             branch_count=branch_count, note_preview=preview, has_note=bool(text.strip()),
             pinned=bool(note and note.pinned), locked_count=locked_count,
             flags=frozenset(flags), representative=rep, facts=self._view(rep),
+            edited_by=line_edited_by,
         )
 
     def _line_name(self, pid: Pid, names: list[str]) -> str:
