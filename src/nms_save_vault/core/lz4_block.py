@@ -3,8 +3,12 @@
 A ``saveN.hg`` is a sequence of chunks:
     [magic 0xFEEDA1E5 u32][compressed_size u32][decompressed_size u32][0 u32] + LZ4-block
 
-This module walks that container and (for deep verification) LZ4-block-decodes it. Only
-*decoding* is implemented -- the app never recompresses, it copies data verbatim.
+This module walks that container and (for deep verification) LZ4-block-decodes it. It also
+*encodes* (:func:`compress_block`, :func:`compress`) for an app that edits a save's content
+(NMS Savecraft): NMS Save Vault itself never recompresses, it copies data verbatim. The
+encoder is a plain greedy LZ4 ("fast" style); any valid block decodes the same in the game,
+so its ratio only has to be reasonable, and every container it makes is decoded again and
+compared before it is returned.
 
 Pre-Waypoint Microsoft saves predate that framing: the whole save is ONE bare LZ4 block
 with no chunk headers, so nothing on the wire says how big it decompresses to. The size
@@ -225,3 +229,105 @@ def decompress(data: bytes, expected_size: int | None = None) -> bytes:
     if expected_size:
         return decompress_block(data, expected_size, exact=True, limit=MAX_BARE_BLOCK)
     raise ValueError("no valid save chunks found, and no expected size for a bare LZ4 block")
+
+
+# --- encoding -------------------------------------------------------------------------------
+
+MIN_MATCH = 4
+LAST_LITERALS = 5           # the format: a block ends with at least 5 literal bytes
+MF_LIMIT = 12               # ... and its last match starts at least 12 bytes before the end
+MAX_OFFSET = 0xFFFF
+SKIP_STRENGTH = 6           # after 64 positions without a match, look less often (as LZ4 fast)
+
+
+def _length(out: bytearray, extra: int) -> None:
+    """The bytes after a nibble of 15: 255s, then the rest."""
+    while extra >= 255:
+        out.append(255)
+        extra -= 255
+    out.append(extra)
+
+
+def _sequence(out: bytearray, literals: memoryview, offset: int, match: int) -> None:
+    """One sequence: ``literals``, then ``match`` bytes from ``offset`` back (``match`` 0: the
+    last sequence, literals only)."""
+    lit = len(literals)
+    ml = match - MIN_MATCH if match else 0
+    out.append((min(lit, 15) << 4) | (min(ml, 15) if match else 0))
+    if lit >= 15:
+        _length(out, lit - 15)
+    out += literals
+    if match:
+        out += offset.to_bytes(2, "little")
+        if ml >= 15:
+            _length(out, ml - 15)
+
+
+def _common(src: bytes, a: int, b: int, limit: int) -> int:
+    """How many bytes from ``a`` equal those from ``b`` (``b`` + the result <= ``limit``):
+    doubling, then halving, so a long match costs about its length in compared bytes."""
+    most = limit - b
+    if most <= 0 or src[a] != src[b]:
+        return 0
+    lo, step = 1, 8                         # src[a:a+lo] == src[b:b+lo] holds
+    while lo < most:
+        hi = min(lo + step, most)
+        if src[a + lo:a + hi] == src[b + lo:b + hi]:
+            lo, step = hi, step * 2
+        elif step == 1:
+            break
+        else:
+            step //= 2
+    return lo
+
+
+def compress_block(src: bytes) -> bytes:
+    """One raw LZ4 block holding ``src`` (no size header): what each save chunk carries.
+    :func:`decompress_block` gives ``src`` back."""
+    n = len(src)
+    out = bytearray()
+    view = memoryview(src)
+    anchor = 0
+    if n > MF_LIMIT:
+        table: dict[bytes, int] = {}
+        start_limit = n - MF_LIMIT          # a match starts before this
+        end_limit = n - LAST_LITERALS       # ... and ends at or before this
+        i, misses = 0, 0
+        while i < start_limit:
+            key = src[i:i + MIN_MATCH]
+            cand = table.get(key)
+            table[key] = i
+            if cand is None or i - cand > MAX_OFFSET:
+                misses += 1
+                i += 1 + (misses >> SKIP_STRENGTH)
+                continue
+            misses = 0
+            while i > anchor and cand > 0 and src[i - 1] == src[cand - 1]:
+                i, cand = i - 1, cand - 1   # the match starts earlier than the 4 bytes seen
+            length = MIN_MATCH + _common(src, cand + MIN_MATCH, i + MIN_MATCH, end_limit)
+            _sequence(out, view[anchor:i], i - cand, length)
+            i += length
+            anchor = i
+            if i - 2 < start_limit:
+                table[src[i - 2:i + 2]] = i - 2
+    _sequence(out, view[anchor:n], 0, 0)
+    return bytes(out)
+
+
+def compress(raw: bytes) -> bytes:
+    """The game's save container for ``raw`` (the save's JSON, with its NUL): chunks of at
+    most 512 KiB, each a 16-byte header and one LZ4 block. Decoded again before it is
+    returned; :class:`LZ4FormatError` if it does not give ``raw`` back."""
+    if not raw:
+        raise LZ4FormatError("a save is never empty")
+    if len(raw) > MAX_SAVE_DECOMPRESSED:
+        raise LZ4FormatError(f"{len(raw)} bytes is more than a save holds ({MAX_SAVE_DECOMPRESSED})")
+    out = bytearray()
+    for off in range(0, len(raw), formats.SAVE_CHUNK_DECOMPRESSED_MAX):
+        piece = raw[off:off + formats.SAVE_CHUNK_DECOMPRESSED_MAX]
+        block = compress_block(piece)
+        out += struct.pack("<4I", formats.SAVE_MAGIC, len(block), len(piece), 0) + block
+    packed = bytes(out)
+    if decompress(packed) != raw:
+        raise LZ4FormatError("the compressed save does not decode back to its content")
+    return packed
