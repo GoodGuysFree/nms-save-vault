@@ -156,6 +156,7 @@ class _Tail:
     by_op: dict = field(default_factory=dict)       # op_id -> its events, ops in first-seen order
     records: dict = field(default_factory=dict)     # op_id -> OpRecord, rebuilt when dirty
     dirty: set = field(default_factory=set)
+    newer: bool = False                   # a line of a journal version this core does not know
 
 
 _tails: dict[str, _Tail] = {}
@@ -185,11 +186,16 @@ def _refresh(path: Path) -> _Tail:
         tail.offset += len(raw) + 1
         tail.lines += 1
         record = _parse_line(raw, tail.lines)
-        if record is not None:
+        if record is _NEWER:
+            tail.newer = True
+        elif record is not None:
             tail.events.append(record)
             tail.by_op.setdefault(record["op_id"], []).append(record)
             tail.dirty.add(record["op_id"])
     return tail
+
+
+_NEWER: dict = {}
 
 
 def _parse_line(raw: bytes, number: int) -> dict | None:
@@ -200,6 +206,11 @@ def _parse_line(raw: bytes, number: int) -> dict | None:
     except ValueError as exc:
         log.warning("%s: line %d is damaged and was skipped (%s)", OPS, number, exc)
         return None
+    version = record.get("j") if isinstance(record, dict) else None
+    if isinstance(version, int) and not isinstance(version, bool) and version > JOURNAL_VERSION:
+        log.warning("%s: line %d was written by a newer app (journal version %d)", OPS, number,
+                    version)
+        return _NEWER
     if not _valid_envelope(record):
         log.warning("%s: line %d is not an operation event and was skipped", OPS, number)
         return None
@@ -283,6 +294,12 @@ def read_ops(ctx: OpContext) -> dict[str, OpRecord]:
             tail.records[op_id] = _record(op_id, tail.by_op[op_id])
         tail.dirty.clear()
         return {op_id: tail.records[op_id] for op_id in tail.by_op}
+
+
+def newer_records(ctx: OpContext) -> bool:
+    """A newer app wrote operations here that this core cannot read (CL10)."""
+    with _tails_guard:
+        return _refresh(ops_path(ctx)).newer
 
 
 def open_ops(ctx: OpContext) -> list[OpRecord]:

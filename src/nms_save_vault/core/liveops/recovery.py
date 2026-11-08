@@ -52,7 +52,7 @@ from .execute import (
     validate,
 )
 from .errors import LiveOpError, SourceUnreadable, TargetError
-from .planner import game_warning
+from .planner import game_warning, too_new, warning
 from .model import OpOutcome, PairSource, RecoveryItem, TargetPlan
 from .pairmeta import PlannedMember, SourcePair
 from .slots import MemberNow, SlotNow, read_account
@@ -79,6 +79,8 @@ TEXTS = {
                 "now: {problem}.",
 }
 GAME_TEXT = "Close No Man's Sky to finish."
+TOO_NEW = ("a newer version of NMS Save Vault or NMS Savecraft changed this vault; update this "
+           "app")
 
 
 @dataclass
@@ -128,11 +130,15 @@ def resolve_recovery(ctx: OpContext, op_id: str, choice: Choice,
 def _pending(ctx: OpContext) -> list[RecoveryItem]:
     items = []
     game_free = ctx.game_probe() is False
+    newer = too_new(ctx)
     for rec in opjournal.read_ops(ctx).values():
         if not rec.open:
             continue
         if rec.machine != ctx.machine_id:
             items.append(_item(rec, "other_machine", "none", ()))
+            continue
+        if newer:                       # this core writes nothing there, not even a recovery
+            items.append(_unusable(rec, TOO_NEW))
             continue
         if rec.status == "preparing":                 # nothing live can have changed
             append_quietly(ctx, rec.op_id, "abandoned", {"reason": "not_started"})
@@ -161,9 +167,7 @@ def _pending(ctx: OpContext) -> list[RecoveryItem]:
 def _classify(ctx: OpContext, op: _Open, game_free: bool) -> RecoveryItem:
     rec = op.record
     if op.problem:          # every choice is refused (_resolve), so none is offered
-        item = RecoveryItem(rec.op_id, rec.kind, tuple(_target_labels(rec)), "unusable", "none",
-                            (), TEXTS["unusable"].format(labels=_labels(rec), problem=op.problem),
-                            _local(rec.started))
+        item = _unusable(rec, op.problem)
     elif op.state == "other":                    # the game or another tool wrote the slot since
         item = _item(rec, "superseded", "leave", ("leave",))
     elif rec.status == "failed":
@@ -186,6 +190,8 @@ def _resolve(ctx: OpContext, op_id: str, choice: Choice,
     rec = opjournal.read_ops(ctx).get(op_id)
     if rec is None or not rec.open or rec.machine != ctx.machine_id:
         return refused(op_id, "NOT_OPEN", "That move is not waiting to be recovered here.")
+    if too_new(ctx):
+        return refused(op_id, "VAULT_TOO_NEW", warning("VAULT_TOO_NEW").text)
     probe = ctx.game_probe()
     if probe is True:
         return refused(op_id, "GAME_RUNNING", GAME_TEXT)
@@ -500,6 +506,12 @@ def _can_forward(ctx: OpContext, op: _Open) -> bool:
 
 
 # --- listing ---------------------------------------------------------------------------------
+
+
+def _unusable(rec: opjournal.OpRecord, problem: str) -> RecoveryItem:
+    return RecoveryItem(rec.op_id, rec.kind, tuple(_target_labels(rec)), "unusable", "none", (),
+                        TEXTS["unusable"].format(labels=_labels(rec), problem=problem),
+                        _local(rec.started))
 
 
 def _item(rec: opjournal.OpRecord, state: str, recommended: str,

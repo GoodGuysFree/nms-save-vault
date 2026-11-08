@@ -13,7 +13,9 @@ import pytest
 
 from nms_save_vault.core import api, appinfo, meta, platform, safety, savejson, slotmap, state
 from nms_save_vault.core.hashname import key as K
-from nms_save_vault.core.liveops import FaultInjector, SimulatedCrash
+from nms_save_vault.core.liveops import FaultInjector, SimulatedCrash, opjournal
+from nms_save_vault.core.organizer import store as orgstore
+from nms_save_vault.core.store import versionstore
 
 from .conftest import steam_save
 from .liveops_support import MAIN, T0, host_in, steam_world, tree_hash
@@ -326,6 +328,100 @@ def test_an_interrupted_edit_in_a_folder_switched_off_since_offers_nothing(world
     assert "cannot be finished or put back now" in item.text and "read-only" in item.text
     with pytest.raises(ValueError, match="not offered"):
         session.resolve(item.op_id, "leave")
+    assert tree_hash(world.live) == torn
+
+
+# --- CL10: a core older than the vault's format never writes to it ------------------------
+
+
+NEWER_PARTS = ["store", "organizer", "journal"]
+
+
+def _newer_core_changed(w, part):
+    """What a newer core leaves behind: a store format that needs it to write, an organizer
+    schema it made, or op-journal records of a version this core does not know."""
+    folder = orgstore.store_root(w.vault_root)
+    if part == "store":
+        path = versionstore.store_root(w.vault_root) / versionstore.FORMAT_NAME
+        d = json.loads(path.read_text(encoding="ascii"))
+        d["write_compat"] = versionstore.STORE_VERSION + 1
+        path.write_text(json.dumps(d, indent=1, sort_keys=True) + "\n", encoding="ascii")
+    elif part == "organizer":
+        path = folder / orgstore.HEADER
+        d = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {
+            "kind": orgstore.KINDS[orgstore.HEADER], "vault_id": "0" * 32}
+        d["schema"] = orgstore.SCHEMA + 1
+        folder.mkdir(exist_ok=True)
+        path.write_text(json.dumps(d), encoding="utf-8")
+    else:
+        line = {"j": opjournal.JOURNAL_VERSION + 1, "op_id": "op-20991231T000000Z-0000",
+                "seq": 1, "event": "preparing", "utc": "2099-12-31T00:00:00Z", "machine": "m"}
+        folder.mkdir(exist_ok=True)
+        with open(folder / opjournal.OPS, "a", encoding="ascii") as f:
+            f.write(json.dumps(line) + "\n")
+
+
+@pytest.mark.parametrize("part", NEWER_PARTS)
+def test_a_vault_a_newer_core_changed_is_not_edited(world, part):
+    _newer_core_changed(world, part)
+    live_before, entries = tree_hash(world.live), _entries(world)
+    with pytest.raises(api.EditRefused, match="newer version"):
+        _session(world).plan_edit(_slot(world), UNITS, what="x")
+    assert tree_hash(world.live) == live_before and _entries(world) == entries
+
+
+@pytest.mark.parametrize("part", NEWER_PARTS)
+def test_a_plan_made_before_a_newer_core_changed_the_vault_is_not_written(world, part):
+    session = _session(world)
+    plan = session.plan_edit(_slot(world), UNITS, what="x")
+    _newer_core_changed(world, part)
+    live_before = tree_hash(world.live)
+    result = session.write(plan, plan.confirmations)
+    assert (result.status, result.code) == ("refused", "VAULT_TOO_NEW")
+    assert tree_hash(world.live) == live_before
+
+
+def test_an_edit_is_not_undone_in_a_vault_a_newer_core_changed(world):
+    session = _session(world)
+    plan = session.plan_edit(_slot(world), UNITS, what="x")
+    done = session.write(plan, plan.confirmations)
+    _newer_core_changed(world, "store")
+    undo = session.plan_undo(done.op_id)            # planned before the app saw the change
+    live_before = tree_hash(world.live)
+    assert session.write(undo, undo.confirmations).code == "VAULT_TOO_NEW"
+    assert tree_hash(world.live) == live_before
+    session.refresh()
+    assert "VAULT_TOO_NEW" in {n.code for n in session.plan_undo(done.op_id).blocked}
+
+
+def test_a_vault_only_a_newer_core_can_read_opens_no_session(world):
+    path = versionstore.store_root(world.vault_root) / versionstore.FORMAT_NAME
+    d = json.loads(path.read_text(encoding="ascii"))
+    d["read_compat"] = d["write_compat"] = versionstore.STORE_VERSION + 1
+    path.write_text(json.dumps(d, indent=1, sort_keys=True) + "\n", encoding="ascii")
+    with pytest.raises(api.StoreTooNew):
+        _session(world)
+
+
+def test_an_interrupted_edit_is_not_resolved_in_a_vault_a_newer_core_changed(world, monkeypatch):
+    session = _session(world)
+    plan = session.plan_edit(_slot(world), UNITS, what="x")
+    make = session._make
+
+    def crashing():
+        ctx = make()
+        ctx.faults = FaultInjector({"swapped:2"})
+        return ctx
+
+    monkeypatch.setattr(session, "_make", crashing)
+    with pytest.raises(SimulatedCrash):
+        session.write(plan, plan.confirmations)
+    monkeypatch.setattr(session, "_make", make)
+    _newer_core_changed(world, "store")
+    session.refresh()
+    torn = tree_hash(world.live)
+    (item,) = session.interrupted()
+    assert (item.recommended, item.choices) == ("none", ()) and "newer version" in item.text
     assert tree_hash(world.live) == torn
 
 

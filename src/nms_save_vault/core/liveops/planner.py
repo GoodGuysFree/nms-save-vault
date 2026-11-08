@@ -20,6 +20,7 @@ from pathlib import Path
 from .. import aliases, gameversion, msstore
 from ..organizer.locator import LiveMember, Location
 from ..organizer.model import LiveRef, LiveTarget
+from ..organizer.store import NEWER_SCHEMA
 from ..store import CaptureScope, vault_mode
 from ..store import capture as store_capture
 from . import convert, crosssave, opjournal, pairmeta, steamcloud, transfer
@@ -112,6 +113,8 @@ TEXTS = {
                              "Nothing was changed."),
     "VAULT_UNAVAILABLE": ("block", "The vault is not reachable, or its store cannot be opened "
                           "(made by a newer NMS Save Vault, or damaged). Nothing was changed."),
+    "VAULT_TOO_NEW": ("block", "A newer version of NMS Save Vault or NMS Savecraft changed this "
+                      "vault. Update this app to change anything in it. Nothing was changed."),
     "VAULT_SPACE": ("block", "Not enough free disk space."),
     "SOURCE_UNREADABLE": ("block", "That version cannot be read from the vault."),
     "RECOVERY_PENDING": ("block", "An earlier move was interrupted. Resolve it first."),
@@ -440,9 +443,20 @@ def vault_problem(ctx: OpContext) -> Warning | None:
         return warning("VAULT_UNAVAILABLE")     # a store the app cannot open (too new, damaged)
     if mode != "store":
         return warning("VAULT_UPGRADE_NEEDED")
+    if too_new(ctx):
+        return warning("VAULT_TOO_NEW")
     if getattr(ctx.versions, "read_only", False):
         return warning("VAULT_UNAVAILABLE")
     return None
+
+
+def too_new(ctx: OpContext) -> bool:
+    """A newer core changed this vault, so only it may write there now (CL10): a store format
+    that needs it to write, an organizer schema it made, or operations it journaled."""
+    store = getattr(ctx, "store", None)
+    return (getattr(ctx.versions, "read_only_reason", None) == "too-new"
+            or (store is not None and (NEWER_SCHEMA in store.problems
+                                       or opjournal.newer_records(ctx))))
 
 
 def game_warning(ctx: OpContext) -> Warning | None:
