@@ -9,6 +9,7 @@ from nms_save_vault.core import api, gameversion, testing
 from nms_save_vault.core.hashname import key
 
 PINNED = {
+    "game_closed": "() -> 'Iterator[None]'",
     "obfuscated": "(node: 'object') -> 'object'",
     "write_steam_save": (
         "(folder: 'str | Path', slot: 'int', root: 'dict', *, member: 'int' = 0, "
@@ -56,3 +57,13 @@ def test_a_hashed_technology_id_is_written_exactly(tmp_path):
     member = api.scan_save_dir(folder).slots[1].newest
     (inv,) = api.inventories_of(api.read_member(member).root)
     assert inv.slots[0].item.encode("utf-8", "surrogateescape") == bytes.fromhex("8080B7B5DD85")
+
+
+def test_inside_game_closed_the_core_takes_the_game_for_closed(monkeypatch):
+    from nms_save_vault.core import safety
+
+    monkeypatch.setattr(safety, "is_game_running", lambda *a, **k: True)
+    assert api.game_running() is True
+    with testing.game_closed():
+        assert api.game_running() is False
+    assert api.game_running() is True

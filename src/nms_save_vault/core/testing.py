@@ -9,12 +9,29 @@ from __future__ import annotations
 
 import json
 import struct
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 from . import formats, gameversion, lz4_block, meta, slotmap
 from .hashname import key
 
-__all__ = ["obfuscated", "write_steam_save"]
+__all__ = ["game_closed", "obfuscated", "write_steam_save"]
+
+
+@contextmanager
+def game_closed() -> Iterator[None]:
+    """Inside it, the core takes No Man's Sky for closed (``api.game_running()`` is False and
+    a write is not refused for it), so an app's write tests never depend on whether the game
+    runs on the machine that tests."""
+    from . import safety
+
+    saved = safety.is_game_running
+    safety.is_game_running = lambda *args, **kwargs: False
+    try:
+        yield
+    finally:
+        safety.is_game_running = saved
 
 
 def obfuscated(node: object) -> object:
