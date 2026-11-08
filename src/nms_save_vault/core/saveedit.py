@@ -1,10 +1,11 @@
 """A save's data and meta rebuilt after a content edit (CL5).
 
 The edited JSON (:mod:`.savepatch`) is compressed again (:func:`lz4_block.compress`) and the
-meta gets the new sizes, set the way the game sets them. Nothing else in the meta changes:
-its name, play time, playthrough id (0x15C) and save time (0x164) stay as they were, so the
-live operation that places the result decides the save time exactly as it does for any
-version it places.
+meta gets the new sizes, set the way the game sets them. Its name follows the save's own
+(``CommonStateData.SaveName``) when an edit changes that: the game keeps the two equal, and
+the load screen shows the meta's. Nothing else in the meta changes: play time, playthrough
+id (0x15C) and save time (0x164) stay as they were, so the live operation that places the
+result decides the save time exactly as it does for any version it places.
 
 The sizes, as real saves show them (Steam, Worlds Part II, 432-byte meta, decrypted):
 
@@ -22,6 +23,7 @@ is refused with :class:`EditRefused`. Pure functions: nothing is read or written
 """
 from __future__ import annotations
 
+import json
 import struct
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -30,6 +32,10 @@ from . import formats, gameversion, lz4_block, meta, msstore, savepatch
 
 #: Steam: the second copy of the decompressed size (see the module text).
 OFF_SIZE_DECOMPRESSED_AGAIN = 0x54
+
+#: Where the save holds its name; the meta holds a copy (128 bytes, NUL-terminated UTF-8).
+SAVE_NAME_AT = ("CommonStateData", "SaveName")
+NAME_FIELD = formats.NAME_FIELD_LENGTH
 
 STEAM_META_LEN = formats.META_LEN_WORLDS_II
 XBOX_META_LEN = msstore.MS_META_LEN_WORLDS_II
@@ -66,6 +72,7 @@ def rebuild(platform: str, data: bytes, meta_plain: bytes,
     """``data`` with ``edits`` made (each proven, :func:`savepatch.apply`), compressed again,
     and ``meta_plain`` with its sizes set. Refused with :class:`EditRefused`, or
     :class:`savepatch.PatchRefused` for an edit that cannot be made exactly."""
+    edits = list(edits)
     if platform == "steam":
         recorded, base_version, meta_format = _steam_fields(meta_plain)
     elif platform == "xbox":
@@ -86,11 +93,47 @@ def rebuild(platform: str, data: bytes, meta_plain: bytes,
         raise EditRefused(f"the edited save could not be compressed ({exc})") from None
     if body_of(new_data) != new_body:                  # as the game will read it back
         raise EditRefused("the rebuilt save does not read back as the edited JSON")
+    name = None
+    if _may_rename(edits):          # reading the name scans the save: only when it may change
+        name = _save_name(new_body)
+        name = None if name == _save_name(body) else name
     if platform == "steam":
-        new_meta = _steam_sizes(meta_plain, len(raw), len(new_data))
+        new_meta = _steam_sizes(meta_plain, len(raw), len(new_data), name)
     else:
-        new_meta = _xbox_size(meta_plain, len(raw))
+        new_meta = _xbox_size(meta_plain, len(raw), name)
     return Rebuilt(new_data, new_meta, len(raw), len(new_data))
+
+
+def _may_rename(edits: list[savepatch.Edit]) -> bool:
+    """An edit at the save name or at a field holding it (a proven edit changes nothing else)."""
+    for edit in edits:
+        where = tuple(edit.where)
+        if isinstance(edit, savepatch.AddMember):
+            where += (edit.name,)
+        if SAVE_NAME_AT[:len(where)] == where:
+            return True
+    return False
+
+
+def _save_name(body: bytes) -> str:
+    """The save's own name, '' when it has none."""
+    try:
+        raw = savepatch.value_bytes(body, SAVE_NAME_AT)
+    except savepatch.PatchRefused:
+        return ""
+    value = json.loads(raw.decode("utf-8", errors="surrogateescape"), strict=False)
+    return value if isinstance(value, str) else ""
+
+
+def _name_field(name: str) -> bytes:
+    """``name`` as the meta's name field holds it: UTF-8, NUL-padded, at least one NUL."""
+    try:
+        encoded = name.encode("utf-8")
+    except UnicodeEncodeError:
+        raise EditRefused("the new save name is not text the meta can hold") from None
+    if b"\x00" in encoded or len(encoded) >= NAME_FIELD:
+        raise EditRefused(f"a save name must be under {NAME_FIELD} bytes, without NUL")
+    return encoded.ljust(NAME_FIELD, b"\x00")
 
 
 # --- Steam ---------------------------------------------------------------------------------
@@ -106,19 +149,25 @@ def _steam_fields(plain: bytes) -> tuple[int, int, int]:
     return info.size_decompressed, info.base_version, info.meta_format
 
 
-def _steam_sizes(plain: bytes, size_decompressed: int, size_disk: int) -> bytes:
+def _steam_sizes(plain: bytes, size_decompressed: int, size_disk: int,
+                 name: str | None = None) -> bytes:
+    """The meta with its sizes set, and its name when ``name`` is not None."""
     out = bytearray(plain)
     struct.pack_into("<I", out, formats.OFF_SIZE_DECOMPRESSED, size_decompressed)
     struct.pack_into("<I", out, formats.OFF_SIZE_DISK, size_disk)
     struct.pack_into("<I", out, OFF_SIZE_DECOMPRESSED_AGAIN, size_decompressed)
+    allowed = {formats.OFF_SIZE_DECOMPRESSED, formats.OFF_SIZE_DISK, OFF_SIZE_DECOMPRESSED_AGAIN}
+    if name is not None:
+        out[formats.OFF_SAVE_NAME:formats.OFF_SAVE_NAME + NAME_FIELD] = _name_field(name)
+        allowed |= set(range(formats.OFF_SAVE_NAME, formats.OFF_SAVE_NAME + NAME_FIELD, 4))
     new = bytes(out)
-    sizes = {formats.OFF_SIZE_DECOMPRESSED, formats.OFF_SIZE_DISK, OFF_SIZE_DECOMPRESSED_AGAIN}
     changed = {i - i % 4 for i in range(len(plain)) if plain[i] != new[i]}
     before, after = meta.parse(plain, 0), meta.parse(new, 0)
-    if not changed <= sizes or (after.size_decompressed, after.size_disk) != (
-            size_decompressed, size_disk) or (
-            after.slot_identifier, after.timestamp, after.save_name, after.total_play_time) != (
-            before.slot_identifier, before.timestamp, before.save_name, before.total_play_time):
+    if not changed <= allowed or (after.size_decompressed, after.size_disk) != (
+            size_decompressed, size_disk) or after.save_name != (
+            before.save_name if name is None else name) or (
+            after.slot_identifier, after.timestamp, after.total_play_time) != (
+            before.slot_identifier, before.timestamp, before.total_play_time):
         raise EditRefused("the rebuilt Steam meta does not read back as expected")
     return new
 
@@ -134,11 +183,16 @@ def _xbox_fields(stored: bytes) -> tuple[int, int, int]:
     return fields["size_field"], fields["base_version"], fields["meta_format"]
 
 
-def _xbox_size(stored: bytes, size_decompressed: int) -> bytes:
+def _xbox_size(stored: bytes, size_decompressed: int, name: str | None = None) -> bytes:
+    """The meta with its size set, and its name when ``name`` is not None."""
     out = bytearray(stored)
     struct.pack_into("<I", out, msstore.MS_OFF_SIZE, size_decompressed)
+    if name is not None:
+        out[msstore.MS_OFF_NAME:msstore.MS_OFF_NAME + NAME_FIELD] = _name_field(name)
     new = bytes(out)
     before, after = msstore.parse_ms_meta(stored), msstore.parse_ms_meta(new)
+    if name is not None:
+        before["name"] = name
     if after["size_field"] != size_decompressed or {
             k: v for k, v in after.items() if k != "size_field"} != {
             k: v for k, v in before.items() if k != "size_field"}:

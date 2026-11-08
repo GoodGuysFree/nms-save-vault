@@ -36,7 +36,7 @@ decompressing the user's actual files.
 | 0x44 | BaseVersion (u32) |
 | 0x48 / 0x4A | GameMode / Season (u16) |
 | 0x4C | TotalPlayTime (u64) |
-| 0x58 | SaveName (128B, NUL-term) |
+| 0x58 | SaveName (128B, NUL-term, zero-padded) — equals the JSON's `CommonStateData.SaveName` in every save the game wrote |
 | 0xD8 | SaveSummary (128B) |
 | 0x158 | Difficulty (u32) |
 | 0x15C | Slot identifier (8B) |

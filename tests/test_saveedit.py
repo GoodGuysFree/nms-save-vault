@@ -126,6 +126,74 @@ def test_rebuild_names_an_old_container_as_old(tmp_path):
                          [savepatch.Replace(UNITS, b"1")])
 
 
+NAME_AT = ("CommonStateData", "SaveName")
+
+
+def named_member(folder: Path):
+    body = json.dumps({K("CommonStateData"): {K("SaveName"): "Main"},
+                       K("PlayerStateData"): {K("Units"): 5}}, separators=(",", ":"))
+    steam_save(folder, 1, 0, "Main", 3600, 0x1234, 1_790_000_000,
+               payload=body.encode() + b"\x00", base_version=4233)
+    m = savedir.scan(folder).slots[1].a
+    return Path(m.data_path).read_bytes(), meta.decrypt(Path(m.meta_path).read_bytes(),
+                                                         m.ref.storage_ordinal)
+
+
+@pytest.mark.parametrize("edit", [
+    savepatch.Replace(NAME_AT, savepatch.dumps("Ålesund Base")),
+    savepatch.Replace(NAME_AT[:1], json.dumps({K("SaveName"): "Ålesund Base"}).encode()),
+])
+def test_a_new_save_name_goes_into_the_meta_as_the_game_keeps_it(tmp_path, edit):
+    data, plain = named_member(tmp_path / "st_1")
+    out = saveedit.rebuild("steam", data, plain, [edit])
+    assert savejson.decode_save(out.data).root[K("CommonStateData")][K("SaveName")] == \
+        "Ålesund Base"
+    before, after = meta.parse(plain, 0), meta.parse(out.meta, 0)
+    assert after.save_name == "Ålesund Base"
+    name_words = set(range(formats.OFF_SAVE_NAME, formats.OFF_SAVE_NAME + 0x80, 4))
+    changed = {i - i % 4 for i in range(len(plain)) if plain[i] != out.meta[i]}
+    assert changed <= {0x38, 0x3C, 0x54} | name_words
+    assert out.meta[formats.OFF_SAVE_NAME + len("Ålesund Base".encode()):
+                    formats.OFF_SAVE_NAME + 0x80] == bytes(0x80 - len("Ålesund Base".encode()))
+    assert (after.slot_identifier, after.timestamp, after.total_play_time, after.save_summary) == (
+        before.slot_identifier, before.timestamp, before.total_play_time, before.save_summary)
+
+
+def test_an_edit_elsewhere_leaves_the_meta_name_alone(tmp_path):
+    data, plain = named_member(tmp_path / "st_1")
+    odd = bytearray(plain)                          # a meta name the save does not hold
+    odd[formats.OFF_SAVE_NAME:formats.OFF_SAVE_NAME + 4] = b"Odd\x00"
+    out = saveedit.rebuild("steam", data, bytes(odd), [savepatch.Replace(UNITS, b"6")])
+    assert meta.parse(out.meta, 0).save_name == "Odd"
+
+
+@pytest.mark.parametrize("length, fits", [(127, True), (128, False)])
+def test_a_save_name_must_fit_the_meta(tmp_path, length, fits):
+    data, plain = named_member(tmp_path / "st_1")
+    edit = [savepatch.Replace(NAME_AT, savepatch.dumps("é" * (length // 2) + "x" * (length % 2)))]
+    if fits:
+        assert len(meta.parse(saveedit.rebuild("steam", data, plain, edit).meta,
+                              0).save_name.encode()) == length
+    else:
+        with pytest.raises(saveedit.EditRefused, match="under 128 bytes"):
+            saveedit.rebuild("steam", data, plain, edit)
+
+
+def test_an_xbox_save_s_new_name_goes_into_its_meta(tmp_path, make_wgs_account):
+    text = json.dumps({K("CommonStateData"): {K("SaveName"): "Main"}},
+                      separators=(",", ":")) + "\x00"
+    folder = make_wgs_account(tmp_path, [("Slot1Auto", text, "Main", "", 60, 1_790_000_000)])
+    m = msstore.scan(folder).slots[1].a
+    data, stored = Path(m.data_path).read_bytes(), bytearray(Path(m.meta_path).read_bytes())
+    struct.pack_into("<I", stored, msstore.MS_OFF_BASE_VERSION, 4233)
+    out = saveedit.rebuild("xbox", data, bytes(stored),
+                           [savepatch.Replace(NAME_AT, savepatch.dumps("Renamed"))])
+    before, after = msstore.parse_ms_meta(bytes(stored)), msstore.parse_ms_meta(out.meta)
+    assert after["name"] == "Renamed" and after["size_field"] == out.size_decompressed
+    assert {k: v for k, v in after.items() if k not in ("name", "size_field")} == {
+        k: v for k, v in before.items() if k not in ("name", "size_field")}
+
+
 def test_a_raw_nul_never_reaches_a_rebuilt_save(tmp_path):
     _m, data, plain = steam_member(tmp_path / "st_1")
     with pytest.raises(savepatch.PatchRefused, match="NUL"):
@@ -148,3 +216,17 @@ def test_a_real_steam_save_is_rebuilt_with_one_edit(live_save_dir):
     assert lz4_block.decompress(out.data) == savepatch.apply(
         body, [savepatch.Replace(where, str(old + 1).encode())]) + b"\x00"
     assert meta.parse(out.meta, 0).size_decompressed == out.size_decompressed
+
+
+@pytest.mark.slow
+def test_a_real_steam_save_renamed_shows_the_new_name_in_its_meta(live_save_dir):
+    """Read-only: a real save renamed in memory; the meta's name follows the save's."""
+    view = savedir.scan(live_save_dir)
+    m = next(s.newest for s in view.occupied_slots if s.newest is not None and s.newest.valid)
+    data = Path(m.data_path).read_bytes()
+    plain = meta.decrypt(Path(m.meta_path).read_bytes(), m.ref.storage_ordinal)
+    out = saveedit.rebuild("steam", data, plain,
+                           [savepatch.Replace(NAME_AT, savepatch.dumps("Renamed Save"))])
+    assert savejson.decode_save(out.data).root[K("CommonStateData")][K("SaveName")] == \
+        "Renamed Save"
+    assert meta.parse(out.meta, 0).save_name == "Renamed Save"
