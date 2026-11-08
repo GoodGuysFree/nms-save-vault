@@ -213,24 +213,44 @@ def configured_vault(host: platform.Host | None = None) -> Path | None:
     return None
 
 
-def vault_settings(host: platform.Host | None = None) -> AppState | None:
-    """NMS Save Vault's settings as another app sharing the vault reads them: the file the
-    pointer names, else the first ``state.json`` of :func:`state_candidates` that exists; None
-    when there is none. Only reads. A file that exists but cannot be read raises
-    ``ValueError``: what it switches off is then not known, and is never guessed."""
-    for path in state_candidates(host):
-        if path.name == POINTER:
-            named = _read_json(path).get("state")
-            if not isinstance(named, str) or not named.strip():
-                continue
-            path = Path(named)
-        if not path.is_file():
-            continue
+def vault_settings(host: platform.Host | None = None) -> list[AppState]:
+    """Every settings file of NMS Save Vault another app sharing the vault can find, the one in
+    use first: the file the pointer names while it still chooses the pointer's vault, then the
+    ``state.json`` files of :func:`state_candidates` that exist. Empty when there is none. Only
+    reads. A file that exists but cannot be read, the pointer included, raises ``ValueError``:
+    what it switches off is then not known, and is never guessed."""
+    def strict(path: Path) -> dict:
         try:
-            return AppState.from_dict(json.loads(path.read_bytes().decode("utf-8-sig")))
-        except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
+            raw = json.loads(path.read_bytes().decode("utf-8-sig"))
+        except (OSError, ValueError) as exc:
             raise ValueError(f"NMS Save Vault's settings ({path.name}) cannot be read") from exc
-    return None
+        if not isinstance(raw, dict):
+            raise ValueError(f"NMS Save Vault's settings ({path.name}) cannot be read")
+        return raw
+
+    files: list[Path] = []
+    for path in state_candidates(host):
+        if path.name != POINTER:
+            files.append(path)
+        elif path.is_file():
+            pointer = strict(path)
+            named = pointer.get("state")
+            if not isinstance(named, str) or not named.strip():
+                raise ValueError(f"NMS Save Vault's settings ({path.name}) cannot be read")
+            settings = Path(named)
+            in_use = settings.is_file() and isinstance(pointer.get("vault"), str) and (
+                _named_vault(settings) == Path(pointer["vault"]))
+            files.insert(0, settings) if in_use else files.append(settings)
+    out, seen = [], set()
+    for path in files:
+        if _key(path) in seen or not path.is_file():
+            continue
+        seen.add(_key(path))
+        try:
+            out.append(AppState.from_dict(strict(path)))
+        except (KeyError, TypeError, AttributeError) as exc:
+            raise ValueError(f"NMS Save Vault's settings ({path.name}) cannot be read") from exc
+    return out
 
 
 def _read_json(path: Path) -> dict:

@@ -68,7 +68,7 @@ PINNED = {
     "VaultReader": ("class", {"entries": "(self) -> 'list[StoreEntry]'",
                               "entry": "(self, entry_id: 'str') -> 'StoreEntry'",
                               "read_file": "(self, entry_id: 'str', path: 'str') -> 'bytes'"},
-                    ("root",)),
+                    (("root", "Path"),)),
     "app_of": ("function", "(recorded: 'object') -> 'str'"),
     "contexts_of": ("function", "(root: 'dict') -> 'tuple[SaveInput, dict[str, CtxInput]]'"),
     "current": ("function", "() -> 'AppIdentity'"),
@@ -101,14 +101,23 @@ PINNED = {
     "TargetError": ("error", ("LiveOpError", "OperationError")),
     "LiveSession": ("class", {
         "refresh": "(self) -> 'None'",
-        "plan_edit": "(self, slot: 'LiveTarget', edits: 'Sequence[Edit]', *, what: 'str') "
-                     "-> 'WritePlan'",
+        "plan_edit": "(self, slot: 'LiveTarget', "
+                     "edits: 'Sequence[Replace | Remove | Insert | AddMember]', *, "
+                     "what: 'str') -> 'WritePlan'",
         "plan_undo": "(self, op_id: 'str') -> 'WritePlan'",
-        "write": "(self, plan: 'WritePlan', confirmed: 'Iterable[str]' = ()) -> 'WriteResult'"},
-                    ()),
+        "write": "(self, plan: 'WritePlan', confirmed: 'Iterable[str]' = ()) -> 'WriteResult'",
+        "interrupted": "(self) -> 'list[Interrupted]'",
+        "resolve": "(self, op_id: 'str', choice: 'str', confirmed: 'Iterable[str]' = ()) "
+                   "-> 'WriteResult'"}, ()),
+    "Interrupted": ("fields", ("op_id", "app", "text", "recommended", "choices"), ()),
     "Notice": ("fields", ("code", "severity", "text"), ()),
-    "WritePlan": ("class", {}, ("blocked", "confirmations", "made", "outcome", "undoes",
-                                "warnings")),
+    "SEVERITIES": ("value", "tuple"),
+    "WRITE_STATUSES": ("value", "tuple"),
+    "WritePlan": ("class", {}, (("blocked", "tuple[Notice, ...]"),
+                                ("confirmations", "frozenset[str]"),
+                                ("made", "tuple[str, ...]"), ("outcome", "str"),
+                                ("undoes", "str | None"),
+                                ("warnings", "tuple[Notice, ...]"))),
     "WriteResult": ("fields", ("op_id", "status", "text", "code", "warnings", "undo"), ()),
     "open_live": ("function", "(vault_root: 'str | Path | None' = None, *, "
                               "live_dirs: 'Sequence[str | Path] | None' = None) "
@@ -134,6 +143,11 @@ def _properties(cls) -> tuple[str, ...]:
     return tuple(sorted(n for n, v in vars(cls).items() if isinstance(v, property)))
 
 
+def _typed_properties(cls) -> tuple[tuple[str, str], ...]:
+    return tuple(sorted((n, str(v.fget.__annotations__.get("return")))
+                        for n, v in vars(cls).items() if isinstance(v, property)))
+
+
 def _shape(obj):
     if inspect.isclass(obj) and dataclasses.is_dataclass(obj):
         return "fields", tuple(f.name for f in dataclasses.fields(obj)), _properties(obj)
@@ -141,7 +155,7 @@ def _shape(obj):
         return "error", tuple(c.__name__ for c in obj.__mro__[1:3])
     if inspect.isclass(obj):
         return "class", {n: str(inspect.signature(v)) for n, v in vars(obj).items()
-                         if callable(v) and not n.startswith("_")}, _properties(obj)
+                         if callable(v) and not n.startswith("_")}, _typed_properties(obj)
     if callable(obj):
         return "function", str(inspect.signature(obj))
     return "value", type(obj).__name__
@@ -152,6 +166,11 @@ def test_the_api_is_exactly_the_pinned_names_signatures_and_fields_at_version_1(
     assert {name: _shape(getattr(api, name)) for name in api.__all__} == PINNED
     assert api.API_VERSION == 1
     assert api.CORE_VERSION == __version__
+
+
+def test_the_words_a_write_is_reported_in_are_pinned():
+    assert api.SEVERITIES == ("info", "warn", "confirm", "block")
+    assert api.WRITE_STATUSES == ("done", "rolled_back", "failed", "refused", "stale")
 
 
 def test_the_types_reached_through_the_api_are_pinned_too():

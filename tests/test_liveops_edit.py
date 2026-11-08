@@ -1,6 +1,7 @@
 """liveops.edit (CL5): an edit of a live Steam save, kept in the vault as an extract and placed
 like any version - preserve, snapshot, journal, records naming the app and what it made, and
-an undo that puts the slot back byte for byte."""
+an undo that puts the saves back byte for byte (their metas too, but for the save time every
+write sets)."""
 from __future__ import annotations
 
 import pytest
