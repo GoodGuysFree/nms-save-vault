@@ -89,6 +89,12 @@ PINNED = {
     "scan_save_dir": ("function", "(folder: 'str | Path') -> 'SaveDirView'"),
     "set_app": ("function", "(name: 'str', version: 'str') -> 'AppIdentity'"),
     "vault_dir": ("function", "() -> 'Path'"),
+    "Inventory": ("fields", ("context", "owner", "index", "field", "where", "width", "height",
+                             "valid", "special", "inventory_class", "stack_group", "slots"), ()),
+    "Slot": ("fields", ("number", "item", "kind", "amount", "max_amount", "x", "y", "damage",
+                        "installed"), ()),
+    "SpecialSlot": ("fields", ("x", "y", "kind"), ()),
+    "inventories_of": ("function", "(root: 'dict') -> 'list[Inventory]'"),
     "vault_stamp": ("function", "(vault_root: 'str | Path | None' = None) -> 'tuple[int, ...]'"),
     # the write side: an edit of a live save, and its undo
     "AddMember": ("fields", ("where", "name", "raw"), ()),
