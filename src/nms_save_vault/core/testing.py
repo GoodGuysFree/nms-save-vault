@@ -37,7 +37,9 @@ def write_steam_save(folder: str | Path, slot: int, root: dict, *, member: int =
     time and game version are set. Returns the data file's path."""
     folder = Path(folder)
     folder.mkdir(parents=True, exist_ok=True)
-    raw = json.dumps(obfuscated(root), ensure_ascii=False, separators=(",", ":")).encode() + b"\x00"
+    # a hashed technology id is held as lone surrogates: its bytes go back as they were
+    raw = json.dumps(obfuscated(root), ensure_ascii=False,
+                     separators=(",", ":")).encode("utf-8", "surrogateescape") + b"\x00"
     data = lz4_block.compress(raw)
     file_no = slotmap.slot_file_numbers(slot)[member]
     plain = bytearray(formats.META_LEN_WORLDS_II)

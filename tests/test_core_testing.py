@@ -44,3 +44,15 @@ def test_a_written_save_reads_back_through_the_api(tmp_path):
     decoded = api.read_member(m).root
     assert api.get(decoded, "BaseContext", "PlayerStateData", "Units") == 1234
     assert api.playthrough_of(m) is not None
+
+
+def test_a_hashed_technology_id_is_written_exactly(tmp_path):
+    """A hashed id is six bytes that are not UTF-8, held as lone surrogates; the save keeps the
+    bytes, as the game writes them."""
+    hashed = "^" + bytes.fromhex("8080B7B5DD85").decode("utf-8", "surrogateescape")
+    root = {"PlayerStateData": {"Inventory": {"Slots": [{"Id": hashed}]}}}
+    folder = tmp_path / "st_76561198000000001"
+    testing.write_steam_save(folder, 1, root)
+    member = api.scan_save_dir(folder).slots[1].newest
+    (inv,) = api.inventories_of(api.read_member(member).root)
+    assert inv.slots[0].item.encode("utf-8", "surrogateescape") == bytes.fromhex("8080B7B5DD85")

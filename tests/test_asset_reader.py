@@ -116,8 +116,9 @@ def test_each_asset_reads_its_key_name_model_class_and_use():
     (ship,), (corvette,), (tool,) = k["ship"], k["corvette"], k["multitool"]
     assert (ship.key, ship.name, ship.model, ship.cls, ship.current) == (
         f"{SHIP}|0x0000000000000051", "Swift", SHIP, "S", False)
-    assert (corvette.name, corvette.current, corvette.facts) == (
-        "Hall", True, {"seed": f"0x{MADE:016X}", "layout_parts": 3})
+    assert (corvette.name, corvette.current, corvette.facts["seed"], corvette.facts["layout_parts"]) == (
+        "Hall", True, f"0x{MADE:016X}", 3)
+    assert len(corvette.facts["layout"]) == 16
     assert (tool.key, tool.name, tool.cls, tool.current) == (
         f"{TOOL}|0x0000000000000007", "Spark", "B", True)
     current, other = k["freighter"]
@@ -241,6 +242,8 @@ def charge(p):
     (lambda p: p["Pets"][0].update(CustomName="Mossy"), ["companion"]),
     (lambda p: p["PersistentPlayerBases"][0]["Objects"].append({"ObjectID": "^DOOR"}), ["base"]),
     (lambda p: p["PersistentPlayerBases"][0].update(Name="Barn"), ["base"]),
+    (lambda p: p["PersistentPlayerBases"][1]["Objects"].append({"ObjectID": "^HULL"}),
+     ["corvette"]),                                     # a rebuilt corvette is a new state
     (lambda p: p["TeleportEndpoints"][0].update(Name="Barn"), ["location"]),
     (lambda p: p["FreighterInventory"]["Slots"].append({"Id": "^FUEL1", "Amount": 5}),
      ["freighter"]),
@@ -263,9 +266,44 @@ def test_a_technology_s_charge_is_not_a_change_but_its_kind_of_item_is():
     assert states(save) != states(product)
 
 
+def freighter_save(freighter_seed, parts):
+    return {"PlayerStateData": {
+        "CurrentFreighter": {"Filename": FREIGHTER, "Seed": seed(freighter_seed)},
+        "CurrentFreighterHomeSystemSeed": seed(0xF2),
+        "PersistentPlayerBases": [{"BaseType": {"PersistentBaseTypes": "FreighterBase"},
+                                   "Name": "", "Objects": [{"ObjectID": "^ROOM"}] * parts}]}}
+
+
+def test_a_freighter_base_is_keyed_by_its_freighter():
+    """Every save's freighter base has the base id "freighter": two saves' bases on two
+    freighters must not be taken for one."""
+    (one,) = [a for a in assets_of(obf(freighter_save(0xF1, 2))) if a.kind == "base"]
+    (other,) = [a for a in assets_of(obf(freighter_save(0xF9, 2))) if a.kind == "base"]
+    (again,) = [a for a in assets_of(obf(freighter_save(0xF1, 5))) if a.kind == "base"]
+    assert one.key != other.key and one.key == again.key
+    assert one.key == f"freighter:{FREIGHTER}|0x00000000000000F1|0x00000000000000F2"
+    alone = freighter_save(0xF1, 2)
+    del alone["PlayerStateData"]["CurrentFreighter"]
+    assert [a.key for a in assets_of(obf(alone)) if a.kind == "base"] == ["freighter"]
+
+
+def test_a_save_from_before_multitool_collections_has_its_one_tool():
+    root = obf({"PlayerStateData": {
+        "CurrentWeapon": {"Filename": TOOL, "Seed": seed(0x7)},
+        "WeaponInventory": inv("B"), "Multitools": [{"Resource": {"Filename": ""}}]}})
+    (tool,) = [a for a in assets_of(root) if a.kind == "multitool"]
+    assert (tool.index, tool.where, tool.key, tool.cls, tool.current) == (
+        None, ("PlayerStateData", "CurrentWeapon"), f"{TOOL}|0x0000000000000007", "B", True)
+    assert [i.field for i in api.inventories_of(root) if i.owner == "multitool"] == [
+        "WeaponInventory"]                              # the same tool as the inventories have
+    with_collection = obf({"PlayerStateData": {"CurrentWeapon": {"Filename": TOOL},
+                                               "Multitools": PSD["Multitools"]}})
+    assert [a.where[-1] for a in assets_of(with_collection) if a.kind == "multitool"] == [0]
+
+
 def test_the_reader_is_in_the_public_api():
     assert api.assets_of is assets_of and api.Asset is Asset and api.ASSET_KINDS == KINDS
-    assert api.state_of is state_of
+    assert api.state_of is state_of and isinstance(api.INDEX_VERSION, int)
 
 
 @pytest.mark.slow

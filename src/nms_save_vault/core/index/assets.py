@@ -28,6 +28,11 @@ from .extract.bases import CORVETTE_FOLDER, walk_bases
 from .nodes import galaxy_of, get, gid, hex64, integer, items, label, seed, text, u64
 from .privacy import DENIED, owner_time
 
+#: Raised whenever what :func:`assets_of`, :func:`state_of` or ``inventories_of`` give for
+#: the same save changes (a key, a state, a field read differently): an app that keeps their
+#: results reads every save again (``api.INDEX_VERSION``).
+INDEX_VERSION = 2
+
 #: Every kind, in the order :func:`assets_of` lists them.
 KINDS = ("ship", "corvette", "multitool", "freighter", "frigate", "pilot", "exocraft",
          "companion", "egg", "base", "location")
@@ -78,17 +83,24 @@ def assets_of(root: dict) -> list[Asset]:
         layouts = _corvette_layouts(ctx)
         out += _ships(name, base, psd, ctx.ships, layouts)
         out += _multitools(name, base, psd, ctx.multitools)
-        out += _freighters(name, base, psd)
+        freighters = _freighters(name, base, psd)
+        out += freighters
         out += _frigates(name, base, psd)
         out += _pilots(name, base, psd)
         out += _exocraft(name, base, psd)
         out += _creatures(name, base, items(psd, "Pets"), "Pets", "companion")
         out += _creatures(name, base, items(psd, "Eggs"), "Eggs", "egg")
-        out += _bases(name, base, ctx)
+        current = next((f.key for f in freighters if f.current), None)
+        out += _bases(name, base, ctx, current)
         out += _locations(name, base, psd)
     order = {k: n for n, k in enumerate(KINDS)}
     contexts_order = {c: n for n, c in enumerate(contexts)}
     return sorted(out, key=lambda a: (contexts_order[a.context], order[a.kind]))
+
+
+def _digest(value: object) -> str:
+    body = json.dumps(value, sort_keys=True, ensure_ascii=True, separators=(",", ":"))
+    return hashlib.sha256(body.encode("ascii")).hexdigest()[:16]
 
 
 def _key(*parts: object) -> str:
@@ -97,7 +109,8 @@ def _key(*parts: object) -> str:
 
 def _ships(context: str, base: tuple, psd: dict, ships: tuple[Owned, ...],
            layouts: dict[int, int]) -> list[Asset]:
-    """``facts``: ``seed``; a corvette's ``layout_parts``, the parts of the layout it owns."""
+    """``facts``: ``seed``; a corvette's ``layout_parts``, the parts of the layout it owns, and
+    ``layout``, which parts (a digest: the same parts give the same digest)."""
     primary = integer(get(psd, "PrimaryShip"))
     out = []
     for s in ships:
@@ -105,7 +118,8 @@ def _ships(context: str, base: tuple, psd: dict, ships: tuple[Owned, ...],
         ship_seed = seed(get(s.node, "Resource", "Seed"))
         facts: dict = {"seed": ship_seed}
         if corvette:
-            facts["layout_parts"] = layouts.get(s.index)
+            parts, digest = layouts.get(s.index, (None, None))
+            facts["layout_parts"], facts["layout"] = parts, digest
         out.append(Asset(context, "corvette" if corvette else "ship", s.index,
                          base + ("ShipOwnership", s.index), _key(s.model, ship_seed),
                          text(get(s.node, "Name")), s.model,
@@ -114,15 +128,16 @@ def _ships(context: str, base: tuple, psd: dict, ships: tuple[Owned, ...],
     return out
 
 
-def _corvette_layouts(ctx) -> dict[int, int]:
-    """Ship slot -> part count of the layout its corvette owns: by ``UserData`` = the slot, or
-    an owner block made in the corvette's seed second or the next (``bases.claimed``)."""
+def _corvette_layouts(ctx) -> dict[int, tuple[int, str]]:
+    """Ship slot -> (part count, digest of which parts) of the layout its corvette owns: by
+    ``UserData`` = the slot, or an owner block made in the corvette's seed second or the next
+    (``bases.claimed``). Where a part sits is not in the digest; times and user data churn."""
     corvettes = {}
     for s in ctx.ships:
         if CORVETTE_FOLDER in s.model:
             value = seed(get(s.node, "Resource", "Seed"))
             corvettes[s.index] = int(value, 16) if value else None
-    out: dict[int, int] = {}
+    out: dict[int, tuple[int, str]] = {}
     if not corvettes:
         return out
     for _bid, node, base_type, ids in walk_bases(ctx).own:
@@ -134,14 +149,23 @@ def _corvette_layouts(ctx) -> dict[int, int]:
             (i for i, s in corvettes.items() if ts is not None and s is not None and 0 <= ts - s <= 1),
             None)
         if owner is not None and owner not in out:
-            out[owner] = sum(ids.values())
+            out[owner] = (sum(ids.values()), _digest(sorted(ids.items())))
     return out
 
 
 def _multitools(context: str, base: tuple, psd: dict, tools: tuple[Owned, ...]) -> list[Asset]:
-    """``facts``: ``seed``."""
+    """``facts``: ``seed``. A save from before multi-tool collections has one tool: the model
+    in ``CurrentWeapon``, its slots in ``WeaponInventory`` (as ``inventories_of`` lists it)."""
     active = integer(get(psd, "ActiveMultioolIndex"))     # sic: the game's spelling
     out = []
+    if not tools:
+        model = text(get(psd, "CurrentWeapon", "Filename"), MODEL_LIMIT)
+        if model:
+            tool_seed = seed(get(psd, "CurrentWeapon", "Seed"))
+            out.append(Asset(context, "multitool", None, base + ("CurrentWeapon",),
+                             _key(model, tool_seed), "", model,
+                             label(get(psd, "WeaponInventory", "Class", "InventoryClass")),
+                             True, None, None, {"seed": tool_seed}))
     for t in tools:
         tool_seed = seed(get(t.node, "Seed"))
         out.append(Asset(context, "multitool", t.index, base + ("Multitools", t.index),
@@ -249,9 +273,11 @@ def _creatures(context: str, base: tuple, entries: list, list_name: str, kind: s
     return out
 
 
-def _bases(context: str, base: tuple, ctx) -> list[Asset]:
+def _bases(context: str, base: tuple, ctx, freighter: str | None) -> list[Asset]:
     """The player's own bases but corvette layouts (they belong to their corvette). The key is
-    NMS Save Vault's base id. ``facts``: ``parts``."""
+    NMS Save Vault's base id; the freighter base's, ``freighter`` in every save, gets the key
+    of the freighter it is on (``freighter``: the current freighter's), so two saves' freighter
+    bases are told apart. ``facts``: ``parts``."""
     out = []
     lst = items(ctx.psd, "PersistentPlayerBases")
     positions = {id(node): n for n, node in enumerate(lst)}
@@ -260,6 +286,8 @@ def _bases(context: str, base: tuple, ctx) -> list[Asset]:
             continue
         address = u64(get(node, "GalacticAddress"))
         index = positions.get(id(node))
+        if base_type == "FreighterBase" and bid == "freighter" and freighter is not None:
+            bid = f"freighter:{freighter}"
         out.append(Asset(context, "base", index, base + ("PersistentPlayerBases", index), bid,
                          text(get(node, "Name")), base_type, None, None, galaxy_of(address),
                          hex64(address), {"parts": sum(ids.values())}))
@@ -310,6 +338,8 @@ def state_of(root: dict, asset: Asset) -> str:
     if asset.kind == "base":
         value: object = [asset.name, sorted(Counter(
             gid(get(o, "ObjectID")) for o in items(node, "Objects") if isinstance(o, dict)).items())]
+    elif asset.kind == "corvette":
+        value = [_stable(node), asset.facts.get("layout")]
     elif asset.kind == "location":
         value = [asset.name, asset.facts.get("favourite")]
     elif asset.kind == "freighter" and asset.index is None:

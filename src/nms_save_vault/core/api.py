@@ -35,6 +35,7 @@ from . import discover, gameversion, locations, safety, savedir, state
 from . import platform as hostmod
 from .appinfo import CORE_VERSION, VAULT, AppIdentity, app_of, current, is_stamp, set_app
 from .index.extract import CtxInput, SaveInput, contexts_of
+from .index.assets import INDEX_VERSION
 from .index.assets import KINDS as ASSET_KINDS
 from .index.assets import Asset, assets_of, state_of
 from .index.inventory import Inventory, Slot, SpecialSlot, inventories_of
@@ -86,7 +87,7 @@ __all__ = [
     "CtxInput", "DecodedSave", "SaveDecodeError", "SaveInput", "contexts_of", "decode_save",
     "PrivacyError", "get", "items", "known_game_version", "playthrough_of", "read_member",
     "Inventory", "Slot", "SpecialSlot", "inventories_of",
-    "ASSET_KINDS", "Asset", "assets_of", "state_of",
+    "ASSET_KINDS", "Asset", "INDEX_VERSION", "assets_of", "state_of",
     # the vault's stored versions
     "FileEntry", "StoreEntry", "StoreError", "StoreNotUpgraded", "StoreTooNew",
     "StoreUnavailable", "VaultReader", "open_vault",

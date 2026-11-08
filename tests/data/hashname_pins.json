@@ -1,5 +1,5 @@
 {
- "source": "MBINCompiler mapping.json 7.7.0.1 (LGPL-3.0); legacy names from libNOM.map mapping_legacy.json and MBINCompiler 6.17 (ActiveSpaceBattleLevel); DamageFactor, FullyInstalled, GraveInventory, Height, InventorySpecialSlotType, InventoryType, SpecialSlots, StackSizeGroup, Type, Width from goatfungus NMSSaveEditor jsonmap.txt (all ten equal to hashname.key); WeaponInventory from goatfungus NMSSaveEditor jsonmap.txt (equal to hashname.key); the asset reader's 24 names from goatfungus NMSSaveEditor jsonmap.txt (equal to hashname.key); the asset reader's 19 names from goatfungus NMSSaveEditor jsonmap.txt (equal to hashname.key)",
+ "source": "MBINCompiler mapping.json 7.7.0.1 (LGPL-3.0); legacy names from libNOM.map mapping_legacy.json and MBINCompiler 6.17 (ActiveSpaceBattleLevel); DamageFactor, FullyInstalled, GraveInventory, Height, InventorySpecialSlotType, InventoryType, SpecialSlots, StackSizeGroup, Type, Width from goatfungus NMSSaveEditor jsonmap.txt (all ten equal to hashname.key); WeaponInventory from goatfungus NMSSaveEditor jsonmap.txt (equal to hashname.key); the asset reader's 24 names from goatfungus NMSSaveEditor jsonmap.txt (equal to hashname.key); the asset reader's 19 names from goatfungus NMSSaveEditor jsonmap.txt (equal to hashname.key); the asset reader's 1 names from goatfungus NMSSaveEditor jsonmap.txt (equal to hashname.key)",
  "pairs": [
   ["AbandonedFreighterTransformUp", "Bg3"],
   ["Action", "TD8"],
@@ -60,6 +60,7 @@
   ["CurrentFreighter", "bIR"],
   ["CurrentFreighterHomeSystemSeed", "kYq"],
   ["CurrentMissionID", ";R7"],
+  ["CurrentWeapon", "e6e"],
   ["CursorSensitivityMode2", ";b<"],
   ["CustomName", "fH8"],
   ["DD", "8P3"],
