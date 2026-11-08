@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .. import formats, lz4_block, meta, msstore, safety, savedir
+from .. import appinfo, formats, lz4_block, meta, msstore, safety, savedir
 from ..organizer.journal import Journal
 from ..organizer.locator import LiveMember, Location, PreserveFailed
 from ..organizer.model import LiveRef, LiveTarget, new_op_id, pid_kind
@@ -675,6 +675,18 @@ def rollback_target(ctx: OpContext, wt: OpTarget, kept: list[str] | None = None)
 # --- recording -------------------------------------------------------------------------------
 
 
+def op_app(ctx: OpContext, op_id: str) -> str:
+    """The app that started ``op_id``, as its ``preparing`` event says: recovery may finish an
+    operation in another app, and the records must still name the one that ran it. The app
+    now when the journal does not say."""
+    try:
+        rec = opjournal.read_ops(ctx).get(op_id)
+    except Exception:  # noqa: BLE001 - only the name of the app is at stake
+        rec = None
+    app = rec.events[0].get("app") if rec is not None and rec.events else None
+    return app if appinfo.is_stamp(app) else ctx.app()
+
+
 def record_oplog(ctx: OpContext, op_id: str, kind: str, undo_of: str | None,
                  wts: list[OpTarget], status: str, confirmed: Iterable[str], note: str,
                  error: str | None) -> None:
@@ -700,7 +712,7 @@ def record_oplog(ctx: OpContext, op_id: str, kind: str, undo_of: str | None,
         "op": kind, "entry_id": first.preserved[0].ref.key if first.preserved else None,
         "snapshot_id": first.snapshot_id, "detail": detail, "changed": changed,
         "v": 2, "op_id": op_id, "utc": utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "app": ctx.app(), "kind": kind, "status": status, "undo_of": undo_of,
+        "app": op_app(ctx, op_id), "kind": kind, "status": status, "undo_of": undo_of,
         "targets": [_oplog_target(wt) for wt in wts], "confirmed": sorted(confirmed),
         "note": note, "error": error})
 
@@ -736,7 +748,7 @@ def record_lineage(ctx: OpContext, op_id: str, kind: str, undo_of: str | None,
             op_id, kind, int(ctx.clock()), wt.rt.target, (placed.get("A"), placed.get("B")),
             evicted, source=dict(loading.origin),
             preserved={loc.vid: loc.to_json() for loc in wt.preserved}, status=status,
-            undo_of=undo_of, note=note[:200], app=ctx.app(), members=members,
+            undo_of=undo_of, note=note[:200], app=op_app(ctx, op_id), members=members,
             snapshot=wt.snapshot_id))
     ctx.lineage.record_ops(recs)
 

@@ -181,12 +181,12 @@ WINDOWS_INSTALL = ("Programs", "NMSSaveVault")
 
 
 def state_candidates(host: platform.Host | None = None) -> list[Path]:
-    """Every ``state.json`` NMS Save Vault may be using, as another app sharing the vault sees
-    it: this process's own, the installed app's (Windows), then the per-user config folder
-    (a run from source). The portable Linux and macOS kits keep theirs wherever they were
-    unpacked, which nothing else can know."""
+    """Every file that may name the vault NMS Save Vault uses, as another app sharing it sees
+    it: the pointer NMS Save Vault writes whenever it saves its settings (:data:`POINTER`),
+    then the ``state.json`` files of a Vault older than the pointer - this process's own, the
+    installed app's (Windows), the per-user config folder (a run from source)."""
     host = host or platform.Host.current()
-    out = [default_state_path()]
+    out = [pointer_path(host), default_state_path()]
     local = host.env.get("LOCALAPPDATA")
     if host.system == platform.WINDOWS and local:
         out.append(Path(local).joinpath(*WINDOWS_INSTALL) / "state.json")
@@ -197,8 +197,8 @@ def state_candidates(host: platform.Host | None = None) -> list[Path]:
 
 def configured_vault(host: platform.Host | None = None) -> Path | None:
     """The vault folder chosen in NMS Save Vault (File > Choose vault folder), or None when no
-    ``state.json`` names one that exists. Only reads: unlike :func:`load`, a damaged file is
-    skipped, never moved aside."""
+    file of :func:`state_candidates` names one that exists. Only reads: unlike :func:`load`,
+    a damaged file is skipped, never moved aside."""
     for path in state_candidates(host):
         try:
             raw = json.loads(path.read_text(encoding="utf-8"))
@@ -277,4 +277,27 @@ def save(state: AppState, path: str | Path | None = None) -> Path:
         return p
     safety.atomic_write_bytes(p, json.dumps(state.to_dict(), indent=2).encode("utf-8"),
                               temp_prefix=p.name + ".tmp_")
+    if path is None and state.vault:
+        _point_to(state.vault)
     return p
+
+
+#: The per-user file that names the vault NMS Save Vault uses, wherever its own state.json
+#: is (a portable kit keeps that next to the program, where no other app can look).
+POINTER = "shared-vault.json"
+
+
+def pointer_path(host: platform.Host | None = None) -> Path:
+    return platform.user_config_dir(host) / POINTER
+
+
+def _point_to(vault: str) -> None:
+    """Name the vault in :data:`POINTER` for other apps sharing it. Never fails the save."""
+    from . import safety
+
+    target = pointer_path()
+    try:
+        safety.atomic_write_bytes(target, json.dumps({"vault": vault}).encode("utf-8"),
+                                  temp_prefix=POINTER + ".tmp_")
+    except OSError as exc:
+        log.warning("the shared vault pointer was not written: %s", exc)

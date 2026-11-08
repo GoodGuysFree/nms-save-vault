@@ -1,17 +1,19 @@
 """organizer.provenance (CL1.5): which versions an app made, and the last version before it
-changed a slot - over a journal built by hand, and once over a real live operation."""
+changed a playthrough - over journals built by hand, and over real live operations."""
 from __future__ import annotations
 
-import calendar
 from types import SimpleNamespace
 
 import pytest
 
 from nms_save_vault.core import api, appinfo
+from nms_save_vault.core.liveops import FaultInjector, SimulatedCrash
+from nms_save_vault.core.liveops import opjournal as jr
 from nms_save_vault.core.liveops.execute import execute
 from nms_save_vault.core.liveops.planner import plan_place
+from nms_save_vault.core.liveops.recovery import pending_recovery
 from nms_save_vault.core.organizer import provenance as pv
-from nms_save_vault.core.organizer.journal import JournalState, OpRecord
+from nms_save_vault.core.organizer.journal import JournalState, ObsRecord, OpRecord, op_fields
 from nms_save_vault.core.organizer.model import Edge, LiveRef, LiveTarget
 
 from .liveops_support import STEAM_ACCOUNT, steam_world
@@ -21,14 +23,22 @@ SC_STAMP = "nms-savecraft 0.1.0"
 VAULT_STAMP = "nms-save-vault 0.3.6"
 SLOT1 = LiveTarget("steam", "st_1", 1)
 SLOT2 = LiveTarget("steam", "st_1", 2)
+LIVE = LiveRef("steam", STEAM_ACCOUNT)
 
 
-def op(seq, at, placed, evicted, *, app=SC_STAMP, target=SLOT1, status="done", kind="edit",
-       op_id=None):
-    kept = {v: {"entry": f"kept-{seq}", "vid": v} for v in evicted if v}
-    return OpRecord(id=f"r-{seq}", seq=seq, at=at, src="app", op_id=op_id or f"op-{seq}",
+def op(seq, placed, evicted, *, made=(), app=SC_STAMP, target=SLOT1, status="done",
+       kind="place", op_id=None):
+    kept = {v: {"kind": "store", "entry": f"kept-{seq}", "slot": 1, "member": "A"}
+            for v in evicted if v}
+    return OpRecord(id=f"r-{seq}", seq=seq, at=100 * seq, src="app", op_id=op_id or f"op-{seq}",
                     kind=kind, target=target, pair=placed, evicted=evicted, source=None,
-                    preserved=kept, status=status, undo_of=None, note="", app=app)
+                    preserved=kept, status=status, undo_of=None, note="", app=app,
+                    made=tuple(made))
+
+
+def seen(seq, pair, target=SLOT1):
+    return ObsRecord(id=f"r-{seq}", seq=seq, at=100 * seq, src="scan", target=target, pair=pair,
+                     members={}, note_revs={}, entry=None, quality="exact")
 
 
 def played(parent, child, at):
@@ -36,99 +46,157 @@ def played(parent, child, at):
 
 
 def journal(records, edges=(), pids=None):
+    first: dict = {}
+    for rec in records:                      # as replay does: the first record holding a vid
+        for vid in rec.pair:
+            if vid and vid not in first:
+                first[vid] = rec.order
     metas = {v: SimpleNamespace(pid=p) for v, p in (pids or {}).items()}
     return JournalState(targets={}, edges=tuple(edges), events=(), events_by_seq={}, ops={},
-                        metas=metas, first_seen={}, note_rev={}, problems=(),
+                        metas=metas, first_seen=first, note_rev={}, problems=(),
                         records=tuple(records))
 
 
-def test_a_copy_is_not_made_by_the_app_that_moved_it_an_edit_is():
-    state = journal([op(1, 200, ("c", None), ("v1", "v0"), kind="place"),
-                     op(2, 300, ("e1", None), ("c", None))])
-    backup = [(None, 100, ("c",))]                         # a backup held "c" first: a copy
-    assert pv.made_by(state, SC, backup) == {"e1"}
-    assert pv.first_recorded_by(state, backup)["c"] is None
-    assert pv.first_recorded_by(state, backup)["v1"] is None      # evicted: it was there
+def test_only_what_an_operation_names_as_made_is_made():
+    state = journal([op(1, ("c", None), ("v1", "v0")),                  # a copy
+                     op(2, ("e1", None), ("c", None), made=("e1",))])   # an edit
+    assert pv.made_by(state, SC) == {"e1"}
     assert [c.op_id for c in pv.changes_by(state, SC)] == ["op-1", "op-2"]
 
 
-def test_an_edit_kept_as_an_entry_before_it_is_placed_is_still_the_editors():
-    state = journal([op(1, 400, ("e2", None), ("v1", None))])
-    entries = [(SC_STAMP, 400, ("e2",)), (None, 400, ("v1",))]   # an edit entry, a snapshot
-    assert pv.made_by(state, SC, entries) == {"e2"}
+def test_a_live_save_copied_in_and_played_on_is_still_a_good_version():
+    """The game's own save placed by the editor is no edit: once played on and then edited,
+    the pair just before the edit is the answer, of the playthrough in the slot."""
+    state = journal([op(1, ("pol", None), ("m1", "m0")),
+                     seen(2, ("p2", "pol")),
+                     op(3, ("x", "p2"), ("p2", "pol"), made=("x",))],
+                    pids={"pol": "POL", "p2": "POL", "x": "POL", "m1": "MAIN", "m0": "MAIN"})
+    assert pv.made_by(state, SC) == {"x"}
+    assert pv.last_before(state, SC, target=SLOT1).pair == ("p2", "pol")
+    assert pv.last_before(state, SC, pid="MAIN").pair == ("m1", "m0")
 
 
 def test_the_last_version_before_is_the_one_before_the_first_edit_of_a_run():
-    """v1 -> edit e1 -> the game plays on to p1 -> edit e2: still v1, never p1 or e1."""
-    state = journal([op(1, 100, ("e1", "v1"), ("v1", "v0")),
-                     op(2, 300, ("e2", "p1"), ("p1", "e1"))],
-                    edges=[played("e1", "p1", 200)])
-    assert pv.touched_by(state, SC) == {"e1", "p1", "e2"}
+    """v1 -> edit e1 -> the game plays on to g1 -> edit e2: still v1, never g1 or e1."""
+    state = journal([op(1, ("e1", "v1"), ("v1", "v0"), made=("e1",)),
+                     seen(2, ("g1", "e1")),
+                     op(3, ("e2", "g1"), ("g1", "e1"), made=("e2",))],
+                    pids={v: "P" for v in ("v0", "v1", "e1", "g1", "e2")})
+    assert pv.touched_by(state, SC) == {"e1", "g1", "e2"}        # g1 by the window, no edge
     before = pv.last_before(state, SC, target=SLOT1)
     assert (before.pair, before.change.op_id) == (("v1", "v0"), "op-1")
-    assert before.kept == {"v1": {"entry": "kept-1", "vid": "v1"},
-                           "v0": {"entry": "kept-1", "vid": "v0"}}
+    assert before.kept["v1"] == pv.KeptCopy("store", "kept-1", 1, "A")
+
+
+def test_a_descent_edge_touches_a_save_seen_only_elsewhere():
+    state = journal([op(1, ("e1", None), ("v1", None), made=("e1",))],
+                    edges=[played("e1", "g9", 150)])
+    assert pv.touched_by(state, SC) == {"e1", "g9"}
 
 
 def test_a_clean_version_played_after_going_back_is_the_newer_answer():
-    state = journal([op(1, 100, ("e1", "v1"), ("v1", "v0")),
-                     op(2, 200, ("v1", None), ("e1", "v1"), app=VAULT_STAMP, kind="undo"),
-                     op(3, 400, ("e3", "v2"), ("v2", "v1"))],
-                    edges=[played("v1", "v2", 300)])
+    state = journal([op(1, ("e1", "v1"), ("v1", "v0"), made=("e1",)),
+                     op(2, ("v1", None), ("e1", "v1"), app=VAULT_STAMP, kind="undo"),
+                     seen(3, ("v2", "v1")),
+                     op(4, ("e3", "v2"), ("v2", "v1"), made=("e3",))],
+                    pids={v: "P" for v in ("v0", "v1", "v2", "e1", "e3")})
     assert pv.last_before(state, SC, target=SLOT1).pair == ("v2", "v1")
 
 
-def test_by_slot_by_playthrough_and_failed_or_repeated_operations():
-    state = journal([op(1, 100, ("e1", None), ("a1", None)),
-                     op(2, 200, ("e2", None), ("b1", None), target=SLOT2),
-                     op(3, 300, ("e3", None), ("a2", None), status="rolled_back"),
-                     op(4, 400, ("e4", None), ("a3", None), op_id="op-1")],   # a repeat of op-1
-                    pids={"a1": "AAAA", "b1": "BBBB"})
+def test_a_slot_is_asked_for_the_playthrough_it_holds_after_a_swap():
+    """Edit Q in slot 2, edit P in slot 1, the slots are swapped, P is edited again in slot 2:
+    slot 2 now holds P, so its answer is P's p0, not Q's q0."""
+    vault = dict(app=VAULT_STAMP, kind="swap")
+    state = journal([op(1, ("q1", None), ("q0", None), made=("q1",), target=SLOT2),
+                     op(2, ("p1", None), ("p0", None), made=("p1",), target=SLOT1),
+                     op(3, ("q1", None), ("p1", None), target=SLOT1, **vault),
+                     op(4, ("p1", None), ("q1", None), target=SLOT2, **vault),
+                     op(5, ("p2", None), ("p1", None), made=("p2",), target=SLOT2)],
+                    pids={"q0": "Q", "q1": "Q", "p0": "P", "p1": "P", "p2": "P"})
+    assert pv.last_before(state, SC, target=SLOT2).pair == ("p0", None)
+    assert pv.last_before(state, SC, target=SLOT1).pair == ("q0", None)
+    assert pv.last_before(state, SC, pid="P").pair == ("p0", None)
+
+
+def test_failed_and_repeated_operations_and_other_apps_answer_nothing():
+    state = journal([op(1, ("e1", None), ("a1", None), made=("e1",)),
+                     op(2, ("e3", None), ("a2", None), made=("e3",), status="rolled_back"),
+                     op(3, ("e4", None), ("a3", None), made=("e4",), op_id="op-1"),
+                     op(4, ("x1", None), ("b1", None), app=VAULT_STAMP),
+                     op(5, ("x2", None), ("b2", None), app="0.3.5")],     # before stamps named one
+                    pids={"a1": "A"})
+    assert [c.op_id for c in pv.changes_by(state, SC)] == ["op-1"]
+    assert pv.made_by(state, SC) == {"e1"}
+    assert {c.op_id for c in pv.changes_by(state, "nms-save-vault")} == {"op-4", "op-5"}
+    assert pv.last_before(state, SC, pid="A").pair == ("a1", None)
+    assert pv.last_before(state, SC, pid="B") is None
+
+
+def test_a_slot_of_unknown_playthrough_answers_for_itself_alone():
+    state = journal([op(1, ("e1", None), ("a1", None), made=("e1",), target=SLOT1),
+                     op(2, ("e2", None), ("b1", None), made=("e2",), target=SLOT2)])
     assert pv.last_before(state, SC, target=SLOT1).pair == ("a1", None)
-    assert pv.last_before(state, SC, target=SLOT2).pair == ("b1", None)
-    assert pv.last_before(state, SC, pid="BBBB").pair == ("b1", None)
-    assert pv.last_before(state, SC, pid="CCCC") is None
-    assert pv.last_before(state, SC).pair == ("b1", None)        # the newest of all
-    assert [c.op_id for c in pv.changes_by(state, SC)] == ["op-1", "op-2"]
+    assert pv.last_before(state, SC).pair == ("b1", None)                   # the newest of all
 
 
-def test_an_app_never_answers_for_another():
-    state = journal([op(1, 100, ("x1", None), ("v1", None), app=VAULT_STAMP),
-                     op(2, 200, ("x2", None), ("v2", None), app="0.3.5")])   # before stamps named an app
-    assert pv.changes_by(state, SC) == [] and pv.last_before(state, SC) is None
-    assert {c.op_id for c in pv.changes_by(state, "nms-save-vault")} == {"op-1", "op-2"}
+def test_slots_with_an_instance_tag_match_only_their_own():
+    tagged = LiveTarget("steam", "st_1", 1, "aaaa1111")
+    assert pv.same_slot(tagged, SLOT1) and pv.same_slot(SLOT1, tagged)
+    assert not pv.same_slot(tagged, LiveTarget("steam", "st_1", 1, "bbbb2222"))
+    assert pv.KeptCopy.from_json({"kind": "store"}) is None
 
 
-def test_a_copy_entry_or_one_without_a_readable_time_claims_nothing():
-    made = SimpleNamespace(kind="edit", created_utc="2026-11-08T10:00:00Z", app_version=SC_STAMP,
-                           members=[SimpleNamespace(vid="e1"), SimpleNamespace(vid=None)])
-    copy = SimpleNamespace(kind="snapshot", created_utc="2026-11-08T10:00:00Z",
-                           app_version=SC_STAMP, members=[SimpleNamespace(vid="v1")])
-    bad = SimpleNamespace(kind="edit", created_utc="soon", app_version=SC_STAMP, members=[])
-    at = calendar.timegm((2026, 11, 8, 10, 0, 0))
-    assert pv.entry_origins([made, copy, bad]) == [(SC_STAMP, at, ("e1",)), (None, at, ("v1",))]
+def test_made_travels_in_the_record_and_only_when_there_is_some():
+    with_made = op_fields("app", "op-1", "place", SLOT1, ("e" * 64, None), None,
+                          made=("e" * 64,))
+    assert with_made["made"] == ["e" * 64]
+    assert "made" not in op_fields("app", "op-1", "place", SLOT1, ("e" * 64, None), None)
 
 
-def test_the_api_history_names_a_savecrafts_place_and_what_it_replaced(tmp_path):
-    """A real place run as Savecraft: one change by it, nothing made (a copy of a backup), and
-    the slot's pair before it, kept in the vault."""
-    world = steam_world(tmp_path)
-    plan = plan_place(world.ctx, world.polestar(), LiveRef("steam", STEAM_ACCOUNT).target(1))
+def _place_as_savecraft(world, *, crash_at=None):
+    plan = plan_place(world.ctx, world.polestar(), LIVE.target(1))
     previous = appinfo.set_app("nms-savecraft", "0.1.0")
     try:
-        outcome = execute(world.ctx, plan, plan.confirmations)
+        if crash_at is None:
+            return execute(world.ctx, plan, plan.confirmations).op_id
+        world.ctx.faults = FaultInjector({crash_at})
+        with pytest.raises(SimulatedCrash):
+            execute(world.ctx, plan, plan.confirmations)
     finally:
         appinfo.set_app(previous.name, previous.version)
-    assert outcome.status == "done", outcome
+    world.ctx.faults = None
+    (op_id,) = jr.read_ops(world.ctx)
+    return op_id
+
+
+def test_the_api_history_names_a_savecraft_copy_and_where_the_replaced_pair_was_kept(tmp_path):
+    world = steam_world(tmp_path)
+    op_id = _place_as_savecraft(world)
     history = api.open_history(world.vault_root)
     [change] = history.changes_by(SC)
-    assert (change.op_id, change.app, change.target.slot) == (outcome.op_id, SC_STAMP, 1)
-    assert history.made_by(SC) == set()
+    assert (change.op_id, change.app, change.target.slot, change.made) == (op_id, SC_STAMP, 1, ())
+    assert history.made_by(SC) == set()                           # a copy of a backup
     before = history.last_before(SC, slot=api.slot_of(world.live, 1))
-    assert before.pair == change.evicted and set(before.kept) == {v for v in before.pair if v}
-    preserved = {loc["entry"] if "entry" in loc else str(loc) for loc in before.kept.values()}
-    assert preserved                                          # where to get it back from
+    assert before is not None and before.pair == change.evicted
+    store = world.ctx.versions
+    for vid, kept in before.kept.items():                         # each copy reads back
+        assert kept.kind == "store"
+        assert store.entry(kept.entry).member(kept.slot, kept.member).vid == vid
     assert history.last_before(SC, slot=api.slot_of(world.live, 2)) is None
+
+
+@pytest.mark.parametrize("point", ["after_validated", "after_oplog", "after_record"])
+def test_an_operation_finished_by_recovery_in_another_app_names_the_app_that_ran_it(tmp_path,
+                                                                                    point):
+    world = steam_world(tmp_path)
+    op_id = _place_as_savecraft(world, crash_at=point)
+    world.refresh()                       # NMS Save Vault starts next and finishes it
+    pending_recovery(world.ctx)
+    line = [r for r in world.ctx.vault.read_oplog() if r.get("op_id") == op_id]
+    assert [r["app"] for r in line] == [SC_STAMP]
+    records = [r for r in world.ctx.store.journal_records() if r.get("op_id") == op_id]
+    assert [r["app"] for r in records] == [SC_STAMP]
+    assert [c.op_id for c in api.open_history(world.vault_root).changes_by(SC)] == [op_id]
 
 
 def test_a_vault_without_a_journal_has_an_empty_history(tmp_path):

@@ -34,6 +34,7 @@ from .model import (
     edge_kind,
     is_op_id,
     is_pid,
+    is_vid,
     member_from_json,
     member_to_json,
     pair_from_json,
@@ -103,6 +104,7 @@ class OpRecord:
     members: Mapping[Vid, MemberObs] = field(default_factory=dict)   # "m": placed vids the
                                         # journal had not described, so it alone draws history
     snapshot: str | None = None         # the entry the app kept the slot in before writing
+    made: tuple[Vid, ...] = ()          # placed versions it wrote new content into (an edit)
 
     @property
     def order(self) -> ObsOrder:
@@ -126,15 +128,20 @@ def op_fields(src: OpSrc, op_id: str, kind: str, target: LiveTarget, placed: Pai
               preserved: Mapping[Vid, Mapping[str, Any]] | None = None,
               status: OpStatus = "done", undo_of: str | None = None, note: str = "",
               app: str = "", members: Mapping[Vid, MemberObs] | None = None,
-              snapshot: str | None = None) -> dict:
-    """An ``op`` record before the store gives it ``id``, ``seq`` and ``at``."""
-    return {"t": "op", "src": src, "op_id": op_id, "kind": kind, "snapshot": snapshot,
-            "target": target_to_json(target), "pair": pair_to_json(placed),
-            "evicted": pair_to_json(evicted) if evicted is not None else None,
-            "source": dict(source) if source is not None else None,
-            "preserved": {vid: dict(loc) for vid, loc in (preserved or {}).items()},
-            "status": status, "undo_of": undo_of, "note": note, "app": app,
-            "m": {vid: member_to_json(m, with_vid=False) for vid, m in (members or {}).items()}}
+              snapshot: str | None = None, made: tuple[Vid, ...] = ()) -> dict:
+    """An ``op`` record before the store gives it ``id``, ``seq`` and ``at``. ``made``: the
+    placed versions the operation wrote new content into; only an operation that makes some
+    carries the key, so every other record keeps its shape."""
+    record = {"t": "op", "src": src, "op_id": op_id, "kind": kind, "snapshot": snapshot,
+              "target": target_to_json(target), "pair": pair_to_json(placed),
+              "evicted": pair_to_json(evicted) if evicted is not None else None,
+              "source": dict(source) if source is not None else None,
+              "preserved": {vid: dict(loc) for vid, loc in (preserved or {}).items()},
+              "status": status, "undo_of": undo_of, "note": note, "app": app,
+              "m": {vid: member_to_json(m, with_vid=False) for vid, m in (members or {}).items()}}
+    if made:
+        record["made"] = sorted(set(made))
+    return record
 
 
 def decode_record(d: Mapping[str, Any]) -> Record:
@@ -183,9 +190,13 @@ def _decode_op(d: Mapping[str, Any]) -> OpRecord:
     snapshot = d.get("snapshot")
     if snapshot is not None and not isinstance(snapshot, str):
         raise ModelError("op record: bad snapshot")
+    made = d.get("made", [])
+    if not isinstance(made, list) or not all(is_vid(v) for v in made):
+        raise ModelError("op record: bad made")
     return OpRecord(d["id"], d["seq"], d["at"], d["src"], d["op_id"], d["kind"],
                     target_from_json(d["target"]), pair_from_json(d["pair"]), evicted, source,
-                    preserved, d["status"], undo_of, d["note"], d["app"], members, snapshot)
+                    preserved, d["status"], undo_of, d["note"], d["app"], members, snapshot,
+                    tuple(made))
 
 
 def _dict(value: object) -> dict:

@@ -30,7 +30,7 @@ from .index.nodes import PrivacyError, get, items
 from .organizer import provenance
 from .organizer.journal import Journal
 from .organizer.model import LiveTarget, ModelError, pid_from_id
-from .organizer.provenance import AppChange, Before
+from .organizer.provenance import AppChange, Before, KeptCopy
 from .organizer.store import OrganizerStore
 from .savedir import MemberView, SaveDirView, SlotView
 from .savejson import DecodedSave, SaveDecodeError, decode_save
@@ -64,7 +64,8 @@ __all__ = [
     "FileEntry", "StoreEntry", "StoreError", "StoreNotUpgraded", "StoreTooNew",
     "StoreUnavailable", "VaultReader", "open_vault",
     # which versions an app made, and the last one before its change
-    "AppChange", "Before", "LiveTarget", "VaultHistory", "open_history", "slot_of",
+    "AppChange", "Before", "KeptCopy", "LiveTarget", "VaultHistory", "open_history",
+    "slot_of",
 ]
 
 
@@ -174,30 +175,29 @@ class VaultHistory:
     Apps are named as :func:`set_app` names them (``"nms-savecraft"``, ``"nms-save-vault"``).
     A snapshot: open it again to see later changes."""
 
-    def __init__(self, state, entries=()) -> None:
+    def __init__(self, state) -> None:
         self._state = state
-        self._entries = tuple(entries)
 
     def changes_by(self, app: str) -> list[AppChange]:
         """Every operation ``app`` ran on a live slot that went through, oldest first."""
         return provenance.changes_by(self._state, app)
 
     def made_by(self, app: str) -> set[str]:
-        """The versions (sha256 of a save's data) ``app`` recorded first, in the journal or as
-        a vault entry: an edit's output, not a copy."""
-        return provenance.made_by(self._state, app, self._entries)
+        """The versions (sha256 of a save's data) ``app``'s operations wrote new content into:
+        an edit's output, never a copy."""
+        return provenance.made_by(self._state, app)
 
     def touched_by(self, app: str) -> set[str]:
         """The versions ``app`` made and every version the game saved from one of them."""
-        return provenance.touched_by(self._state, app, self._entries)
+        return provenance.touched_by(self._state, app)
 
     def last_before(self, app: str, *, slot: LiveTarget | None = None,
                     playthrough: str | None = None) -> Before | None:
-        """The slot's pair just before ``app`` first changed it, not touched by ``app``, and
-        where it was kept: of one slot (:func:`slot_of`) or one playthrough
-        (:func:`playthrough_of`), or the newest of all. None when ``app`` changed none."""
-        return provenance.last_before(self._state, app, target=slot, pid=playthrough,
-                                      entries=self._entries)
+        """The newest pair of a playthrough before ``app`` changed it, that ``app`` had not
+        touched, and where the vault kept it: of ``playthrough`` (:func:`playthrough_of`); of
+        the playthrough ``slot`` holds now (:func:`slot_of`), else what that slot held before
+        ``app`` wrote it; or the newest of all. None when there is none."""
+        return provenance.last_before(self._state, app, target=slot, pid=playthrough)
 
 
 def open_history(vault_root: str | Path | None = None) -> VaultHistory:
@@ -206,9 +206,4 @@ def open_history(vault_root: str | Path | None = None) -> VaultHistory:
     root = Path(vault_root) if vault_root is not None else vault_dir()
     if not root.is_dir():
         raise StoreUnavailable("The vault is not reachable.")
-    journal = Journal(OrganizerStore(root, create=False, read_only=True), {}).replay()
-    try:
-        entries = open_vault(root, live_roots=()).entries()
-    except StoreError:              # no version store yet (a legacy vault): the journal alone
-        entries = []
-    return VaultHistory(journal, provenance.entry_origins(entries))
+    return VaultHistory(Journal(OrganizerStore(root, create=False, read_only=True), {}).replay())

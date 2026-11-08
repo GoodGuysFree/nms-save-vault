@@ -24,8 +24,9 @@ from .store_helpers import fingerprint, new_vault, open_vault_store, steam_live
 PINNED = {
     "API_VERSION": ("value", "int"),
     "AppChange": ("fields", ("op_id", "kind", "at", "app", "target", "placed", "evicted", "kept",
-                             "snapshot", "seq"), ()),
+                             "snapshot", "made", "seq"), ()),
     "Before": ("fields", ("change", "pair", "kept"), ()),
+    "KeptCopy": ("fields", ("kind", "entry", "slot", "member"), ()),
     "LiveTarget": ("fields", ("platform", "account_key", "slot", "instance"), ("ref",)),
     "VaultHistory": ("class", {
         "changes_by": "(self, app: 'str') -> 'list[AppChange]'",
@@ -203,10 +204,14 @@ def test_the_vault_chosen_in_nms_save_vault_is_the_one_shared(tmp_path, monkeypa
     assert api.vault_dir() == api.default_vault_dir()           # nothing chosen yet
     installed.write_text(json.dumps({"vault": str(chosen)}), encoding="utf-8")
     assert api.vault_dir() == chosen
-    before = installed.read_bytes()
     installed.write_text("{damaged", encoding="utf-8")
     assert api.vault_dir() == api.default_vault_dir()           # skipped, never moved aside
-    assert installed.is_file() and installed.read_bytes() != before
+    assert installed.read_text(encoding="utf-8") == "{damaged"
+    portable = tmp_path / "E" / "PortableVault"               # chosen in a portable kit
+    portable.mkdir(parents=True)
+    state.save(state.AppState(vault=str(portable)))          # NMS Save Vault saves its settings
+    assert state.pointer_path(host).is_file()
+    assert api.vault_dir() == portable                        # the pointer comes first
 
 
 def test_the_vault_opens_to_read_and_nothing_in_it_is_written(tmp_path):

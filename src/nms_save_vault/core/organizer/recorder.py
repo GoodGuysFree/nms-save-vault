@@ -53,6 +53,7 @@ class OpLineage:
     app: str = field(default_factory=appinfo.stamp)
     members: Mapping[Vid, MemberObs] = field(default_factory=dict)   # the placed members
     snapshot: str | None = None             # the entry the app kept the folder in first
+    made: tuple[Vid, ...] = ()              # placed versions it wrote new content into (an edit)
 
 
 class LineageRecorder:
@@ -85,7 +86,8 @@ class LineageRecorder:
                 tx.append(op_fields("app", rec.op_id, rec.kind, rec.target, rec.placed,
                                     rec.evicted, source=rec.source, preserved=rec.preserved,
                                     status=rec.status, undo_of=rec.undo_of, note=rec.note,
-                                    app=rec.app, members=members, snapshot=rec.snapshot),
+                                    app=rec.app, members=members, snapshot=rec.snapshot,
+                                    made=rec.made),
                           at=max(rec.at, tx.last_at))
                 written += 1
         return written
