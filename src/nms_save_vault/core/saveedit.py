@@ -74,12 +74,18 @@ def rebuild(platform: str, data: bytes, meta_plain: bytes,
         raise EditRefused(f"not a platform: {platform!r}")
     if gameversion.newer(platform, meta_format, base_version):
         raise EditRefused(gameversion.GAME_NEWER_TEXT)
+    body = body_of(data)
     chunks, _ = lz4_block.walk_chunks(data)
     if sum(c.decompressed_size for c in chunks) != recorded:
         raise EditRefused("the meta's size does not match its own data; not touching it")
-    body = body_of(data)
-    raw = savepatch.apply(body, edits) + b"\x00"
-    new_data = lz4_block.compress(raw)
+    new_body = savepatch.apply(body, edits)
+    raw = new_body + b"\x00"
+    try:
+        new_data = lz4_block.compress(raw)
+    except lz4_block.LZ4FormatError as exc:
+        raise EditRefused(f"the edited save could not be compressed ({exc})") from None
+    if body_of(new_data) != new_body:                  # as the game will read it back
+        raise EditRefused("the rebuilt save does not read back as the edited JSON")
     if platform == "steam":
         new_meta = _steam_sizes(meta_plain, len(raw), len(new_data))
     else:

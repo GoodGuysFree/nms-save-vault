@@ -108,8 +108,8 @@ def test_an_edit_that_cannot_be_made_exactly_is_refused(edits, why):
 def test_the_re_parse_catches_an_edit_that_changed_more_than_it_said(monkeypatch):
     real = sp._splice
 
-    def sloppy(body, edit):
-        start, end, raw = real(body, edit)
+    def sloppy(body, edit, cache):
+        start, end, raw = real(body, edit, cache)
         return start, end + 1, raw                  # eats the byte after the value
 
     monkeypatch.setattr(sp, "_splice", sloppy)
@@ -126,6 +126,56 @@ def test_raw_control_characters_and_non_ascii_text_are_read_as_the_game_wrote_th
 def test_no_edits_is_the_same_bytes():
     body = save(Units=1)
     assert sp.apply(body, []) is body
+
+
+
+@pytest.mark.parametrize("raw, why", [
+    (b'"Ma\x00in"', "NUL"),                                  # the game ends a save at a NUL
+    (b'1,"' + K("Nanites").encode() + b'":3', "not JSON"),     # a second member smuggled in
+    (b"1,2", "more than one JSON value"),
+    (b'1]  ,[2', "not JSON"),
+    (b'"x\\\ty"', "not JSON"),                                # needs the escape repair
+])
+def test_a_raw_value_that_would_break_or_smuggle_into_the_save_is_refused(raw, why):
+    with pytest.raises(sp.PatchRefused, match=why):
+        sp.apply(save(Units=5, Nanites=2), [R(PSD + ("Units",), raw)])
+
+
+def test_a_save_with_a_field_twice_in_one_object_is_not_touched():
+    body = save(Units=5).replace(b"}}", b',"' + K("Units").encode() + b'":6}}')
+    with pytest.raises(sp.PatchRefused, match="twice"):
+        sp.apply(body, [A(PSD, "Nanites", b"1")])
+
+
+def test_the_proof_compares_member_order_and_value_types():
+    assert sp._canonical({"a": True}) != sp._canonical({"a": 1})
+    assert sp._canonical({"a": 1}) != sp._canonical({"a": 1.0})
+    assert sp._canonical({"a": 1, "b": 2}) != sp._canonical({"b": 2, "a": 1})
+
+
+def test_text_with_undecodable_bytes_is_written_back_as_it_was():
+    assert sp.dumps("ab\udcff") == b'"ab\xff"'
+    body = save(Units=1).replace(b"}}", b',"' + K("SaveName").encode() + b'":"ab\xff"}}')
+    name = tree(body)[K("PlayerStateData")][K("SaveName")]
+    new = sp.apply(body, [R(PSD + ("SaveName",), sp.dumps(name + "c"))])
+    assert b'"ab\xffc"' in new
+
+
+def test_odd_names_are_refused_as_edits_not_as_crashes():
+    with pytest.raises(sp.PatchRefused, match="not a field name"):
+        sp.apply(save(Units=1), [R(PSD + ("x" * 200,), b"1")])
+    body = save(Units=1).replace(b"{", b'{"\x01":0,', 1)          # a raw control char in a key
+    assert psd(sp.apply(body, [R(PSD + ("Units",), b"2")]))[K("Units")] == 2
+
+
+def test_many_edits_of_one_big_container_read_it_once():
+    import time
+
+    body = save(Ships=[{"n": i, "pad": "x" * 200} for i in range(4000)])
+    started = time.perf_counter()
+    new = sp.apply(body, [X(PSD + ("Ships", i)) for i in range(0, 4000, 2)])
+    assert time.perf_counter() - started < 10
+    assert [s["n"] for s in psd(new)[K("Ships")]] == list(range(1, 4000, 2))
 
 
 @pytest.mark.slow

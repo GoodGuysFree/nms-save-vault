@@ -128,6 +128,26 @@ def test_a_container_that_would_not_decode_back_is_refused(monkeypatch):
         lz4_block.compress(b"hello world, hello world")
 
 
+
+def test_a_block_ending_with_a_match_or_short_literals_is_refused_by_the_end_check():
+    src = b"a" * 20
+    ends_on_match = bytes([0x1F]) + b"a" + bytes([1, 0, 0])      # 1 literal, a 19-byte match
+    assert lz4_block.decompress_block(ends_on_match, 20, exact=True) == src   # lenient
+    with pytest.raises(lz4_block.LZ4FormatError, match="ends with a match"):
+        lz4_block.check_block_ends(ends_on_match, 20)
+    short_tail = bytes([0x1F]) + b"a" + bytes([1, 0, 0]) + bytes([0x10]) + b"a"
+    with pytest.raises(lz4_block.LZ4FormatError, match="end rules"):
+        lz4_block.check_block_ends(short_tail, 21)
+    lz4_block.check_block_ends(lz4_block.compress_block(src), 20)
+
+
+def test_compress_refuses_a_block_the_reference_library_would_reject(monkeypatch):
+    ends_on_match = bytes([0x1F]) + b"a" + bytes([1, 0, 0])
+    monkeypatch.setattr(lz4_block, "compress_block", lambda src: ends_on_match)
+    with pytest.raises(lz4_block.LZ4FormatError, match="ends with a match"):
+        lz4_block.compress(b"a" * 20)
+
+
 @pytest.mark.slow
 def test_real_saves_round_trip(live_save_dir):
     """Read-only: every real save here decodes, re-encodes and decodes back to the same JSON."""

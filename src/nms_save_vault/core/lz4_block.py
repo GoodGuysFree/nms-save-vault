@@ -314,6 +314,47 @@ def compress_block(src: bytes) -> bytes:
     return bytes(out)
 
 
+def check_block_ends(block: bytes, size: int) -> None:
+    """The format's end rules, which this module's own decoder does not insist on but the
+    reference library does: a block of more than one sequence ends with at least 5 literals,
+    and its last match starts at least 12 bytes before the end. :class:`LZ4FormatError`."""
+    s, n, out, last_match_start, last_lit = 0, len(block), 0, None, 0
+
+    def ext() -> int:
+        nonlocal s
+        total = 0
+        while True:
+            b = block[s]
+            s += 1
+            total += b
+            if b != 255:
+                return total
+
+    while s < n:
+        token = block[s]
+        s += 1
+        lit = token >> 4
+        if lit == 15:
+            lit += ext()
+        s += lit
+        out += lit
+        last_lit = lit
+        if s >= n:
+            break
+        s += 2
+        ml = token & 15
+        if ml == 15:
+            ml += ext()
+        last_match_start = out
+        out += ml + MIN_MATCH
+        last_lit = -1                       # the block may not end on a match
+    if last_lit < 0:
+        raise LZ4FormatError("an LZ4 block ends with a match")
+    if last_match_start is not None and (last_lit < LAST_LITERALS
+                                         or last_match_start > size - MF_LIMIT):
+        raise LZ4FormatError("an LZ4 block breaks the format's end rules")
+
+
 def compress(raw: bytes) -> bytes:
     """The game's save container for ``raw`` (the save's JSON, with its NUL): chunks of at
     most 512 KiB, each a 16-byte header and one LZ4 block. Decoded again before it is
@@ -326,6 +367,7 @@ def compress(raw: bytes) -> bytes:
     for off in range(0, len(raw), formats.SAVE_CHUNK_DECOMPRESSED_MAX):
         piece = raw[off:off + formats.SAVE_CHUNK_DECOMPRESSED_MAX]
         block = compress_block(piece)
+        check_block_ends(block, len(piece))
         out += struct.pack("<4I", formats.SAVE_MAGIC, len(block), len(piece), 0) + block
     packed = bytes(out)
     if decompress(packed) != raw:

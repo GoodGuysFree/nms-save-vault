@@ -24,7 +24,7 @@ from dataclasses import dataclass
 from typing import Any, Union
 
 from .hashname import key
-from .savejson import SaveDecodeError, _parse
+from .savejson import _BAD_ESCAPE, _ESCAPED
 
 Step = Union[str, int]          # a readable field name, or an array index
 Where = Sequence[Step]
@@ -81,8 +81,17 @@ Edit = Union[Replace, Remove, Insert, AddMember]
 
 
 def dumps(value: Any) -> bytes:
-    """A Python value as compact JSON text, the way the game writes JSON (UTF-8, no spaces)."""
-    return json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    """A Python value as compact JSON text, the way the game writes JSON (UTF-8, no spaces).
+    Text read from a save keeps its undecodable bytes (``surrogateescape``) and gets them back."""
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode(
+        "utf-8", "surrogateescape")
+
+
+def _k(name: str) -> str:
+    try:
+        return key(name)
+    except ValueError:
+        raise PatchRefused(f"{name[:40]!r} is not a field name") from None
 
 
 # --- finding bytes -------------------------------------------------------------------------
@@ -139,7 +148,18 @@ class _Container:
     keys: tuple[str | None, ...]        # an object's obfuscated keys; None for an array
 
 
-def _container(body: bytes, p: int) -> _Container:
+def _container(body: bytes, p: int, cache: dict | None = None) -> _Container:
+    """The object or array starting at ``p``. ``cache``: containers already read in this pass,
+    by offset, so many edits do not read the same big containers again and again."""
+    if cache is not None and p in cache:
+        return cache[p]
+    box = _read_container(body, p)
+    if cache is not None:
+        cache[p] = box
+    return box
+
+
+def _read_container(body: bytes, p: int) -> _Container:
     c = body[p]
     if c not in b"{[":
         raise PatchRefused("expected an object or an array in the save JSON")
@@ -152,7 +172,11 @@ def _container(body: bytes, p: int) -> _Container:
         name = None
         if is_obj:
             k_end = _string_end(body, q)
-            name = json.loads(body[q:k_end].decode("utf-8", errors="surrogateescape"))
+            try:
+                name = json.loads(body[q:k_end].decode("utf-8", errors="surrogateescape"),
+                                  strict=False)
+            except ValueError:
+                raise PatchRefused("a field name in the save JSON cannot be read") from None
             q = _ws(body, k_end)
             if body[q] != 0x3A:
                 raise PatchRefused("expected ':' in the save JSON")
@@ -168,19 +192,20 @@ def _container(body: bytes, p: int) -> _Container:
     return _Container(p + 1, q, tuple(items), tuple(keys))
 
 
-def _locate(body: bytes, where: Where) -> tuple[int, int, _Container | None, int | None]:
+def _locate(body: bytes, where: Where, cache: dict | None = None
+            ) -> tuple[int, int, _Container | None, int | None]:
     """(value start, value end, the container holding it, its item number there) of the
     value at ``where``; the root has no container."""
     start, end = _ws(body, 0), None
     parent, item = None, None
     for step in where:
-        box = _container(body, start)
+        box = _container(body, start, cache)
         if isinstance(step, bool) or not isinstance(step, (str, int)):
             raise PatchRefused(f"a place is named by field names and indices, not {step!r}")
         if isinstance(step, str):
             if body[start] != 0x7B:
                 raise PatchRefused(f"{step!r}: not an object here")
-            want = key(step)
+            want = _k(step)
             if want not in box.keys:
                 raise PatchRefused(f"no field {step!r} here")
             item = box.keys.index(want)
@@ -212,14 +237,15 @@ def value_bytes(body: bytes, where: Where) -> bytes:
 # --- applying ------------------------------------------------------------------------------
 
 
-def _removals(body: bytes, removes: list[Remove]) -> list[tuple[int, int, bytes]]:
+def _removals(body: bytes, removes: list[Remove], cache: dict
+              ) -> list[tuple[int, int, bytes]]:
     """The byte ranges that remove items, per container: each run of neighbouring items goes
     with one separator, so any set of items of one container can go at once."""
     groups: dict[tuple, tuple[_Container, set[int]]] = {}
     for edit in removes:
         if not edit.where:
             raise PatchRefused("the save itself cannot be removed")
-        _, _, box, item = _locate(body, edit.where)
+        _, _, box, item = _locate(body, edit.where, cache)
         groups.setdefault(tuple(edit.where[:-1]), (box, set()))[1].add(item)
     out = []
     for box, items in groups.values():
@@ -242,15 +268,15 @@ def _removals(body: bytes, removes: list[Remove]) -> list[tuple[int, int, bytes]
     return out
 
 
-def _splice(body: bytes, edit: Edit) -> tuple[int, int, bytes]:
+def _splice(body: bytes, edit: Edit, cache: dict) -> tuple[int, int, bytes]:
     """The byte range an edit (not a removal) replaces, and what with."""
     if isinstance(edit, Replace):
         if not edit.where:
             raise PatchRefused("replace the save's fields, not the whole save")
-        start, end, _, _ = _locate(body, edit.where)
+        start, end, _, _ = _locate(body, edit.where, cache)
         return start, end, edit.raw
-    target, _, _, _ = _locate(body, edit.where)
-    box = _container(body, target)
+    target, _, _, _ = _locate(body, edit.where, cache)
+    box = _container(body, target, cache)
     if isinstance(edit, Insert):
         if body[target] != 0x5B:
             raise PatchRefused("an element is inserted into an array only")
@@ -266,7 +292,7 @@ def _splice(body: bytes, edit: Edit) -> tuple[int, int, bytes]:
     if isinstance(edit, AddMember):
         if body[target] != 0x7B:
             raise PatchRefused("a member is added to an object only")
-        name = key(edit.name)
+        name = _k(edit.name)
         if name in box.keys:
             raise PatchRefused(f"the object has {edit.name!r} already")
         member = dumps(name) + b":" + edit.raw
@@ -279,7 +305,7 @@ def _splice(body: bytes, edit: Edit) -> tuple[int, int, bytes]:
 
 def _node(tree: Any, steps: Where) -> Any:
     for step in steps:
-        tree = tree[key(step) if isinstance(step, str) else step]
+        tree = tree[_k(step) if isinstance(step, str) else step]
     return tree
 
 
@@ -289,22 +315,62 @@ def _expected(tree: Any, edit: Edit, parse) -> None:
     if isinstance(edit, Insert):
         _node(tree, where).insert(edit.index, parse(edit.raw))
     elif isinstance(edit, AddMember):
-        _node(tree, where)[key(edit.name)] = parse(edit.raw)
+        _node(tree, where)[_k(edit.name)] = parse(edit.raw)
     else:
         parent, last = _node(tree, where[:-1]), where[-1]
-        name = key(last) if isinstance(last, str) else last
+        name = _k(last) if isinstance(last, str) else last
         if isinstance(edit, Replace):
             parent[name] = parse(edit.raw)
         else:
             del parent[name]
 
 
-def _parse_value(raw: bytes) -> Any:
+class _Duplicate(ValueError):
+    pass
+
+
+def _no_duplicates(pairs: list) -> dict:
+    out = {}
+    for k, v in pairs:
+        if k in out:
+            raise _Duplicate(k)
+        out[k] = v
+    return out
+
+
+def _loads(text: bytes, *, repair: bool) -> Any:
+    """JSON as the game reads it (raw control characters in strings, undecodable bytes kept),
+    but strict where a proof needs it: a duplicate field is an error. ``repair``: the escape
+    repair NMS Save Vault applies to saves (savejson); never for a new value."""
+    def go(data: bytes) -> Any:
+        return json.loads(data.decode("utf-8", errors="surrogateescape"), strict=False,
+                          object_pairs_hook=_no_duplicates)
     try:
-        root, _ = _parse(b'{"v":' + raw + b"}")
-    except SaveDecodeError:
+        return go(text)
+    except json.JSONDecodeError as exc:
+        if not (repair and "Invalid \\escape" in exc.msg):
+            raise
+        return go(_BAD_ESCAPE.sub(lambda m: _ESCAPED[m.group(1)], text))
+
+
+def _parse_value(raw: bytes) -> Any:
+    """The one JSON value ``raw`` holds; refused when it holds anything else - no NUL (the
+    game ends a save at its first NUL), no second value, nothing that needs repair."""
+    if b"\x00" in raw:
+        raise PatchRefused("a value holds a NUL byte")
+    try:
+        got = _loads(b"[" + raw + b"]", repair=False)
+    except (ValueError, RecursionError):
         raise PatchRefused(f"a value is not JSON: {raw[:40]!r}") from None
-    return root["v"]
+    if len(got) != 1:
+        raise PatchRefused(f"a value holds more than one JSON value: {raw[:40]!r}")
+    return got[0]
+
+
+def _canonical(tree: Any) -> str:
+    """The tree as compact JSON text: comparing two of these compares member order and value
+    types too (``true`` is not ``1``, ``1`` is not ``1.0``), which ``==`` on trees does not."""
+    return json.dumps(tree, ensure_ascii=False, separators=(",", ":"), check_circular=False)
 
 
 def _tree_order(edits: list[Edit]) -> list[Edit]:
@@ -324,16 +390,18 @@ def _tree_order(edits: list[Edit]) -> list[Edit]:
 
 def apply(body: bytes, edits: Iterable[Edit]) -> bytes:
     """``body`` with every edit made, proven: the result parses, and reads as the original
-    tree with exactly those edits made. Each edit names its place in the original text; edits
-    must not touch the same bytes, and two insertions may not share one point (make them in
-    one :class:`Insert` per index, or in two calls). Raises :class:`PatchRefused` otherwise,
-    and returns nothing."""
+    tree with exactly those edits made, member order and value types included. Each edit
+    names its place in the original text; edits must not touch the same bytes, and two
+    insertions may not share one point. Emptying a container and inserting into it, or
+    removing an array's last element and inserting at its index, also share bytes: make them
+    in two calls. Raises :class:`PatchRefused` otherwise, and returns nothing."""
     edits = list(edits)
     if not edits:
         return body
+    cache: dict = {}
     removes = [e for e in edits if isinstance(e, Remove)]
-    splices = _removals(body, removes) + [_splice(body, e) for e in edits
-                                          if not isinstance(e, Remove)]
+    splices = _removals(body, removes, cache) + [_splice(body, e, cache) for e in edits
+                                                 if not isinstance(e, Remove)]
     splices.sort(key=lambda s: (s[0], s[1]))
     for (s1, e1, _), (s2, e2, _) in zip(splices, splices[1:]):
         if s2 < e1 or s1 == e1 == s2 == e2:
@@ -345,15 +413,25 @@ def apply(body: bytes, edits: Iterable[Edit]) -> bytes:
         at = end
     out += body[at:]
     new = bytes(out)
+    if b"\x00" in new:
+        raise PatchRefused("the edited save would hold a NUL byte")
     try:
-        expected, _ = _parse(body)
+        expected = _loads(body, repair=True)
+    except _Duplicate:
+        raise PatchRefused("the save has a field twice in one object; not touching it") from None
+    except (ValueError, RecursionError):
+        raise PatchRefused("the save does not parse") from None
+    try:
         for edit in _tree_order(edits):
             _expected(expected, edit, _parse_value)
-        got, _ = _parse(new)
-    except SaveDecodeError as exc:
-        raise PatchRefused(f"the edited save does not parse: {exc}") from None
     except (KeyError, IndexError, TypeError) as exc:
         raise PatchRefused(f"an edit does not fit the save's tree ({type(exc).__name__})") from None
-    if got != expected:
+    try:
+        got = _loads(new, repair=True)
+    except _Duplicate:
+        raise PatchRefused("the edited save would have a field twice in one object") from None
+    except (ValueError, RecursionError):
+        raise PatchRefused("the edited save does not parse") from None
+    if _canonical(got) != _canonical(expected):
         raise PatchRefused("the edited save is not the original with exactly these edits")
     return new

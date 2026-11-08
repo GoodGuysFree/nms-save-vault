@@ -118,6 +118,21 @@ def test_an_edit_that_cannot_be_made_stops_the_rebuild(tmp_path):
         saveedit.rebuild("steam", data, plain, [savepatch.Replace(("Nope",), b"1")])
 
 
+
+def test_rebuild_names_an_old_container_as_old(tmp_path):
+    _m, _data, plain = steam_member(tmp_path / "st_1")
+    with pytest.raises(saveedit.EditRefused, match="old save container"):
+        saveedit.rebuild("steam", lz4_block.compress_block(payload(5)), plain,
+                         [savepatch.Replace(UNITS, b"1")])
+
+
+def test_a_raw_nul_never_reaches_a_rebuilt_save(tmp_path):
+    _m, data, plain = steam_member(tmp_path / "st_1")
+    with pytest.raises(savepatch.PatchRefused, match="NUL"):
+        saveedit.rebuild("steam", data, plain,
+                         [savepatch.Replace(("PlayerStateData", "SaveName"), b'"Ma\x00in"')])
+
+
 @pytest.mark.slow
 def test_a_real_steam_save_is_rebuilt_with_one_edit(live_save_dir):
     """Read-only: a real save's Units raised by one; sizes and every other meta field right."""
