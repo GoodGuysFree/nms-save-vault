@@ -60,12 +60,25 @@ has never run on.
 
 Both kits are untested on real hardware; say so in the release notes until that changes.
 
+## 3c. Build the core library wheel
+
+```pwsh
+python packaging\build_core.py   # -> build\core\nms_save_vault_core-X.Y.Z-py3-none-any.whl + its sha256
+```
+
+The core alone (`nms_save_vault/__init__.py` and `nms_save_vault/core/`), for apps that share
+the vault and bundle it (NMS Savecraft). It is reproducible: the same commit builds the same
+bytes anywhere, so put the printed SHA-256 in the release notes and an app can pin it. If
+`core/api.py` lost a name or changed what one means, `API_VERSION` must have gone up
+(`tests/test_core_api.py`); say so in the notes.
+
 Stage a versioned copy (the `releases/` folder is gitignored — local staging only):
 
 ```pwsh
 New-Item -ItemType Directory -Force releases | Out-Null
 Copy-Item dist\NMSSaveVault-Setup.zip releases\NMSSaveVault-Setup-vX.Y.Z.zip -Force
 Copy-Item build\kits\NMSSaveVault-vX.Y.Z-*.tar.gz releases\ -Force
+Copy-Item build\core\nms_save_vault_core-X.Y.Z-py3-none-any.whl releases\ -Force
 ```
 
 ## 4. Merge, commit & push (no binary)
@@ -86,13 +99,15 @@ gh release create vX.Y.Z `
   releases\NMSSaveVault-Setup-vX.Y.Z.zip `
   releases\NMSSaveVault-vX.Y.Z-linux-x86_64.tar.gz `
   releases\NMSSaveVault-vX.Y.Z-macos-arm64.tar.gz `
+  releases\nms_save_vault_core-X.Y.Z-py3-none-any.whl `
   -R GoodGuysFree/nms-save-vault `
   --target main `
   --title "vX.Y.Z" `
   --notes "<highlights>"
 ```
 
-The Windows zip must stay the only `.zip` asset (the in-app updater takes the first one).
+The Windows zip must stay the only `.zip` asset (the in-app updater takes the first one);
+the core library is a `.whl` for that reason.
 The asset filename becomes the public download name, so keep the `-vX.Y.Z` suffix. The
 QuickStart link in the README points at `/releases/latest`, so it always resolves to the
 newest release automatically.
