@@ -1,7 +1,7 @@
 """Every inventory of a save, slot by slot (CL7): where it is, its shape and what it holds.
 
-Item ids only, without their leading ``^`` as the index keeps them; names, icons and limits
-are game content that the reader does not ship. ``where`` is the readable path of an
+Item ids only, exactly as the save holds them but for the leading ``^``; names, icons and
+limits are game content that the reader does not ship. ``where`` is the readable path of an
 inventory from the save's root, so an edit (``savepatch``) can name it, and a slot's
 ``number`` is its place in that inventory's ``Slots``.
 
@@ -18,7 +18,7 @@ from dataclasses import dataclass
 
 from .extract import contexts_of
 from .extract.inventories import EXOSUIT, FREIGHTER, STORAGE, VEHICLE
-from .nodes import get, gid, integer, items, label
+from .nodes import get, integer, items, label
 
 #: Inventories that hold what the player lost: the grave left at a death.
 GRAVE = ("GraveInventory",)
@@ -27,7 +27,7 @@ GRAVE = ("GraveInventory",)
 @dataclass(frozen=True)
 class Slot:
     number: int                         # its place in the inventory's ``Slots``
-    item: str                           # the item id, without ``^``
+    item: str                           # the item id exactly, without ``^`` (see :func:`_slot`)
     kind: str | None                    # Substance, Product or Technology, as the save says
     amount: int | float | None
     max_amount: int | float | None
@@ -115,8 +115,13 @@ def _inventory(context: str, owner: str, index: int | None, field: str,
 
 
 def _slot(number: int, slot: object) -> Slot:
+    """A slot's id is kept exactly, not cleaned up for display: a hashed technology id is six
+    bytes that are not UTF-8 (held as lone surrogates, ``str.encode("utf-8",
+    "surrogateescape")`` gives them back), and a procedural one ends in ``#<seed>``."""
     damage, installed = get(slot, "DamageFactor"), get(slot, "FullyInstalled")
-    return Slot(number, gid(get(slot, "Id")), label(get(slot, "Type", "InventoryType")),
+    raw = get(slot, "Id")
+    return Slot(number, raw.removeprefix("^") if isinstance(raw, str) else "",
+                label(get(slot, "Type", "InventoryType")),
                 _num(get(slot, "Amount")), _num(get(slot, "MaxAmount")),
                 *_xy(get(slot, "Index")),
                 float(damage) if isinstance(damage, (int, float)) and not isinstance(damage, bool)

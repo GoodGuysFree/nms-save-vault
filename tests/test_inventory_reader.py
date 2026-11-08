@@ -98,6 +98,16 @@ def test_a_slot_and_an_inventory_read_as_the_save_holds_them():
     assert tech.special == (SpecialSlot(0, 0, "TechBonus"),)
 
 
+def test_an_id_is_kept_exactly_hashed_and_procedural_ones_too():
+    hashed = "^" + bytes.fromhex("8080B7B5DD85").decode("utf-8", "surrogateescape") + "#27988"
+    root = obf({"PlayerStateData": {"Inventory": inv(
+        slot(hashed, "Technology", 1, 1, 0, 0), slot("^PROC_LOOT#12345", "Product", 1, 1, 1, 0),
+        slot(" ^SPACED", "Product", 1, 1, 2, 0))}})
+    ids = [s.item for s in inventories_of(root)[0].slots]
+    assert ids[0].encode("utf-8", "surrogateescape") == bytes.fromhex("8080B7B5DD85") + b"#27988"
+    assert ids[1:] == ["PROC_LOOT#12345", " ^SPACED"]
+
+
 def test_where_names_the_inventory_for_an_edit():
     body = json.dumps(obf(SAVE), separators=(",", ":")).encode()
     for found in inventories_of(obf(SAVE)):
