@@ -69,8 +69,8 @@ __all__ = [
     "API_VERSION", "CORE_VERSION", "PLATFORMS",
     # who is writing (every vault record names its app)
     "VAULT", "AppIdentity", "app_of", "current", "is_stamp", "set_app",
-    # where things are
-    "default_vault_dir", "live_save_dirs", "vault_dir",
+    # where things are, and whether the game runs
+    "default_vault_dir", "game_running", "live_save_dirs", "vault_dir",
     # the saves on disk
     "MemberView", "SaveDirView", "SlotView", "platform_of", "scan_save_dir",
     # what is in a save
@@ -108,6 +108,13 @@ def live_save_dirs() -> list[Path]:
     """Every live save folder on this machine: Steam and GOG account folders, then Microsoft
     Store / Game Pass ones."""
     return [*locations.find_live_save_dirs(), *locations.find_microsoft_save_dirs()]
+
+
+def game_running() -> bool | None:
+    """Whether No Man's Sky runs on this machine now: True, False, or None when it cannot be
+    told. While it is not False, an app shows the saves but changes nothing (a write is
+    refused then anyway)."""
+    return safety.is_game_running()
 
 
 def platform_of(folder: str | Path) -> str:

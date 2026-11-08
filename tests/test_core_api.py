@@ -76,6 +76,7 @@ PINNED = {
                                 "max_decompressed: 'int' = 268435456, "
                                 "timings: 'dict[str, int] | None' = None) -> 'DecodedSave'"),
     "default_vault_dir": ("function", "() -> 'Path'"),
+    "game_running": ("function", "() -> 'bool | None'"),
     "get": ("function", "(node: 'object', *path: 'str', default: 'object' = None) -> 'object'"),
     "is_stamp": ("function", "(recorded: 'object') -> 'bool'"),
     "items": ("function", "(node: 'object', *path: 'str') -> 'list'"),

@@ -179,6 +179,12 @@ def test_a_slot_the_game_saved_after_the_plan_is_not_written(world):
         assert tree_hash(world.live) == saved
 
 
+@pytest.mark.parametrize("probe", [True, False, None])
+def test_an_app_can_tell_whether_the_game_runs(monkeypatch, probe):
+    monkeypatch.setattr(safety, "is_game_running", lambda: probe)
+    assert api.game_running() is probe
+
+
 def test_nothing_is_written_while_the_game_runs(world, monkeypatch):
     session = _session(world)
     plan = session.plan_edit(_slot(world), UNITS, what="x")
