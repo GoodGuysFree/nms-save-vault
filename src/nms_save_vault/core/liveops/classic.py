@@ -35,7 +35,7 @@ from . import opjournal as jr
 from .execute import LIVEOP_TIMEOUT, execute
 from .model import OpOutcome, PairSource, PlacePlan
 from .opjournal import machine_id
-from .planner import plan_place, plan_promote
+from .planner import plan_place, plan_promote, too_new, warning
 
 APP_VERSION = "nms-save-vault classic"
 
@@ -148,6 +148,8 @@ def restore_full(vault: Vault, entry, live_dir: Path, mirror: bool = True,
     found = listing.get_vault_entry(ctx.vault, ctx.versions, entry.id, live_roots=[])
     if found is not None and found.platform != ref.platform:
         raise ops.FeatureNotYetAvailableError(ops.CROSS_PLATFORM_MSG)
+    if too_new(ctx):                  # before the index repair, which writes live (CL10)
+        raise ops.OperationError(warning("VAULT_TOO_NEW").text)
     notes = repair_damaged_index(ctx, ref, vault, entry, live_dir, allow_game_running)
     if notes:
         ctx, ref = open_context(vault, live_dir)      # the folder reads again

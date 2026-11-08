@@ -121,6 +121,17 @@ class OrganizerStore:
             doc = self._refresh_doc(name)
         return copy.deepcopy(doc) if doc is not None else _empty_doc(name)
 
+    def newer_schema(self) -> bool:
+        """The header names a schema newer than this core's, as the file says now (CL10)."""
+        if NEWER_SCHEMA in self.problems:
+            return True
+        try:
+            data = json.loads((self.root / HEADER).read_bytes().decode("utf-8"))
+        except (OSError, ValueError):
+            return False
+        schema = data.get("schema") if isinstance(data, dict) else None
+        return isinstance(schema, int) and not isinstance(schema, bool) and schema > SCHEMA
+
     # --- writing --------------------------------------------------------------
 
     @contextmanager

@@ -8,10 +8,12 @@ import hashlib
 import json
 import os
 import sys
+import time
 
 import pytest
 
-from nms_save_vault.core import api, appinfo, meta, platform, safety, savejson, slotmap, state
+from nms_save_vault.core import api, appinfo, liveops, meta, platform, safety, savejson, slotmap
+from nms_save_vault.core import state
 from nms_save_vault.core.hashname import key as K
 from nms_save_vault.core.liveops import FaultInjector, SimulatedCrash, opjournal
 from nms_save_vault.core.organizer import store as orgstore
@@ -306,7 +308,8 @@ def test_an_interrupted_edit_is_listed_and_put_back(world, monkeypatch):
     assert {n: (world.live / n).read_bytes() for n in before} == before
 
 
-def test_an_interrupted_edit_in_a_folder_switched_off_since_offers_nothing(world, monkeypatch):
+def _crashed_edit(world, monkeypatch):
+    """A session whose edit stopped half-way (one member swapped in), the slot left torn."""
     session = _session(world)
     plan = session.plan_edit(_slot(world), UNITS, what="x")
     make = session._make
@@ -320,15 +323,39 @@ def test_an_interrupted_edit_in_a_folder_switched_off_since_offers_nothing(world
     with pytest.raises(SimulatedCrash):
         session.write(plan, plan.confirmations)
     monkeypatch.setattr(session, "_make", make)
+    return session
+
+
+def test_an_interrupted_edit_in_a_folder_switched_off_since_can_only_be_left(world, monkeypatch):
+    session = _crashed_edit(world, monkeypatch)
     _switch_off(world, world.live, writable=False)
     session.refresh()
     torn = tree_hash(world.live)
     (item,) = session.interrupted()
-    assert (item.recommended, item.choices) == ("none", ())
+    assert (item.recommended, item.choices) == ("leave", ("leave",))
     assert "cannot be finished or put back now" in item.text and "read-only" in item.text
     with pytest.raises(ValueError, match="not offered"):
-        session.resolve(item.op_id, "leave")
-    assert tree_hash(world.live) == torn
+        session.resolve(item.op_id, "back")
+    assert session.resolve(item.op_id, "leave").status == "rolled_back"
+    assert session.interrupted() == [] and tree_hash(world.live) == torn
+
+
+def test_an_interrupted_edit_with_a_damaged_record_can_be_left(world, monkeypatch):
+    session = _crashed_edit(world, monkeypatch)
+    ctx = session._now()
+    (rec,) = [r for r in opjournal.read_ops(ctx).values() if r.open]
+    line = {"j": opjournal.JOURNAL_VERSION, "op_id": rec.op_id, "seq": len(rec.events) + 1,
+            "event": "writing", "utc": "2026-11-08T00:00:00.000Z", "machine": rec.machine,
+            "targets": [{"bogus": 1}]}
+    with open(opjournal.ops_path(ctx), "a", encoding="ascii") as f:
+        f.write(json.dumps(line) + "\n")
+    session.refresh()
+    torn = tree_hash(world.live)
+    (item,) = session.interrupted()
+    assert item.choices == ("leave",) and "its record is damaged" in item.text
+    assert session.resolve(item.op_id, "leave").status == "rolled_back"
+    assert session.interrupted() == [] and tree_hash(world.live) == torn
+    session.plan_edit(_slot(world), UNITS, what="y")          # the folder is usable again
 
 
 # --- CL10: a core older than the vault's format never writes to it ------------------------
@@ -337,12 +364,12 @@ def test_an_interrupted_edit_in_a_folder_switched_off_since_offers_nothing(world
 NEWER_PARTS = ["store", "organizer", "journal"]
 
 
-def _newer_core_changed(w, part):
+def _newer_core_changed(vault_root, part):
     """What a newer core leaves behind: a store format that needs it to write, an organizer
     schema it made, or op-journal records of a version this core does not know."""
-    folder = orgstore.store_root(w.vault_root)
+    folder = orgstore.store_root(vault_root)
     if part == "store":
-        path = versionstore.store_root(w.vault_root) / versionstore.FORMAT_NAME
+        path = versionstore.store_root(vault_root) / versionstore.FORMAT_NAME
         d = json.loads(path.read_text(encoding="ascii"))
         d["write_compat"] = versionstore.STORE_VERSION + 1
         path.write_text(json.dumps(d, indent=1, sort_keys=True) + "\n", encoding="ascii")
@@ -363,7 +390,7 @@ def _newer_core_changed(w, part):
 
 @pytest.mark.parametrize("part", NEWER_PARTS)
 def test_a_vault_a_newer_core_changed_is_not_edited(world, part):
-    _newer_core_changed(world, part)
+    _newer_core_changed(world.vault_root, part)
     live_before, entries = tree_hash(world.live), _entries(world)
     with pytest.raises(api.EditRefused, match="newer version"):
         _session(world).plan_edit(_slot(world), UNITS, what="x")
@@ -374,24 +401,81 @@ def test_a_vault_a_newer_core_changed_is_not_edited(world, part):
 def test_a_plan_made_before_a_newer_core_changed_the_vault_is_not_written(world, part):
     session = _session(world)
     plan = session.plan_edit(_slot(world), UNITS, what="x")
-    _newer_core_changed(world, part)
+    _newer_core_changed(world.vault_root, part)
     live_before = tree_hash(world.live)
     result = session.write(plan, plan.confirmations)
     assert (result.status, result.code) == ("refused", "VAULT_TOO_NEW")
     assert tree_hash(world.live) == live_before
 
 
-def test_an_edit_is_not_undone_in_a_vault_a_newer_core_changed(world):
+@pytest.mark.parametrize("part", NEWER_PARTS)
+def test_a_context_held_while_a_newer_core_changed_the_vault_writes_nothing(world, part):
+    session = _session(world)
+    plan = session.plan_edit(_slot(world), UNITS, what="x")
+    ctx = session._now()                    # NMS Save Vault's window keeps its context open
+    _newer_core_changed(world.vault_root, part)
+    live_before = tree_hash(world.live)
+    out = liveops.execute(ctx, plan._plan, frozenset(plan.confirmations))
+    assert (out.status, out.code) == ("refused", "VAULT_TOO_NEW")
+    assert tree_hash(world.live) == live_before
+
+
+@pytest.mark.parametrize("part", NEWER_PARTS)
+def test_an_edit_is_not_undone_in_a_vault_a_newer_core_changed(world, part):
     session = _session(world)
     plan = session.plan_edit(_slot(world), UNITS, what="x")
     done = session.write(plan, plan.confirmations)
-    _newer_core_changed(world, "store")
-    undo = session.plan_undo(done.op_id)            # planned before the app saw the change
+    _newer_core_changed(world.vault_root, part)
+    undo = session.plan_undo(done.op_id)
+    assert "VAULT_TOO_NEW" in {n.code for n in undo.blocked}
     live_before = tree_hash(world.live)
     assert session.write(undo, undo.confirmations).code == "VAULT_TOO_NEW"
     assert tree_hash(world.live) == live_before
+
+
+@pytest.mark.parametrize("part", NEWER_PARTS)
+@pytest.mark.parametrize("call", ["update", "dismiss"])
+def test_verification_records_nothing_in_a_vault_a_newer_core_changed(world, part, call):
+    session = _session(world)
+    plan = session.plan_edit(_slot(world), UNITS, what="x")
+    done = session.write(plan, plan.confirmations)
+    later = lambda: time.time() + 10 ** 8           # long after: the pending check expires
+    if call == "dismiss":                           # an expired check to dismiss
+        ctx = session._now()
+        ctx.clock = later
+        liveops.update_verification(ctx)
+    _newer_core_changed(world.vault_root, part)
     session.refresh()
-    assert "VAULT_TOO_NEW" in {n.code for n in session.plan_undo(done.op_id).blocked}
+    ctx = session._now()
+    ctx.clock = later
+    ops_file = opjournal.ops_path(ctx)
+    before = ops_file.read_bytes()
+    if call == "update":
+        liveops.update_verification(ctx)
+    else:
+        (target,) = opjournal.read_ops(ctx)[done.op_id].targets
+        liveops.dismiss_verification(ctx, done.op_id, target)
+    assert ops_file.read_bytes() == before
+
+
+def test_a_full_restore_repairs_no_xbox_index_in_a_vault_a_newer_core_changed(
+        tmp_path, make_wgs_account):
+    from nms_save_vault.core import operations as ops
+    from nms_save_vault.core import store as vstore
+    from nms_save_vault.core.catalog import Vault
+
+    live = make_wgs_account(tmp_path / "live", [("Slot1Auto", '{"a":1}', "Keep", "", 1, 100)])
+    vault = Vault(tmp_path / "vault")
+    vault.ensure()
+    vstore.create_store(vault.root)
+    backup = ops.create_full_backup(vault, live, include_cache=False)
+    _newer_core_changed(vault.root, "journal")
+    index = live / "containers.index"
+    index.write_bytes(index.read_bytes()[:-30])            # damaged: a restore would repair it
+    live_before = tree_hash(live)
+    with pytest.raises(ops.OperationError, match="newer version"):
+        ops.restore_full(vault, backup, live, allow_game_running=True)
+    assert tree_hash(live) == live_before and not (vault.root / "damaged-index").exists()
 
 
 def test_a_vault_only_a_newer_core_can_read_opens_no_session(world):
@@ -403,26 +487,29 @@ def test_a_vault_only_a_newer_core_can_read_opens_no_session(world):
         _session(world)
 
 
-def test_an_interrupted_edit_is_not_resolved_in_a_vault_a_newer_core_changed(world, monkeypatch):
-    session = _session(world)
-    plan = session.plan_edit(_slot(world), UNITS, what="x")
-    make = session._make
-
-    def crashing():
-        ctx = make()
-        ctx.faults = FaultInjector({"swapped:2"})
-        return ctx
-
-    monkeypatch.setattr(session, "_make", crashing)
-    with pytest.raises(SimulatedCrash):
-        session.write(plan, plan.confirmations)
-    monkeypatch.setattr(session, "_make", make)
-    _newer_core_changed(world, "store")
+@pytest.mark.parametrize("part", NEWER_PARTS)
+def test_an_interrupted_edit_is_not_resolved_in_a_vault_a_newer_core_changed(
+        world, monkeypatch, part):
+    session = _crashed_edit(world, monkeypatch)
+    _newer_core_changed(world.vault_root, part)
     session.refresh()
     torn = tree_hash(world.live)
     (item,) = session.interrupted()
     assert (item.recommended, item.choices) == ("none", ()) and "newer version" in item.text
-    assert tree_hash(world.live) == torn
+    ctx = session._now()
+    ops_file = opjournal.ops_path(ctx)
+    before = ops_file.read_bytes()
+    for choice in ("forward", "back", "leave"):     # Vault's own windows call the core directly
+        out = liveops.resolve_recovery(ctx, item.op_id, choice)
+        assert (out.status, out.code) == ("refused", "VAULT_TOO_NEW")
+    assert tree_hash(world.live) == torn and ops_file.read_bytes() == before
+
+
+def test_two_extra_folders_of_one_name_are_not_taken_for_nms_save_vault_s(world, tmp_path):
+    _switch_off(world, tmp_path / "elsewhere" / "st_other", enabled=True)
+    twin = tmp_path / "copy" / world.live.name
+    twin.mkdir(parents=True)
+    api.open_live(world.vault_root, live_dirs=[world.live, twin])
 
 
 def test_a_write_s_result_survives_a_refresh_that_fails(world, monkeypatch):

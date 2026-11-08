@@ -79,6 +79,8 @@ TEXTS = {
                 "now: {problem}.",
 }
 GAME_TEXT = "Close No Man's Sky to finish."
+LEAVE_TEXT = ("Leave it to go on: the slot stays as it is now, and the save the move replaced "
+              "is in the vault.")
 TOO_NEW = ("a newer version of NMS Save Vault or NMS Savecraft changed this vault; update this "
            "app")
 
@@ -138,7 +140,7 @@ def _pending(ctx: OpContext) -> list[RecoveryItem]:
             items.append(_item(rec, "other_machine", "none", ()))
             continue
         if newer:                       # this core writes nothing there, not even a recovery
-            items.append(_unusable(rec, TOO_NEW))
+            items.append(_unusable(rec, TOO_NEW, ()))
             continue
         if rec.status == "preparing":                 # nothing live can have changed
             append_quietly(ctx, rec.op_id, "abandoned", {"reason": "not_started"})
@@ -166,8 +168,8 @@ def _pending(ctx: OpContext) -> list[RecoveryItem]:
 
 def _classify(ctx: OpContext, op: _Open, game_free: bool) -> RecoveryItem:
     rec = op.record
-    if op.problem:          # every choice is refused (_resolve), so none is offered
-        item = _unusable(rec, op.problem)
+    if op.problem:          # only leaving it needs nothing of its record (_resolve)
+        item = _unusable(rec, op.problem, ("leave",))
     elif op.state == "other":                    # the game or another tool wrote the slot since
         item = _item(rec, "superseded", "leave", ("leave",))
     elif rec.status == "failed":
@@ -199,7 +201,7 @@ def _resolve(ctx: OpContext, op_id: str, choice: Choice,
         w = game_warning(ctx)
         return refused(op_id, "GAME_STATE_UNKNOWN", w.text if w else GAME_TEXT)
     op = _open(ctx, rec)
-    if op.problem:
+    if op.problem and choice != "leave":
         return refused(op_id, "DAMAGED", f"The record of that move cannot be used: {op.problem}")
     if rec.status == "preparing":
         append_quietly(ctx, op_id, "abandoned", {"reason": "not_started"})
@@ -368,8 +370,9 @@ def _open(ctx: OpContext, rec: opjournal.OpRecord) -> _Open:
             targets.append(wt)
             states.append(_state(wt, rec.op_id, (rec.last("failed") or {}).get("settled")))
     except (KeyError, TypeError, ValueError, TargetError) as exc:
-        log.warning("op %s: its write-ahead record cannot be used: %s", rec.op_id, exc)
-        return _Open(rec, targets, states, str(exc))
+        log.warning("op %s: its write-ahead record cannot be used: %r", rec.op_id, exc)
+        why = str(exc) if isinstance(exc, TargetError) else "its record is damaged"
+        return _Open(rec, targets, states, why)
     set_containment(targets)          # no baseline was journaled: the folder as it is now
     return _Open(rec, targets, states)
 
@@ -508,10 +511,11 @@ def _can_forward(ctx: OpContext, op: _Open) -> bool:
 # --- listing ---------------------------------------------------------------------------------
 
 
-def _unusable(rec: opjournal.OpRecord, problem: str) -> RecoveryItem:
-    return RecoveryItem(rec.op_id, rec.kind, tuple(_target_labels(rec)), "unusable", "none", (),
-                        TEXTS["unusable"].format(labels=_labels(rec), problem=problem),
-                        _local(rec.started))
+def _unusable(rec: opjournal.OpRecord, problem: str, choices: tuple[str, ...]) -> RecoveryItem:
+    text = TEXTS["unusable"].format(labels=_labels(rec), problem=problem)
+    return RecoveryItem(rec.op_id, rec.kind, tuple(_target_labels(rec)), "unusable",
+                        "leave" if choices else "none", choices,
+                        f"{text} {LEAVE_TEXT}" if choices else text, _local(rec.started))
 
 
 def _item(rec: opjournal.OpRecord, state: str, recommended: str,

@@ -457,19 +457,18 @@ def _sources(live_dirs: Sequence[Path] | None, host: hostmod.Host) -> list[state
     extra = ([_ad_hoc(Path(d)) for d in live_dirs] if live_dirs is not None
              else list(discover.discover_live_sources()))
     known = {_key(s.path) for s in base}
-    names = {(s.platform == "xbox", Path(s.path).name.lower()) for s in base}
+    vaults_names = {(s.platform == "xbox", Path(s.path).name.lower()) for s in base}
     out = list(base)
     for s in extra:
-        name = (s.platform == "xbox", Path(s.path).name.lower())
         if _key(s.path) in known:
             continue
-        if settings and name in names:  # a second folder of one name renames the first's slots
+        if (s.platform == "xbox", Path(s.path).name.lower()) in vaults_names:
+            # a second folder of one name would rename the slots of NMS Save Vault's folder
             if live_dirs is None:
                 continue                # found on this machine: NMS Save Vault does not use it
             raise ValueError(f"the save folder {Path(s.path).name} cannot be used: NMS Save "
                              "Vault uses another folder of that name")
         known.add(_key(s.path))
-        names.add(name)
         out.append(s)
     return [replace(s, writable=False) if _key(s.path) in off else s for s in out]
 

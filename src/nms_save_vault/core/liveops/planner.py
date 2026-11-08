@@ -20,8 +20,8 @@ from pathlib import Path
 from .. import aliases, gameversion, msstore
 from ..organizer.locator import LiveMember, Location
 from ..organizer.model import LiveRef, LiveTarget
-from ..organizer.store import NEWER_SCHEMA
 from ..store import CaptureScope, vault_mode
+from ..store.versionstore import written_by_newer
 from ..store import capture as store_capture
 from . import convert, crosssave, opjournal, pairmeta, steamcloud, transfer
 from .context import OpContext
@@ -452,11 +452,12 @@ def vault_problem(ctx: OpContext) -> Warning | None:
 
 def too_new(ctx: OpContext) -> bool:
     """A newer core changed this vault, so only it may write there now (CL10): a store format
-    that needs it to write, an organizer schema it made, or operations it journaled."""
+    that needs it to write, an organizer schema it made, or operations it journaled. Read
+    from the files each time: a window may hold its context while another app upgrades."""
     store = getattr(ctx, "store", None)
     return (getattr(ctx.versions, "read_only_reason", None) == "too-new"
-            or (store is not None and (NEWER_SCHEMA in store.problems
-                                       or opjournal.newer_records(ctx))))
+            or written_by_newer(ctx.vault.root)
+            or (store is not None and (store.newer_schema() or opjournal.newer_records(ctx))))
 
 
 def game_warning(ctx: OpContext) -> Warning | None:

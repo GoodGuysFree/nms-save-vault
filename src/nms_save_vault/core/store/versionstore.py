@@ -165,6 +165,18 @@ def read_format(root: Path) -> StoreFormat:
     return fmt
 
 
+def written_by_newer(vault_root: str | Path) -> bool:
+    """A newer app changed the store so that only it may write there now (CL10), as
+    ``store/FORMAT`` says at this moment. False without a readable store."""
+    try:
+        fmt = read_format(store_root(vault_root))
+    except StoreTooNew:
+        return True
+    except StoreUnavailable:
+        return False
+    return fmt.write_compat > STORE_VERSION
+
+
 def create_store(vault_root: str | Path, *, clock: Callable[[], datetime] = utc_now,
                  record: dict | None = None) -> StoreFormat:
     """Create an empty store: its folders first, FORMAT last, since FORMAT appearing is what

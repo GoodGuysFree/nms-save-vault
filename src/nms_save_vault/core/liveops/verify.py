@@ -24,6 +24,7 @@ from . import opjournal, steamcloud
 from .context import OpContext
 from .errors import TargetError
 from .model import VerifyItem
+from .planner import too_new
 from .slots import SlotNow, read_account
 from .steamwrite import file_names
 from .targets import resolve_account, resolve_target
@@ -120,6 +121,7 @@ def update_verification(ctx: OpContext, events: Iterable[object] = ()) -> list[V
     note_game_state(ctx, ctx.game_probe())
     seen = (last_seen_running(ctx), session_ended_at(ctx))
     now_ts = ctx.clock()
+    record = not too_new(ctx)           # a newer app's journal is only read (CL10)
     items: list[VerifyItem] = []
     for rec in list(opjournal.read_ops(ctx).values()):
         if rec.status != "done" or rec.machine != ctx.machine_id:
@@ -140,7 +142,7 @@ def update_verification(ctx: OpContext, events: Iterable[object] = ()) -> list[V
                 if state == "pending" and done_at is not None and \
                         now_ts - done_at > EXPIRE_SECONDS:
                     state, detail = "expired", ""
-                if state != "pending":
+                if state != "pending" and record:
                     _journal(ctx, rec.op_id, target, state, detail, observed)
             if state == "pending" or state in ALERTS:
                 items.append(_item(ctx, rec, target, facts, state, detail))
@@ -152,6 +154,9 @@ def dismiss_verification(ctx: OpContext, op_id: str, target: LiveTarget) -> None
     rec = opjournal.read_ops(ctx).get(op_id)
     last = None if rec is None else _last_verify(rec, target)
     if last is None:
+        return
+    if too_new(ctx):
+        log.warning("not recording the dismissal: a newer app changed this vault")
         return
     opjournal.append(ctx, op_id, "verify", {
         "target": opjournal.target_json(target), "state": last["state"],
