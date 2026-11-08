@@ -1,4 +1,4 @@
-"""The core's public read API: everything another app (NMS Savecraft) may use of the core.
+"""The core's public API: everything another app (NMS Savecraft) may use of the core.
 
 An app that bundles the core imports this module only, never the modules behind it; those
 can change in any release. What is here is versioned:
@@ -8,9 +8,11 @@ can change in any release. What is here is versioned:
   function's parameters or a type's fields. Adding keeps it. ``tests/test_core_api.py`` pins
   all of that, so neither happens by accident.
 
-This first API reads only: where the saves and the vault are, the saves on disk and what is in
-them, the vault's stored versions, and which versions an app made (the last version before
-it changed a slot). Writing comes with the edit engine.
+It reads where the saves and the vault are, the saves on disk and what is in them, the
+vault's stored versions, and which versions an app made (the last version before it changed
+a slot). It writes one way only: an edit of a live Steam save, and its undo, through a
+:class:`LiveSession` - the same preserve, journal, check, rollback and undo as every write NMS
+Save Vault makes, under the same lock, so the two apps never write at once.
 
 Saves are read by readable field names (``get(root, "PlayerStateData", "Units")``); the
 obfuscated keys stay inside the core. :func:`get` refuses a path through an ownership field
@@ -20,20 +22,33 @@ subtree.
 """
 from __future__ import annotations
 
-from collections.abc import Sequence
+import logging
+import os
+from collections.abc import Callable, Iterable, Sequence
+from dataclasses import dataclass, replace
 from pathlib import Path
 
-from . import gameversion, locations, savedir, state
+from . import discover, gameversion, locations, safety, savedir, state
+from . import platform as hostmod
 from .appinfo import CORE_VERSION, VAULT, AppIdentity, app_of, current, is_stamp, set_app
 from .index.extract import CtxInput, SaveInput, contexts_of
 from .index.nodes import PrivacyError, get, items
-from .organizer import provenance
+from .liveops import context_for, execute, plan_undo
+from .liveops.classic import _ad_hoc
+from .liveops.context import OpContext
+from .liveops.edit import plan_edit
+from .liveops.errors import ConfirmationRequired, LiveOpError, TargetError
+from .liveops.model import PlacePlan
+from .liveops.opjournal import machine_id
+from .organizer import Organizer, provenance
 from .organizer.journal import Journal
 from .organizer.model import LiveTarget, ModelError, pid_from_id
 from .organizer.provenance import AppChange, Before, KeptCopy
 from .organizer.store import OrganizerStore
+from .saveedit import EditRefused
 from .savedir import MemberView, SaveDirView, SlotView
 from .savejson import DecodedSave, SaveDecodeError, decode_save
+from .savepatch import AddMember, Edit, Insert, PatchRefused, Remove, Replace, dumps
 from .store import (
     FileEntry,
     StoreEntry,
@@ -66,7 +81,13 @@ __all__ = [
     # which versions an app made, and the last one before its change
     "AppChange", "Before", "KeptCopy", "LiveTarget", "VaultHistory", "open_history",
     "slot_of",
+    # an edit of a live save, and its undo
+    "AddMember", "Insert", "Remove", "Replace", "dumps",
+    "ConfirmationRequired", "EditRefused", "LiveOpError", "PatchRefused", "TargetError",
+    "LiveSession", "Notice", "WritePlan", "WriteResult", "open_live",
 ]
+
+log = logging.getLogger(__name__)
 
 
 def vault_dir() -> Path:
@@ -207,3 +228,168 @@ def open_history(vault_root: str | Path | None = None) -> VaultHistory:
     if not root.is_dir():
         raise StoreUnavailable("The vault is not reachable.")
     return VaultHistory(Journal(OrganizerStore(root, create=False, read_only=True), {}).replay())
+
+
+# --- an edit of a live save, and its undo ---------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Notice:
+    """One thing a plan or a write tells the user: a stable ``code``, how much it matters
+    (``"info"``, ``"warn"``; ``"confirm"``: the user must agree first; ``"block"``: the write
+    cannot be made) and one plain sentence to show."""
+
+    code: str
+    severity: str
+    text: str
+
+
+def _notices(warnings) -> tuple[Notice, ...]:
+    return tuple(Notice(w.code, w.severity, w.text) for w in warnings)
+
+
+class WritePlan:
+    """A write planned and not yet made. Show :attr:`outcome` and :attr:`warnings`, ask the
+    user about each of :attr:`confirmations`, then hand the plan back to
+    :meth:`LiveSession.write` as it is."""
+
+    def __init__(self, plan: PlacePlan) -> None:
+        self._plan = plan
+
+    @property
+    def outcome(self) -> str:
+        """What the write does, in one line."""
+        return self._plan.outcome
+
+    @property
+    def warnings(self) -> tuple[Notice, ...]:
+        return _notices(self._plan.warnings)
+
+    @property
+    def confirmations(self) -> frozenset[str]:
+        """The codes of the warnings the user must agree to; pass those they agreed to as
+        ``confirmed``."""
+        return self._plan.confirmations
+
+    @property
+    def blocked(self) -> tuple[Notice, ...]:
+        """Why the write cannot be made; empty when it can."""
+        return _notices(self._plan.blocked)
+
+    @property
+    def made(self) -> tuple[str, ...]:
+        """The versions with new content the write puts in the slot (an edit's output)."""
+        return self._plan.made
+
+    @property
+    def undoes(self) -> str | None:
+        """The operation this plan undoes, or None."""
+        return self._plan.undo_of
+
+
+@dataclass(frozen=True)
+class WriteResult:
+    """What a write did. ``status``: ``"done"``; ``"refused"`` (nothing was written:
+    ``code`` says why, e.g. ``GAME_RUNNING`` or ``BUSY``); ``"stale"`` (the slot changed since
+    the plan, the game or another app saved: nothing was written, plan the edit again from
+    the slot as it is now); ``"rolled_back"`` (the write failed and the slot is as it was);
+    ``"failed"``. ``op_id`` names the operation, to undo it (:meth:`LiveSession.plan_undo`)."""
+
+    op_id: str | None
+    status: str
+    text: str
+    code: str | None
+    warnings: tuple[Notice, ...]
+    undo: str | None              # what its undo would do, when it can be undone
+
+
+class LiveSession:
+    """Writes to the live saves, made as NMS Save Vault makes them: what the slot held is kept
+    in the vault first, the write is journaled and checked, rolled back when it fails, and
+    can be undone. One write at a time across every app sharing the vault; never while the
+    game runs. Every record names the app :func:`set_app` named. Made by :func:`open_live`."""
+
+    def __init__(self, make: Callable[[], OpContext]) -> None:
+        self._make = make
+        self._ctx = make()
+
+    def refresh(self) -> None:
+        """See the saves and the vault as they are now. :meth:`write` does it after every
+        write; call it when the game or another app may have written since."""
+        self._ctx = self._make()
+
+    def plan_edit(self, slot: LiveTarget, edits: Sequence[Edit], *, what: str) -> WritePlan:
+        """The plan to put the save ``slot`` (:func:`slot_of`) loads back with ``edits`` made,
+        each proven: the edited save reads back as the original with exactly those changes.
+        Every field name in an edit is a readable one. ``what`` says what the edit does, for
+        the vault's label ("rename ship 'Ark'"). The edited version is kept in the vault before
+        this returns. Raises :class:`EditRefused` (a save this core does not edit: an Xbox
+        slot, a newer game, an old container ...), :class:`PatchRefused` (an edit that cannot
+        be made exactly) or :class:`TargetError` (a slot no write may use)."""
+        return WritePlan(plan_edit(self._ctx, slot, list(edits), what=what))
+
+    def plan_undo(self, op_id: str) -> WritePlan:
+        """The plan that puts back what operation ``op_id`` replaced; a plan that says why
+        (:attr:`WritePlan.blocked`) when it cannot be undone."""
+        return WritePlan(plan_undo(self._ctx, op_id))
+
+    def write(self, plan: WritePlan, confirmed: Iterable[str] = ()) -> WriteResult:
+        """Make ``plan``'s write. Raises :class:`ConfirmationRequired` when ``confirmed`` lacks
+        a code of :attr:`WritePlan.confirmations`, and :class:`TargetError` for a slot no write
+        may use; every other result is a :class:`WriteResult`."""
+        try:
+            out = execute(self._ctx, plan._plan, frozenset(confirmed))
+        finally:
+            self.refresh()
+        return WriteResult(out.op_id, out.status, out.outcome, out.code, _notices(out.warnings),
+                           out.undo.label if out.undo is not None else None)
+
+
+def _key(path: str | Path) -> str:
+    return os.path.normcase(os.path.abspath(path))
+
+
+def _sources(live_dirs: Sequence[Path] | None, host: hostmod.Host) -> list[state.Source]:
+    """The live folders a session may write, as NMS Save Vault's settings allow: a folder they
+    switch off, mark read-only or keep as a backup source is only read."""
+    settings = state.vault_settings(host)
+    configured = list(settings.sources) if settings is not None else []
+    if live_dirs is not None:
+        found = [_ad_hoc(Path(d)) for d in live_dirs]
+    else:
+        found = list(discover.discover_live_sources())
+        found += [s for s in configured if s.role == state.ROLE_LIVE and s.enabled]
+    off = {_key(s.path) for s in configured
+           if not s.enabled or not s.writable or s.role != state.ROLE_LIVE}
+    out, seen = [], set()
+    for s in found:
+        if _key(s.path) in seen:
+            continue
+        seen.add(_key(s.path))
+        out.append(replace(s, writable=False) if _key(s.path) in off else s)
+    return out
+
+
+def open_live(vault_root: str | Path | None = None, *,
+              live_dirs: Sequence[str | Path] | None = None) -> LiveSession:
+    """A session that writes to the live saves through the vault at ``vault_root`` (default
+    :func:`vault_dir`). ``live_dirs``: the live save folders to use; default every one found
+    on this machine. Call :func:`set_app` first: a write is refused to an app that has not
+    named itself. Raises :class:`StoreUnavailable` when the vault is not there, and
+    ``ValueError`` when NMS Save Vault's settings cannot be read (what they switch off is
+    then not known)."""
+    if current().name == VAULT:
+        raise ValueError("name the app with set_app() before writing")
+    root = Path(vault_root) if vault_root is not None else vault_dir()
+    if not root.is_dir():
+        raise StoreUnavailable("The vault is not reachable.")
+    host = hostmod.Host.current()
+    sources = _sources(None if live_dirs is None else [Path(d) for d in live_dirs], host)
+    mid = machine_id(host)
+
+    def make() -> OpContext:
+        organizer = Organizer(root, sources, host=host, game_running=safety.is_game_running)
+        return context_for(organizer, host=host, machine_id=mid,
+                           game_probe=safety.is_game_running)
+
+    return LiveSession(make)

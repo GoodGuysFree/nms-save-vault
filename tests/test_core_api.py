@@ -1,4 +1,4 @@
-"""core.api: the public read API another app bundles (NMS Savecraft). Its names, the
+"""core.api: the public API another app bundles (NMS Savecraft). Its names, the
 parameters of its functions and the fields of the types it hands out are pinned: removing one
 or changing what it means is a new API_VERSION, never an accident."""
 from __future__ import annotations
@@ -88,6 +88,31 @@ PINNED = {
     "scan_save_dir": ("function", "(folder: 'str | Path') -> 'SaveDirView'"),
     "set_app": ("function", "(name: 'str', version: 'str') -> 'AppIdentity'"),
     "vault_dir": ("function", "() -> 'Path'"),
+    # the write side: an edit of a live save, and its undo
+    "AddMember": ("fields", ("where", "name", "raw"), ()),
+    "Insert": ("fields", ("where", "index", "raw"), ()),
+    "Remove": ("fields", ("where",), ()),
+    "Replace": ("fields", ("where", "raw"), ()),
+    "dumps": ("function", "(value: 'Any') -> 'bytes'"),
+    "ConfirmationRequired": ("error", ("LiveOpError", "OperationError")),
+    "EditRefused": ("error", ("ValueError", "Exception")),
+    "LiveOpError": ("error", ("OperationError", "Exception")),
+    "PatchRefused": ("error", ("ValueError", "Exception")),
+    "TargetError": ("error", ("LiveOpError", "OperationError")),
+    "LiveSession": ("class", {
+        "refresh": "(self) -> 'None'",
+        "plan_edit": "(self, slot: 'LiveTarget', edits: 'Sequence[Edit]', *, what: 'str') "
+                     "-> 'WritePlan'",
+        "plan_undo": "(self, op_id: 'str') -> 'WritePlan'",
+        "write": "(self, plan: 'WritePlan', confirmed: 'Iterable[str]' = ()) -> 'WriteResult'"},
+                    ()),
+    "Notice": ("fields", ("code", "severity", "text"), ()),
+    "WritePlan": ("class", {}, ("blocked", "confirmations", "made", "outcome", "undoes",
+                                "warnings")),
+    "WriteResult": ("fields", ("op_id", "status", "text", "code", "warnings", "undo"), ()),
+    "open_live": ("function", "(vault_root: 'str | Path | None' = None, *, "
+                              "live_dirs: 'Sequence[str | Path] | None' = None) "
+                              "-> 'LiveSession'"),
 }
 
 # Types the API hands out inside its own (MemberView.ref and .info, StoreEntry.members).

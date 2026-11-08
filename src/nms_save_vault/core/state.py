@@ -213,6 +213,26 @@ def configured_vault(host: platform.Host | None = None) -> Path | None:
     return None
 
 
+def vault_settings(host: platform.Host | None = None) -> AppState | None:
+    """NMS Save Vault's settings as another app sharing the vault reads them: the file the
+    pointer names, else the first ``state.json`` of :func:`state_candidates` that exists; None
+    when there is none. Only reads. A file that exists but cannot be read raises
+    ``ValueError``: what it switches off is then not known, and is never guessed."""
+    for path in state_candidates(host):
+        if path.name == POINTER:
+            named = _read_json(path).get("state")
+            if not isinstance(named, str) or not named.strip():
+                continue
+            path = Path(named)
+        if not path.is_file():
+            continue
+        try:
+            return AppState.from_dict(json.loads(path.read_bytes().decode("utf-8-sig")))
+        except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
+            raise ValueError(f"NMS Save Vault's settings ({path.name}) cannot be read") from exc
+    return None
+
+
 def _read_json(path: Path) -> dict:
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
