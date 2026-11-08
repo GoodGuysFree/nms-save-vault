@@ -23,6 +23,19 @@ from .store_helpers import fingerprint, new_vault, open_vault_store, steam_live
 # removed or changed meaning.
 PINNED = {
     "API_VERSION": ("value", "int"),
+    "AppChange": ("fields", ("op_id", "kind", "at", "app", "target", "placed", "evicted", "kept",
+                             "snapshot", "seq"), ()),
+    "Before": ("fields", ("change", "pair", "kept"), ()),
+    "LiveTarget": ("fields", ("platform", "account_key", "slot", "instance"), ("ref",)),
+    "VaultHistory": ("class", {
+        "changes_by": "(self, app: 'str') -> 'list[AppChange]'",
+        "made_by": "(self, app: 'str') -> 'set[str]'",
+        "touched_by": "(self, app: 'str') -> 'set[str]'",
+        "last_before": "(self, app: 'str', *, slot: 'LiveTarget | None' = None, "
+                       "playthrough: 'str | None' = None) -> 'Before | None'"}, ()),
+    "open_history": ("function", "(vault_root: 'str | Path | None' = None) -> 'VaultHistory'"),
+    "playthrough_of": ("function", "(member: 'MemberView') -> 'str | None'"),
+    "slot_of": ("function", "(folder: 'str | Path', slot: 'int') -> 'LiveTarget'"),
     "AppIdentity": ("fields", ("name", "version"), ()),
     "CORE_VERSION": ("value", "str"),
     "CtxInput": ("fields", ("name", "psd", "container", "save"), ()),
@@ -215,3 +228,11 @@ def test_the_vault_opens_to_read_and_nothing_in_it_is_written(tmp_path):
 def test_no_vault_is_a_store_error(tmp_path):
     with pytest.raises(api.StoreError):
         api.open_vault(tmp_path / "none", live_roots=())
+
+
+def test_a_playthrough_and_a_slot_are_named_as_the_history_names_them(tmp_path):
+    folder = tmp_path / "st_1"
+    _save(folder, units=1)
+    member = api.scan_save_dir(folder).slots[1].a
+    assert api.playthrough_of(member) == "0000000000000001"       # steam_save ident 1
+    assert api.slot_of(folder, 3) == api.LiveTarget("steam", "st_1", 3)
