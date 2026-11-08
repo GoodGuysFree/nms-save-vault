@@ -581,3 +581,13 @@ def test_a_new_object_is_written_by_readable_names(world):
     assert raw.startswith(b'{"' + K("Id").encode() + b'":"^\x80\x80\xb7\xb5\xdd\x85"')
     with pytest.raises(api.PatchRefused):
         api.dumps_named({"x" * 300: 1})
+
+
+def test_a_session_says_which_folder_it_writes_for_a_slot(world, tmp_path):
+    """Two folders can share a name; an app checks the one written is the one it read."""
+    session = _session(world)
+    assert session.folder_of(_slot(world)) == world.live
+    elsewhere = tmp_path / "elsewhere" / world.live.name
+    elsewhere.mkdir(parents=True)
+    assert session.folder_of(api.slot_of(elsewhere, 1)) == world.live      # not "elsewhere"
+    assert session.folder_of(api.slot_of(tmp_path / "st_76561198999999999", 1)) is None

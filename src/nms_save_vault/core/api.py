@@ -45,6 +45,7 @@ from .liveops.classic import _ad_hoc
 from .liveops.context import OpContext
 from .liveops.edit import plan_edit
 from .liveops.errors import ConfirmationRequired, LiveOpError, TargetError
+from .liveops.targets import resolve_target
 from .liveops.model import OpOutcome, PlacePlan, Severity
 from .catalog import Vault
 from .liveops.opjournal import OPS, machine_id, read_ops
@@ -442,6 +443,16 @@ class LiveSession:
         running, an interrupted write waiting), :class:`PatchRefused` (an edit that cannot
         be made exactly) or :class:`TargetError` (a slot no write may use)."""
         return WritePlan(plan_edit(self._now(), slot, list(edits), what=what))
+
+    def folder_of(self, slot: LiveTarget) -> Path | None:
+        """The live save folder this session writes for ``slot``; None when it writes none.
+        Two folders can share a name (a Steam folder NMS Save Vault lists and another found
+        on this machine), and a slot is named by its folder's name: before it writes, an app
+        checks that this is the folder it read the save from."""
+        try:
+            return Path(resolve_target(self._now(), slot).folder)
+        except TargetError:
+            return None
 
     def plan_undo(self, op_id: str) -> WritePlan:
         """The plan that puts back what this app's operation ``op_id`` replaced; a plan that
