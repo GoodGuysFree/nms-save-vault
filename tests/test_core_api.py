@@ -89,6 +89,7 @@ PINNED = {
     "scan_save_dir": ("function", "(folder: 'str | Path') -> 'SaveDirView'"),
     "set_app": ("function", "(name: 'str', version: 'str') -> 'AppIdentity'"),
     "vault_dir": ("function", "() -> 'Path'"),
+    "create_vault": ("function", "(vault_root: 'str | Path | None' = None) -> 'Path'"),
     "Inventory": ("fields", ("context", "owner", "index", "field", "where", "width", "height",
                              "valid", "special", "inventory_class", "stack_group", "slots"), ()),
     "Slot": ("fields", ("number", "item", "kind", "amount", "max_amount", "x", "y", "damage",

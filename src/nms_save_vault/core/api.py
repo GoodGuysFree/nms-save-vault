@@ -80,7 +80,8 @@ __all__ = [
     # who is writing (every vault record names its app)
     "VAULT", "AppIdentity", "app_of", "current", "is_stamp", "set_app",
     # where things are, whether the game runs, and whether another app changed the vault
-    "default_vault_dir", "game_running", "live_save_dirs", "vault_dir", "vault_stamp",
+    "create_vault", "default_vault_dir", "game_running", "live_save_dirs", "vault_dir",
+    "vault_stamp",
     # the saves on disk
     "MemberView", "SaveDirView", "SlotView", "platform_of", "scan_save_dir",
     # what is in a save
@@ -114,6 +115,31 @@ def default_vault_dir() -> Path:
     """Where NMS Save Vault puts a new vault; an app that starts the vault for a user without
     NMS Save Vault puts it here, so a later install finds it."""
     return locations.default_vault_dir()
+
+
+def create_vault(vault_root: str | Path | None = None) -> Path:
+    """Start the vault for a user without NMS Save Vault (CL9): at ``vault_root`` (default
+    :func:`vault_dir`, which is :func:`default_vault_dir` until NMS Save Vault chooses one),
+    laid out as NMS Save Vault lays out a vault it creates, so a later install of it takes the
+    vault as its own. A vault already there is left as it is. Returns the vault's folder.
+    Raises :class:`StoreNotUpgraded` for a vault of NMS Save Vault's older layout (only NMS
+    Save Vault upgrades one, when its user asks) and :class:`StoreUnavailable` when the folder
+    cannot be made."""
+    root = Path(vault_root) if vault_root is not None else vault_dir()
+    if versionstore.vault_mode(root) != "legacy":
+        return root                       # in store mode already (or being upgraded by Vault)
+    if root.exists() and not versionstore.is_new_vault(root):
+        raise StoreNotUpgraded("The vault there is in an older layout. Open it in NMS Save "
+                               "Vault once to upgrade it; nothing was changed.")
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+        versionstore.start_new_vault(root)
+    except OSError as exc:
+        raise StoreUnavailable(f"The vault folder cannot be made here "
+                               f"({exc.strerror or type(exc).__name__}).") from exc
+    if versionstore.vault_mode(root) != "store":
+        raise StoreUnavailable("The vault could not be started here.")
+    return root
 
 
 def live_save_dirs() -> list[Path]:
