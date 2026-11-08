@@ -326,18 +326,25 @@ def _crashed_edit(world, monkeypatch):
     return session
 
 
-def test_an_interrupted_edit_in_a_folder_switched_off_since_can_only_be_left(world, monkeypatch):
+def test_an_interrupted_edit_in_a_folder_switched_off_since_waits_for_it(world, monkeypatch):
+    before = {n: (world.live / n).read_bytes() for n in SLOT1}
     session = _crashed_edit(world, monkeypatch)
     _switch_off(world, world.live, writable=False)
     session.refresh()
     torn = tree_hash(world.live)
     (item,) = session.interrupted()
-    assert (item.recommended, item.choices) == ("leave", ("leave",))
-    assert "cannot be finished or put back now" in item.text and "read-only" in item.text
-    with pytest.raises(ValueError, match="not offered"):
-        session.resolve(item.op_id, "back")
-    assert session.resolve(item.op_id, "leave").status == "rolled_back"
-    assert session.interrupted() == [] and tree_hash(world.live) == torn
+    assert (item.recommended, item.choices) == ("none", ())
+    assert "read-only" in item.text and "can be written again" in item.text
+    assert "NOT_WRITABLE" not in item.text
+    out = liveops.resolve_recovery(session._now(), item.op_id, "leave")
+    assert (out.status, out.code) == ("refused", "TARGET_UNAVAILABLE")
+    assert tree_hash(world.live) == torn
+    world.own.unlink()                                      # switched on again
+    session.refresh()
+    (item,) = session.interrupted()
+    assert "back" in item.choices
+    assert session.resolve(item.op_id, "back").status == "rolled_back"
+    assert {n: (world.live / n).read_bytes() for n in SLOT1} == before    # all four, exactly
 
 
 def test_an_interrupted_edit_with_a_damaged_record_can_be_left(world, monkeypatch):
@@ -361,7 +368,7 @@ def test_an_interrupted_edit_with_a_damaged_record_can_be_left(world, monkeypatc
 # --- CL8: an app can tell cheaply that another one changed the vault -----------------------
 
 
-def test_the_vault_stamp_moves_with_every_record_and_only_then(world):
+def test_the_vault_stamp_moves_with_keeps_writes_undos_and_damage_never_with_a_look(world):
     session = _session(world)
     session.refresh()
     quiet = api.vault_stamp(world.vault_root)
@@ -376,7 +383,11 @@ def test_the_vault_stamp_moves_with_every_record_and_only_then(world):
     assert written != kept
     undo = session.plan_undo(done.op_id)
     session.write(undo, undo.confirmations)
-    assert api.vault_stamp(world.vault_root) != written
+    undone = api.vault_stamp(world.vault_root)
+    assert undone != written
+    damage = versionstore.store_root(world.vault_root) / versionstore.STATE / "damage.json"
+    damage.write_text("{}", encoding="utf-8")            # another app found a damaged file
+    assert api.vault_stamp(world.vault_root) != undone
 
 
 def test_the_vault_stamp_of_a_folder_that_is_no_vault_is_still_a_stamp(tmp_path):
@@ -530,11 +541,15 @@ def test_an_interrupted_edit_is_not_resolved_in_a_vault_a_newer_core_changed(
     assert tree_hash(world.live) == torn and ops_file.read_bytes() == before
 
 
-def test_two_extra_folders_of_one_name_are_not_taken_for_nms_save_vault_s(world, tmp_path):
+def test_two_extra_folders_of_one_name_open_and_neither_is_written(world, tmp_path):
     _switch_off(world, tmp_path / "elsewhere" / "st_other", enabled=True)
     twin = tmp_path / "copy" / world.live.name
     twin.mkdir(parents=True)
-    api.open_live(world.vault_root, live_dirs=[world.live, twin])
+    session = api.open_live(world.vault_root, live_dirs=[world.live, twin])  # not Vault's names
+    live_before = tree_hash(world.live)
+    with pytest.raises(api.TargetError) as refused:       # one name, two folders: ambiguous
+        session.plan_edit(_slot(world), UNITS, what="x")
+    assert refused.value.code == "AMBIGUOUS" and tree_hash(world.live) == live_before
 
 
 def test_a_write_s_result_survives_a_refresh_that_fails(world, monkeypatch):

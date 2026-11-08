@@ -105,6 +105,16 @@ def test_where_names_the_inventory_for_an_edit():
         assert len(held[K("Slots")]) == len(found.slots), found.where
 
 
+@pytest.mark.parametrize("tools", [None, [], [{"Resource": {"Filename": ""}, "Store": inv()}]])
+def test_a_save_without_a_filled_multitool_lists_its_weapon_inventory(tools):
+    psd = {"Inventory": inv(), "WeaponInventory": TOOL}           # from before tool collections
+    if tools is not None:
+        psd["Multitools"] = tools
+    found = [i for i in inventories_of(obf({"PlayerStateData": psd})) if i.owner == "multitool"]
+    assert [(i.index, i.field, i.where, [s.item for s in i.slots]) for i in found] == [
+        (None, "WeaponInventory", ("PlayerStateData", "WeaponInventory"), ["LASER"])]
+
+
 def test_a_save_from_before_the_contexts_has_one_context_at_the_root():
     found = inventories_of(obf({"PlayerStateData": {"Inventory": inv(OXYGEN)}}))
     assert [(i.context, i.where) for i in found] == [

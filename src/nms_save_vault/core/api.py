@@ -47,6 +47,7 @@ from .liveops.opjournal import OPS, machine_id, read_ops
 from .organizer import Organizer, provenance
 from .organizer import store as orgstore
 from .store import versionstore
+from .store.damage import DAMAGE_JSON
 from .organizer.journal import Journal
 from .organizer.model import LiveTarget, ModelError, pid_from_id
 from .organizer.provenance import AppChange, Before, KeptCopy
@@ -126,14 +127,15 @@ def game_running() -> bool | None:
 def vault_stamp(vault_root: str | Path | None = None) -> tuple[int, ...]:
     """A token that changes whenever anything is recorded in the vault at ``vault_root``
     (default :func:`vault_dir`) by any app: a version kept or removed, an operation and its
-    checks, the history, notes, the format. A few file stats, no reading: poll it every few
-    seconds and when the window gets focus, and refresh when it differs from the last one.
+    checks, the history, notes, damage found, the format. A few file stats, no reading: poll
+    it every few seconds and when the window gets focus, and refresh when it differs.
     Compare tokens with ``==`` only; what is in one can change in any release."""
     root = Path(vault_root) if vault_root is not None else vault_dir()
     organizer = root / orgstore.DIRNAME
     store = versionstore.store_root(root)
     catalog = Vault(root, read_only=True)
     paths = (store / versionstore.FORMAT_NAME, store / versionstore.ENTRIES,
+             store / versionstore.STATE / DAMAGE_JSON,
              organizer / orgstore.HEADER, organizer / orgstore.JOURNAL, organizer / orgstore.NOTES,
              organizer / orgstore.LINEAGE, organizer / OPS, catalog.catalog_path,
              catalog.oplog_path)

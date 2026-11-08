@@ -438,8 +438,14 @@ class OrganizerView(ttk.Frame):
                 except Exception:  # noqa: BLE001 - a stuck old index must not fail the scan
                     log.exception("the old content index did not close cleanly")
         organizer = self.organizer
+        before = vault_stamp(organizer.vault_root)
         model = organizer.refresh(record=record)
-        return organizer, model, self._extras(organizer, record)
+        extras = self._extras(organizer, record)
+        after = vault_stamp(organizer.vault_root)
+        # Something recorded while this scan read (another app, or this scan itself) may not
+        # be in what it read: keep the stamp from before, so one quiet rescan follows.
+        extras["stamp"] = after if after == before else before
+        return organizer, model, extras
 
     def _extras(self, organizer: Organizer, record: bool) -> dict:
         """In the worker after a scan: the verification of earlier moves (D5), the vault
@@ -467,7 +473,6 @@ class OrganizerView(ttk.Frame):
                                             live_roots=[Path(s.path) for s in organizer.sources])
         except Exception:  # noqa: BLE001
             log.exception("the vault store's status could not be read")
-        out["stamp"] = vault_stamp(organizer.vault_root)    # after this scan's own records
         return out
 
     def vault_moved(self) -> bool:

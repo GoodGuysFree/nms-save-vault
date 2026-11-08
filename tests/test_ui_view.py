@@ -65,14 +65,48 @@ def test_a_scan_asked_for_while_one_runs_follows_it(view, gui_app):
     _wait(gui_app, lambda: not view.scanning)
 
 
-def test_another_app_s_change_to_the_vault_is_seen_and_shown(view, gui_app, world):
-    assert view.vault_stamp is not None and not view.vault_moved()     # nothing new yet
-    ops = world.organizer.store.root / "ops.jsonl"            # another app journals an op
-    with open(ops, "ab") as f:
+def _another_app_records(world):
+    with open(world.organizer.store.root / "ops.jsonl", "ab") as f:
         f.write(b'{"j":1}\n')
+
+
+def test_another_app_s_change_to_the_vault_is_seen_and_scanned_again(view, gui_app, world):
+    _wait(gui_app, lambda: not view.vault_moved() and not view.scanning)   # settled
+    scanned = view.scanned_at
+    _another_app_records(world)
     assert view.vault_moved() and view.scanning
     _wait(gui_app, lambda: not view.scanning)
-    assert not view.vault_moved()                             # its own look moved nothing
+    assert view.scanned_at > scanned and not view.vault_moved()   # its own look moved nothing
+
+
+def test_a_change_made_while_the_window_scans_is_seen_after_it(view, gui_app, world,
+                                                               monkeypatch):
+    _wait(gui_app, lambda: not view.vault_moved() and not view.scanning)
+    refresh = world.organizer.refresh
+
+    def refresh_while_another_app_records(**kw):
+        model = refresh(**kw)
+        _another_app_records(world)                    # after the scan read the vault
+        return model
+
+    monkeypatch.setattr(world.organizer, "refresh", refresh_while_another_app_records)
+    view.rescan(record=False)
+    _wait(gui_app, lambda: not view.scanning)
+    monkeypatch.setattr(world.organizer, "refresh", refresh)
+    assert view.vault_moved()
+
+
+def test_the_main_window_shows_another_app_s_change_on_both_tabs(gui_app, monkeypatch):
+    from nms_save_vault import gui
+
+    later, refreshed = [], []
+    monkeypatch.setattr(gui_app, "after", lambda ms, fn: later.append((ms, fn)))
+    monkeypatch.setattr(gui_app, "refresh", lambda: refreshed.append(1))
+    for moved, expected in ((False, []), (True, [1])):
+        refreshed.clear()
+        monkeypatch.setattr(gui_app.organizer_view, "vault_moved", lambda moved=moved: moved)
+        gui_app._watch_vault()
+        assert refreshed == expected and later[-1] == (gui.VAULT_WATCH_MS, gui_app._watch_vault)
 
 
 def test_the_table_selection_drives_the_detail_and_the_live_outline(view, gui_app):

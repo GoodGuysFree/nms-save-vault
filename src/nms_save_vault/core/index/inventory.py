@@ -8,8 +8,9 @@ inventory from the save's root, so an edit (``savepatch``) can name it, and a sl
 Read as the game keeps them (live Steam saves, 2026-11-08): the exosuit, freighter and
 storage inventories are fields of ``PlayerStateData``; each filled ship of ``ShipOwnership``
 has three, each filled multi-tool its ``Store``, each exocraft two. ``WeaponInventory`` is a
-copy of the active multi-tool's ``Store`` (equal in every context checked) and
-``ShipInventory`` an old field, so neither is listed: an item is never counted twice.
+copy of the active multi-tool's ``Store`` (equal in every context checked), so it is listed
+only in a save without a filled multi-tool (one from before multi-tool collections, where it
+is the tool's own); ``ShipInventory`` is an old field. An item is never counted twice.
 """
 from __future__ import annotations
 
@@ -83,6 +84,9 @@ def inventories_of(root: dict) -> list[Inventory]:
         for tool in ctx.multitools:
             add("multitool", tool.index, get(tool.node, "Store"), "Store",
                 ("Multitools", tool.index, "Store"))
+        if not ctx.multitools:          # a save from before multi-tool collections: its one tool
+            add("multitool", None, get(psd, "WeaponInventory"), "WeaponInventory",
+                ("WeaponInventory",))
         for index, vehicle in enumerate(items(psd, "VehicleOwnership")):
             for field in VEHICLE:
                 add("exocraft", index, get(vehicle, field), field,
