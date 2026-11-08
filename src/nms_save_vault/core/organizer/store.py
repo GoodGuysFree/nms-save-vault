@@ -27,8 +27,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from ... import __version__
-from .. import safety
+from .. import appinfo, safety
 
 log = logging.getLogger(__name__)
 
@@ -49,7 +48,6 @@ KINDS = {
 }
 RECORD_TYPES = ("obs", "op")
 
-APP = f"nms-save-vault {__version__}"
 NEWER_SCHEMA = "This vault's organizer data was written by a newer version of the app"
 BUSY = "Another NMS Save Vault window is saving - try again"
 
@@ -183,7 +181,7 @@ class OrganizerStore:
 
     def _write_header(self) -> None:
         header = {"schema": SCHEMA, "kind": KINDS[HEADER], "vault_id": uuid.uuid4().hex,
-                  "created": int(self.clock()), "app": APP}
+                  "created": int(self.clock()), "app": appinfo.stamp()}
         safety.atomic_write_bytes(self.root / HEADER, _dump_doc(header))
         self.vault_id = header["vault_id"]
 

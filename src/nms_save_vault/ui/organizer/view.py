@@ -108,13 +108,13 @@ def last_change_text(outcome: OpOutcome) -> str:
 
 def default_context(organizer: Organizer) -> OpContext:
     """The live-operations context of the app's own organizer (worker thread)."""
-    from ... import __version__
+    from ...core import appinfo
     from ...core.liveops import context_for
     from ...core.liveops.opjournal import machine_id
 
     host = organizer.host
     return context_for(organizer, host=host, machine_id=machine_id(host),
-                       app_version=f"nms-save-vault {__version__}")
+                       app_version=appinfo.stamp())
 
 
 class OrganizerView(ttk.Frame):

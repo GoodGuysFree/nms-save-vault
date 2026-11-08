@@ -205,10 +205,10 @@ def _context(args):
     try:
         org = Organizer(root, sources, read_only=False)
         host = hostmod.Host.current()
-        from . import __version__
+        from .core import appinfo
 
         return context_for(org, host=host, machine_id=machine_id(host),
-                           app_version=f"nms-save-vault {__version__}")
+                           app_version=appinfo.stamp())
     except (OSError, ValueError, RuntimeError) as exc:
         _die(f"error: the vault cannot be opened for live operations: {explain(exc)}")
 

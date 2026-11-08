@@ -16,14 +16,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
-from .. import safety, savedir
+from .. import appinfo, safety, savedir
 from .. import state as appstate
 from ..state import Source
 from .cache import FILENAME, ScanCache, cache_dir
 from .journal import Journal, ObserveResult, OpStatus, op_fields
 from .model import LiveRef, LiveTarget, MemberObs, PairKey, Vid
 from .scanner import ScanResult, live_refs, scan
-from .store import APP, OrganizerStore
+from .store import OrganizerStore
 
 log = logging.getLogger(__name__)
 
@@ -50,7 +50,7 @@ class OpLineage:
     status: OpStatus = "done"
     undo_of: str | None = None
     note: str = ""
-    app: str = APP
+    app: str = field(default_factory=appinfo.stamp)
     members: Mapping[Vid, MemberObs] = field(default_factory=dict)   # the placed members
     snapshot: str | None = None             # the entry the app kept the folder in first
 

@@ -25,7 +25,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from .. import catalog, safety, savedir
+from .. import appinfo, catalog, safety, savedir
 from ..formats import MAX_SAVE_SLOTS
 from ..catalog import CatalogEntry, Vault
 from ..state import Source
@@ -53,7 +53,7 @@ from .model import (
 from .lineage import ensure_skeleton
 from .scanner import EntryScan, ScanProblem, ScanResult, scan
 from .recorder import LIVEOP_TIMEOUT
-from .store import APP, LINEAGE, OrganizerStore, liveop_lock_path
+from .store import LINEAGE, OrganizerStore, liveop_lock_path
 
 if TYPE_CHECKING:
     from ..store import VersionStore
@@ -148,7 +148,7 @@ def bootstrap(vault: Vault, store: OrganizerStore, sources: Sequence[Source],
             ensure_skeleton(doc)
             block = dict(doc.get("bootstrap") or {})
             block.setdefault("done_at", cutoff)
-            block.update(app=APP, algo=ALGO, report=_counts(plan, result, written))
+            block.update(app=appinfo.stamp(), algo=ALGO, report=_counts(plan, result, written))
             doc["bootstrap"] = block
         state = journal.replay()
     return _report(plan, result, state, written, time.perf_counter() - started, dry_run)
@@ -355,7 +355,7 @@ class _Plan:
                                        entry=item.entry), item.time))
             else:
                 out.append((op_fields("oplog", item.op_id, item.kind, item.target, item.pair,
-                                      evicted[id(item)], app=APP, members=members), item.time))
+                                      evicted[id(item)], app=appinfo.stamp(), members=members), item.time))
         return out
 
 

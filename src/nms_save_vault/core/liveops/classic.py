@@ -57,10 +57,10 @@ def open_context(vault: Vault, live_dir: Path, *, host: hostmod.Host | None = No
         sources.append(_ad_hoc(live_dir))
     try:
         organizer = Organizer(vault.root, sources, host=host, game_running=safety.is_game_running)
-        from ... import __version__
+        from .. import appinfo
 
         ctx = context_for(organizer, host=host, machine_id=machine_id(host),
-                          app_version=f"nms-save-vault {__version__}",
+                          app_version=appinfo.stamp(),
                           game_probe=game_probe or safety.is_game_running)
     except (OSError, ValueError, RuntimeError) as exc:
         raise ops.OperationError(f"The vault cannot be opened for a live write ({exc}).") from exc

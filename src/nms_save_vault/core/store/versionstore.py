@@ -25,8 +25,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
 
-from ... import __version__
-from .. import catalog, discover, safety, savedir
+from .. import appinfo, catalog, discover, safety, savedir
 from ..organizer.model import Platform
 from ..state import AppState
 from . import capture
@@ -907,5 +906,5 @@ def open_store(vault_root: str | Path, *, live_roots: Sequence[Path] | None = No
                clock: Callable[[], datetime] = utc_now) -> VersionStore:
     """Open a vault's store with the app's defaults: D1's vault lock and this app's version.
     ``app_state``: the app's configuration (its live sources are never written into)."""
-    return VersionStore.open(vault_root, lock=vault_lock(vault_root), app_version=__version__,
+    return VersionStore.open(vault_root, lock=vault_lock(vault_root), app_version=appinfo.stamp(),
                              clock=clock, live_roots=live_roots, app_state=app_state)

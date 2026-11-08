@@ -140,8 +140,8 @@ def index_enabled(setting: object = None, env: Mapping[str, str] = os.environ) -
 
 
 def _app_version() -> str:
-    from ... import __version__
-    return __version__
+    from .. import appinfo
+    return appinfo.stamp()
 
 
 def default_sources() -> list[Source]:

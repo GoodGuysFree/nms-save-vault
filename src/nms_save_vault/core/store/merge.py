@@ -11,7 +11,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from ... import __version__
+from .. import appinfo
 from .errors import StoreError, StoreNotUpgraded
 from .manifest import StoreEntry
 from .versionstore import VersionStore, vault_lock, vault_mode
@@ -41,7 +41,7 @@ def open_source(source_root: str | Path) -> VersionStore:
     root = Path(source_root)
     if vault_mode(root) != "store":
         raise StoreNotUpgraded("That vault has no version store, or is being upgraded.")
-    return VersionStore.open(root, lock=vault_lock(root), app_version=__version__,
+    return VersionStore.open(root, lock=vault_lock(root), app_version=appinfo.stamp(),
                              live_roots=(), read_only=True)
 
 

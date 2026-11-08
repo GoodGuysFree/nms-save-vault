@@ -241,9 +241,9 @@ def cmd_store_rollback(args) -> int:
 
 
 def _version() -> str:
-    from . import __version__
+    from .core import appinfo
 
-    return __version__
+    return appinfo.stamp()
 
 
 def _fold(root: Path, state) -> int:

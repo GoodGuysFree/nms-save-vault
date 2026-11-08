@@ -247,7 +247,7 @@ class Organizer:
 def _open_version_store(vault_root: Path, sources: Sequence[Source], read_only: bool):
     """The vault's version store when the vault is in store mode, else None. A store that
     cannot be opened raises _StoreNotOpened (the Organizer keeps the reason in ``store_error``)."""
-    from ... import __version__
+    from .. import appinfo
     from ..store import StoreError, VersionStore, vault_lock, vault_mode
 
     if vault_mode(vault_root) != "store":
@@ -255,7 +255,7 @@ def _open_version_store(vault_root: Path, sources: Sequence[Source], read_only: 
     live = [Path(s.path) for s in sources] + [Path(p) for p in discover.all_live_paths(None)]
     try:
         return VersionStore.open(vault_root, lock=vault_lock(vault_root),
-                                 app_version=__version__, live_roots=live, read_only=read_only)
+                                 app_version=appinfo.stamp(), live_roots=live, read_only=read_only)
     except StoreError as exc:
         log.warning("the vault's version store is not used: %s", exc)
         raise _StoreNotOpened(store_open_error_text(exc, vault_root)) from exc
