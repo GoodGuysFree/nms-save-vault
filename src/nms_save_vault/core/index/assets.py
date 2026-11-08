@@ -17,17 +17,32 @@ class is called is game content that the reader does not ship.
 """
 from __future__ import annotations
 
+import hashlib
+import json
+from collections import Counter
 from dataclasses import dataclass, field
 
+from ..hashname import key
 from .extract import Owned, contexts_of
 from .extract.bases import CORVETTE_FOLDER, walk_bases
 from .nodes import galaxy_of, get, gid, hex64, integer, items, label, seed, text, u64
-from .privacy import owner_time
+from .privacy import DENIED, owner_time
 
 #: Every kind, in the order :func:`assets_of` lists them.
 KINDS = ("ship", "corvette", "multitool", "freighter", "frigate", "pilot", "exocraft",
          "companion", "egg", "base", "location")
 MODEL_LIMIT = 256
+
+#: What changes in a save by itself and never makes an asset different: where it is and which
+#: way it faces, times, a companion's trust and moods, a multi-tool's firing mode, a base's
+#: difficulty (it follows the save's). Measured on consecutive vault versions, 2026-11-09.
+VOLATILE = ("Timestamp", "LastUpdateTimestamp", "LastSpawnTime", "Position", "Direction",
+            "Forward", "Facing", "Up", "At", "Location", "MatrixAt", "MatrixUp", "MatrixPos",
+            "ScreenshotAt", "ScreenshotPos", "UserData", "Difficulty", "LastTrustIncreaseTime",
+            "LastTrustDecreaseTime", "LastEggTime", "Trust", "Moods", "PrimaryMode",
+            "SecondaryMode")
+_SKIP = frozenset(key(n) for n in VOLATILE) | frozenset(key(n) for n in DENIED)
+_AMOUNT = key("Amount")
 
 
 @dataclass(frozen=True)
@@ -282,3 +297,46 @@ def _locations(context: str, base: tuple, psd: dict) -> list[Asset]:
                          None, galaxy, hex64(address),
                          {"favourite": get(point, "IsFavourite") is True}))
     return out
+
+
+def state_of(root: dict, asset: Asset) -> str:
+    """What ``asset`` is like in the decoded save ``root``, as 16 hex digits: two versions that
+    give the same digest hold it unchanged. Its place, times and charge are left out
+    (:data:`VOLATILE`; a technology's amount is its charge), and every ownership field. A base
+    is its name and which parts it has, a saved location its name and whether it is a
+    favourite (the rest is its key); the current freighter includes its inventories, which the
+    save keeps beside it."""
+    node = _at(root, *asset.where)
+    if asset.kind == "base":
+        value: object = [asset.name, sorted(Counter(
+            gid(get(o, "ObjectID")) for o in items(node, "Objects") if isinstance(o, dict)).items())]
+    elif asset.kind == "location":
+        value = [asset.name, asset.facts.get("favourite")]
+    elif asset.kind == "freighter" and asset.index is None:
+        psd = _at(root, *asset.where[:-1])
+        value = [_stable(node), asset.name] + [_stable(get(psd, f)) for f in (
+            "FreighterInventory", "FreighterInventory_TechOnly", "FreighterInventory_Cargo")]
+    else:
+        value = _stable(node)
+    body = json.dumps(value, sort_keys=True, ensure_ascii=True, separators=(",", ":"))
+    return hashlib.sha256(body.encode("ascii")).hexdigest()[:16]
+
+
+def _at(root: object, *where: str | int) -> object:
+    node = root
+    for step in where:
+        if isinstance(step, str):
+            node = get(node, step)
+        else:
+            node = node[step] if isinstance(node, list) and 0 <= step < len(node) else None
+    return node
+
+
+def _stable(node: object) -> object:
+    if isinstance(node, dict):
+        technology = get(node, "Type", "InventoryType") == "Technology"
+        return {k: _stable(v) for k, v in node.items()
+                if k not in _SKIP and not (technology and k == _AMOUNT)}
+    if isinstance(node, list):
+        return [_stable(v) for v in node]
+    return node

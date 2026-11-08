@@ -2,13 +2,14 @@
 save (Savecraft R2), the path an edit names it by, and which one is in use."""
 from __future__ import annotations
 
+import copy
 import json
 from pathlib import Path
 
 import pytest
 
 from nms_save_vault.core import api, savedir, saveedit, savejson, savepatch
-from nms_save_vault.core.index.assets import KINDS, Asset, assets_of, portal_address
+from nms_save_vault.core.index.assets import KINDS, Asset, assets_of, portal_address, state_of
 from nms_save_vault.core.testing import obfuscated as obf
 
 SHIP = "MODELS/COMMON/SPACECRAFT/FIGHTERS/FIGHTER_PROC.SCENE.MBIN"
@@ -91,7 +92,7 @@ PSD = {
 }
 SAVE = {"CommonStateData": {"SaveName": "Main"},
         "BaseContext": {"PlayerStateData": PSD},
-        "ExpeditionContext": {"PlayerStateData": {"Pets": PSD["Pets"][:1]}}}
+        "ExpeditionContext": {"PlayerStateData": {"Pets": copy.deepcopy(PSD["Pets"][:1])}}}
 
 
 def by_kind(found):
@@ -196,8 +197,75 @@ def test_odd_values_read_as_unknown_and_never_stop_the_reading():
         ("location", "||", None)]
 
 
+def states(save):
+    root = obf(save)
+    return {(a.context, a.kind, a.key): state_of(root, a) for a in assets_of(root)}
+
+
+def changed(edit):
+    """The assets whose state differs after ``edit`` changed a copy of SAVE."""
+    save = copy.deepcopy(SAVE)
+    edit(save["BaseContext"]["PlayerStateData"])
+    before, after = states(SAVE), states(save)
+    return sorted(k[1] for k in before if k in after and before[k] != after[k])
+
+
+def test_a_state_is_a_short_digest_and_the_same_for_the_same_save():
+    first = states(SAVE)
+    assert first == states(copy.deepcopy(SAVE))
+    assert all(len(v) == 16 and int(v, 16) >= 0 for v in first.values())
+
+
+@pytest.mark.parametrize("edit", [
+    lambda p: p["ShipOwnership"][0].update(Position=[9, 9, 9], Direction=[0, 1, 0], Location=7),
+    lambda p: p["Pets"][0].update(Trust=0.9, Moods=[0.1, 0.2], LastEggTime=5),
+    lambda p: p["Multitools"][0].update(PrimaryMode=1),
+    lambda p: p["PersistentPlayerBases"][0]["Objects"][0].update(Timestamp=99, Position=[1, 1, 1]),
+    lambda p: p["PersistentPlayerBases"][0].update(Owner={"UID": "someone", "TS": 5}),
+    lambda p: p["TeleportEndpoints"][0].update(Position=[1.4, 2.1, 2.9], Facing=[1, 0, 0]),
+    lambda p: p["VehicleOwnership"][1].update(Location="0x1", Position=[3, 3, 3]),
+])
+def test_what_changes_by_itself_leaves_every_state_as_it_was(edit):
+    assert changed(edit) == []
+
+
+def charge(p):
+    p["ShipOwnership"][0]["Inventory"]["Slots"] = [
+        {"Type": {"InventoryType": "Technology"}, "Id": "^HYPERDRIVE", "Amount": 100}]
+
+
+@pytest.mark.parametrize("edit, kinds", [
+    (lambda p: p["ShipOwnership"][0].update(Name="Swifter"), ["ship"]),
+    (lambda p: p["ShipOwnership"][0]["Inventory"]["Slots"].append(
+        {"Type": {"InventoryType": "Product"}, "Id": "^CASING", "Amount": 3}), ["ship"]),
+    (lambda p: p["Pets"][0].update(CustomName="Mossy"), ["companion"]),
+    (lambda p: p["PersistentPlayerBases"][0]["Objects"].append({"ObjectID": "^DOOR"}), ["base"]),
+    (lambda p: p["PersistentPlayerBases"][0].update(Name="Barn"), ["base"]),
+    (lambda p: p["TeleportEndpoints"][0].update(Name="Barn"), ["location"]),
+    (lambda p: p["FreighterInventory"]["Slots"].append({"Id": "^FUEL1", "Amount": 5}),
+     ["freighter"]),
+    (lambda p: p["FleetFrigates"][0].update(TotalNumberOfExpeditions=5), ["frigate"]),
+])
+def test_a_real_change_makes_a_new_state_for_that_asset_only(edit, kinds):
+    assert changed(edit) == kinds
+
+
+def test_a_technology_s_charge_is_not_a_change_but_its_kind_of_item_is():
+    save = copy.deepcopy(SAVE)
+    charge(save["BaseContext"]["PlayerStateData"])
+    recharged = copy.deepcopy(save)
+    recharged["BaseContext"]["PlayerStateData"]["ShipOwnership"][0]["Inventory"]["Slots"][0][
+        "Amount"] = 40
+    assert states(save) == states(recharged)
+    product = copy.deepcopy(save)
+    product["BaseContext"]["PlayerStateData"]["ShipOwnership"][0]["Inventory"]["Slots"][0][
+        "Type"] = {"InventoryType": "Product"}
+    assert states(save) != states(product)
+
+
 def test_the_reader_is_in_the_public_api():
     assert api.assets_of is assets_of and api.Asset is Asset and api.ASSET_KINDS == KINDS
+    assert api.state_of is state_of
 
 
 @pytest.mark.slow
@@ -210,8 +278,10 @@ def test_a_real_save_s_assets_all_read_and_name_their_place(live_save_dir):
     body = saveedit.body_of(data)
     found = assets_of(savejson.decode_save(data).root)
     assert found
+    root = savejson.decode_save(data).root
     for a in found:
         assert savepatch.value_bytes(body, a.where), a.where
+        assert len(state_of(root, a)) == 16
     for context in {a.context for a in found}:
         ships = [a for a in found if a.context == context and a.kind in ("ship", "corvette")]
         assert not ships or sum(bool(a.current) for a in ships) == 1, context
