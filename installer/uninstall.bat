@@ -15,8 +15,7 @@ rem ---------------------------------------------------------------------------
 
 set "INSTALL_DIR=%LOCALAPPDATA%\Programs\NMSSaveVault"
 set "EXE=NMSSaveVault.exe"
-set "DESKTOP_LNK=%USERPROFILE%\Desktop\NMS Save Vault.lnk"
-set "STARTMENU_LNK=%APPDATA%\Microsoft\Windows\Start Menu\Programs\NMS Save Vault.lnk"
+set "LNK_NAME=NMS Save Vault.lnk"
 
 echo(
 echo  ============================================
@@ -42,8 +41,17 @@ if /i not "%GO:~0,1%"=="y" (
 echo(
 
 rem --- remove shortcuts (ignore if absent) -----------------------------------
-if exist "%DESKTOP_LNK%"   ( del /f /q "%DESKTOP_LNK%"   >nul 2>&1 & echo   - Desktop shortcut removed. )
-if exist "%STARTMENU_LNK%" ( del /f /q "%STARTMENU_LNK%" >nul 2>&1 & echo   - Start Menu entry removed. )
+rem  Windows is asked where the Desktop and Start Menu are, as install.bat does:
+rem  OneDrive and folder redirection move them. The fixed paths are where older
+rem  installers put the shortcuts, so those are cleaned up too.
+set "DESKTOP_DIR="
+set "PROGRAMS_DIR="
+for /f "usebackq delims=" %%D in (`powershell -NoProfile -Command "[Environment]::GetFolderPath('Desktop')"`) do set "DESKTOP_DIR=%%D"
+for /f "usebackq delims=" %%D in (`powershell -NoProfile -Command "[Environment]::GetFolderPath('Programs')"`) do set "PROGRAMS_DIR=%%D"
+if defined DESKTOP_DIR  call :rmlink "%DESKTOP_DIR%\%LNK_NAME%" "Desktop shortcut"
+call :rmlink "%USERPROFILE%\Desktop\%LNK_NAME%" "Desktop shortcut"
+if defined PROGRAMS_DIR call :rmlink "%PROGRAMS_DIR%\%LNK_NAME%" "Start Menu entry"
+call :rmlink "%APPDATA%\Microsoft\Windows\Start Menu\Programs\%LNK_NAME%" "Start Menu entry"
 
 rem --- delete the app exe first: this also detects a running app (locked exe) -
 if exist "%INSTALL_DIR%\%EXE%" (
@@ -75,4 +83,10 @@ if /i "%~dp0"=="%INSTALL_DIR%\" (
     rmdir /s /q "%INSTALL_DIR%" >nul 2>&1
     pause
 )
+exit /b 0
+
+rem ---------------------------------------------------------------------------
+:rmlink
+rem  %~1 = full path of a shortcut to delete if present, %~2 = what to call it.
+if exist "%~1" ( del /f /q "%~1" >nul 2>&1 & echo   - %~2 removed. )
 exit /b 0

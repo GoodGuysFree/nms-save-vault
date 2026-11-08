@@ -19,9 +19,7 @@ set "APPSRC=%~dp0NMSSaveVault"
 set "INSTALL_DIR=%LOCALAPPDATA%\Programs\NMSSaveVault"
 set "TARGET=%INSTALL_DIR%\%EXE%"
 set "ICON=%INSTALL_DIR%\nmsvault.ico"
-set "DESKTOP_LNK=%USERPROFILE%\Desktop\NMS Save Vault.lnk"
-set "STARTMENU_DIR=%APPDATA%\Microsoft\Windows\Start Menu\Programs"
-set "STARTMENU_LNK=%STARTMENU_DIR%\NMS Save Vault.lnk"
+set "LNK_NAME=NMS Save Vault.lnk"
 
 echo(
 echo  ============================================
@@ -84,13 +82,12 @@ echo(
 set "DID_SHORTCUT="
 
 if /i not "%DESK:~0,1%"=="n" (
-    call :mklink "%DESKTOP_LNK%"
-    if not errorlevel 1 ( echo   - Desktop shortcut created. & set "DID_SHORTCUT=1" )
+    call :mklink Desktop
+    if not errorlevel 1 ( echo   - Desktop shortcut created. & set "DID_SHORTCUT=1" ) else echo   - Could not create the Desktop shortcut.
 )
 if /i not "%MENU:~0,1%"=="n" (
-    if not exist "%STARTMENU_DIR%" mkdir "%STARTMENU_DIR%"
-    call :mklink "%STARTMENU_LNK%"
-    if not errorlevel 1 ( echo   - Start Menu entry created. & set "DID_SHORTCUT=1" )
+    call :mklink Programs
+    if not errorlevel 1 ( echo   - Start Menu entry created. & set "DID_SHORTCUT=1" ) else echo   - Could not create the Start Menu entry.
 )
 
 echo(
@@ -113,8 +110,10 @@ exit /b 0
 
 rem ---------------------------------------------------------------------------
 :mklink
-rem  %~1 = full path of the .lnk to create. Paths are passed via environment
-rem  variables so spaces/quotes never break the PowerShell command line.
-set "LNK=%~1"
-powershell -NoProfile -Command "$w = New-Object -ComObject WScript.Shell; $s = $w.CreateShortcut($env:LNK); $s.TargetPath = $env:TARGET; $s.WorkingDirectory = $env:INSTALL_DIR; $s.IconLocation = $(if (Test-Path $env:ICON) { $env:ICON + ',0' } else { $env:TARGET + ',0' }); $s.Description = 'NMS Save Vault'; $s.Save()"
+rem  %~1 = the folder to put the shortcut in: Desktop or Programs (the Start Menu).
+rem  Windows is asked where that is, because it moves: OneDrive and folder
+rem  redirection take the Desktop away from %USERPROFILE%\Desktop. Paths are passed
+rem  via environment variables so spaces/quotes never break the PowerShell command line.
+set "LNK_FOLDER=%~1"
+powershell -NoProfile -Command "$ErrorActionPreference = 'Stop'; $d = [Environment]::GetFolderPath($env:LNK_FOLDER, 'Create'); if (-not $d) { exit 1 }; $w = New-Object -ComObject WScript.Shell; $s = $w.CreateShortcut((Join-Path $d $env:LNK_NAME)); $s.TargetPath = $env:TARGET; $s.WorkingDirectory = $env:INSTALL_DIR; $s.IconLocation = $(if (Test-Path $env:ICON) { $env:ICON + ',0' } else { $env:TARGET + ',0' }); $s.Description = 'NMS Save Vault'; $s.Save()"
 exit /b %errorlevel%
