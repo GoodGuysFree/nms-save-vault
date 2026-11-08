@@ -4,8 +4,10 @@ it did not write, and undoing the vault upgrade waits for live ops."""
 from __future__ import annotations
 
 import json
+import os
 import subprocess
-from types import SimpleNamespace
+import sys
+from pathlib import Path
 
 import pytest
 
@@ -48,18 +50,31 @@ def test_a_restore_keeps_an_account_data_that_only_xgs_holds(make_wgs_account, t
     assert any("account data was kept" in w for w in result.warnings)
 
 
-def _tasklist(monkeypatch, *, code, out):
-    monkeypatch.setattr(subprocess, "run", lambda *a, **k: SimpleNamespace(
-        returncode=code, stdout=out, stderr=b""))
+def _processes(monkeypatch, names):
+    def listing():
+        if isinstance(names, Exception):
+            raise names
+        return names
+    monkeypatch.setattr(safety, "_process_names", listing)
 
 
-def test_a_failing_tasklist_is_unknown_not_not_running(monkeypatch):
-    _tasklist(monkeypatch, code=1, out=b"")
+def test_an_unreadable_process_list_is_unknown_not_not_running(monkeypatch):
+    _processes(monkeypatch, OSError(5, "Access is denied"))
     assert REAL_PROBE() is None
-    _tasklist(monkeypatch, code=0, out=b"INFO: No tasks are running\r\n")
+    _processes(monkeypatch, ["System", "explorer.exe", "notNMS.exe"])
     assert REAL_PROBE() is False
-    _tasklist(monkeypatch, code=0, out=b"NMS.exe   1234 Console\r\n\xff\xfe")
+    _processes(monkeypatch, ["System", "nms.EXE"])
     assert REAL_PROBE() is True
+
+
+@pytest.mark.skipif(os.name != "nt", reason="the in-process probe is Windows-only")
+def test_the_windows_process_list_is_read_without_a_child_process(monkeypatch):
+    def no_children(*a, **k):
+        raise AssertionError("the game probe must not start a process")
+    monkeypatch.setattr(subprocess, "Popen", no_children)
+    names = {name.lower() for name in safety._toolhelp_process_names()}
+    assert "system" in names
+    assert Path(sys.executable).name.lower() in names
 
 
 def test_a_steam_rollback_keeps_the_bytes_of_a_file_it_did_not_write(tmp_path):

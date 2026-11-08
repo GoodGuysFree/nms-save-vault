@@ -13,7 +13,6 @@ import math
 import os
 import shutil
 import stat
-import subprocess
 import tempfile
 import threading
 import time
@@ -33,29 +32,85 @@ log = logging.getLogger(__name__)
 # editions (same HelloGames binary, just packaged differently), so this one name covers both.
 NMS_PROCESS_NAME = "NMS.exe"
 
-# Suppress the console window that ``tasklist`` would otherwise flash on-screen every time
-# this runs from the windowed GUI build. Defined only on Windows; 0 elsewhere is a no-op.
-_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-
 
 def is_game_running() -> bool | None:
     """Return True/False if NMS is running, or None if it could not be determined.
 
-    Uses Windows ``tasklist``. Callers should treat None as "unknown" and warn.
+    Callers should treat None as "unknown" and warn.
     """
     try:
-        result = subprocess.run(
-            ["tasklist", "/FI", f"IMAGENAME eq {NMS_PROCESS_NAME}", "/NH"],
-            capture_output=True,
-            timeout=10,
-            creationflags=_NO_WINDOW,
-        )
-    except (OSError, subprocess.SubprocessError):
+        names = _process_names()
+    except OSError:
         return None
-    if result.returncode != 0:
-        return None                      # a failing tasklist says nothing about the game
-    out = (result.stdout or b"").decode("utf-8", errors="replace").lower()
-    return NMS_PROCESS_NAME.lower() in out
+    wanted = NMS_PROCESS_NAME.lower()
+    return any(name.lower() == wanted for name in names)
+
+
+if os.name == "nt":
+    import ctypes
+    from ctypes import wintypes
+
+    class _ProcessEntry(ctypes.Structure):
+        """PROCESSENTRY32W."""
+
+        _fields_ = [
+            ("dwSize", wintypes.DWORD),
+            ("cntUsage", wintypes.DWORD),
+            ("th32ProcessID", wintypes.DWORD),
+            ("th32DefaultHeapID", ctypes.c_size_t),
+            ("th32ModuleID", wintypes.DWORD),
+            ("cntThreads", wintypes.DWORD),
+            ("th32ParentProcessID", wintypes.DWORD),
+            ("pcPriClassBase", wintypes.LONG),
+            ("dwFlags", wintypes.DWORD),
+            ("szExeFile", wintypes.WCHAR * 260),
+        ]
+
+    _TH32CS_SNAPPROCESS = 0x00000002
+    _ERROR_NO_MORE_FILES = 18
+    _INVALID_HANDLE = ctypes.c_void_p(-1).value
+
+    # A private WinDLL, so these prototypes never clash with ``ctypes.windll.kernel32``'s.
+    _kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    _kernel32.CreateToolhelp32Snapshot.argtypes = (wintypes.DWORD, wintypes.DWORD)
+    _kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+    _kernel32.Process32FirstW.argtypes = (wintypes.HANDLE, ctypes.POINTER(_ProcessEntry))
+    _kernel32.Process32FirstW.restype = wintypes.BOOL
+    _kernel32.Process32NextW.argtypes = (wintypes.HANDLE, ctypes.POINTER(_ProcessEntry))
+    _kernel32.Process32NextW.restype = wintypes.BOOL
+    _kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+    _kernel32.CloseHandle.restype = wintypes.BOOL
+
+    def _toolhelp_process_names() -> list[str]:
+        """The image name of every running process, read in-process from the kernel's process
+        list. This replaced a hidden ``tasklist`` child: an app silently spawning a system
+        tool to enumerate processes is what behavioural antivirus watches for (issue #2).
+        Needs no access to the processes themselves, so elevated ones are listed too. Raises
+        OSError when the list cannot be read in full: a partial list could miss the game."""
+        snapshot = _kernel32.CreateToolhelp32Snapshot(_TH32CS_SNAPPROCESS, 0)
+        if snapshot is None or snapshot == _INVALID_HANDLE:
+            raise ctypes.WinError(ctypes.get_last_error())
+        try:
+            entry = _ProcessEntry()
+            entry.dwSize = ctypes.sizeof(_ProcessEntry)
+            names: list[str] = []
+            more = _kernel32.Process32FirstW(snapshot, ctypes.byref(entry))
+            while more:
+                names.append(entry.szExeFile)
+                more = _kernel32.Process32NextW(snapshot, ctypes.byref(entry))
+            error = ctypes.get_last_error()
+            if error != _ERROR_NO_MORE_FILES:
+                raise ctypes.WinError(error)
+            return names
+        finally:
+            _kernel32.CloseHandle(snapshot)
+
+    _process_names = _toolhelp_process_names
+
+else:
+
+    def _process_names() -> list[str]:
+        raise OSError(errno.ENOSYS, "no game-process probe on this platform yet")
 
 
 def sha256_file(path: str | Path, chunk: int = 1 << 20) -> str:

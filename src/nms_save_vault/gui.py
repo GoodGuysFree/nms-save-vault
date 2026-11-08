@@ -1698,7 +1698,7 @@ class App(tk.Tk):
         self._sources_shown = len(sources)
         self._game_running = _CHECKING
         self._show_status()
-        # The vault listing (a store's manifests) and the game probe (tasklist) take as long
+        # The vault listing (a store's manifests) and the game probe take as long
         # as the vault is big: the window does not wait for them.
         self._refresh_gen += 1
         gen, vault = self._refresh_gen, self.vault

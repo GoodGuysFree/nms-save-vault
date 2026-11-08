@@ -7,7 +7,6 @@ import json
 import os
 import re
 import struct
-import subprocess
 import sys
 import tempfile
 import uuid
@@ -15,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from nms_save_vault.core import catalog, formats, meta, msstore, slotmap
+from nms_save_vault.core import catalog, formats, meta, msstore, safety, slotmap
 
 # --- the write guard --------------------------------------------------------------------
 #
@@ -173,20 +172,13 @@ def _no_configured_live_folders(monkeypatch):
 
 
 def _install_game_not_running() -> None:
-    """The game probe asks ``tasklist``: 0.1 s and a console host a time, hundreds of times a
-    run. Patching ``safety.is_game_running`` misses the calls that reach it through default
-    arguments bound at import, and the App's worker thread probes between tests too, so
-    ``tasklist`` itself answers, for the whole session: the game is not running. A test that
-    wants it running patches the probe; test_safety_live patches ``subprocess.run`` over this
-    to drive the real one."""
-    real_run = subprocess.run
-
-    def run(args, *a, **kw):
-        if isinstance(args, (list, tuple)) and list(args[:1]) == ["tasklist"]:
-            return subprocess.CompletedProcess(args, 0, stdout=b"INFO: No tasks are running "
-                                               b"which match the specified criteria.\r\n", stderr=b"")
-        return real_run(args, *a, **kw)
-    subprocess.run = run
+    """A test never asks this machine whether the game is running: the answer would depend
+    on whether it is. Patching ``safety.is_game_running`` misses the calls that reach it
+    through default arguments bound at import, and the App's worker thread probes between
+    tests too, so the process list itself answers, for the whole session: the game is not
+    running. A test that wants it running patches the probe; test_safety_live patches
+    ``safety._process_names`` over this to drive the real one."""
+    safety._process_names = lambda: ["System", "explorer.exe"]
 
 
 _install_game_not_running()
