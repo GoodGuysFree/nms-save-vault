@@ -127,14 +127,6 @@ def test_a_store_refuses_a_stamp_that_would_read_back_as_another_app(tmp_path, b
                                        app_version=bare, live_roots=())
 
 
-def test_a_live_operation_context_refuses_a_bare_version():
-    from nms_save_vault.core.liveops.context import OpContext
-
-    with pytest.raises(ValueError, match="<name> <version>"):
-        OpContext(vault=None, versions=None, store=None, locator=None, lineage=None,
-                  readmodel=None, sources=[], host=None, app_version="0.1.0", machine_id="m")
-
-
 def test_the_index_cache_records_the_current_app_by_default(savecraft):
     from nms_save_vault.core.index.cache import IndexCache
 

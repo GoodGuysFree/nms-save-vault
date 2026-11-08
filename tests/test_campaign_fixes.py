@@ -156,8 +156,7 @@ def test_a_version_placed_into_steam_is_listed_once_with_each_place_once():
         row = model.versions(line.pid)[0]
         host = platform.Host(platform.WINDOWS, root / "home",
                              {"LOCALAPPDATA": str(demo.target / "Local")})
-        ctx = context_for(org, host=host, machine_id="m-1", app_version="nms-save-vault test",
-                          game_probe=lambda: False)
+        ctx = context_for(org, host=host, machine_id="m-1", game_probe=lambda: False)
         steam = next(s for s in sources if s.platform == "steam")
         plan = plan_place(ctx, PairSource(row.pair[0], row.pair[1], None, None),
                           LiveRef("steam", Path(steam.path).name).target(9))
@@ -181,7 +180,7 @@ def _world(root):
     org = Organizer(demo.vault, sources, game_running=lambda: False)
     model = org.refresh(record=False)
     host = platform.Host(platform.WINDOWS, root / "home", {"LOCALAPPDATA": str(demo.target / "Local")})
-    ctx = context_for(org, host=host, machine_id="m-1", app_version="nms-save-vault test", game_probe=lambda: False)
+    ctx = context_for(org, host=host, machine_id="m-1", game_probe=lambda: False)
     return demo, sources, model, ctx
 
 

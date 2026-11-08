@@ -59,6 +59,7 @@ def test_copy_in(world):
                                     "no-such-entry": "not a folder kept outside the vault"}
     entry = store.entry(handmade)
     assert (entry.kind, entry.origin["inplace_entry"]) == ("imported", handmade)
+    assert entry.app_version == "nms-save-vault legacy"     # NMS Save Vault's catalogued folder
     assert entry.source == {"type": "folder", "name": "my copy"}
     assert _tree(hand) == before and vault.catalog_path.read_bytes() == catalog_before
     listed = [e for e in vstore.list_vault_entries(Vault(vault.root), store, live_roots=[live])

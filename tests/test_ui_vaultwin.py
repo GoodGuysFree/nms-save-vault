@@ -274,8 +274,7 @@ def test_the_organizer_in_the_same_app_is_rebuilt_after_the_upgrade(gui_app, leg
         make_organizer=lambda: Organizer(legacy.vault.root, sources, host=host,
                                          game_running=lambda: False),
         make_context=lambda org: liveops.context_for(
-            org, host=host, machine_id="m-00000000000a", app_version="nms-save-vault test",
-            game_probe=lambda: False))
+            org, host=host, machine_id="m-00000000000a", game_probe=lambda: False))
     view.pack()
     view.rescan()
     _wait(gui_app, lambda: not view.scanning and view.model is not None)

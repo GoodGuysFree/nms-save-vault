@@ -350,3 +350,28 @@ def test_a_newer_file_found_at_rollback_is_kept_and_the_outcome_says_where(tmp_p
     assert len(kept) == 1 and kept[0].read_bytes() == b"newer bytes the game wrote after the swap"
     assert f"{Path(world.ctx.vault.root).name}/rollback-kept/{kept[0].name}" in outcome.outcome
     assert "your newer file was kept" in outcome.outcome
+
+
+def test_an_app_named_after_the_vault_was_opened_is_named_on_every_record_of_its_operation(
+        tmp_path):
+    """CL1: the journal, the op log, D1's record and the entries the operation kept all name
+    the app current when it ran, though the vault was opened before the app named itself."""
+    from nms_save_vault.core import appinfo
+
+    world = steam_world(tmp_path)
+    plan = plan_place(world.ctx, world.polestar(), LIVE.target(1))
+    previous = appinfo.set_app("nms-savecraft", "0.1.0")
+    try:
+        outcome = run(world, plan)
+    finally:
+        appinfo.set_app(previous.name, previous.version)
+    assert outcome.status == "done", outcome
+    want = "nms-savecraft 0.1.0"
+    assert {e.get("app") for e in jr.read_ops(world.ctx)[outcome.op_id].events} - {None} == {want}
+    line = oplog(world)[-1]
+    assert line["app"] == want
+    store = world.ctx.versions
+    assert store.entry(line["entry_id"]).app_version == want              # the preserved copy
+    assert store.entry(line["snapshot_id"]).app_version == want           # the snapshot
+    ops = [r for r in world.ctx.store.journal_records() if r["t"] == "op"]
+    assert [r["app"] for r in ops] == [want]

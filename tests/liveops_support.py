@@ -42,8 +42,7 @@ def make_ctx(tmp_path: Path, sources=(), *, vault_root: Path | None = None,
         vault=Vault(root), versions=None,
         store=OrganizerStore(root, create=False, clock=clock, lock_timeout=lock_timeout),
         locator=None, lineage=None, readmodel=None, sources=list(sources),
-        host=host_in(tmp_path), app_version="nms-save-vault test",
-        machine_id=machine_id, game_probe=game_probe, clock=clock, faults=faults)
+        host=host_in(tmp_path), machine_id=machine_id, game_probe=game_probe, clock=clock, faults=faults)
 
 
 MAIN = 0xDDDAD1BDD39F9C72          # the playthrough live in Steam slot 1
@@ -91,7 +90,7 @@ class World:
                                    game_running=lambda: False)
         kw.setdefault("game_probe", lambda: False)
         self.ctx = context_for(self.organizer, host=self.host, machine_id="m-00000000000a",
-                               app_version="nms-save-vault test", **kw)
+                               **kw)
         return self.ctx
 
     def polestar(self, load=None) -> PairSource:

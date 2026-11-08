@@ -332,7 +332,7 @@ def test_the_planner_calls_it_unavailable_not_in_need_of_an_upgrade(world, monke
     organizer = Organizer(world.vault_root, world.sources, cache=ScanCache(None, None),
                           game_running=lambda: False)
     ctx = liveops.context_for(organizer, host=world.host, machine_id="m-00000000000a",
-                              app_version="nms-save-vault test", game_probe=lambda: False)
+                              game_probe=lambda: False)
     assert ctx.versions is None
     assert liveops.planner.vault_problem(ctx).code == "VAULT_UNAVAILABLE"
 

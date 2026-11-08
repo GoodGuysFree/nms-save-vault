@@ -56,7 +56,6 @@ def view(gui_app, world, running, threads, monkeypatch):
 
     def context(organizer):
         return liveops.context_for(organizer, host=world.host, machine_id="m-00000000000a",
-                                   app_version="nms-save-vault test",
                                    game_probe=lambda: running["on"])
     top = tk.Toplevel(gui_app)
     top.withdraw()

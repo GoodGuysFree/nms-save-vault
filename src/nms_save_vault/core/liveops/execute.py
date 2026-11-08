@@ -235,7 +235,8 @@ def _keep(ctx: OpContext, plan: PlacePlan, confirmed: frozenset[str],
         entry = ctx.versions.add_from_live(
             rt.folder, platform=rt.target.platform, account_key=rt.target.account_key,
             kind="extract", label=f"kept: {rt.label}",
-            scope=CaptureScope(slots=(rt.target.slot,)), op_id=op_id, reason="keep")
+            scope=CaptureScope(slots=(rt.target.slot,)), op_id=op_id, reason="keep",
+            app_version=ctx.app())
     except (StoreError, OSError) as exc:
         append_quietly(ctx, op_id, "abandoned", {"reason": "preserve_failed"})
         return refused(op_id, "PRESERVE_FAILED", f"The save could not be kept in the vault "
@@ -375,7 +376,7 @@ def _snapshot(ctx: OpContext, wt: OpTarget, op_id: str, kind: str) -> str:
         entry = ctx.versions.add_from_live(
             wt.folder, platform=wt.rt.target.platform, account_key=wt.rt.target.account_key,
             kind="snapshot", label=f"auto: {kind}", scope=CaptureScope(), op_id=op_id,
-            reason=kind)
+            reason=kind, app_version=ctx.app())
     except (StoreError, OSError) as exc:
         code = "BUSY" if isinstance(exc, store_errors.StoreBusy) else "SNAPSHOT_FAILED"
         raise _Abandon("snapshot_failed", code,

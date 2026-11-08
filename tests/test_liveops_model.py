@@ -125,6 +125,6 @@ def test_errors_are_operation_errors_with_stable_codes():
 def test_context_defaults_ask_the_real_world():
     ctx = OpContext(vault=None, versions=None, store=None, locator=None, lineage=None,
                     readmodel=None, sources=[], host=None,
-                    app_version="nms-save-vault test", machine_id="m-0123456789ab")
+                    machine_id="m-0123456789ab")
     assert ctx.game_probe is safety.is_game_running and ctx.clock is time.time
     assert ctx.faults is None

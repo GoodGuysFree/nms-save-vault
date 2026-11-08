@@ -162,3 +162,16 @@ def test_the_cli_upgrade_folds_and_store_fold_resumes(tmp_path, monkeypatch, cap
     assert cli.main(["--vault", str(vault.root), "store", "fold"]) == 0
     assert "1 old backups are now in the store" in capsys.readouterr().out
     assert catalog.looks_like_vault_dir(vault.root)
+
+
+def test_folded_backups_are_nms_save_vaults_own_whoever_runs_the_fold(upgraded):
+    from nms_save_vault.core import appinfo
+
+    vault, live, store, ids = upgraded
+    previous = appinfo.set_app("nms-savecraft", "0.1.0")
+    try:
+        vstore.run_fold(store, live_roots=[live])
+    finally:
+        appinfo.set_app(previous.name, previous.version)
+    for key in ("full", "snap", "extract", "imported"):
+        assert store.entry(ids[key]).app_version == "nms-save-vault legacy", key

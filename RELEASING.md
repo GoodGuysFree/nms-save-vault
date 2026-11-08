@@ -63,12 +63,13 @@ Both kits are untested on real hardware; say so in the release notes until that 
 ## 3c. Build the core library wheel
 
 ```pwsh
-python packaging\build_core.py   # -> build\core\nms_save_vault_core-X.Y.Z-py3-none-any.whl + its sha256
+uv run python packaging\build_core.py   # -> build\core\nms_save_vault_core-X.Y.Z-py3-none-any.whl + its sha256
 ```
 
 The core alone (`nms_save_vault/__init__.py` and `nms_save_vault/core/`), for apps that share
 the vault and bundle it (NMS Savecraft). It is reproducible: the same commit builds the same
-bytes anywhere, so put the printed SHA-256 in the release notes and an app can pin it. If
+bytes anywhere, so put the printed SHA-256 in the release notes and an app can pin it. It
+refuses to build while `src/nms_save_vault` differs from the commit. If
 `core/api.py` lost a name or changed what one means, `API_VERSION` must have gone up
 (`tests/test_core_api.py`); say so in the notes.
 

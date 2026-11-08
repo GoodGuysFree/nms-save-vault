@@ -52,7 +52,22 @@ def test_two_builds_are_the_same_bytes_and_carry_no_crlf(tmp_path):
     assert first == tool.build(tmp_path / "b").read_bytes()
     zf = zipfile.ZipFile(tmp_path / "a" / f"nms_save_vault_core-{__version__}-py3-none-any.whl")
     assert all(b"\r\n" not in zf.read(n) for n in zf.namelist())
-    assert {i.date_time for i in zf.infolist()} == {tool.TIMESTAMP}
+    # Nothing that depends on the building machine: time, OS, zlib build.
+    assert {(i.date_time, i.create_system, i.compress_type) for i in zf.infolist()} == {
+        (tool.TIMESTAMP, 3, zipfile.ZIP_STORED)}
+
+
+def test_only_what_git_tracks_is_shipped(tmp_path):
+    names = [n for n in zipfile.ZipFile(tool.build(tmp_path)).namelist() if not n.startswith(INFO)]
+    assert names == tool.tracked()
+
+
+def test_a_release_build_refuses_a_tree_that_differs_from_the_commit(tmp_path, monkeypatch,
+                                                                    capsys):
+    monkeypatch.setattr(tool, "dirty", lambda: ["?? src/nms_save_vault/core/stray.py"])
+    assert tool.main(["build_core.py", str(tmp_path / "out")]) == 1
+    assert not (tmp_path / "out").exists()
+    assert "stray.py" in capsys.readouterr().err
 
 
 def test_the_wheel_alone_gives_the_api_without_the_source_tree(tmp_path):

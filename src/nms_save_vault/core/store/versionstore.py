@@ -510,10 +510,12 @@ class VersionStore:
     def add_from_live(self, target_dir: str | Path, *, platform: Platform, account_key: str,
                       kind: EntryKind, label: str, scope: CaptureScope,
                       op_id: str | None = None, reason: str = "",
-                      finish: Callable[[list[MemberRecord]], str | None] | None = None
-                      ) -> StoreEntry:
+                      finish: Callable[[list[MemberRecord]], str | None] | None = None,
+                      app_version: str | None = None) -> StoreEntry:
         """Keep (part of) a live save folder; it is only read. ``finish`` sees the member
-        records before the commit: it may refuse (raise) or return the label to use."""
+        records before the commit: it may refuse (raise) or return the label to use.
+        ``app_version``: the stamp of the operation this copy is part of, so the entry names
+        the same app as the operation's journal lines."""
         target_dir = Path(target_dir)
         if target_dir.is_dir() and savedir.platform_of(target_dir) != platform:
             raise StoreError(f"That folder is not a {platform} save folder.")
@@ -522,7 +524,8 @@ class VersionStore:
         return self._add(target_dir, platform=platform, account_key=account_key, live=True,
                          kind=kind, label=label, source=source, scope=scope, entry_id=None,
                          origin=None, created_local=None, op_id=op_id, reason=reason,
-                         cancel=None, progress=None, finish=finish)
+                         cancel=None, progress=None, finish=finish,
+                         app_version=None if app_version is None else appinfo.checked(app_version))
 
     def _add(self, folder: Path, *, platform: Platform, account_key: str | None, live: bool,
              kind: EntryKind, label: str, source: Mapping[str, Any], scope: CaptureScope,

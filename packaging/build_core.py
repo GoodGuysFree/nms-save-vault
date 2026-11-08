@@ -6,21 +6,27 @@ else: no GUI, no CLI, no tests. An app such as NMS Savecraft pins one release's 
 SHA-256 and bundles it; it uses only ``nms_save_vault.core.api`` (README, "The core as a
 library").
 
-The wheel is reproducible: files in a fixed order, a fixed timestamp, and text with LF line
-endings whatever the checkout uses, so the same commit builds the same bytes on any machine
-and the published SHA-256 can be checked by rebuilding.
+The wheel is reproducible: the files git tracks, in a fixed order, with a fixed timestamp,
+LF line endings whatever the checkout uses, stored uncompressed (deflate output depends on the
+zlib build) and marked as made on POSIX, so the same commit builds the same bytes on any
+machine and Python, and the published SHA-256 can be checked by rebuilding. A release build
+refuses a working tree whose package differs from the commit.
+
+The wheel installs the ``nms_save_vault`` package, as the app does: install one or the other in
+an environment, never both.
 
 It is a ``.whl``, not a ``.zip``, on purpose: the in-app updater takes the release's first
 ``.zip`` asset (RELEASING.md, step 5).
 
 Usage:
-    python packaging/build_core.py [output folder]
+    uv run python packaging/build_core.py [output folder]
 """
 from __future__ import annotations
 
 import ast
 import base64
 import hashlib
+import subprocess
 import sys
 import zipfile
 from pathlib import Path
@@ -42,16 +48,26 @@ def _constant(path: Path, name: str) -> object:
     raise SystemExit(f"{path} has no {name}")
 
 
+def _git(*args: str) -> str:
+    return subprocess.run(["git", "-C", str(ROOT), *args], check=True, capture_output=True,
+                          text=True, encoding="utf-8").stdout
+
+
+def tracked() -> list[str]:
+    """The package root and every core file git tracks, as paths under ``src/``, sorted."""
+    listed = _git("ls-files", "-z", "--", f"src/{PACKAGE}/__init__.py", f"src/{PACKAGE}/core")
+    return sorted(p.removeprefix("src/") for p in listed.split("\0") if p)
+
+
+def dirty() -> list[str]:
+    """What in the package differs from the commit: changed, staged or untracked."""
+    status = _git("status", "--porcelain", "--untracked-files=all", "--", f"src/{PACKAGE}")
+    return [line for line in status.splitlines() if line.strip()]
+
+
 def sources() -> list[tuple[str, bytes]]:
-    """(path in the wheel, LF bytes) of the package root and every core module, sorted."""
-    files = [SRC / PACKAGE / "__init__.py",
-             *(p for p in (SRC / PACKAGE / "core").rglob("*") if p.is_file()
-               and "__pycache__" not in p.parts and p.suffix not in (".pyc", ".pyo"))]
-    out = []
-    for path in sorted(files, key=lambda p: p.relative_to(SRC).as_posix()):
-        data = path.read_bytes().replace(b"\r\n", b"\n")
-        out.append((path.relative_to(SRC).as_posix(), data))
-    return out
+    """(path in the wheel, LF bytes) of every file :func:`tracked` names."""
+    return [(rel, (SRC / rel).read_bytes().replace(b"\r\n", b"\n")) for rel in tracked()]
 
 
 def _metadata(version: str, api_version: int) -> bytes:
@@ -98,15 +114,21 @@ def build(out_dir: Path) -> Path:
     with zipfile.ZipFile(partial, "w") as zf:
         for name, data in members:
             entry = zipfile.ZipInfo(name, date_time=TIMESTAMP)
-            entry.compress_type = zipfile.ZIP_DEFLATED
+            entry.compress_type = zipfile.ZIP_STORED
+            entry.create_system = 3                  # POSIX on every OS (the default follows it)
             entry.external_attr = 0o644 << 16
-            zf.writestr(entry, data, compresslevel=9)
+            zf.writestr(entry, data)
     partial.replace(wheel)
     return wheel
 
 
 def main(argv: list[str]) -> int:
     out_dir = Path(argv[1]) if len(argv) > 1 else ROOT / "build" / "core"
+    changed = dirty()
+    if changed:
+        print("Refusing: src/nms_save_vault differs from the commit, so the wheel would not "
+              "match it:", *changed, sep="\n  ", file=sys.stderr)
+        return 1
     wheel = build(out_dir)
     print(wheel)
     print("sha256", hashlib.sha256(wheel.read_bytes()).hexdigest())

@@ -31,12 +31,13 @@ class VersionStore(Protocol):
     kept copy as store entries, and one file of an entry back for an exact rollback."""
 
     def add_from_live(self, folder: Path, *, platform: str, account_key: str, kind: str,
-                      label: str, scope: object, op_id: str, reason: str) -> object: ...
+                      label: str, scope: object, op_id: str, reason: str,
+                      app_version: str | None = None) -> object: ...
 
     def read_file(self, entry_id: str, path: str) -> bytes: ...
 
 
-def context_for(organizer: Organizer, *, host: Host, machine_id: str, app_version: str | None = None,
+def context_for(organizer: Organizer, *, host: Host, machine_id: str,
                 game_probe: Callable[[], bool | None] = safety.is_game_running,
                 clock: Callable[[], float] = time.time,
                 faults: FaultInjector | None = None) -> OpContext:
@@ -55,7 +56,7 @@ def context_for(organizer: Organizer, *, host: Host, machine_id: str, app_versio
         locator=organizer.locator,
         lineage=LineageRecorder(organizer.store, Journal(organizer.store, organizer.scan.versions)),
         readmodel=organizer.model, sources=list(organizer.sources),
-        host=host, app_version=app_version,
+        host=host,
         machine_id=machine_id, game_probe=game_probe, clock=clock, faults=faults)
     ctx.game_probe = recording_probe(game_probe, lambda: ctx)      # D5 2.12: game sessions seen
     return ctx
@@ -75,14 +76,8 @@ class OpContext:
     game_probe: Callable[[], bool | None] = safety.is_game_running
     clock: Callable[[], float] = time.time
     faults: FaultInjector | None = None   # tests only; None in production
-    # None: each record names the app current when it is written (appinfo.stamp()), so an app
-    # named after the context was made is still the one recorded. A stamp here overrides.
-    app_version: str | None = None
-
-    def __post_init__(self) -> None:
-        if self.app_version is not None:
-            appinfo.checked(self.app_version)
 
     def app(self) -> str:
-        """The ``app`` stamp of a record written now."""
-        return self.app_version or appinfo.stamp()
+        """The ``app`` stamp of a record written now: the app current then, so one named after
+        the context was made is still the one recorded, on every record of the operation."""
+        return appinfo.stamp()

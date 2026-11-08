@@ -176,6 +176,40 @@ def default_state_path() -> Path:
     return install_dir() / "state.json"
 
 
+#: Where install.bat puts the app on Windows, under %LOCALAPPDATA%.
+WINDOWS_INSTALL = ("Programs", "NMSSaveVault")
+
+
+def state_candidates(host: platform.Host | None = None) -> list[Path]:
+    """Every ``state.json`` NMS Save Vault may be using, as another app sharing the vault sees
+    it: this process's own, the installed app's (Windows), then the per-user config folder
+    (a run from source). The portable Linux and macOS kits keep theirs wherever they were
+    unpacked, which nothing else can know."""
+    host = host or platform.Host.current()
+    out = [default_state_path()]
+    local = host.env.get("LOCALAPPDATA")
+    if host.system == platform.WINDOWS and local:
+        out.append(Path(local).joinpath(*WINDOWS_INSTALL) / "state.json")
+    out.append(platform.user_config_dir(host) / "state.json")
+    seen: set[str] = set()
+    return [p for p in out if not (_key(p) in seen or seen.add(_key(p)))]
+
+
+def configured_vault(host: platform.Host | None = None) -> Path | None:
+    """The vault folder chosen in NMS Save Vault (File > Choose vault folder), or None when no
+    ``state.json`` names one that exists. Only reads: unlike :func:`load`, a damaged file is
+    skipped, never moved aside."""
+    for path in state_candidates(host):
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        chosen = raw.get("vault") if isinstance(raw, dict) else None
+        if isinstance(chosen, str) and chosen.strip() and Path(chosen).is_dir():
+            return Path(chosen)
+    return None
+
+
 _notices: list[str] = []
 
 

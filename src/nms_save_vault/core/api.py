@@ -4,23 +4,25 @@ An app that bundles the core imports this module only, never the modules behind 
 can change in any release. What is here is versioned:
 
 - ``CORE_VERSION`` is the release the core came from (the Vault release tag, without ``v``).
-- ``API_VERSION`` goes up when a name here is removed or changes meaning. Adding a name
-  keeps it. ``tests/test_core_api.py`` pins the list, so neither happens by accident.
+- ``API_VERSION`` goes up when a name here is removed or changes meaning, including a
+  function's parameters or a type's fields. Adding keeps it. ``tests/test_core_api.py`` pins
+  all of that, so neither happens by accident.
 
 This first API reads only: where the saves and the vault are, the saves on disk and what is in
 them, and the vault's stored versions. Writing comes with the edit engine.
 
 Saves are read by readable field names (``get(root, "PlayerStateData", "Units")``); the
-obfuscated keys stay inside the core. :func:`get` refuses the ownership fields (platform ids
-and user names: ``Owner``, ``UID``, ...) with :class:`PrivacyError`, so nothing built on this
-API can show or keep them.
+obfuscated keys stay inside the core. :func:`get` refuses a path through an ownership field
+(platform ids and user names: ``Owner``, ``UID``, ...) with :class:`PrivacyError`. A subtree it
+returns, and ``DecodedSave.root``, can still hold them: an app must never show or keep a raw
+subtree.
 """
 from __future__ import annotations
 
 from collections.abc import Sequence
 from pathlib import Path
 
-from . import gameversion, locations, savedir
+from . import gameversion, locations, savedir, state
 from .appinfo import CORE_VERSION, VAULT, AppIdentity, app_of, current, is_stamp, set_app
 from .index.extract import CtxInput, SaveInput, contexts_of
 from .index.nodes import PrivacyError, get, items
@@ -39,26 +41,34 @@ from .store import (
 
 API_VERSION = 1
 
+PLATFORMS = ("steam", "xbox")
+
 __all__ = [
-    "API_VERSION", "CORE_VERSION",
+    "API_VERSION", "CORE_VERSION", "PLATFORMS",
     # who is writing (every vault record names its app)
     "VAULT", "AppIdentity", "app_of", "current", "is_stamp", "set_app",
     # where things are
-    "default_vault_dir", "live_save_dirs",
+    "default_vault_dir", "live_save_dirs", "vault_dir",
     # the saves on disk
     "MemberView", "SaveDirView", "SlotView", "platform_of", "scan_save_dir",
     # what is in a save
     "CtxInput", "DecodedSave", "SaveDecodeError", "SaveInput", "contexts_of", "decode_save",
-    "PrivacyError", "get", "items", "newer_than_known", "read_member",
+    "PrivacyError", "get", "items", "known_game_version", "read_member",
     # the vault's stored versions
     "FileEntry", "StoreEntry", "StoreError", "StoreNotUpgraded", "StoreTooNew",
-    "StoreUnavailable", "VersionStore", "open_vault",
+    "StoreUnavailable", "VaultReader", "open_vault",
 ]
 
 
+def vault_dir() -> Path:
+    """The vault to share: the folder chosen in NMS Save Vault when its settings name one,
+    else :func:`default_vault_dir`."""
+    return state.configured_vault() or default_vault_dir()
+
+
 def default_vault_dir() -> Path:
-    """Where NMS Save Vault keeps the vault by default; an app without a vault of its own
-    uses this one, so both apps share it."""
+    """Where NMS Save Vault puts a new vault; an app that starts the vault for a user without
+    NMS Save Vault puts it here, so a later install finds it."""
     return locations.default_vault_dir()
 
 
@@ -69,7 +79,8 @@ def live_save_dirs() -> list[Path]:
 
 
 def platform_of(folder: str | Path) -> str:
-    """``"steam"`` or ``"xbox"``: how the saves in ``folder`` are laid out."""
+    """``"steam"`` or ``"xbox"`` (:data:`PLATFORMS`): how the saves in ``folder`` are laid
+    out."""
     return savedir.platform_of(folder)
 
 
@@ -86,19 +97,47 @@ def read_member(member: MemberView) -> DecodedSave:
     return decode_save(Path(member.data_path).read_bytes(), bare_size_hint=hint or None)
 
 
-def newer_than_known(member: MemberView, *, platform: str) -> bool:
-    """The save was written by a newer game than this core is tested with: show it, but
-    never write it. ``platform`` is the folder's (:func:`platform_of`)."""
-    if member.info is None:
+def known_game_version(member: MemberView, *, platform: str) -> bool:
+    """The save's meta reads and its game version is one this core is tested with. Anything
+    else - a newer game, an unreadable or invalid meta - may be shown but never written.
+    ``platform`` is the folder's (:func:`platform_of`); another value raises ``ValueError``."""
+    if platform not in PLATFORMS:
+        raise ValueError(f"platform {platform!r} is not one of {PLATFORMS}")
+    if not member.valid:
         return False
-    return gameversion.newer(platform, member.info.meta_format, member.info.base_version)
+    return not gameversion.newer(platform, member.info.meta_format, member.info.base_version)
+
+
+class VaultReader:
+    """The vault's stored versions, to read. Nothing in the vault is written through it, not
+    even a probe or a temporary copy."""
+
+    def __init__(self, store: VersionStore) -> None:
+        self._store = store
+
+    @property
+    def root(self) -> Path:
+        return self._store.vault_root
+
+    def entries(self) -> list[StoreEntry]:
+        """Every stored entry (a backup, snapshot, import ...), with its files and members."""
+        return self._store.entries()
+
+    def entry(self, entry_id: str) -> StoreEntry:
+        """One entry by id; ``StoreError`` when there is none."""
+        return self._store.entry(entry_id)
+
+    def read_file(self, entry_id: str, path: str) -> bytes:
+        """One file of an entry (``path`` as in ``StoreEntry.files``), checked against its
+        hash."""
+        return self._store.read_file(entry_id, path)
 
 
 def open_vault(vault_root: str | Path | None = None, *,
-               live_roots: Sequence[Path] | None = None) -> VersionStore:
-    """The vault's stored versions, opened to read: ``entries()``, ``entry(id)``,
-    ``read_file(id, path)``. Nothing in the vault is written, not even a probe.
-    ``vault_root`` defaults to :func:`default_vault_dir`. Raises :class:`StoreUnavailable`,
-    :class:`StoreNotUpgraded` or :class:`StoreTooNew` (all :class:`StoreError`)."""
-    root = Path(vault_root) if vault_root is not None else default_vault_dir()
-    return VersionStore.open(root, lock=vault_lock(root), live_roots=live_roots, read_only=True)
+               live_roots: Sequence[Path] | None = None) -> VaultReader:
+    """Open the vault's stored versions to read. ``vault_root`` defaults to
+    :func:`vault_dir`. Raises :class:`StoreUnavailable`, :class:`StoreNotUpgraded` or
+    :class:`StoreTooNew` (all :class:`StoreError`)."""
+    root = Path(vault_root) if vault_root is not None else vault_dir()
+    return VaultReader(VersionStore.open(root, lock=vault_lock(root), live_roots=live_roots,
+                                         read_only=True))
