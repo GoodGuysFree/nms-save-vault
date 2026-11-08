@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from collections import Counter
 from dataclasses import dataclass, field
 
@@ -319,7 +320,8 @@ def _locations(context: str, base: tuple, psd: dict) -> list[Asset]:
         kind = label(get(point, "TeleporterType"))
         position = get(point, "Position")
         where = ",".join(str(round(v)) for v in position) if isinstance(position, list) and all(
-            isinstance(v, (int, float)) and not isinstance(v, bool) for v in position) else ""
+            isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
+            for v in position) else ""
         out.append(Asset(context, "location", index, base + ("TeleportEndpoints", index),
                          _key(hex64(address), kind, where), text(get(point, "Name")), kind, None,
                          None, galaxy, hex64(address),

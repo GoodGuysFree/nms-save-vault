@@ -591,3 +591,32 @@ def test_a_session_says_which_folder_it_writes_for_a_slot(world, tmp_path):
     elsewhere.mkdir(parents=True)
     assert session.folder_of(api.slot_of(elsewhere, 1)) == world.live      # not "elsewhere"
     assert session.folder_of(api.slot_of(tmp_path / "st_76561198999999999", 1)) is None
+
+
+def test_a_marker_that_cannot_be_written_never_stops_a_write(world, monkeypatch):
+    """The open-operation marker is only a hint ("connect the vault drive"): a disk that
+    refuses it must not leave the write open and the folder blocked."""
+    real = safety.atomic_write_bytes
+
+    def refuse_markers(path, data, **kw):
+        if "marker" in str(path).lower():
+            raise PermissionError(13, "Access is denied")
+        return real(path, data, **kw)
+    monkeypatch.setattr(safety, "atomic_write_bytes", refuse_markers)
+    session = _session(world)
+    plan = session.plan_edit(_slot(world), UNITS, what="units")
+    assert session.write(plan, plan.confirmations).status == "done"
+    assert session.interrupted() == [] and _units(world) == 9
+    again = session.plan_edit(_slot(world), [api.Replace(("Units",), b"10")], what="units")
+    assert not again.blocked
+
+
+def test_a_write_waits_while_it_cannot_be_told_whether_the_game_runs(world, monkeypatch):
+    """NMS Save Vault asks its user then; an app's write is refused (Savecraft S11)."""
+    monkeypatch.setattr(safety, "is_game_running", lambda *a, **k: None)
+    session = _session(world)
+    plan = session.plan_edit(_slot(world), UNITS, what="units")
+    assert [n.code for n in plan.blocked] == ["GAME_STATE_UNKNOWN"]
+    assert "GAME_STATE_UNKNOWN" not in plan.confirmations
+    result = session.write(plan, {"GAME_STATE_UNKNOWN", *plan.confirmations})
+    assert result.status != "done" and _units(world) is None

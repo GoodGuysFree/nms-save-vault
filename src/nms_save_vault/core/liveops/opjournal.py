@@ -374,12 +374,18 @@ def write_marker(ctx: OpContext, op_id: str, labels: Sequence[str]) -> None:
     marker = {"op_id": op_id, "vault_id": ctx.store.vault_id,
               "vault_root": str(Path(ctx.store.vault_root).resolve()), "labels": list(labels),
               "utc": utc_text(ctx.clock())}
-    safety.atomic_write_bytes(markers_dir(ctx) / f"{op_id}.json",
-                              json.dumps(marker, ensure_ascii=True).encode("ascii"))
+    try:
+        safety.atomic_write_bytes(markers_dir(ctx) / f"{op_id}.json",
+                                  json.dumps(marker, ensure_ascii=True).encode("ascii"))
+    except OSError as exc:      # a hint lost, never a write stopped half-way for it
+        log.warning("op %s: its marker could not be written: %s", op_id, type(exc).__name__)
 
 
 def remove_marker(ctx: OpContext, op_id: str) -> None:
-    (markers_dir(ctx) / f"{op_id}.json").unlink(missing_ok=True)
+    try:
+        (markers_dir(ctx) / f"{op_id}.json").unlink(missing_ok=True)
+    except OSError as exc:
+        log.warning("op %s: its marker could not be removed: %s", op_id, type(exc).__name__)
 
 
 def list_markers(host: platform.Host) -> list[Marker]:

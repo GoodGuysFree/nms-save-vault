@@ -82,7 +82,9 @@ Edit = Union[Replace, Remove, Insert, AddMember]
 
 def dumps(value: Any) -> bytes:
     """A Python value as compact JSON text, the way the game writes JSON (UTF-8, no spaces).
-    Text read from a save keeps its undecodable bytes (``surrogateescape``) and gets them back."""
+    Text read from a save keeps its undecodable bytes (``surrogateescape``) and gets them back.
+    An object's member names are written as given: the save's own keys (a subtree read from a
+    save); for an object given by readable field names use :func:`dumps_named`."""
     return json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode(
         "utf-8", "surrogateescape")
 
@@ -414,8 +416,11 @@ def apply(body: bytes, edits: Iterable[Edit]) -> bytes:
         return body
     cache: dict = {}
     removes = [e for e in edits if isinstance(e, Remove)]
-    splices = _removals(body, removes, cache) + [_splice(body, e, cache) for e in edits
-                                                 if not isinstance(e, Remove)]
+    try:
+        splices = _removals(body, removes, cache) + [_splice(body, e, cache) for e in edits
+                                                     if not isinstance(e, Remove)]
+    except IndexError:          # a body cut short ends inside a value
+        raise PatchRefused("the save's text ends too early") from None
     splices.sort(key=lambda s: (s[0], s[1]))
     for (s1, e1, _), (s2, e2, _) in zip(splices, splices[1:]):
         if s2 < e1 or s1 == e1 == s2 == e2:

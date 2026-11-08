@@ -323,3 +323,36 @@ def test_a_real_save_s_assets_all_read_and_name_their_place(live_save_dir):
     for context in {a.context for a in found}:
         ships = [a for a in found if a.context == context and a.kind in ("ship", "corvette")]
         assert not ships or sum(bool(a.current) for a in ships) == 1, context
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
+def test_a_position_that_is_not_a_number_reads_as_unknown(bad):
+    root = obf({"PlayerStateData": {"TeleportEndpoints": [{
+        "Position": [bad, 1.0, 2.0], "TeleporterType": "Base", "UniverseAddress": {}}]}})
+    (point,) = assets_of(root)
+    assert point.key == "|Base|"
+
+
+def readers_digest() -> str:
+    """Everything the readers give for SAVE, as one digest."""
+    import hashlib
+    root = obf(SAVE)
+    rows = [[a.context, a.kind, a.index, list(a.where), a.key, a.name, a.model, a.cls,
+             a.current, a.galaxy, a.address, sorted(a.facts.items()), state_of(root, a)]
+            for a in assets_of(root)]
+    rows += [[i.context, i.owner, i.index, i.field, list(i.where),
+              [[s.number, s.item, s.kind, s.amount, s.max_amount, s.x, s.y] for s in i.slots]]
+             for i in api.inventories_of(root)]
+    body = json.dumps(rows, sort_keys=True, ensure_ascii=True, default=str)
+    return hashlib.sha256(body.encode("ascii")).hexdigest()[:16]
+
+
+#: What the readers give for SAVE, per INDEX_VERSION. When this test fails, the readers changed
+#: what they give: raise INDEX_VERSION (apps' caches are read again) and pin the new digest.
+READERS = {2: "fdc7dc8473bcbf97"}
+
+
+def test_what_the_readers_give_is_pinned_to_index_version():
+    from nms_save_vault.core.index.assets import INDEX_VERSION
+    assert READERS.get(INDEX_VERSION) == readers_digest(), (
+        f"the readers changed: raise INDEX_VERSION and pin {readers_digest()}")

@@ -190,3 +190,11 @@ def test_a_real_save_takes_an_edit_and_changes_only_those_bytes(live_save_dir):
     new = sp.apply(body, [R(where, str(int(old) + 1).encode())])
     start, end = sp.span(body, where)
     assert new[:start] == body[:start] and new[start + len(str(int(old) + 1)):] == body[end:]
+
+
+@pytest.mark.parametrize("cut", [b'{"' + K("PlayerStateData").encode() + b'":',
+                                 b'{"' + K("PlayerStateData").encode() + b'":{"' + K("Units").encode() + b'":1',
+                                 b""])
+def test_a_body_cut_short_is_refused_not_a_crash(cut):
+    with pytest.raises(sp.PatchRefused):
+        sp.apply(cut, [sp.Replace(("PlayerStateData", "Units"), b"2")])

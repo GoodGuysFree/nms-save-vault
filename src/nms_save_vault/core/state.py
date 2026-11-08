@@ -199,15 +199,25 @@ def configured_vault(host: platform.Host | None = None) -> Path | None:
     """The vault folder chosen in NMS Save Vault (File > Choose vault folder), or None when no
     file of :func:`state_candidates` names one that exists. Only reads: unlike :func:`load`,
     a damaged file is skipped, never moved aside."""
+    return _chosen(host, must_exist=True)
+
+
+def chosen_vault(host: platform.Host | None = None) -> Path | None:
+    """:func:`configured_vault`, but also when its folder cannot be found now (a drive that is
+    not connected): an app sharing the vault must then wait for it, never use another one."""
+    return _chosen(host, must_exist=False)
+
+
+def _chosen(host: platform.Host | None, *, must_exist: bool) -> Path | None:
     for path in state_candidates(host):
-        chosen = _named_vault(path)
+        chosen = _named_vault(path, must_exist)
         if chosen is None:
             continue
         if path.name == POINTER:
             settings = _read_json(path).get("state")
             # The pointer holds only while the settings that wrote it still choose that vault:
             # an older NMS Save Vault that switched vaults leaves it stale.
-            if not isinstance(settings, str) or _named_vault(Path(settings)) != chosen:
+            if not isinstance(settings, str) or _named_vault(Path(settings), must_exist) != chosen:
                 continue
         return chosen
     return None
@@ -271,9 +281,9 @@ def _read_json(path: Path) -> dict:
     return raw if isinstance(raw, dict) else {}
 
 
-def _named_vault(path: Path) -> Path | None:
+def _named_vault(path: Path, must_exist: bool = True) -> Path | None:
     chosen = _read_json(path).get("vault")
-    if isinstance(chosen, str) and chosen.strip() and Path(chosen).is_dir():
+    if isinstance(chosen, str) and chosen.strip() and (not must_exist or Path(chosen).is_dir()):
         return Path(chosen)
     return None
 

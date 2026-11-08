@@ -73,3 +73,46 @@ def test_a_vault_that_cannot_be_made_says_so(machine):
     blocker.write_text("not a folder", encoding="utf-8")
     with pytest.raises(api.StoreUnavailable):
         api.create_vault(blocker)
+
+
+def test_an_unreachable_chosen_vault_is_waited_for_never_replaced(machine):
+    """NMS Save Vault's settings choose a vault on a drive that is not connected: no write goes
+    to another vault, and none is started in its place."""
+    import json
+    tmp_path, live = machine
+    gone = tmp_path / "unplugged" / "vault"
+    (tmp_path / "own").mkdir(exist_ok=True)
+    (tmp_path / "own" / "state.json").write_text(json.dumps({"vault": str(gone)}), encoding="utf-8")
+    assert api.vault_dir() == gone
+    with pytest.raises(api.StoreUnavailable, match="cannot be found"):
+        api.create_vault()
+    with pytest.raises(api.StoreUnavailable):
+        api.open_live(live_dirs=[live])
+    assert not gone.exists() and not (tmp_path / "default_vault").exists()
+
+
+def test_a_vault_that_fails_half_way_is_cleared_and_can_be_started_again(machine, monkeypatch):
+    tmp_path, _live = machine
+    root = tmp_path / "v"
+    real = versionstore.create_store
+
+    def full_disk(vault_root, **kw):
+        for name in ("objects", "entries"):
+            (versionstore.store_root(vault_root) / name).mkdir(parents=True, exist_ok=True)
+        raise OSError(28, "No space left on device")
+    monkeypatch.setattr(versionstore, "create_store", full_disk)
+    with pytest.raises(api.StoreUnavailable, match="No space left"):
+        api.create_vault(root)
+    assert not root.exists()                                     # nothing half-made is left
+    monkeypatch.setattr(versionstore, "create_store", real)
+    assert versionstore.vault_mode(api.create_vault(root)) == "store"
+
+
+def test_a_folder_that_is_not_empty_is_never_made_a_vault(machine):
+    tmp_path, _live = machine
+    odd = tmp_path / "odd"
+    (odd / "organizer").mkdir(parents=True)
+    before = fingerprint(odd)
+    with pytest.raises(api.StoreNotUpgraded, match="not empty"):
+        api.create_vault(odd)
+    assert fingerprint(odd) == before and versionstore.vault_mode(odd) == "legacy"

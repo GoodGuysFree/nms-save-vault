@@ -107,9 +107,10 @@ log = logging.getLogger(__name__)
 
 
 def vault_dir() -> Path:
-    """The vault to share: the folder chosen in NMS Save Vault when its settings name one,
-    else :func:`default_vault_dir`."""
-    return state.configured_vault() or default_vault_dir()
+    """The vault to share: the folder chosen in NMS Save Vault when its settings name one -
+    even when it cannot be found now (a drive not connected: then nothing is written until it
+    is back, never into another vault) - else :func:`default_vault_dir`."""
+    return state.chosen_vault() or default_vault_dir()
 
 
 def default_vault_dir() -> Path:
@@ -127,20 +128,58 @@ def create_vault(vault_root: str | Path | None = None) -> Path:
     Save Vault upgrades one, when its user asks) and :class:`StoreUnavailable` when the folder
     cannot be made."""
     root = Path(vault_root) if vault_root is not None else vault_dir()
+    chosen = state.chosen_vault()
+    if chosen is not None and not chosen.is_dir() and _same_path(chosen, root):
+        raise StoreUnavailable("The vault chosen in NMS Save Vault cannot be found: connect "
+                               "the drive it is on. No other vault is started in its place.")
     if versionstore.vault_mode(root) != "legacy":
         return root                       # in store mode already (or being upgraded by Vault)
-    if root.exists() and not versionstore.is_new_vault(root):
-        raise StoreNotUpgraded("The vault there is in an older layout. Open it in NMS Save "
-                               "Vault once to upgrade it; nothing was changed.")
+    existed = root.exists()
+    if existed and not root.is_dir():
+        raise StoreUnavailable("The vault folder cannot be made here: a file has its name.")
+    try:
+        empty = not existed or not any(root.iterdir())
+    except OSError as exc:
+        raise StoreUnavailable(f"The vault folder cannot be read "
+                               f"({exc.strerror or type(exc).__name__}).") from exc
+    if not empty:
+        # NMS Save Vault's rule: only a missing or completely empty folder becomes a new vault
+        raise StoreNotUpgraded("That folder is not empty and holds no vault Savecraft can use. "
+                               "Open it in NMS Save Vault, or choose an empty folder; nothing "
+                               "was changed.")
     try:
         root.mkdir(parents=True, exist_ok=True)
         versionstore.start_new_vault(root)
-    except OSError as exc:
+        if versionstore.vault_mode(root) != "store":
+            raise StoreUnavailable("The vault could not be started here.")
+    except (OSError, StoreError) as exc:
+        _undo_new_vault(root, existed)
+        if isinstance(exc, StoreError):
+            raise
         raise StoreUnavailable(f"The vault folder cannot be made here "
                                f"({exc.strerror or type(exc).__name__}).") from exc
-    if versionstore.vault_mode(root) != "store":
-        raise StoreUnavailable("The vault could not be started here.")
     return root
+
+
+def _same_path(a: Path, b: Path) -> bool:
+    return os.path.normcase(os.path.abspath(a)) == os.path.normcase(os.path.abspath(b))
+
+
+def _undo_new_vault(root: Path, existed: bool) -> None:
+    """A vault this call was starting failed part-way: the folder was missing or empty, so all
+    in it is this call's own; remove it, so a retry finds what it found (as NMS Save Vault's
+    own new vault does)."""
+    import shutil
+    try:
+        for child in root.iterdir():
+            if child.is_dir() and not child.is_symlink():
+                shutil.rmtree(child)
+            else:
+                child.unlink()
+        if not existed:
+            root.rmdir()
+    except OSError:
+        log.warning("a vault that failed to start could not be cleared away")
 
 
 def live_save_dirs() -> list[Path]:
@@ -327,6 +366,11 @@ def _notices(warnings) -> tuple[Notice, ...]:
     return tuple(Notice(w.code, w.severity, w.text) for w in warnings)
 
 
+#: What NMS Save Vault asks its user about but an app's write is refused for: an app writes
+#: only while the game is known to be closed (Savecraft S11).
+_APP_BLOCKS = frozenset({"GAME_STATE_UNKNOWN"})
+
+
 class WritePlan:
     """A write planned and not yet made. Show :attr:`outcome` and :attr:`warnings`, ask the
     user about each of :attr:`confirmations`, then hand the plan back to
@@ -342,18 +386,20 @@ class WritePlan:
 
     @property
     def warnings(self) -> tuple[Notice, ...]:
-        return _notices(self._plan.warnings)
+        return _notices(w for w in self._plan.warnings if w.code not in _APP_BLOCKS)
 
     @property
     def confirmations(self) -> frozenset[str]:
         """The codes of the warnings the user must agree to; pass those they agreed to as
         ``confirmed``."""
-        return self._plan.confirmations
+        return frozenset(self._plan.confirmations) - _APP_BLOCKS
 
     @property
     def blocked(self) -> tuple[Notice, ...]:
-        """Why the write cannot be made; empty when it can."""
-        return _notices(self._plan.blocked)
+        """Why the write cannot be made; empty when it can. Whether the game runs must be
+        known: when it cannot be told, the write is blocked."""
+        return _notices((*self._plan.blocked,
+                         *(w for w in self._plan.warnings if w.code in _APP_BLOCKS)))
 
     @property
     def made(self) -> tuple[str, ...]:
@@ -441,7 +487,8 @@ class LiveSession:
         this returns. Raises :class:`EditRefused` (a save this core does not edit: an Xbox
         slot, a newer game, an old container; or one that cannot be written now: the game
         running, an interrupted write waiting), :class:`PatchRefused` (an edit that cannot
-        be made exactly) or :class:`TargetError` (a slot no write may use)."""
+        be made exactly), :class:`TargetError` (a slot no write may use) or a
+        :class:`StoreError` (the vault busy with another app's write, or unreachable)."""
         return WritePlan(plan_edit(self._now(), slot, list(edits), what=what))
 
     def folder_of(self, slot: LiveTarget) -> Path | None:
@@ -471,7 +518,10 @@ class LiveSession:
         may use; every other result is a :class:`WriteResult`. NMS Save Vault's settings are
         read again first, as for every write it makes itself."""
         self.refresh()
-        out = execute(self._ctx, plan._plan, frozenset(confirmed))
+        held = [w for w in plan._plan.warnings if w.code in _APP_BLOCKS]
+        if held:            # an app writes only with the game known to be closed
+            return WriteResult("", "refused", held[0].text, held[0].code, (), None)
+        out = execute(self._ctx, plan._plan, frozenset(confirmed) - _APP_BLOCKS)
         self._after_write()
         return _result(out)
 
