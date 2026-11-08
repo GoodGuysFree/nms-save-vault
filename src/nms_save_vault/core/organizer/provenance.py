@@ -155,7 +155,7 @@ def _windows(state: JournalState, touched: set[Vid], parents: Mapping[Vid, set[V
             for vid in rec.evicted or ():
                 if vid and (vid not in known or rec.order < known[vid]):
                     known[vid] = rec.order
-    open_: dict[LiveTarget, tuple[tuple[int, int], set[Pid]]] = {}
+    open_: dict[LiveTarget, tuple[tuple[int, int], set[Pid], set[Vid]]] = {}
     for rec in _deduped(state):
         if isinstance(rec, OpRecord):
             if rec.status != "done":
@@ -163,18 +163,20 @@ def _windows(state: JournalState, touched: set[Vid], parents: Mapping[Vid, set[V
             placed = [v for v in rec.pair if v and v in touched]
             pids = {pid for v in placed for pid in _pids(state, (v,))}
             if placed:
-                open_[rec.target] = (rec.order, pids)
+                open_[rec.target] = (rec.order, pids, {v for v in rec.pair if v})
             else:
                 open_.pop(rec.target, None)
             continue
         window = open_.get(rec.target)
         if window is None:
             continue
-        start, pids = window
+        start, pids, placed_pair = window
+        # The replay picks a parent by play time, not by the member the game loaded: the other
+        # member the operation placed is no proof of an untouched origin.
         new = [v for v in rec.pair if v and v not in touched
                and known.get(v, start) > start
                and _compatible(_pids(state, (v,)), pids)
-               and not (parents.get(v, set()) - touched)]
+               and not (parents.get(v, set()) - touched - placed_pair)]
         if new:
             touched.update(new)
         elif not any(v in touched for v in rec.pair if v):
@@ -227,7 +229,8 @@ def last_before(state: JournalState, app: str, *, target: LiveTarget | None = No
     if found is not None:
         return found
     last = next((rec for rec in reversed(_ops(state)) if same_slot(rec.target, target)), None)
-    if last is None or appinfo.app_of(last.app) != app or not (_pids(state, last.pair) & held):
+    if last is None or appinfo.app_of(last.app) != app or not _compatible(_pids(state, last.pair),
+                                                                           held):
         return None
     return _newest(state, [_change(last)], touched, None)
 

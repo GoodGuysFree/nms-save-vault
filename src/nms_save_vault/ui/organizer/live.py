@@ -33,7 +33,7 @@ from ..fmt import local_time, play_time
 from ..redact import ctext, shown
 from ..themeaware import ThemeRegistry
 from ..tooltip import Tooltip
-from .words import NO_BACKUP_TIP, slot_words
+from .words import NO_BACKUP_TIP, edited_by_words, slot_words
 
 ONE, TWO = "one", "two"
 SLOT, GAME = "slot", "game"
@@ -145,6 +145,9 @@ def slot_tip(slot: BoardSlot, source: LiveSource, labels: dict) -> str:
             out.append(NO_BACKUP_TIP)
     if slot.state == "partial":
         out.append("Only one of the slot's two saves is there.")
+    if slot.edited_by:
+        mark = edited_by_words(slot.edited_by)
+        out.append(f"{mark[:1].upper()}{mark[1:]}.")
     return "\n".join(out)
 
 

@@ -195,6 +195,7 @@ class BoardSlot:
     pending_op: str | None
     last_event: JournalEvent | None
     suggest_rank: int | None
+    edited_by: tuple[str, ...] = ()         # other apps that made or touched what it holds
 
 
 @dataclass(frozen=True)
@@ -958,7 +959,9 @@ class _Builder:
             vault_copy=self._vault_copy(p) if p else "none",
             pinned=pid in pinned if pid else False, twin=twin, other_platform=others,
             cloud=cloud, pending_op=pending[1] if pending else None, last_event=event,
-            suggest_rank=None)
+            suggest_rank=None,
+            edited_by=tuple(sorted({a for v in (p.pair if p else ()) if v
+                                    for a in self.edited_by(v)})))
 
     @staticmethod
     def _ranks(slots: list[BoardSlot]) -> list[BoardSlot]:

@@ -12,7 +12,7 @@ from ...core.organizer.readmodel import Line, ReadModel
 from ..dpi import px, pxs
 from ..fmt import local_time, play_time
 from ..redact import RedactingTreeview
-from .words import line_name, version_numbers
+from .words import edited_by_words, line_name, version_numbers
 
 VAULT, OLDER, ELSEWHERE = "vault", "older", "elsewhere"
 GROUP_TITLES = {VAULT: "VAULT ONLY", OLDER: "OLDER VERSIONS OF", ELSEWHERE: "LIVE ELSEWHERE"}
@@ -126,7 +126,8 @@ class VersionPicker(ttk.Frame):
             self.tree.insert(iid, "end", iid=f"v:{key}:{pid}:{row.head}",
                              text=f"{mark}#{numbers[row.head]}",
                              values=(play_time(row.play_time), local_time(row.saved_at),
-                                     row.summary))
+                                     "; ".join(filter(None, [row.summary,
+                                                             edited_by_words(row.edited_by)]))))
 
     def _selected(self, _event=None) -> None:
         sel = self.tree.selection()

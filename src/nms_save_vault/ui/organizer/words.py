@@ -36,7 +36,7 @@ SLOT_MARKERS_TIP = ("* = the save the game loads. / moved = the file was moved h
 #: them. An app not listed is shown by its record name.
 APP_NAMES = {"nms-savecraft": "NMS Savecraft"}
 APP_EDITED_TIP = ("Another app that shares this vault made this version, or the game saved it "
-                  "from one that app made. The vault keeps the version from before the change.")
+                  "from one that app made.")
 
 
 def app_name(app: str) -> str:

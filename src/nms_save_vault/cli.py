@@ -676,6 +676,7 @@ def cmd_versions(args) -> int:
         parent = _METHOD_WORDS.get(r.parent_method or "", "") if r.parent else "by date"
         where = r.locations[0].label if r.locations else ("gone" if "gone" in r.flags else "-")
         flags = sorted(r.flags & {"live", "tip", "fork", "edited", "locked", "placed", "evicted"})
+        flags += [f"edited-by:{a}" for a in r.edited_by]
         notes = " ".join(filter(None, [r.label, ",".join(flags)]))
         print(f"{_fmt_ts(r.saved_at):<18}{_fmt_playtime(r.play_time):<9}{r.head[:8]:<10}"
               f"{parent:<22}{where[:33]:<34}{notes}")

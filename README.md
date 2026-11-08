@@ -353,8 +353,8 @@ and the standard library (`tests/test_core_boundary.py`). Such an app uses only
 writes new content also names the versions it made. So
 `api.open_history().last_before("nms-savecraft", slot=...)` finds the last version of a
 playthrough before that app changed it, and where the vault kept it. The Organizer says
-"edited by NMS Savecraft" on such versions and their save file, whether or not that app is
-installed here. The app finds the vault
+"edited by NMS Savecraft" on the versions that app made (and the game saves made from them)
+and on their save file, whether or not that app is installed here. The app finds the vault
 chosen here through `shared-vault.json`, which this app writes to its per-user config folder
 whenever it saves its settings. Each release
 attaches the core alone as a reproducible wheel (`packaging/build_core.py`, RELEASING.md 3c).
@@ -653,7 +653,7 @@ The vault lives outside `st_<id>`, so it is never scanned by the game or synced 
 ## Status
 
 Working. Core format/crypto and all operations are verified against the real save files and
-in a temp sandbox (2830 tests). Xbox / Game Pass saves are supported for reading **and**
+in a temp sandbox (2831 tests). Xbox / Game Pass saves are supported for reading **and**
 writing, including Steam ↔ Xbox moves (validated in the real game) — verified against a real install (reads) and synthetic `wgs` fixtures
 (writes). A full file-copy safety backup of the live folder was made before development
 (`C:\Devel\NMS-SaveBackup-SAFETY-2026-06-24`). The Organizer is in (see above); a

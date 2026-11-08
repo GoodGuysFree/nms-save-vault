@@ -27,7 +27,7 @@ from ..redact import RedactingTreeview, rtext, rtitle, set_label
 from ..themeaware import ThemeRegistry
 from .lanes import LaneCell, lane_cells, lane_width
 from ..tooltip import Tooltip
-from .words import NOT_LINKED_TIP, line_name, version_numbers
+from .words import NOT_LINKED_TIP, edited_by_words, line_name, version_numbers
 
 STYLE = "Organizer.Treeview"
 MODES = ("key", "all")
@@ -100,7 +100,7 @@ def _note(row: VersionRow, since: str = "") -> str:
     text = row.label or next(iter(row.comment.splitlines()), "")
     if row.label:
         text = f'"{text}"'
-    return f"{text}  {since}".strip()
+    return "  ".join(filter(None, [text, edited_by_words(row.edited_by), since]))
 
 
 def key_counts(model: ReadModel, pid: str) -> tuple[int, int]:

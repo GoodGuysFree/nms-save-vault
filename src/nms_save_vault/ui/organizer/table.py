@@ -314,6 +314,9 @@ def line_tip(line: Line) -> str:
     if "behind" in state:
         out.append("The copy with less play time is behind; each platform's copy is its "
                    "own tip.")
+    if line.edited_by:
+        mark = edited_by_words(line.edited_by)
+        out.append(f"{mark[:1].upper()}{mark[1:]}: {APP_EDITED_TIP}")
     if line.note_preview:
         out.append("Note: " + line.note_preview)
     out.append(f"{line.version_count} versions, {play_time(line.play_time) or '0h00'} played")

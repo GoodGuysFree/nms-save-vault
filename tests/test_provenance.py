@@ -25,7 +25,8 @@ from nms_save_vault.core.organizer.journal import (
 from nms_save_vault.core.organizer.model import Edge, LiveRef, LiveTarget, new_op_id
 from nms_save_vault.core.organizer.store import OrganizerStore
 
-from .liveops_support import STEAM_ACCOUNT, steam_world
+from .conftest import steam_save
+from .liveops_support import SECOND, STEAM_ACCOUNT, T0, steam_world
 
 SC = "nms-savecraft"
 SC_STAMP = "nms-savecraft 0.1.0"
@@ -166,6 +167,18 @@ def test_an_edge_from_an_untouched_save_overrules_the_window_and_the_placed_b_is
     assert "a2" not in touched and "b1" not in touched and "e1" in touched
 
 
+def test_the_other_member_an_edit_placed_is_no_proof_of_an_untouched_origin():
+    """The replay picks a parent by play time: a game save made from the edited A, with an
+    edge from the B the edit placed beside it, is still the edit's."""
+    state = journal([op(1, ("e", "b"), ("a", "b"), made=("e",)),
+                     seen(2, ("n", "e")), seen(3, ("n2", "n")),
+                     op(4, ("e2", "n2"), ("n2", "n"), made=("e2",))],
+                    edges=[played("b", "n", 150), played("n", "n2", 250)],
+                    pids={v: "P" for v in ("a", "b", "e", "n", "n2", "e2")})
+    assert {"n", "n2"} <= pv.touched_by(state, SC)
+    assert pv.last_before(state, SC, target=SLOT1).pair == ("a", "b")
+
+
 def test_a_pair_matches_its_playthrough_by_either_member():
     state = journal([op(1, ("e1", None), ("u1", "b1"), made=("e1",))], pids={"b1": "B"})
     assert pv.last_before(state, SC, pid="B").pair == ("u1", "b1")
@@ -284,7 +297,7 @@ def test_nms_save_vaults_own_view_marks_what_savecraft_made_and_nothing_it_only_
         tmp_path):
     """CL1.6: the organizer's rows and lines say "edited by NMS Savecraft" for a version an
     operation of it made, with or without Savecraft installed (only the records are read)."""
-    from nms_save_vault.ui.organizer import table, words
+    from nms_save_vault.ui.organizer import detail, history, live, table, words
 
     world = steam_world(tmp_path)
     _place_as_savecraft(world)                                     # a copy: no mark
@@ -307,3 +320,22 @@ def test_nms_save_vaults_own_view_marks_what_savecraft_made_and_nothing_it_only_
     assert "edited by NMS Savecraft" in table.state_words(line)
     assert f"Edited by NMS Savecraft: {words.APP_EDITED_TIP}" in table.version_tip(marked)
     assert words.edited_by_words(("nms-other",)) == "edited by nms-other"
+    assert words.edited_by_words(("nms-savecraft", "nms-other")) == (
+        "edited by NMS Savecraft, nms-other")
+    mark = "edited by NMS Savecraft"
+    assert mark in table.version_values(marked, {})["state"]
+    assert mark in detail._version_state(marked)
+    assert mark in history._note(marked)
+    assert f"Edited by NMS Savecraft: {words.APP_EDITED_TIP}" in table.line_tip(line)
+    board = model.live_board()
+    source = next(s for s in board.sources if s.ref == target.ref)
+    slot = next(s for s in source.slots if s.target == target)
+    assert slot.edited_by == ("nms-savecraft",)
+    assert "Edited by NMS Savecraft." in live.slot_tip(slot, source, {})
+
+    # The game saves on from the edited version: that save is the edit's too.
+    steam_save(world.live, 2, 0, "Second", 900, SECOND, T0 + 20_000, extra="played on")
+    world.refresh()
+    model = world.organizer.model
+    newest = max(model.versions(row.pid), key=lambda r: r.saved_at)
+    assert newest.head != row.head and newest.edited_by == ("nms-savecraft",)
