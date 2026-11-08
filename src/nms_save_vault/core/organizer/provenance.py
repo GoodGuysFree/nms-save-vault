@@ -9,16 +9,18 @@ it made (``made``). From that:
   inferred: a copy, a move or an undo makes nothing, whichever app runs it. (NMS Save Vault's
   own operations only ever copy.)
 - A version an app **touched** is one it made, or one the game saved from one: a descent edge
-  from it, or any version seen in a slot after an operation placed a touched version there,
-  up to the slot's next operation. The game may have loaded either member, so the window does
-  not trust the replay's guess of which one was the parent.
+  from it, or a version of that playthrough first seen in a slot after an operation placed a
+  touched version there, while the slot still shows it (see :func:`_windows`). The game may
+  have loaded either member, so the window does not rely on the replay's guess of which one
+  was the parent; an edge from an untouched version overrules it. Without edges, a revert
+  and a new save between two scans cannot be told from playing on.
 - The **last version before** an app changed a playthrough is the newest pair of that
   playthrough that an operation of the app evicted from a slot, and that the app had not
   touched, together with where the vault kept it. If the app edited, the game played on and
-  the app edited again, that is still the pair before the first edit. Asked by slot, it is
-  asked for the playthrough the slot holds, so a slot whose saves were swapped answers for
-  what is in it now; when the app never changed that playthrough (it put it there), the
-  answer is what the slot held before the app wrote it.
+  the app edited again, that is still the pair before the first edit. Asked by slot, the
+  answer comes from that slot's own history and is always of the playthrough the slot holds
+  now - or, when the app itself put that playthrough there, the pair it replaced. A
+  playthrough that moved between slots is asked by playthrough.
 
 Read-only, and the same for every app.
 """
@@ -29,8 +31,8 @@ from dataclasses import dataclass
 from typing import Any
 
 from .. import appinfo
-from .journal import JournalState, ObsRecord, OpRecord
-from .model import LiveTarget, PairKey, Pid, Vid
+from .journal import JournalState, OpRecord
+from .model import LiveTarget, PairKey, Pid, Vid, pids_compatible
 
 
 @dataclass(frozen=True)
@@ -123,8 +125,10 @@ def touched_by(state: JournalState, app: str) -> set[Vid]:
     """The versions ``app`` made, and every version the game saved from one of them."""
     touched = made_by(state, app)
     children: dict[Vid, list[Vid]] = {}
+    parents: dict[Vid, set[Vid]] = {}
     for edge in state.edges:
         children.setdefault(edge.parent, []).append(edge.child)
+        parents.setdefault(edge.child, set()).add(edge.parent)
     while True:
         before = len(touched)
         todo = list(touched)
@@ -133,78 +137,130 @@ def touched_by(state: JournalState, app: str) -> set[Vid]:
                 if child not in touched:
                     touched.add(child)
                     todo.append(child)
-        # A slot's window opens at an operation that placed a touched version: what the game
-        # saves there afterwards (versions first seen since) is touched, up to the next one.
-        window: dict[LiveTarget, tuple[int, int] | None] = {}
-        for rec in state.records:
-            if isinstance(rec, OpRecord):
-                if rec.status == "done":
-                    opened = any(v in touched for v in rec.pair if v)
-                    window[rec.target] = rec.order if opened else None
-            elif isinstance(rec, ObsRecord) and window.get(rec.target) is not None:
-                start = window[rec.target]
-                touched.update(v for v in rec.pair
-                               if v and state.first_seen.get(v, rec.order) >= start)
+        _windows(state, touched, parents)
         if len(touched) == before:
             return touched
 
 
-def playthrough_in(state: JournalState, target: LiveTarget) -> Pid | None:
-    """The playthrough the slot holds as the journal last saw it, else the one an operation
-    last placed there."""
+def _windows(state: JournalState, touched: set[Vid], parents: Mapping[Vid, set[Vid]]) -> None:
+    """A slot's window opens at an operation that placed a touched version there. While it is
+    open, a version the scan sees there for the first time is touched when it belongs to the
+    placed playthrough and no descent edge says it came from an untouched one. The window
+    closes at the slot's next operation, or when the slot shows nothing touched or new of
+    that playthrough (the game or a sync reverted it, it was emptied, another playthrough is
+    there)."""
+    known = dict(state.first_seen)
+    for rec in state.records:            # an evicted version was there before its operation
+        if isinstance(rec, OpRecord):
+            for vid in rec.evicted or ():
+                if vid and (vid not in known or rec.order < known[vid]):
+                    known[vid] = rec.order
+    open_: dict[LiveTarget, tuple[tuple[int, int], set[Pid]]] = {}
+    for rec in _deduped(state):
+        if isinstance(rec, OpRecord):
+            if rec.status != "done":
+                continue
+            placed = [v for v in rec.pair if v and v in touched]
+            pids = {pid for v in placed for pid in _pids(state, (v,))}
+            if placed:
+                open_[rec.target] = (rec.order, pids)
+            else:
+                open_.pop(rec.target, None)
+            continue
+        window = open_.get(rec.target)
+        if window is None:
+            continue
+        start, pids = window
+        new = [v for v in rec.pair if v and v not in touched
+               and known.get(v, start) > start
+               and _compatible(_pids(state, (v,)), pids)
+               and not (parents.get(v, set()) - touched)]
+        if new:
+            touched.update(new)
+        elif not any(v in touched for v in rec.pair if v):
+            del open_[rec.target]
+
+
+def _deduped(state: JournalState):
+    """Records in replay order, one operation record per operation and slot (as replay)."""
+    seen: set[tuple[str, LiveTarget]] = set()
+    for rec in state.records:
+        if isinstance(rec, OpRecord):
+            if (rec.op_id, rec.target) in seen:
+                continue
+            seen.add((rec.op_id, rec.target))
+        yield rec
+
+
+def playthrough_in(state: JournalState, target: LiveTarget) -> set[Pid]:
+    """The playthrough(s) of the pair the slot holds as the journal last saw it (A and B
+    may name two forms of one); empty when not known."""
     for t, now in state.targets.items():
         if same_slot(t, target):
-            pid = _pid_of(state, now.pair)
-            if pid is not None:
-                return pid
+            return _pids(state, now.pair)
     for rec in reversed(_ops(state)):
         if same_slot(rec.target, target):
-            pid = _pid_of(state, rec.pair)
-            if pid is not None:
-                return pid
-    return None
+            return _pids(state, rec.pair)
+    return set()
 
 
 def last_before(state: JournalState, app: str, *, target: LiveTarget | None = None,
                 pid: Pid | None = None) -> Before | None:
-    """The newest pair an operation of ``app`` evicted that ``app`` had not touched: of
-    playthrough ``pid``; of the playthrough slot ``target`` holds, else of what that slot held
-    before ``app`` wrote it (the app put another playthrough there); or of any. None when
-    there is none."""
-    if target is not None and pid is None:
-        held = playthrough_in(state, target)
-        if held is not None:
-            found = _last_before(state, app, None, held)
-            if found is not None:
-                return found
-        return _last_before(state, app, target, None)
-    return _last_before(state, app, target, pid)
+    """The newest pair an operation of ``app`` evicted that ``app`` had not touched.
 
+    - ``pid``: of that playthrough, in whatever slot.
+    - ``target``: of the playthrough the slot holds now, from that slot's own history; when
+      ``app`` itself put that playthrough there (a copy), the pair it replaced. Never another
+      playthrough's pair: a playthrough moved here from another slot is asked by ``pid``.
+    - Neither: the newest of all.
 
-def _last_before(state: JournalState, app: str, target: LiveTarget | None,
-                 pid: Pid | None) -> Before | None:
-    slot_only = target is not None
+    None when there is none."""
     touched = touched_by(state, app)
+    changes = changes_by(state, app)
+    if target is None:
+        return _newest(state, changes, touched, pid)
+    held = playthrough_in(state, target)
+    if not held:
+        return None
+    mine = [c for c in changes if same_slot(c.target, target)]
+    found = _newest(state, mine, touched, None, held)
+    if found is not None:
+        return found
+    last = next((rec for rec in reversed(_ops(state)) if same_slot(rec.target, target)), None)
+    if last is None or appinfo.app_of(last.app) != app or not (_pids(state, last.pair) & held):
+        return None
+    return _newest(state, [_change(last)], touched, None)
+
+
+def _newest(state: JournalState, changes, touched: set[Vid], pid: Pid | None,
+            pids: set[Pid] | None = None) -> Before | None:
     best: Before | None = None
-    for change in changes_by(state, app):
+    for change in changes:
         if change.evicted is None:
-            continue
-        if slot_only and not same_slot(change.target, target):
             continue
         vids = [v for v in change.evicted if v]
         if not vids or any(v in touched for v in vids):
             continue
-        if pid is not None and _pid_of(state, change.evicted) != pid:
+        have = _pids(state, change.evicted)
+        if pid is not None and not _compatible(have, {pid}):
             continue
-        before = Before(change, change.evicted, {v: change.kept[v] for v in vids if v in change.kept})
+        if pids is not None and not _compatible(have, pids):
+            continue
+        before = Before(change, change.evicted,
+                        {v: change.kept[v] for v in vids if v in change.kept})
         if best is None or (change.at, change.seq) >= (best.change.at, best.change.seq):
             best = before
     return best
 
 
-def _pid_of(state: JournalState, pair: PairKey) -> Pid | None:
+def _pids(state: JournalState, pair) -> set[Pid]:
+    out = set()
     for vid in pair:
         meta = state.metas.get(vid) if vid else None
         if meta is not None and meta.pid:
-            return meta.pid
-    return None
+            out.add(meta.pid)
+    return out
+
+
+def _compatible(have: set[Pid], want: set[Pid]) -> bool:
+    return any(pids_compatible(a, b) for a in have for b in want)

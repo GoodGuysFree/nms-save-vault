@@ -212,6 +212,9 @@ def test_the_vault_chosen_in_nms_save_vault_is_the_one_shared(tmp_path, monkeypa
     state.save(state.AppState(vault=str(portable)))          # NMS Save Vault saves its settings
     assert state.pointer_path(host).is_file()
     assert api.vault_dir() == portable                        # the pointer comes first
+    own = tmp_path / "own" / "state.json"                     # those settings now choose another
+    own.write_text(json.dumps({"vault": str(chosen)}), encoding="utf-8")
+    assert api.vault_dir() == chosen                          # a stale pointer is passed over
 
 
 def test_the_vault_opens_to_read_and_nothing_in_it_is_written(tmp_path):

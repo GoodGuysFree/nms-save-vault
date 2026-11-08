@@ -190,13 +190,16 @@ def _decode_op(d: Mapping[str, Any]) -> OpRecord:
     snapshot = d.get("snapshot")
     if snapshot is not None and not isinstance(snapshot, str):
         raise ModelError("op record: bad snapshot")
-    made = d.get("made", [])
-    if not isinstance(made, list) or not all(is_vid(v) for v in made):
-        raise ModelError("op record: bad made")
+    placed = pair_from_json(d["pair"])
+    raw_made = d.get("made")
+    # A claim that cannot be read, or names a version the record did not place, is dropped -
+    # never the record: the placement, eviction and kept copies stay history.
+    made = tuple(v for v in raw_made if is_vid(v) and v in placed) \
+        if isinstance(raw_made, list) else ()
     return OpRecord(d["id"], d["seq"], d["at"], d["src"], d["op_id"], d["kind"],
-                    target_from_json(d["target"]), pair_from_json(d["pair"]), evicted, source,
+                    target_from_json(d["target"]), placed, evicted, source,
                     preserved, d["status"], undo_of, d["note"], d["app"], members, snapshot,
-                    tuple(made))
+                    made)
 
 
 def _dict(value: object) -> dict:

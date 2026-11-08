@@ -13,8 +13,17 @@ from nms_save_vault.core.liveops.execute import execute
 from nms_save_vault.core.liveops.planner import plan_place
 from nms_save_vault.core.liveops.recovery import pending_recovery
 from nms_save_vault.core.organizer import provenance as pv
-from nms_save_vault.core.organizer.journal import JournalState, ObsRecord, OpRecord, op_fields
-from nms_save_vault.core.organizer.model import Edge, LiveRef, LiveTarget
+from nms_save_vault.core.organizer.journal import (
+    Journal,
+    JournalState,
+    ObsRecord,
+    OpRecord,
+    TargetState,
+    decode_record,
+    op_fields,
+)
+from nms_save_vault.core.organizer.model import Edge, LiveRef, LiveTarget, new_op_id
+from nms_save_vault.core.organizer.store import OrganizerStore
 
 from .liveops_support import STEAM_ACCOUNT, steam_world
 
@@ -46,14 +55,19 @@ def played(parent, child, at):
 
 
 def journal(records, edges=(), pids=None):
+    """A JournalState as replay leaves it: the first record holding each vid, and each slot
+    holding the pair its last record shows."""
     first: dict = {}
-    for rec in records:                      # as replay does: the first record holding a vid
+    targets: dict = {}
+    for rec in records:
         for vid in rec.pair:
             if vid and vid not in first:
                 first[vid] = rec.order
+        if not isinstance(rec, OpRecord) or rec.status == "done":
+            targets[rec.target] = TargetState(rec.target, rec.pair, rec.at, None)
     metas = {v: SimpleNamespace(pid=p) for v, p in (pids or {}).items()}
-    return JournalState(targets={}, edges=tuple(edges), events=(), events_by_seq={}, ops={},
-                        metas=metas, first_seen=first, note_rev={}, problems=(),
+    return JournalState(targets=targets, edges=tuple(edges), events=(), events_by_seq={},
+                        ops={}, metas=metas, first_seen=first, note_rev={}, problems=(),
                         records=tuple(records))
 
 
@@ -103,9 +117,10 @@ def test_a_clean_version_played_after_going_back_is_the_newer_answer():
     assert pv.last_before(state, SC, target=SLOT1).pair == ("v2", "v1")
 
 
-def test_a_slot_is_asked_for_the_playthrough_it_holds_after_a_swap():
+def test_after_a_swap_a_slot_never_answers_with_another_playthrough():
     """Edit Q in slot 2, edit P in slot 1, the slots are swapped, P is edited again in slot 2:
-    slot 2 now holds P, so its answer is P's p0, not Q's q0."""
+    asked by playthrough, P's answer is p0; asked by slot, neither slot answers with the other
+    playthrough's pair (P moved: it is asked by playthrough)."""
     vault = dict(app=VAULT_STAMP, kind="swap")
     state = journal([op(1, ("q1", None), ("q0", None), made=("q1",), target=SLOT2),
                      op(2, ("p1", None), ("p0", None), made=("p1",), target=SLOT1),
@@ -113,9 +128,47 @@ def test_a_slot_is_asked_for_the_playthrough_it_holds_after_a_swap():
                      op(4, ("p1", None), ("q1", None), target=SLOT2, **vault),
                      op(5, ("p2", None), ("p1", None), made=("p2",), target=SLOT2)],
                     pids={"q0": "Q", "q1": "Q", "p0": "P", "p1": "P", "p2": "P"})
-    assert pv.last_before(state, SC, target=SLOT2).pair == ("p0", None)
-    assert pv.last_before(state, SC, target=SLOT1).pair == ("q0", None)
     assert pv.last_before(state, SC, pid="P").pair == ("p0", None)
+    assert pv.last_before(state, SC, pid="Q").pair == ("q0", None)
+    assert pv.last_before(state, SC, target=SLOT2) is None
+    assert pv.last_before(state, SC, target=SLOT1) is None
+
+
+def test_a_slot_holding_a_copy_of_another_slots_playthrough_is_not_answered_for_it():
+    """NMS Save Vault copies C from slot 2 into slot 1; the editor then edits slot 2 only."""
+    state = journal([op(1, ("c1", None), ("o1", None), app=VAULT_STAMP, target=SLOT1),
+                     op(2, ("c2", None), ("c1", None), made=("c2",), target=SLOT2)],
+                    pids={"c1": "C", "c2": "C", "o1": "O"})
+    assert pv.last_before(state, SC, target=SLOT1) is None
+    assert pv.last_before(state, SC, target=SLOT2).pair == ("c1", None)
+
+
+def test_a_window_closes_when_the_slot_is_reverted_emptied_or_holds_another_playthrough():
+    pids = {"a0": "A", "a1": "A", "e1": "A", "a2": "A", "q0": "Q", "q1": "Q"}
+    edit = op(1, ("e1", "a1"), ("a1", "a0"), made=("e1",))
+    reverted = journal([edit, seen(2, ("a1", "a0")), seen(3, ("a2", "a1")),
+                        op(4, ("e4", "a2"), ("a2", "a1"), made=("e4",))], pids=pids)
+    assert "a2" not in pv.touched_by(reverted, SC)
+    assert pv.last_before(reverted, SC, target=SLOT1).pair == ("a2", "a1")
+    emptied = journal([edit, seen(2, (None, None)), seen(3, ("q0", None)),
+                       op(4, ("q1", None), ("q0", None), made=("q1",))], pids=pids)
+    assert "q0" not in pv.touched_by(emptied, SC)
+    assert pv.last_before(emptied, SC, pid="Q").pair == ("q0", None)
+    replaced = journal([edit, seen(2, ("q0", None))], pids=pids)
+    assert "q0" not in pv.touched_by(replaced, SC)
+
+
+def test_an_edge_from_an_untouched_save_overrules_the_window_and_the_placed_b_is_not_touched():
+    state = journal([op(1, ("e1", "b1"), ("a1", None), made=("e1",)),
+                     seen(2, ("a2", "e1"))],
+                    edges=[played("a1", "a2", 150)], pids={v: "A" for v in ("a1", "a2", "e1", "b1")})
+    touched = pv.touched_by(state, SC)
+    assert "a2" not in touched and "b1" not in touched and "e1" in touched
+
+
+def test_a_pair_matches_its_playthrough_by_either_member():
+    state = journal([op(1, ("e1", None), ("u1", "b1"), made=("e1",))], pids={"b1": "B"})
+    assert pv.last_before(state, SC, pid="B").pair == ("u1", "b1")
 
 
 def test_failed_and_repeated_operations_and_other_apps_answer_nothing():
@@ -132,11 +185,11 @@ def test_failed_and_repeated_operations_and_other_apps_answer_nothing():
     assert pv.last_before(state, SC, pid="B") is None
 
 
-def test_a_slot_of_unknown_playthrough_answers_for_itself_alone():
+def test_a_slot_of_unknown_playthrough_answers_nothing_but_the_newest_of_all_is_found():
     state = journal([op(1, ("e1", None), ("a1", None), made=("e1",), target=SLOT1),
                      op(2, ("e2", None), ("b1", None), made=("e2",), target=SLOT2)])
-    assert pv.last_before(state, SC, target=SLOT1).pair == ("a1", None)
-    assert pv.last_before(state, SC).pair == ("b1", None)                   # the newest of all
+    assert pv.last_before(state, SC, target=SLOT1) is None           # it cannot say whose
+    assert pv.last_before(state, SC).pair == ("b1", None)
 
 
 def test_slots_with_an_instance_tag_match_only_their_own():
@@ -144,6 +197,26 @@ def test_slots_with_an_instance_tag_match_only_their_own():
     assert pv.same_slot(tagged, SLOT1) and pv.same_slot(SLOT1, tagged)
     assert not pv.same_slot(tagged, LiveTarget("steam", "st_1", 1, "bbbb2222"))
     assert pv.KeptCopy.from_json({"kind": "store"}) is None
+
+
+def test_a_bad_made_claim_is_dropped_never_the_record():
+    vid, other = "e" * 64, "f" * 64
+    base = op_fields("app", "op-20261108T100000Z-ab12", "place", SLOT1, (vid, None), None)
+    envelope = {"id": "x-1", "seq": 1, "at": 100}
+    for made, want in ((None, ()), ("e", ()), ([other, "bad"], ()), ([vid], (vid,))):
+        rec = decode_record({**base, **envelope, "made": made})
+        assert (rec.pair, rec.made) == ((vid, None), want)
+
+
+def test_made_is_read_back_through_a_real_journal(tmp_path):
+    vid, old = "e" * 64, "a" * 64
+    store = OrganizerStore(tmp_path, create=True, clock=lambda: 1_792_000_000)
+    with store.transaction() as tx:
+        tx.append(op_fields("app", new_op_id(lambda: 1_792_000_000.0), "place", SLOT1,
+                            (vid, None), (old, None), app=SC_STAMP, made=(vid,)))
+    state = Journal(store, {}).replay()
+    assert pv.made_by(state, SC) == {vid}
+    assert pv.last_before(state, SC).pair == (old, None)
 
 
 def test_made_travels_in_the_record_and_only_when_there_is_some():

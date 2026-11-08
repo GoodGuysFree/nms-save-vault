@@ -681,10 +681,16 @@ def op_app(ctx: OpContext, op_id: str) -> str:
     now when the journal does not say."""
     try:
         rec = opjournal.read_ops(ctx).get(op_id)
-    except Exception:  # noqa: BLE001 - only the name of the app is at stake
+    except Exception as exc:  # noqa: BLE001 - only the name of the app is at stake
+        log.warning("op %s: the op journal could not be read for its app: %s", op_id, exc)
         rec = None
-    app = rec.events[0].get("app") if rec is not None and rec.events else None
-    return app if appinfo.is_stamp(app) else ctx.app()
+    preparing = next((e for e in rec.events if e.get("event") == "preparing"), None) \
+        if rec is not None else None
+    app = preparing.get("app") if preparing is not None else None
+    if not appinfo.is_stamp(app):
+        log.warning("op %s: no app in its preparing event; recording %s", op_id, ctx.app())
+        return ctx.app()
+    return app
 
 
 def record_oplog(ctx: OpContext, op_id: str, kind: str, undo_of: str | None,
@@ -737,6 +743,7 @@ def record_lineage(ctx: OpContext, op_id: str, kind: str, undo_of: str | None,
     """D1's op record per target (idempotent on op id and target). ``nows``: the accounts
     as they are, when the caller has just read them."""
     recs = []
+    app = op_app(ctx, op_id)
     for wt in wts:
         placed = {pm.write.position: pm.write.vid for pm in wt.writes}
         now = (nows or {}).get(wt.rt.target.ref) or             read_account(ctx, resolve_account(ctx, wt.rt.target.ref))
@@ -748,7 +755,7 @@ def record_lineage(ctx: OpContext, op_id: str, kind: str, undo_of: str | None,
             op_id, kind, int(ctx.clock()), wt.rt.target, (placed.get("A"), placed.get("B")),
             evicted, source=dict(loading.origin),
             preserved={loc.vid: loc.to_json() for loc in wt.preserved}, status=status,
-            undo_of=undo_of, note=note[:200], app=op_app(ctx, op_id), members=members,
+            undo_of=undo_of, note=note[:200], app=app, members=members,
             snapshot=wt.snapshot_id))
     ctx.lineage.record_ops(recs)
 

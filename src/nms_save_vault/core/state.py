@@ -200,13 +200,31 @@ def configured_vault(host: platform.Host | None = None) -> Path | None:
     file of :func:`state_candidates` names one that exists. Only reads: unlike :func:`load`,
     a damaged file is skipped, never moved aside."""
     for path in state_candidates(host):
-        try:
-            raw = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
+        chosen = _named_vault(path)
+        if chosen is None:
             continue
-        chosen = raw.get("vault") if isinstance(raw, dict) else None
-        if isinstance(chosen, str) and chosen.strip() and Path(chosen).is_dir():
-            return Path(chosen)
+        if path.name == POINTER:
+            settings = _read_json(path).get("state")
+            # The pointer holds only while the settings that wrote it still choose that vault:
+            # an older NMS Save Vault that switched vaults leaves it stale.
+            if not isinstance(settings, str) or _named_vault(Path(settings)) != chosen:
+                continue
+        return chosen
+    return None
+
+
+def _read_json(path: Path) -> dict:
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def _named_vault(path: Path) -> Path | None:
+    chosen = _read_json(path).get("vault")
+    if isinstance(chosen, str) and chosen.strip() and Path(chosen).is_dir():
+        return Path(chosen)
     return None
 
 
@@ -278,7 +296,7 @@ def save(state: AppState, path: str | Path | None = None) -> Path:
     safety.atomic_write_bytes(p, json.dumps(state.to_dict(), indent=2).encode("utf-8"),
                               temp_prefix=p.name + ".tmp_")
     if path is None and state.vault:
-        _point_to(state.vault)
+        _point_to(state.vault, p)
     return p
 
 
@@ -291,13 +309,15 @@ def pointer_path(host: platform.Host | None = None) -> Path:
     return platform.user_config_dir(host) / POINTER
 
 
-def _point_to(vault: str) -> None:
-    """Name the vault in :data:`POINTER` for other apps sharing it. Never fails the save."""
+def _point_to(vault: str, settings: Path, host: platform.Host | None = None) -> None:
+    """Name the vault in :data:`POINTER` for other apps sharing it, with the ``state.json`` that
+    chose it: a reader checks that file still names that vault. Never fails the save."""
     from . import safety
 
-    target = pointer_path()
+    target = pointer_path(host)
+    body = {"vault": vault, "state": str(settings)}
     try:
-        safety.atomic_write_bytes(target, json.dumps({"vault": vault}).encode("utf-8"),
+        safety.atomic_write_bytes(target, json.dumps(body).encode("utf-8"),
                                   temp_prefix=POINTER + ".tmp_")
     except OSError as exc:
         log.warning("the shared vault pointer was not written: %s", exc)
