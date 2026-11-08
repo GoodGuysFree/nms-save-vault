@@ -305,4 +305,5 @@ def test_nms_save_vaults_own_view_marks_what_savecraft_made_and_nothing_it_only_
     line = model.line(row.pid)
     assert line.edited_by == ("nms-savecraft",)
     assert "edited by NMS Savecraft" in table.state_words(line)
+    assert f"Edited by NMS Savecraft: {words.APP_EDITED_TIP}" in table.version_tip(marked)
     assert words.edited_by_words(("nms-other",)) == "edited by nms-other"

@@ -37,8 +37,8 @@ from ..themeaware import ThemeRegistry
 from ..tooltip import Tooltip
 from . import factsui
 from .lanes import lane_cells, lane_width
-from .words import (NO_BACKUP, NO_BACKUP_TIP, NOT_LINKED_TIP, OUTSIDE_ONLY_TIP, edited_by_words,
-                    line_name, tip_name, tips_letters, version_numbers)
+from .words import (APP_EDITED_TIP, NO_BACKUP, NO_BACKUP_TIP, NOT_LINKED_TIP, OUTSIDE_ONLY_TIP,
+                    edited_by_words, line_name, tip_name, tips_letters, version_numbers)
 
 STYLE = "Organizer.Treeview"
 FIND_DELAY_MS = 150
@@ -332,6 +332,8 @@ def version_tip(row: VersionRow) -> str:
         out.append(f"{NO_BACKUP}: {NO_BACKUP_TIP}")
     if row.durable_copies == 0 and "gone" not in row.flags and "outside-only" in row.flags:
         out.append(f"Only outside the vault: {OUTSIDE_ONLY_TIP}")
+    if row.edited_by:
+        out.append(f"{edited_by_words(row.edited_by).capitalize()}: {APP_EDITED_TIP}")
     return "\n".join(out)
 
 
