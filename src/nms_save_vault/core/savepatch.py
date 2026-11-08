@@ -87,6 +87,20 @@ def dumps(value: Any) -> bytes:
         "utf-8", "surrogateescape")
 
 
+def dumps_named(value: Any) -> bytes:
+    """:func:`dumps` of ``value`` given with readable field names (``{"Amount": 5}``), each
+    hashed to the key the save holds it by: a new object for :class:`Insert` or
+    :class:`AddMember`, written without the app knowing the save's keys. Raises
+    :class:`PatchRefused` for a name that cannot be a field name."""
+    def keyed(node: Any) -> Any:
+        if isinstance(node, dict):
+            return {_k(k) if isinstance(k, str) else k: keyed(v) for k, v in node.items()}
+        if isinstance(node, list):
+            return [keyed(v) for v in node]
+        return node
+    return dumps(keyed(value))
+
+
 def _k(name: str) -> str:
     try:
         return key(name)

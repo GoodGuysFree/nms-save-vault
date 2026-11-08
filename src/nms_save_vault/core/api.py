@@ -59,7 +59,7 @@ from .organizer.store import OrganizerStore
 from .saveedit import EditRefused
 from .savedir import MemberView, SaveDirView, SlotView
 from .savejson import DecodedSave, SaveDecodeError, decode_save
-from .savepatch import AddMember, Insert, PatchRefused, Remove, Replace, dumps
+from .savepatch import AddMember, Insert, PatchRefused, Remove, Replace, dumps, dumps_named
 from .store import (
     FileEntry,
     StoreEntry,
@@ -96,7 +96,7 @@ __all__ = [
     "AppChange", "Before", "KeptCopy", "LiveTarget", "VaultHistory", "open_history",
     "slot_of",
     # an edit of a live save, and its undo
-    "AddMember", "Insert", "Remove", "Replace", "dumps",
+    "AddMember", "Insert", "Remove", "Replace", "dumps", "dumps_named",
     "ConfirmationRequired", "EditRefused", "LiveOpError", "PatchRefused", "TargetError",
     "Interrupted", "LiveSession", "Notice", "SEVERITIES", "WRITE_STATUSES", "WritePlan",
     "WriteResult", "open_live",

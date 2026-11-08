@@ -568,3 +568,16 @@ def test_a_write_s_result_survives_a_refresh_that_fails(world, monkeypatch):
     result = session.write(plan, plan.confirmations)
     assert result.status == "done" and result.op_id and _units(world) == 9
     assert session.plan_undo(result.op_id).undoes == result.op_id     # refreshed on next use
+
+
+def test_a_new_object_is_written_by_readable_names(world):
+    """dumps_named: an app inserts a whole new object (an inventory slot) without knowing the
+    save's keys; the hashed id's bytes come back as they were."""
+    hashed = "^" + bytes.fromhex("8080B7B5DD85").decode("utf-8", "surrogateescape")
+    raw = api.dumps_named({"Id": hashed, "Amount": 5, "Index": {"X": 1, "Y": 0}, "Tags": [{"Type": "a"}]})
+    held = json.loads(raw.decode("utf-8", "surrogateescape"))
+    assert held == {K("Id"): hashed, K("Amount"): 5, K("Index"): {K("X"): 1, K("Y"): 0},
+                    K("Tags"): [{K("Type"): "a"}]}
+    assert raw.startswith(b'{"' + K("Id").encode() + b'":"^\x80\x80\xb7\xb5\xdd\x85"')
+    with pytest.raises(api.PatchRefused):
+        api.dumps_named({"x" * 300: 1})

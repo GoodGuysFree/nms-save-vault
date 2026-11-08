@@ -109,6 +109,7 @@ PINNED = {
     "Remove": ("fields", ("where",), ()),
     "Replace": ("fields", ("where", "raw"), ()),
     "dumps": ("function", "(value: 'Any') -> 'bytes'"),
+    "dumps_named": ("function", "(value: 'Any') -> 'bytes'"),
     "ConfirmationRequired": ("error", ("LiveOpError", "OperationError")),
     "EditRefused": ("error", ("ValueError", "Exception")),
     "LiveOpError": ("error", ("OperationError", "Exception")),
