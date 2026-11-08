@@ -286,7 +286,7 @@ class RecoveryItem(_JsonForm):
     kind: str
     labels: tuple[str, ...]
     state: Literal["not_started", "complete", "torn", "superseded", "failed", "other_machine",
-                   "vault_missing"]
+                   "vault_missing", "unusable"]
     recommended: Literal["forward", "back", "leave", "none"]
     choices: tuple[str, ...]
     text: str

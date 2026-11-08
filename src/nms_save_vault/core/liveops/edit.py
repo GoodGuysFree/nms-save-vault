@@ -67,11 +67,13 @@ def plan_edit(ctx: OpContext, target: LiveTarget, edits: Iterable[Edit], *,
         raise EditRefused(f"{rt.label} changed while it was read; try again")
     ordinal = slotmap.storage_ordinal(slotmap.file_no(target.slot,
                                                       slotmap.member_index(loaded.position)))
-    try:                    # a meta moved here from another slot is still this save's meta
-        _, plain = meta.decrypt_autodetect((rt.folder / meta_name).read_bytes(), ordinal)
-    except ValueError:
-        raise EditRefused(f"{rt.label}: the save's meta cannot be read") from None
-    out = rebuild("steam", data, plain, edits)
+    blob = (rt.folder / meta_name).read_bytes()
+    # Only a meta keyed for this slot is known to be this save's: one keyed for another slot
+    # was moved here by hand, perhaps from another save, and the game does not read it.
+    if not meta.is_valid_for(blob, ordinal):
+        raise EditRefused(f"{rt.label}: the save's meta was written for another slot (files "
+                          "moved by hand?); it is not edited")
+    out = rebuild("steam", data, meta.decrypt(blob, ordinal), edits)
     new_vid = hashlib.sha256(out.data).hexdigest()
     if new_vid == loaded.vid:
         raise EditRefused("the edits change nothing")

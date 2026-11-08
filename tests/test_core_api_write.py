@@ -196,6 +196,26 @@ def test_unreadable_vault_settings_stop_the_session(world, damaged):
     assert path.read_text(encoding="utf-8") == "{damaged"            # never moved aside
 
 
+def test_settings_the_pointer_names_that_are_gone_stop_the_session(world, tmp_path):
+    pointer = state.pointer_path(platform.Host.current())
+    pointer.parent.mkdir(parents=True, exist_ok=True)
+    gone = tmp_path / "unplugged" / "state.json"        # e.g. a portable kit on a removed drive
+    pointer.write_text(json.dumps({"vault": str(world.vault_root), "state": str(gone)}),
+                       encoding="utf-8")
+    live_before = tree_hash(world.live)
+    with pytest.raises(ValueError, match="cannot be found"):
+        _session(world)
+    assert tree_hash(world.live) == live_before
+
+
+def test_a_folder_with_the_name_of_one_nms_save_vault_uses_is_refused(world, tmp_path):
+    elsewhere = tmp_path / "copy" / world.live.name
+    elsewhere.mkdir(parents=True)
+    _switch_off(world, elsewhere, enabled=True)           # Vault lists another folder so named
+    with pytest.raises(ValueError, match="another folder of that name"):
+        _session(world)
+
+
 def test_a_slot_the_game_saved_after_the_plan_is_not_written(world):
     session = _session(world)
     plan = session.plan_edit(_slot(world), UNITS, what="x")
@@ -236,15 +256,15 @@ def test_an_edit_that_cannot_be_made_is_refused_before_anything_is_kept(world):
     assert _entries(world) == entries
 
 
-def test_a_meta_moved_from_another_slot_is_still_edited(world):
+def test_a_meta_written_for_another_slot_is_not_edited(world):
     ordinal = slotmap.storage_ordinal(slotmap.file_no(1, 0))
     other = slotmap.storage_ordinal(slotmap.file_no(5, 0))
-    mf = world.live / "mf_save.hg"
+    mf = world.live / "mf_save.hg"          # moved by hand: perhaps another save's meta
     mf.write_bytes(meta.re_key(mf.read_bytes(), ordinal, other))
-    session = _session(world)
-    result = session.write(plan := session.plan_edit(_slot(world), UNITS, what="x"),
-                           plan.confirmations)
-    assert result.status == "done" and _units(world) == 9
+    live_before, entries = tree_hash(world.live), _entries(world)
+    with pytest.raises(api.EditRefused, match="another slot"):
+        _session(world).plan_edit(_slot(world), UNITS, what="x")
+    assert tree_hash(world.live) == live_before and _entries(world) == entries
 
 
 def test_only_this_app_s_operations_are_undone_here(world):
@@ -282,6 +302,31 @@ def test_an_interrupted_edit_is_listed_and_put_back(world, monkeypatch):
     result = session.resolve(item.op_id, "back")
     assert result.status == "rolled_back" and session.interrupted() == []
     assert {n: (world.live / n).read_bytes() for n in before} == before
+
+
+def test_an_interrupted_edit_in_a_folder_switched_off_since_offers_nothing(world, monkeypatch):
+    session = _session(world)
+    plan = session.plan_edit(_slot(world), UNITS, what="x")
+    make = session._make
+
+    def crashing():
+        ctx = make()
+        ctx.faults = FaultInjector({"swapped:2"})
+        return ctx
+
+    monkeypatch.setattr(session, "_make", crashing)
+    with pytest.raises(SimulatedCrash):
+        session.write(plan, plan.confirmations)
+    monkeypatch.setattr(session, "_make", make)
+    _switch_off(world, world.live, writable=False)
+    session.refresh()
+    torn = tree_hash(world.live)
+    (item,) = session.interrupted()
+    assert (item.recommended, item.choices) == ("none", ())
+    assert "cannot be finished or put back now" in item.text and "read-only" in item.text
+    with pytest.raises(ValueError, match="not offered"):
+        session.resolve(item.op_id, "leave")
+    assert tree_hash(world.live) == torn
 
 
 def test_a_write_s_result_survives_a_refresh_that_fails(world, monkeypatch):

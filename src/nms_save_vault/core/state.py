@@ -221,8 +221,9 @@ def vault_settings(host: platform.Host | None = None) -> list[AppState]:
     """Every settings file of NMS Save Vault another app sharing the vault can find, the one in
     use first: the file the pointer names while it still chooses the pointer's vault, then the
     ``state.json`` files of :func:`state_candidates` that exist. Empty when there is none. Only
-    reads. A file that exists but cannot be read, the pointer included, raises ``ValueError``:
-    what it switches off is then not known, and is never guessed."""
+    reads. A file that exists but cannot be read, the pointer included, and settings the
+    pointer names that are gone (a drive not connected) raise ``ValueError``: what they switch
+    off is then not known, and is never guessed."""
     def strict(path: Path) -> dict:
         try:
             raw = json.loads(path.read_bytes().decode("utf-8-sig"))
@@ -243,7 +244,11 @@ def vault_settings(host: platform.Host | None = None) -> list[AppState]:
             if not isinstance(named, str) or not named.strip():
                 raise ValueError(f"NMS Save Vault's settings ({_where(path)}) cannot be read")
             settings = Path(named)
-            in_use = settings.is_file() and isinstance(pointer.get("vault"), str) and (
+            if not settings.is_file():
+                raise ValueError(f"NMS Save Vault's settings ({_where(settings)}) cannot be "
+                                 "found: connect the drive they are on, or choose the vault "
+                                 "folder in NMS Save Vault again")
+            in_use = isinstance(pointer.get("vault"), str) and (
                 _named_vault(settings) == Path(pointer["vault"]))
             (files if in_use else stale).append(settings)
     out, seen = [], set()

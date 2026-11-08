@@ -75,6 +75,8 @@ TEXTS = {
     "other_machine": "A move into {labels} was started on another computer. Finish it there.",
     "vault_missing": "A move into {labels} was interrupted and its records are on the vault "
                      "drive. Connect it before playing.",
+    "unusable": "A move into {labels} was interrupted and cannot be finished or put back "
+                "now: {problem}.",
 }
 GAME_TEXT = "Close No Man's Sky to finish."
 
@@ -158,7 +160,11 @@ def _pending(ctx: OpContext) -> list[RecoveryItem]:
 
 def _classify(ctx: OpContext, op: _Open, game_free: bool) -> RecoveryItem:
     rec = op.record
-    if op.state == "other":                      # the game or another tool wrote the slot since
+    if op.problem:          # every choice is refused (_resolve), so none is offered
+        item = RecoveryItem(rec.op_id, rec.kind, tuple(_target_labels(rec)), "unusable", "none",
+                            (), TEXTS["unusable"].format(labels=_labels(rec), problem=op.problem),
+                            _local(rec.started))
+    elif op.state == "other":                    # the game or another tool wrote the slot since
         item = _item(rec, "superseded", "leave", ("leave",))
     elif rec.status == "failed":
         item = _item(rec, "failed", "back", ("back", "leave"))

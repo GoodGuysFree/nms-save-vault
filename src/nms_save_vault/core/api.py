@@ -461,8 +461,13 @@ def _sources(live_dirs: Sequence[Path] | None, host: hostmod.Host) -> list[state
     out = list(base)
     for s in extra:
         name = (s.platform == "xbox", Path(s.path).name.lower())
-        if _key(s.path) in known or (settings and name in names):
-            continue            # a second folder of one name would rename the first one's slots
+        if _key(s.path) in known:
+            continue
+        if settings and name in names:  # a second folder of one name renames the first's slots
+            if live_dirs is None:
+                continue                # found on this machine: NMS Save Vault does not use it
+            raise ValueError(f"the save folder {Path(s.path).name} cannot be used: NMS Save "
+                             "Vault uses another folder of that name")
         known.add(_key(s.path))
         names.add(name)
         out.append(s)
@@ -477,7 +482,8 @@ def open_live(vault_root: str | Path | None = None, *,
     write is refused to an app that has not named itself. Raises :class:`StoreUnavailable`,
     :class:`StoreNotUpgraded` or :class:`StoreTooNew` when there is no vault there to write
     through, and ``ValueError`` when NMS Save Vault's settings cannot be read (what they
-    switch off is then not known). The settings are read again at every refresh."""
+    switch off is then not known) or a folder of ``live_dirs`` has the name of another folder
+    they list. The settings are read again at every refresh."""
     if current().name == VAULT:
         raise ValueError("name the app with set_app() before writing")
     root = Path(vault_root) if vault_root is not None else vault_dir()
