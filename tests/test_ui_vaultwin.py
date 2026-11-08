@@ -49,7 +49,7 @@ def legacy(tmp_path):
     (hand / "save.hg").write_bytes(b"a hand-made copy that differs")
     handmade = operations.import_backup(vault, hand, copy_into_vault=False, warnings=[])
     return SimpleNamespace(vault=vault, live=live, hand=hand, handmade=handmade.id,
-                           env=W.VaultEnv(vault.root, [live], None, "test"))
+                           env=W.VaultEnv(vault.root, [live], None, "nms-save-vault test"))
 
 
 def _window(gui_app, legacy, changed=None):
@@ -274,7 +274,7 @@ def test_the_organizer_in_the_same_app_is_rebuilt_after_the_upgrade(gui_app, leg
         make_organizer=lambda: Organizer(legacy.vault.root, sources, host=host,
                                          game_running=lambda: False),
         make_context=lambda org: liveops.context_for(
-            org, host=host, machine_id="m-00000000000a", app_version="test",
+            org, host=host, machine_id="m-00000000000a", app_version="nms-save-vault test",
             game_probe=lambda: False))
     view.pack()
     view.rescan()

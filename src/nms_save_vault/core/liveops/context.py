@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
-from .. import safety
+from .. import appinfo, safety
 
 if TYPE_CHECKING:
     from ..catalog import Vault
@@ -76,3 +76,6 @@ class OpContext:
     game_probe: Callable[[], bool | None] = safety.is_game_running
     clock: Callable[[], float] = time.time
     faults: FaultInjector | None = None   # tests only; None in production
+
+    def __post_init__(self) -> None:
+        appinfo.checked(self.app_version)

@@ -185,7 +185,7 @@ def test_configured_live_sources_are_protected_too(tmp_path, monkeypatch):
     state = AppState(sources=[Source(id="steam-1", platform="steam", account="1",
                                      path=str(live))])
     store = vstore.VersionStore.open(vault, lock=versionstore.vault_lock(vault),
-                                     app_version="test", app_state=state)
+                                     app_version="nms-save-vault test", app_state=state)
     entry = _snap(store, live)
     with pytest.raises(vstore.StoreError, match="empty folder"):
         store.export_entry(entry.id, live / "restored")

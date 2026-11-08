@@ -180,7 +180,7 @@ def test_old_folders_copied_into_a_store_vault_are_offered_for_the_fold(tmp_path
 
 @pytest.fixture
 def env(tmp_path):
-    return lambda root, live: W.VaultEnv(root, [live], None, "test")
+    return lambda root, live: W.VaultEnv(root, [live], None, "nms-save-vault test")
 
 
 def _window(gui_app, env):
@@ -247,7 +247,7 @@ def test_the_organizer_made_at_start_sees_the_store_of_a_new_vault(tmp_path, new
         org.refresh()
         ops.create_full_backup(vault, live, warnings=[])
         org.refresh()
-        ctx = context_for(org, host=host, machine_id="m-00000000000a", app_version="t",
+        ctx = context_for(org, host=host, machine_id="m-00000000000a", app_version="nms-save-vault test",
                           game_probe=lambda: False)
         assert org.version_store is not None and planner.vault_problem(ctx) is None
     finally:

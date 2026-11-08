@@ -78,7 +78,7 @@ class IndexService:
                  when: Callable[[str], float | None] | None = None,
                  game_running: Callable[[], bool | None] = _default_game_running,
                  clock: Callable[[], float] = time.time, forbidden: Iterable[Path] = (),
-                 app_version: str = "", executor: Executor | None = None) -> None:
+                 app_version: str | None = None, executor: Executor | None = None) -> None:
         self.policy = policy
         self.locator = locator
         self.clock = clock

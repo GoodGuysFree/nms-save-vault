@@ -63,6 +63,25 @@ def stamp() -> str:
     return str(current())
 
 
+def is_stamp(recorded: object) -> bool:
+    """``recorded`` is a full stamp, ``"<name> <version>"``, as :func:`stamp` makes them."""
+    if not isinstance(recorded, str):
+        return False
+    name, sep, version = recorded.partition(" ")
+    return bool(sep) and bool(_NAME.fullmatch(name)) and bool(_VERSION.fullmatch(version))
+
+
+def checked(recorded: str) -> str:
+    """``recorded`` when it is a full stamp; ``ValueError`` otherwise.
+
+    Whatever is handed a stamp to write later (a version store, a live-operation context)
+    checks it: a bare version would read back as NMS Save Vault's (:func:`app_of`), so a record
+    another app made would be credited to the wrong one."""
+    if not is_stamp(recorded):
+        raise ValueError(f"app stamp {recorded!r} must be '<name> <version>', like {stamp()!r}")
+    return recorded
+
+
 def app_of(recorded: object) -> str:
     """The application a recorded stamp names.
 

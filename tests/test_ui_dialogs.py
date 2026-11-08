@@ -332,7 +332,7 @@ def test_the_planner_calls_it_unavailable_not_in_need_of_an_upgrade(world, monke
     organizer = Organizer(world.vault_root, world.sources, cache=ScanCache(None, None),
                           game_running=lambda: False)
     ctx = liveops.context_for(organizer, host=world.host, machine_id="m-00000000000a",
-                              app_version="t", game_probe=lambda: False)
+                              app_version="nms-save-vault test", game_probe=lambda: False)
     assert ctx.versions is None
     assert liveops.planner.vault_problem(ctx).code == "VAULT_UNAVAILABLE"
 
@@ -342,7 +342,7 @@ def test_the_planner_calls_it_unavailable_not_in_need_of_an_upgrade(world, monke
 
 def test_the_vault_window_names_a_store_it_cannot_open(gui_app, world):  # noqa: F811
     (world.vault_root / "store" / "FORMAT").write_bytes(b"{ not json")
-    env = W.VaultEnv(world.vault_root, [world.live], None, "test")
+    env = W.VaultEnv(world.vault_root, [world.live], None, "nms-save-vault test")
     state = W.read_state(env)
     assert state.unopenable and "nmsvault-cli store fsck" in state.unopenable
 
@@ -350,7 +350,7 @@ def test_the_vault_window_names_a_store_it_cannot_open(gui_app, world):  # noqa:
 def test_a_long_result_is_shown_whole_and_wraps(gui_app, world):  # noqa: F811
     top = tk.Toplevel(gui_app)
     top.withdraw()
-    env = W.VaultEnv(world.vault_root, [world.live], None, "test")
+    env = W.VaultEnv(world.vault_root, [world.live], None, "nms-save-vault test")
     win = W.VaultWindow(top, worker=gui_app.worker, themed=gui_app.themed, env=env)
     try:
         _wait(gui_app, lambda: not win.busy and win.state is not None)
@@ -367,7 +367,7 @@ def test_the_rollback_view_offers_to_choose_the_copy_when_it_cannot_be_found(gui
                                                                               tmp_path):
     top = tk.Toplevel(gui_app)
     top.withdraw()
-    env = W.VaultEnv(world.vault_root, [world.live], None, "test")
+    env = W.VaultEnv(world.vault_root, [world.live], None, "nms-save-vault test")
     win = W.VaultWindow(top, worker=gui_app.worker, themed=gui_app.themed, env=env)
     try:
         _wait(gui_app, lambda: not win.busy and win.state is not None)

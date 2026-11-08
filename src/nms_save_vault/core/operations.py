@@ -18,7 +18,7 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
 
-from . import formats, lz4_block, meta, msstore, safety, savedir
+from . import appinfo, formats, lz4_block, meta, msstore, safety, savedir
 from .catalog import (
     OperationError,
     KIND_EXTRACT,
@@ -921,6 +921,7 @@ def _oplog(
         "snapshot_id": snapshot_id,
         "detail": detail,
         "changed": changed or [],
+        "app": appinfo.stamp(),
     }
     if target is not None:
         record["target"] = str(Path(target).resolve())

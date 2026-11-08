@@ -151,7 +151,7 @@ def test_rollback_interrupted_then_finish_or_keep(upgraded):
     with pytest.raises(OSError):
         rollback.run_rollback(plan, store, faults=crash)
     reopened = vstore.VersionStore.open(
-        vault.root, lock=versionstore.vault_lock(vault.root), app_version="test",
+        vault.root, lock=versionstore.vault_lock(vault.root), app_version="nms-save-vault test",
         live_roots=(), for_rollback=True)
     plan = rollback.plan_rollback(vault.root, reopened)                   # Finish
     assert plan.problems == ()

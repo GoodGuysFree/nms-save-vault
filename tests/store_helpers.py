@@ -45,7 +45,7 @@ def open_vault_store(vault: Path, **kw) -> vstore.VersionStore:
     """The vault's store with a real lock. No live folders unless the test names some, so no
     test depends on (or even looks at) this machine's real save folders."""
     kw.setdefault("lock", versionstore.vault_lock(vault))
-    kw.setdefault("app_version", "test")
+    kw.setdefault("app_version", "nms-save-vault test")
     kw.setdefault("live_roots", ())
     return vstore.VersionStore.open(vault, **kw)
 

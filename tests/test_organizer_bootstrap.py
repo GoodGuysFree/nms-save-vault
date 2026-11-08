@@ -337,3 +337,21 @@ def test_reasons_never_name_an_account_folder(tmp_path):
     reasons = [r for _, r in report.entries_skipped + report.ops_unresolved]
     assert len(reasons) == 2
     assert not any("7656119800000000" in r for r in reasons)
+
+
+def test_a_replayed_op_log_line_keeps_its_own_app_not_the_one_replaying_it(tmp_path):
+    from nms_save_vault.core import appinfo
+
+    vault, live = _history(tmp_path)
+    log = vault.oplog_path
+    lines = log.read_text(encoding="utf-8").splitlines()
+    first = json.loads(lines[0])
+    first["app"] = "nms-savecraft 0.1.0"            # a line that names its app keeps it
+    log.write_bytes("".join(f"{line}\n" for line in [json.dumps(first), *lines[1:]]).encode())
+    previous = appinfo.set_app("nms-other", "9.9")
+    try:
+        store, _ = _run(vault, live)
+    finally:
+        appinfo.set_app(previous.name, previous.version)
+    ops = {r["op_id"]: r["app"] for r in store.journal_records() if r["t"] == "op"}
+    assert ops == {"legacy-1": "nms-savecraft 0.1.0", "legacy-2": "nms-save-vault legacy"}

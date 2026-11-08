@@ -267,7 +267,7 @@ class VersionStore:
         self.format = fmt
         self.store_id = fmt.store_id
         self.inline_max = fmt.inline_max
-        self.app_version = app_version
+        self.app_version = appinfo.checked(app_version)
         self.clock = clock
         # None: discover the live folders on this machine whenever they are needed.
         self._live_roots = None if live_roots is None else tuple(Path(p) for p in live_roots)

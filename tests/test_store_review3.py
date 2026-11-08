@@ -181,7 +181,7 @@ def test_the_fold_refuses_a_store_it_cannot_write(legacy):
     migration = vault.root / "store" / "state" / "migration.json"
     before = migration.read_bytes()
     store = vstore.VersionStore.open(vault.root, lock=vstore.vault_lock(vault.root),
-                                     app_version="test", live_roots=[live], read_only=True)
+                                     app_version="nms-save-vault test", live_roots=[live], read_only=True)
     with pytest.raises(vstore.StoreUnavailable):
         vstore.run_fold(store, live_roots=[live])
     assert migration.read_bytes() == before

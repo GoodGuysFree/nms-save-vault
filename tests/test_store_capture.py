@@ -57,7 +57,7 @@ def test_capture_steam_exact_tree(tmp_path):
     assert re.fullmatch(r"full-steam-\d{8}-\d{6}", entry.id)
     assert (entry.kind, entry.platform, entry.account_key) == ("full", "steam", STEAM_ACCOUNT)
     assert (entry.op_id, entry.reason, entry.app_version) == ("op-20261016T111500Z-ab12",
-                                                              "pre-place", "test")
+                                                              "pre-place", "nms-save-vault test")
     assert entry.source == {"type": "live", "platform": "steam", "account_key": STEAM_ACCOUNT,
                             "folder": vstore.versionstore.folder_identity(live)}
     assert entry.scope == {"slots": "all", "account_files": True, "cache": "included"}

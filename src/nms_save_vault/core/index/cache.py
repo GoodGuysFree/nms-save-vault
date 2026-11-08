@@ -25,6 +25,7 @@ from collections import OrderedDict
 from collections.abc import Callable, Iterable
 from pathlib import Path
 
+from .. import appinfo
 from .schema import DECODER_VERSION, EXTRACTOR_VERSION, SCHEMA_VERSION
 from .worker import IndexResult
 
@@ -109,7 +110,7 @@ def _dumps(value: object) -> str:
 
 
 class IndexCache:
-    def __init__(self, path: Path | None, *, vault_id: str, app_version: str = "",
+    def __init__(self, path: Path | None, *, vault_id: str, app_version: str | None = None,
                  forbidden: Iterable[Path] = (), clock: Callable[[], float] = time.time) -> None:
         self.path = Path(path) if path is not None else None
         self.vault_id = vault_id
@@ -128,7 +129,7 @@ class IndexCache:
         self._connections: list[sqlite3.Connection] = []
         self._connections_lock = threading.Lock()
         self._writer_thread: int | None = None
-        self._open(app_version)
+        self._open(appinfo.stamp() if app_version is None else appinfo.checked(app_version))
         self._writer_thread = None              # opening was not the writer thread's job
 
     # --- opening, recovery --------------------------------------------------------------

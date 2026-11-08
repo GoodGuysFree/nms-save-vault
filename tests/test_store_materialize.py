@@ -147,7 +147,7 @@ def test_live_folders_include_xgs_twins_and_are_discovered_by_default(tmp_path, 
 
     monkeypatch.setattr(discover, "all_live_paths", lambda state, *a, **k: [str(acct)])
     discovering = vstore.VersionStore.open(vault, lock=versionstore.vault_lock(vault),
-                                           app_version="test")
+                                           app_version="nms-save-vault test")
     with pytest.raises(vstore.StoreError, match="empty folder"):
         discovering.export_entry(entry.id, acct / "restored")
     with pytest.raises(vstore.StoreError, match="empty folder"):

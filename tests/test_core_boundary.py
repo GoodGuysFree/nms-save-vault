@@ -19,6 +19,16 @@ def _module(path: Path) -> tuple[str, bool]:
     return ".".join(parts[:-1] if is_pkg else parts), is_pkg
 
 
+def _inside(package: str, target: str) -> bool:
+    """``target`` is ``package`` or one of its modules - not merely a name that starts the same."""
+    return target == package or target.startswith(package + ".")
+
+
+def test_inside_means_the_package_not_a_name_that_starts_the_same():
+    assert _inside("nms_save_vault.core", "nms_save_vault.core.store")
+    assert not _inside("nms_save_vault.core", "nms_save_vault.core_x")
+
+
 def _imports():
     """(core module, imported module, names) for every import statement in the core."""
     for py in sorted(CORE.rglob("*.py")):
@@ -43,13 +53,13 @@ def test_the_core_never_imports_the_app_around_it():
         if target == "nms_save_vault":
             if (mod, names) != ("nms_save_vault.core.appinfo", ("__version__",)):
                 outside.append(f"{mod} imports nms_save_vault {names}")
-        elif target.startswith("nms_save_vault.") and not target.startswith("nms_save_vault.core"):
+        elif _inside("nms_save_vault", target) and not _inside("nms_save_vault.core", target):
             outside.append(f"{mod} imports {target}")
     assert not outside, "\n".join(outside)
 
 
 def test_the_core_needs_only_the_standard_library():
     foreign = sorted({f"{mod} imports {target}" for mod, target, _ in _imports()
-                      if target and not target.startswith("nms_save_vault")
+                      if target and not _inside("nms_save_vault", target)
                       and target.split(".")[0] not in sys.stdlib_module_names})
     assert not foreign, "\n".join(foreign)

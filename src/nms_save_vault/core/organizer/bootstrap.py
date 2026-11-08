@@ -103,6 +103,7 @@ class _Item:
     entry: str | None = None
     op_id: str | None = None
     kind: str = ""
+    app: str = ""           # an operation's stamp: the app that logged it, never the one replaying it
 
 
 def bootstrap(vault: Vault, store: OrganizerStore, sources: Sequence[Source],
@@ -261,7 +262,7 @@ class _Plan:
                 if (op_id, target) not in self.known_ops and not self._hook_recorded(
                         target, pair, when):
                     self.items.append(_Item(when, 1, target, pair, members, op_id=op_id,
-                                            kind=kind))
+                                            kind=kind, app=_legacy_app(record)))
             self.resolved += 1
 
     def _hook_recorded(self, target: LiveTarget, pair: PairKey, when: int) -> bool:
@@ -355,12 +356,19 @@ class _Plan:
                                        entry=item.entry), item.time))
             else:
                 out.append((op_fields("oplog", item.op_id, item.kind, item.target, item.pair,
-                                      evicted[id(item)], app=appinfo.stamp(), members=members), item.time))
+                                      evicted[id(item)], app=item.app, members=members), item.time))
         return out
 
 
 class _Unresolved(Exception):
     pass
+
+
+def _legacy_app(record: Mapping) -> str:
+    """The stamp of an op-log line: its own ``app`` when it names one, else NMS Save Vault's,
+    marked legacy - only NMS Save Vault wrote the op log before the line carried its app."""
+    app = record.get("app")
+    return app if appinfo.is_stamp(app) else f"{appinfo.VAULT} legacy"
 
 
 def _capture_at(scanned: EntryScan, slot: int) -> tuple[PairKey, dict]:

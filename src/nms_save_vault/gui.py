@@ -20,7 +20,7 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
 from . import __version__, theme, updates
-from .core import aliases, catalog, discover, locations, slotmap
+from .core import aliases, appinfo, catalog, discover, locations, slotmap
 from .core import operations as ops
 from .core import liveops
 from .core.liveops import classic, plan_promote
@@ -762,7 +762,7 @@ class App(tk.Tk):
         """The vault upgrade window (D6 row 20): only ever opened by the owner or by the
         start-up offer after an interrupted undo; it never starts anything by itself."""
         env = VaultEnv(self.vault.root, [Path(s.path) for s in self.state.live_sources],
-                       self.state, __version__)
+                       self.state, appinfo.stamp())
         return VaultWindow(self, worker=self.worker, themed=self.themed, env=env,
                            on_changed=lambda: self.vault_changed(mode_changed=True))
 
