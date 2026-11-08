@@ -132,7 +132,7 @@ def _run(ctx: OpContext, plan: PlacePlan, confirmed: frozenset[str],
             "sources": [None if tp.source is None else opjournal.pair_source_to_json(tp.source)
                         for tp in plan.targets],
             "undo_of": plan.undo_of, "note": note, "confirmed": sorted(confirmed),
-            "plan_digest": plan.fingerprint})
+            "plan_digest": plan.fingerprint, "made": list(plan.made)})
     except (OrganizerBusy, StoreReadOnly) as exc:
         return refused(None, "BUSY", f"The vault is busy. Try again. ({exc})")
     at(ctx.faults, "after_preparing")
@@ -203,7 +203,7 @@ def _run(ctx: OpContext, plan: PlacePlan, confirmed: frozenset[str],
         return OpOutcome(op_id, "done", outcome_text(plan, wts), (RECORDING_PENDING,),
                          undo_offer(plan, wts, op_id), "pending", None)
     progress(Progress("recording", 0, 1))
-    warnings = finish(ctx, op_id, plan.kind, plan.undo_of, wts, confirmed, note)
+    warnings = finish(ctx, op_id, plan.kind, plan.undo_of, wts, confirmed, note, plan.made)
     return OpOutcome(op_id, "done", outcome_text(plan, wts), tuple(warnings),
                      undo_offer(plan, wts, op_id), "pending", None)
 
@@ -272,7 +272,7 @@ def _replan_keep(ctx: OpContext, target: LiveTarget) -> PlacePlan | None:
 
 
 def finish(ctx: OpContext, op_id: str, kind: str, undo_of: str | None, wts: list[OpTarget],
-           confirmed: Iterable[str], note: str) -> list[Warning]:
+           confirmed: Iterable[str], note: str, made: Iterable[str] = ()) -> list[Warning]:
     """After a verified write: the oplog line, D1's op records, D1's look at the result,
     ``done``. A failure here leaves the op ``validated``; recovery finishes it."""
     try:
@@ -280,7 +280,7 @@ def finish(ctx: OpContext, op_id: str, kind: str, undo_of: str | None, wts: list
         at(ctx.faults, "after_oplog")
         after = {ref: read_account(ctx, resolve_account(ctx, ref))
                  for ref in {wt.rt.target.ref for wt in wts}}
-        record_lineage(ctx, op_id, kind, undo_of, wts, "done", note, after)
+        record_lineage(ctx, op_id, kind, undo_of, wts, "done", note, after, made)
         at(ctx.faults, "after_record")
     except Exception as exc:  # noqa: BLE001 - history only: the write is verified
         log.warning("op %s: the history was not recorded yet: %s", op_id, exc)
@@ -739,11 +739,13 @@ def _oplog_target(wt: OpTarget) -> dict:
 
 def record_lineage(ctx: OpContext, op_id: str, kind: str, undo_of: str | None,
                    wts: list[OpTarget], status: str, note: str,
-                   nows: Mapping[LiveRef, AccountNow] | None = None) -> None:
+                   nows: Mapping[LiveRef, AccountNow] | None = None,
+                   made: Iterable[str] = ()) -> None:
     """D1's op record per target (idempotent on op id and target). ``nows``: the accounts
     as they are, when the caller has just read them."""
     recs = []
     app = op_app(ctx, op_id)
+    made = set(made)
     for wt in wts:
         placed = {pm.write.position: pm.write.vid for pm in wt.writes}
         now = (nows or {}).get(wt.rt.target.ref) or             read_account(ctx, resolve_account(ctx, wt.rt.target.ref))
@@ -756,7 +758,8 @@ def record_lineage(ctx: OpContext, op_id: str, kind: str, undo_of: str | None,
             evicted, source=dict(loading.origin),
             preserved={loc.vid: loc.to_json() for loc in wt.preserved}, status=status,
             undo_of=undo_of, note=note[:200], app=app, members=members,
-            snapshot=wt.snapshot_id))
+            snapshot=wt.snapshot_id,
+            made=tuple(sorted(v for v in placed.values() if v in made))))
     ctx.lineage.record_ops(recs)
 
 

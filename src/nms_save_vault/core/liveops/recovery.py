@@ -268,7 +268,8 @@ def _finish_validated(ctx: OpContext, op: _Open) -> OpOutcome:
                        f"The move is written, but cleaning up failed ({exc}).")
     first = rec.events[0]
     warnings = finish(ctx, rec.op_id, rec.kind, first.get("undo_of"), op.targets,
-                         first.get("confirmed", ()), first.get("note", ""))
+                         first.get("confirmed", ()), first.get("note", ""),
+                         [v for v in first.get("made", ()) if isinstance(v, str)])
     return OpOutcome(rec.op_id, "done", f"The move into {_labels(rec)} is finished.",
                      tuple(warnings), None, "pending", None)
 

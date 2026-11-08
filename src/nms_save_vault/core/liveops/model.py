@@ -237,6 +237,7 @@ class PlacePlan(_JsonForm):
     created_at: float
     restores: str | None = None           # panic_restore: the snapshot or backup it puts back
     via_undo: bool = False                # panic_restore started by the whole-folder Undo
+    made: tuple[str, ...] = ()            # placed versions with new content (an edit, CL1)
 
 
 @dataclass(frozen=True)
