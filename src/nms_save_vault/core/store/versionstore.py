@@ -258,7 +258,7 @@ class VersionStore:
     """One vault's version store. Open it with :meth:`open` (or :func:`open_store`)."""
 
     def __init__(self, vault_root: Path, fmt: StoreFormat, *,
-                 lock: Callable[[], AbstractContextManager], app_version: str,
+                 lock: Callable[[], AbstractContextManager], app_version: str | None = None,
                  clock: Callable[[], datetime], live_roots: Sequence[Path] | None,
                  faults: FaultHook | None, app_state: AppState | None = None) -> None:
         self.vault_root = vault_root
@@ -267,7 +267,9 @@ class VersionStore:
         self.format = fmt
         self.store_id = fmt.store_id
         self.inline_max = fmt.inline_max
-        self.app_version = appinfo.checked(app_version)
+        # None: every entry names the app current when it is kept (appinfo.stamp()), so an app
+        # named after the store was opened is still the one recorded. A stamp here overrides.
+        self._app_override = None if app_version is None else appinfo.checked(app_version)
         self.clock = clock
         # None: discover the live folders on this machine whenever they are needed.
         self._live_roots = None if live_roots is None else tuple(Path(p) for p in live_roots)
@@ -283,6 +285,11 @@ class VersionStore:
         self._corrupt: dict[str, str] = {}          # manifest file name -> why it is unreadable
         self._index_guard = threading.Lock()
         self._entries_seen: int | None = None       # entries/ mtime_ns at the last listing
+
+    @property
+    def app_version(self) -> str:
+        """The stamp the next entry kept gets."""
+        return self._app_override or appinfo.stamp()
 
     @property
     def read_only(self) -> bool:
@@ -484,9 +491,11 @@ class VersionStore:
                         created_local: str | None = None, op_id: str | None = None,
                         reason: str = "", cancel: Callable[[], bool] | None = None,
                         progress: Callable[[int, int], None] | None = None,
-                        verify: Callable[[Mapping[str, FileEntry]], None] | None = None
-                        ) -> StoreEntry:
+                        verify: Callable[[Mapping[str, FileEntry]], None] | None = None,
+                        app_version: str | None = None) -> StoreEntry:
         """Keep a folder (a legacy entry's, an import, a materialized entry) as a store entry.
+        ``app_version``: the stamp of the app that made the folder's content, when that is not
+        the app keeping it now (fold and copy-in keep NMS Save Vault's own old backups).
         ``entry_id`` keeps a given id (fold, copy-in): an entry with that id and the same files
         is returned as is; different files get ``<id>-L``. ``verify`` sees the files read,
         before anything is committed, and may refuse (raise): then no entry is made."""
@@ -495,7 +504,8 @@ class VersionStore:
                          live=False, kind=kind, label=label, source=source, scope=scope,
                          entry_id=entry_id, origin=origin, created_local=created_local,
                          op_id=op_id, reason=reason, cancel=cancel, progress=progress,
-                         verify=verify)
+                         verify=verify,
+                         app_version=None if app_version is None else appinfo.checked(app_version))
 
     def add_from_live(self, target_dir: str | Path, *, platform: Platform, account_key: str,
                       kind: EntryKind, label: str, scope: CaptureScope,
@@ -520,7 +530,8 @@ class VersionStore:
              op_id: str | None, reason: str, cancel: Callable[[], bool] | None,
              progress: Callable[[int, int], None] | None,
              finish: Callable[[list[MemberRecord]], str | None] | None = None,
-             verify: Callable[[Mapping[str, FileEntry]], None] | None = None) -> StoreEntry:
+             verify: Callable[[Mapping[str, FileEntry]], None] | None = None,
+             app_version: str | None = None) -> StoreEntry:
         if kind not in ENTRY_KINDS:
             raise ValueError(f"not an entry kind: {kind!r}")
         if entry_id is not None and not is_entry_id(entry_id):
@@ -564,7 +575,8 @@ class VersionStore:
         for note in notes:
             log.warning("keeping a copy of %s: %s", folder.name, note)
         fields = dict(kind=kind, label=label, reason=reason, op_id=op_id,
-                      app_version=self.app_version, platform=platform, account_key=account_key,
+                      app_version=app_version or self.app_version, platform=platform,
+                      account_key=account_key,
                       source=dict(source), scope=plan.scope,
                       origin=None if origin is None else dict(origin),
                       files=list(records.values()), members=members,
@@ -731,7 +743,7 @@ class VersionStore:
 
     @classmethod
     def open(cls, vault_root: str | Path, *, lock: Callable[[], AbstractContextManager],
-             app_version: str, clock: Callable[[], datetime] = utc_now,
+             app_version: str | None = None, clock: Callable[[], datetime] = utc_now,
              live_roots: Sequence[Path] | None = None,
              faults: FaultHook | None = None,
              app_state: AppState | None = None, read_only: bool = False,
@@ -906,5 +918,4 @@ def open_store(vault_root: str | Path, *, live_roots: Sequence[Path] | None = No
                clock: Callable[[], datetime] = utc_now) -> VersionStore:
     """Open a vault's store with the app's defaults: D1's vault lock and this app's version.
     ``app_state``: the app's configuration (its live sources are never written into)."""
-    return VersionStore.open(vault_root, lock=vault_lock(vault_root), app_version=appinfo.stamp(),
-                             clock=clock, live_roots=live_roots, app_state=app_state)
+    return VersionStore.open(vault_root, lock=vault_lock(vault_root), clock=clock, live_roots=live_roots, app_state=app_state)

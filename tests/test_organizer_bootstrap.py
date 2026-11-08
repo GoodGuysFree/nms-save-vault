@@ -340,13 +340,17 @@ def test_reasons_never_name_an_account_folder(tmp_path):
 
 
 def test_a_replayed_op_log_line_keeps_its_own_app_not_the_one_replaying_it(tmp_path):
-    from nms_save_vault.core import appinfo
+    from nms_save_vault.core import appinfo, operations
 
     vault, live = _history(tmp_path)
     log = vault.oplog_path
     lines = log.read_text(encoding="utf-8").splitlines()
     first = json.loads(lines[0])
-    first["app"] = "nms-savecraft 0.1.0"            # a line that names its app keeps it
+    previous = appinfo.set_app("nms-savecraft", "0.1.0")
+    try:                                            # the app the op log itself records (F4)
+        first["app"] = operations._oplog("repopulate_slot")["app"]
+    finally:
+        appinfo.set_app(previous.name, previous.version)
     log.write_bytes("".join(f"{line}\n" for line in [json.dumps(first), *lines[1:]]).encode())
     previous = appinfo.set_app("nms-other", "9.9")
     try:
@@ -355,3 +359,15 @@ def test_a_replayed_op_log_line_keeps_its_own_app_not_the_one_replaying_it(tmp_p
         appinfo.set_app(previous.name, previous.version)
     ops = {r["op_id"]: r["app"] for r in store.journal_records() if r["t"] == "op"}
     assert ops == {"legacy-1": "nms-savecraft 0.1.0", "legacy-2": "nms-save-vault legacy"}
+
+
+@pytest.mark.parametrize("recorded, app", [
+    ({"app": "nms-savecraft 0.1.0"}, "nms-savecraft 0.1.0"),
+    ({"app": "0.3.6"}, "nms-save-vault 0.3.6"),         # a v2 line from before stamps named an app
+    ({}, "nms-save-vault legacy"), ({"app": ""}, "nms-save-vault legacy"),
+    ({"app": "Weird Thing"}, "nms-save-vault legacy"), ({"app": 7}, "nms-save-vault legacy"),
+])
+def test_an_op_log_line_is_stamped_by_what_it_records(recorded, app):
+    from nms_save_vault.core.organizer.bootstrap import _legacy_app
+
+    assert _legacy_app(recorded) == app

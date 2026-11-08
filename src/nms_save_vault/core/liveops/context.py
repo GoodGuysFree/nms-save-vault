@@ -36,7 +36,7 @@ class VersionStore(Protocol):
     def read_file(self, entry_id: str, path: str) -> bytes: ...
 
 
-def context_for(organizer: Organizer, *, host: Host, machine_id: str, app_version: str,
+def context_for(organizer: Organizer, *, host: Host, machine_id: str, app_version: str | None = None,
                 game_probe: Callable[[], bool | None] = safety.is_game_running,
                 clock: Callable[[], float] = time.time,
                 faults: FaultInjector | None = None) -> OpContext:
@@ -71,11 +71,18 @@ class OpContext:
     readmodel: ReadModel | None           # D1: live board, line names, pins
     sources: Sequence[Source]             # configured live sources (state.json)
     host: Host                            # DESIGN.md D7: environment and home as arguments
-    app_version: str
     machine_id: str                       # random per machine (opjournal.machine_id)
     game_probe: Callable[[], bool | None] = safety.is_game_running
     clock: Callable[[], float] = time.time
     faults: FaultInjector | None = None   # tests only; None in production
+    # None: each record names the app current when it is written (appinfo.stamp()), so an app
+    # named after the context was made is still the one recorded. A stamp here overrides.
+    app_version: str | None = None
 
     def __post_init__(self) -> None:
-        appinfo.checked(self.app_version)
+        if self.app_version is not None:
+            appinfo.checked(self.app_version)
+
+    def app(self) -> str:
+        """The ``app`` stamp of a record written now."""
+        return self.app_version or appinfo.stamp()

@@ -205,10 +205,7 @@ def _context(args):
     try:
         org = Organizer(root, sources, read_only=False)
         host = hostmod.Host.current()
-        from .core import appinfo
-
-        return context_for(org, host=host, machine_id=machine_id(host),
-                           app_version=appinfo.stamp())
+        return context_for(org, host=host, machine_id=machine_id(host))
     except (OSError, ValueError, RuntimeError) as exc:
         _die(f"error: the vault cannot be opened for live operations: {explain(exc)}")
 

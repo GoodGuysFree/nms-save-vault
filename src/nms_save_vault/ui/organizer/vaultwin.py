@@ -44,7 +44,7 @@ class VaultEnv:
     vault_root: Path
     live_roots: Sequence[Path]
     app_state: Any
-    app_version: str
+    app_version: str | None = None      # None: the app current at each write (tests name one)
 
 
 _gb = upgrade.human_size

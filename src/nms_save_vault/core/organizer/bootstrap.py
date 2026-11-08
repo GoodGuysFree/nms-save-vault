@@ -365,10 +365,16 @@ class _Unresolved(Exception):
 
 
 def _legacy_app(record: Mapping) -> str:
-    """The stamp of an op-log line: its own ``app`` when it names one, else NMS Save Vault's,
-    marked legacy - only NMS Save Vault wrote the op log before the line carried its app."""
+    """The stamp of an op-log line, never the app replaying it: the line's own stamp; a bare
+    version (a v2 line from before stamps named their app) as NMS Save Vault's of that
+    version; else NMS Save Vault's, version unknown - only it wrote lines without an app."""
     app = record.get("app")
-    return app if appinfo.is_stamp(app) else f"{appinfo.VAULT} legacy"
+    if appinfo.is_stamp(app):
+        return app
+    if isinstance(app, str) and appinfo.app_of(app) == appinfo.VAULT and appinfo.is_stamp(
+            f"{appinfo.VAULT} {app.strip()}"):
+        return f"{appinfo.VAULT} {app.strip()}"
+    return appinfo.LEGACY
 
 
 def _capture_at(scanned: EntryScan, slot: int) -> tuple[PairKey, dict]:

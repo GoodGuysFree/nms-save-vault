@@ -220,7 +220,7 @@ def cmd_store_rollback(args) -> int:
         print("The vault stays upgraded.")
         return 0
     store = vstore.VersionStore.open(root, lock=vstore.vault_lock(root),
-                                     app_version=_version(), app_state=state,
+                                     app_state=state,
                                      for_rollback=interrupted)
     plan = rollback.plan_rollback(root, store, copy=Path(args.copy) if args.copy else None,
                                   force=args.force)
@@ -238,12 +238,6 @@ def cmd_store_rollback(args) -> int:
     result = rollback.run_rollback(plan, store)
     print(result.message)
     return 0
-
-
-def _version() -> str:
-    from .core import appinfo
-
-    return appinfo.stamp()
 
 
 def _fold(root: Path, state) -> int:

@@ -127,7 +127,7 @@ def _run(ctx: OpContext, plan: PlacePlan, confirmed: frozenset[str],
     tag = steamwrite.op_tag(op_id)
     try:
         opjournal.append(ctx, op_id, "preparing", {
-            "kind": plan.kind, "app": ctx.app_version,
+            "kind": plan.kind, "app": ctx.app(),
             "targets": [opjournal.target_json(rt.target) for rt in rts],
             "sources": [None if tp.source is None else opjournal.pair_source_to_json(tp.source)
                         for tp in plan.targets],
@@ -225,7 +225,7 @@ def _keep(ctx: OpContext, plan: PlacePlan, confirmed: frozenset[str],
     op_id = new_op_id(ctx.clock)
     try:
         opjournal.append(ctx, op_id, "preparing", {
-            "kind": "keep", "app": ctx.app_version,
+            "kind": "keep", "app": ctx.app(),
             "targets": [opjournal.target_json(rt.target)], "note": note,
             "confirmed": sorted(confirmed), "plan_digest": plan.fingerprint})
     except (OrganizerBusy, StoreReadOnly) as exc:
@@ -249,7 +249,7 @@ def _keep(ctx: OpContext, plan: PlacePlan, confirmed: frozenset[str],
             "op": "keep", "entry_id": entry.id, "snapshot_id": None,
             "detail": f"kept '{name}' from {rt.label}", "changed": [],
             "v": 2, "op_id": op_id, "utc": utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "app": ctx.app_version, "kind": "keep", "status": "done", "undo_of": None,
+            "app": ctx.app(), "kind": "keep", "status": "done", "undo_of": None,
             "targets": [{"platform": rt.target.platform, "account_key": rt.target.account_key,
                          "instance": rt.target.instance, "slot": rt.target.slot,
                          "entry_id": entry.id}],
@@ -699,7 +699,7 @@ def record_oplog(ctx: OpContext, op_id: str, kind: str, undo_of: str | None,
         "op": kind, "entry_id": first.preserved[0].ref.key if first.preserved else None,
         "snapshot_id": first.snapshot_id, "detail": detail, "changed": changed,
         "v": 2, "op_id": op_id, "utc": utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "app": ctx.app_version, "kind": kind, "status": status, "undo_of": undo_of,
+        "app": ctx.app(), "kind": kind, "status": status, "undo_of": undo_of,
         "targets": [_oplog_target(wt) for wt in wts], "confirmed": sorted(confirmed),
         "note": note, "error": error})
 
@@ -735,7 +735,7 @@ def record_lineage(ctx: OpContext, op_id: str, kind: str, undo_of: str | None,
             op_id, kind, int(ctx.clock()), wt.rt.target, (placed.get("A"), placed.get("B")),
             evicted, source=dict(loading.origin),
             preserved={loc.vid: loc.to_json() for loc in wt.preserved}, status=status,
-            undo_of=undo_of, note=note[:200], app=ctx.app_version, members=members,
+            undo_of=undo_of, note=note[:200], app=ctx.app(), members=members,
             snapshot=wt.snapshot_id))
     ctx.lineage.record_ops(recs)
 

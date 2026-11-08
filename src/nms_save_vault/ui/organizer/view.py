@@ -108,13 +108,11 @@ def last_change_text(outcome: OpOutcome) -> str:
 
 def default_context(organizer: Organizer) -> OpContext:
     """The live-operations context of the app's own organizer (worker thread)."""
-    from ...core import appinfo
     from ...core.liveops import context_for
     from ...core.liveops.opjournal import machine_id
 
     host = organizer.host
-    return context_for(organizer, host=host, machine_id=machine_id(host),
-                       app_version=appinfo.stamp())
+    return context_for(organizer, host=host, machine_id=machine_id(host))
 
 
 class OrganizerView(ttk.Frame):

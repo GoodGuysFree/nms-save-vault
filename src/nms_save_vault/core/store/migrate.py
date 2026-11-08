@@ -16,7 +16,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from .. import catalog, discover, safety
+from .. import appinfo, catalog, discover, safety
 from ..catalog import CatalogEntry, Vault
 from . import capture
 from .capture import CaptureScope
@@ -162,6 +162,7 @@ def _fold_one(store: VersionStore, entry: CatalogEntry, folder: Path) -> dict:
             created_local=entry.created,
             source={"type": "folder", "name": entry.source or folder.name},
             scope=CaptureScope(cache="include"),
+            app_version=appinfo.LEGACY,
             origin={"legacy_entry": entry.id, "legacy_subdir": subdir,
                     "folded_utc": iso_utc(store.clock())},
             verify=lambda records: check_folder(store, records, folder))
@@ -304,7 +305,7 @@ def copy_in(store: VersionStore, entry_ids: Sequence[str], *,
             store.add_from_folder(
                 folder, kind="imported", label=entry.label, entry_id=entry.id,
                 created_local=entry.created, source={"type": "folder", "name": folder.name},
-                scope=CaptureScope(cache="include"),
+                scope=CaptureScope(cache="include"), app_version=appinfo.LEGACY,
                 origin={"inplace_entry": entry.id, "copied_utc": iso_utc(store.clock())},
                 verify=lambda records, folder=folder: check_folder(store, records, folder))
         except (StoreError, OSError) as exc:

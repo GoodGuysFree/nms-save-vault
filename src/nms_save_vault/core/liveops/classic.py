@@ -57,10 +57,7 @@ def open_context(vault: Vault, live_dir: Path, *, host: hostmod.Host | None = No
         sources.append(_ad_hoc(live_dir))
     try:
         organizer = Organizer(vault.root, sources, host=host, game_running=safety.is_game_running)
-        from .. import appinfo
-
         ctx = context_for(organizer, host=host, machine_id=machine_id(host),
-                          app_version=appinfo.stamp(),
                           game_probe=game_probe or safety.is_game_running)
     except (OSError, ValueError, RuntimeError) as exc:
         raise ops.OperationError(f"The vault cannot be opened for a live write ({exc}).") from exc
@@ -236,7 +233,7 @@ def _repair_locked(ctx, ref, vault, entry, live_dir: Path, raw: bytes, why: str)
     plan = _index_repair_plan(vault, entry, Path(live_dir), raw, why)   # the guard: refuses, writes nothing
     op_id = new_op_id(ctx.clock)
     jr.append(ctx, op_id, "preparing", {
-        "kind": "index_repair", "app": ctx.app_version,
+        "kind": "index_repair", "app": ctx.app(),
         "targets": [jr.target_json(ref.target(1))], "sources": [None], "undo_of": None,
         "note": "containers.index damaged", "confirmed": [], "plan_digest": ""})
     try:

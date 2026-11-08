@@ -7,8 +7,9 @@ made because of the editor is told apart from one made by the app, and how the l
 before an editor change is found.
 
 The stamp comes from here and nowhere else. A front-end that is not NMS Save Vault calls
-:func:`set_app` once at startup, before it opens a vault; everything stamped after that names
-it. Without that call the core is NMS Save Vault's.
+:func:`set_app` once at startup; everything written after that names it, also by a store or a
+live-operation context opened earlier (they read the stamp when they write). Without that
+call the core is NMS Save Vault's.
 """
 from __future__ import annotations
 
@@ -20,6 +21,9 @@ from .. import __version__ as CORE_VERSION
 
 VAULT = "nms-save-vault"
 UNKNOWN = "unknown"
+#: Records NMS Save Vault made before they named their app's version (old backups folded into
+#: the store, op-log lines): its own, version not known.
+LEGACY = f"{VAULT} legacy"
 
 _NAME = re.compile(r"[a-z][a-z0-9-]{1,40}")
 _VERSION = re.compile(r"[0-9A-Za-z][0-9A-Za-z.+-]{0,40}")

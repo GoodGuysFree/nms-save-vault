@@ -75,16 +75,38 @@ def test_an_op_record_takes_the_app_when_it_is_made_not_when_the_module_loaded(s
     assert default.default_factory() == "nms-savecraft 0.1.0"
 
 
-def test_the_version_store_is_opened_with_the_current_app(tmp_path, monkeypatch, savecraft):
-    seen = {}
+def test_an_app_named_after_the_store_opened_is_the_one_its_entries_name(tmp_path):
+    vault = new_vault(tmp_path)
+    store = versionstore.open_store(vault, live_roots=())
+    previous = appinfo.set_app("nms-savecraft", "0.1.0")
+    try:
+        entry = store.add_from_folder(steam_live(tmp_path / "in"), kind="imported", label="x",
+                                      source={"type": "folder", "name": "x"})
+    finally:
+        appinfo.set_app(previous.name, previous.version)
+    assert entry.app_version == "nms-savecraft 0.1.0"
 
-    def fake_open(root, **kw):
-        seen.update(kw)
-        return "store"
 
-    monkeypatch.setattr(versionstore.VersionStore, "open", staticmethod(fake_open))
-    assert versionstore.open_store(tmp_path) == "store"
-    assert seen["app_version"] == "nms-savecraft 0.1.0"
+def test_a_live_operation_context_names_the_app_current_when_it_writes():
+    from nms_save_vault.core.liveops.context import OpContext
+
+    ctx = OpContext(vault=None, versions=None, store=None, locator=None, lineage=None,
+                    readmodel=None, sources=[], host=None, machine_id="m")
+    previous = appinfo.set_app("nms-savecraft", "0.1.0")
+    try:
+        assert ctx.app() == "nms-savecraft 0.1.0"
+    finally:
+        appinfo.set_app(previous.name, previous.version)
+    assert ctx.app() == appinfo.stamp()
+
+
+def test_an_old_backup_folded_into_the_store_reads_as_nms_save_vault_legacy(tmp_path, savecraft):
+    vault = new_vault(tmp_path)
+    entry = versionstore.open_store(vault, live_roots=()).add_from_folder(
+        steam_live(tmp_path / "in"), kind="full", label="old", source={"type": "folder", "name": "x"},
+        app_version=appinfo.LEGACY)
+    assert entry.app_version == "nms-save-vault legacy"
+    assert appinfo.app_of(entry.app_version) == appinfo.VAULT
 
 
 def test_an_entry_added_after_set_app_names_that_app_in_its_manifest(tmp_path, savecraft):
@@ -130,7 +152,7 @@ def test_a_classic_op_log_line_names_the_app(savecraft):
     assert operations._oplog("clear_slot")["app"] == "nms-savecraft 0.1.0"
 
 
-def test_the_vault_window_is_given_the_stamp_not_the_bare_version(tmp_path, monkeypatch):
+def test_the_vault_window_freezes_no_stamp(tmp_path, monkeypatch):
     from types import SimpleNamespace
 
     from nms_save_vault import gui
@@ -141,4 +163,4 @@ def test_the_vault_window_is_given_the_stamp_not_the_bare_version(tmp_path, monk
                           state=SimpleNamespace(live_sources=[]), worker=None, themed=None,
                           vault_changed=lambda **kw: None)
     gui.App.open_vault_window(app)
-    assert seen["env"].app_version == appinfo.stamp()
+    assert seen["env"].app_version is None          # each write names the app current then

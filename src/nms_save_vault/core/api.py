@@ -20,7 +20,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from pathlib import Path
 
-from . import appinfo, gameversion, locations, savedir
+from . import gameversion, locations, savedir
 from .appinfo import CORE_VERSION, VAULT, AppIdentity, app_of, current, is_stamp, set_app
 from .index.extract import CtxInput, SaveInput, contexts_of
 from .index.nodes import PrivacyError, get, items
@@ -101,5 +101,4 @@ def open_vault(vault_root: str | Path | None = None, *,
     ``vault_root`` defaults to :func:`default_vault_dir`. Raises :class:`StoreUnavailable`,
     :class:`StoreNotUpgraded` or :class:`StoreTooNew` (all :class:`StoreError`)."""
     root = Path(vault_root) if vault_root is not None else default_vault_dir()
-    return VersionStore.open(root, lock=vault_lock(root), app_version=appinfo.stamp(),
-                             live_roots=live_roots, read_only=True)
+    return VersionStore.open(root, lock=vault_lock(root), live_roots=live_roots, read_only=True)
