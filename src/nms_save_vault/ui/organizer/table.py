@@ -333,7 +333,8 @@ def version_tip(row: VersionRow) -> str:
     if row.durable_copies == 0 and "gone" not in row.flags and "outside-only" in row.flags:
         out.append(f"Only outside the vault: {OUTSIDE_ONLY_TIP}")
     if row.edited_by:
-        out.append(f"{edited_by_words(row.edited_by).capitalize()}: {APP_EDITED_TIP}")
+        mark = edited_by_words(row.edited_by)
+        out.append(f"{mark[:1].upper()}{mark[1:]}: {APP_EDITED_TIP}")
     return "\n".join(out)
 
 
