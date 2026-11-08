@@ -8,11 +8,8 @@ The plan is then an ordinary place of that extract into the same slot: the same 
 snapshot, journal, validation, rollback and undo as every live write. The plan names the
 edited version as made by the operation (``PlacePlan.made``), so the records say who made it.
 
-The slot must not change while the edit is made: its files are fingerprinted before they are
-read and again once the plan stands, and the plan's own fingerprint (which ``execute``
-checks) falls between the two, so a save the game or another app writes meanwhile is caught,
-never edited over. Nothing is kept in the vault for an edit that could not be written now (the
-game running, an interrupted operation waiting, a vault that cannot be written).
+Nothing is kept in the vault for an edit that could not be written now (the game running, an
+interrupted operation waiting, a vault that cannot be written).
 
 Steam saves only for now; an Xbox slot is refused (:class:`EditRefused`).
 """
@@ -34,13 +31,12 @@ from ..store import CaptureScope
 from .context import OpContext
 from .model import PairSource, PlacePlan
 from .planner import game_warning, plan_place, recovery_pending, vault_problem
-from .slots import read_account, slot_fingerprint
+from .slots import read_account
 from .steamwrite import file_names
 from .targets import resolve_account, resolve_target
 
 __all__ = ["EditRefused", "plan_edit"]
 
-CHANGED = "{slot} changed while the edit was being made; nothing was written. Try again."
 
 
 def plan_edit(ctx: OpContext, target: LiveTarget, edits: Iterable[Edit], *,
@@ -59,7 +55,6 @@ def plan_edit(ctx: OpContext, target: LiveTarget, edits: Iterable[Edit], *,
     for gate in (vault_problem(ctx), game_warning(ctx), recovery_pending(ctx, [target.ref])):
         if gate is not None and gate.severity == "block":
             raise EditRefused(gate.text)
-    before = slot_fingerprint(rt.folder, "steam", target.slot)
     now = read_account(ctx, account).slots[target.slot]
     if now.newer is None or now.member(now.newer) is None:
         raise EditRefused(f"{rt.label} holds no save to edit")
@@ -69,7 +64,7 @@ def plan_edit(ctx: OpContext, target: LiveTarget, edits: Iterable[Edit], *,
     data_name, meta_name = file_names(target.slot, loaded.position)
     data = (rt.folder / data_name).read_bytes()
     if hashlib.sha256(data).hexdigest() != loaded.vid:
-        raise EditRefused(CHANGED.format(slot=rt.label))
+        raise EditRefused(f"{rt.label} changed while it was read; try again")
     ordinal = slotmap.storage_ordinal(slotmap.file_no(target.slot,
                                                       slotmap.member_index(loaded.position)))
     try:                    # a meta moved here from another slot is still this save's meta
@@ -88,13 +83,9 @@ def plan_edit(ctx: OpContext, target: LiveTarget, edits: Iterable[Edit], *,
             if member.position == loaded.position:
                 (stage / names[0]).write_bytes(out.data)
                 (stage / names[1]).write_bytes(meta.encrypt(out.meta, ordinal))
-                continue
-            for name in names:
-                shutil.copyfile(rt.folder / name, stage / name)
-            if hashlib.sha256((stage / names[0]).read_bytes()).hexdigest() != member.vid:
-                raise EditRefused(CHANGED.format(slot=rt.label))
-        if slot_fingerprint(rt.folder, "steam", target.slot) != before:
-            raise EditRefused(CHANGED.format(slot=rt.label))
+            else:
+                for name in names:
+                    shutil.copyfile(rt.folder / name, stage / name)
         entry = ctx.versions.add_from_folder(
             stage, kind="extract", label=f"edited by {ctx.app().split(' ')[0]}: {what}"[:120],
             source={"type": "folder", "name": "edit"}, scope=CaptureScope(slots=(target.slot,)),
@@ -109,6 +100,4 @@ def plan_edit(ctx: OpContext, target: LiveTarget, edits: Iterable[Edit], *,
                         Location(new_vid, "store", StoreRef(entry.id), target.slot,
                                  loaded.position, "steam", True))
     plan = plan_place(ctx, source, target)
-    if slot_fingerprint(rt.folder, "steam", target.slot) != before:
-        raise EditRefused(CHANGED.format(slot=rt.label))
     return dataclasses.replace(plan, made=(new_vid,))

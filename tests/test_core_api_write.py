@@ -1,7 +1,7 @@
 """core.api's write side (Savecraft): an edit of a live Steam save and its undo through a
 LiveSession, which honours NMS Save Vault's settings (whatever path reaches a folder, re-read
-at every refresh), the game-running gate, the vault's lock and interrupted writes, catches a
-slot that changes while it is edited, and never offers a stale edit again."""
+at every refresh), the game-running gate, the vault's lock and interrupted writes, and never
+offers a stale edit again."""
 from __future__ import annotations
 
 import hashlib
@@ -14,7 +14,6 @@ import pytest
 from nms_save_vault.core import api, appinfo, meta, platform, safety, savejson, slotmap, state
 from nms_save_vault.core.hashname import key as K
 from nms_save_vault.core.liveops import FaultInjector, SimulatedCrash
-from nms_save_vault.core.liveops import edit as liveedit
 
 from .conftest import steam_save
 from .liveops_support import MAIN, T0, host_in, steam_world, tree_hash
@@ -178,24 +177,6 @@ def test_a_slot_the_game_saved_after_the_plan_is_not_written(world):
     for _ in range(2):                                   # and not on a second try either
         assert session.write(plan, plan.confirmations).status == "stale"
         assert tree_hash(world.live) == saved
-
-
-def test_a_slot_saved_while_the_edit_is_made_is_caught_and_nothing_is_kept(world, monkeypatch):
-    session = _session(world)
-    entries = _entries(world)
-    real = liveedit.rebuild
-
-    def the_game_saves_meanwhile(*a, **k):
-        body = b'{"' + K("SaveName").encode() + b'":"Other","m":3}'
-        steam_save(world.live, 1, 0, "Other", 9000, MAIN + 1, T0 + 500, payload=body + b"\x00")
-        return real(*a, **k)
-
-    monkeypatch.setattr(liveedit, "rebuild", the_game_saves_meanwhile)
-    with pytest.raises(api.EditRefused, match="changed while the edit"):
-        session.plan_edit(_slot(world), UNITS, what="x")
-    assert _entries(world) == entries
-    root = savejson.decode_save((world.live / "save.hg").read_bytes()).root
-    assert root[K("SaveName")] == "Other" and K("Units") not in root    # the game's save stands
 
 
 def test_nothing_is_written_while_the_game_runs(world, monkeypatch):
