@@ -74,6 +74,9 @@ def _fmt_created(iso: str) -> str:
 
 log = logging.getLogger(__name__)
 
+#: How often the window looks whether another app changed the vault (a few file stats).
+VAULT_WATCH_MS = 3000
+
 @dataclass(frozen=True)
 class Column:
     key: str
@@ -498,6 +501,7 @@ class App(tk.Tk):
         self._open_last_view()
         if scan_on_start:          # the organizer's first look, in the worker (D6 U12)
             self.after(200, self.organizer_view.rescan)
+            self.after(VAULT_WATCH_MS, self._watch_vault)
         self.refresh()
         self.after(300, self._startup_update_check)  # after the window is on screen
         # Sweep up after a previous update. Deliberately late: when this run *is* the
@@ -937,6 +941,16 @@ class App(tk.Tk):
                             "Tools > Finish freeing old backup folders...")
         if needs_attention(self.vault.root):
             self.open_vault_window()
+
+    def _watch_vault(self) -> None:
+        """Another app sharing the vault (NMS Savecraft) changed it: both tabs show it, as F5
+        would (CL8). Not while a dialog holds the grab; the next look catches it."""
+        try:
+            if not grab_held(self) and self.organizer_view.vault_moved():
+                self.refresh()
+        except Exception:  # noqa: BLE001 - the watch never stops the app; it looks again
+            log.exception("could not tell whether the vault changed")
+        self.after(VAULT_WATCH_MS, self._watch_vault)
 
     def _shortcut(self, action, *, main_only: bool = False):
         """A window-wide key. Ignored while a dialog or the "Please wait" window holds the

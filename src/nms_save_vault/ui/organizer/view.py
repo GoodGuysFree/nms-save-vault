@@ -20,6 +20,7 @@ from pathlib import Path
 from tkinter import ttk
 
 from ...core import aliases
+from ...core.api import vault_stamp
 from ...core.liveops import (
     OpContext, OpOutcome, PlacePlan, dismiss_verification, empty_slot_guide, execute,
     pending_recovery, plan_keep, plan_promote, plan_swap, plan_undo, update_verification)
@@ -147,6 +148,7 @@ class OrganizerView(ttk.Frame):
         self.scanning = False
         self.scanned_at = 0.0
         self._pending_scan: bool | None = None
+        self.vault_stamp: tuple[int, ...] | None = None    # the vault as the last scan left it
         self.alerts: dict[str, ttk.Frame] = {}
         self._build()
         self.winfo_toplevel().bind("<Control-f>", self._ctrl_f, add="+")
@@ -465,7 +467,20 @@ class OrganizerView(ttk.Frame):
                                             live_roots=[Path(s.path) for s in organizer.sources])
         except Exception:  # noqa: BLE001
             log.exception("the vault store's status could not be read")
+        out["stamp"] = vault_stamp(organizer.vault_root)    # after this scan's own records
         return out
+
+    def vault_moved(self) -> bool:
+        """Another app sharing the vault (NMS Savecraft) recorded something since the last
+        scan: scan again, recording nothing (CL8). A few file stats; True when it rescans."""
+        if self.organizer is None or self.vault_stamp is None or self.scanning:
+            return False
+        now = vault_stamp(self.organizer.vault_root)
+        if now == self.vault_stamp:
+            return False
+        self.vault_stamp = now
+        self.rescan(record=False)
+        return True
 
     def _scanned(self, result) -> None:
         organizer, model, extras = result
@@ -480,6 +495,7 @@ class OrganizerView(ttk.Frame):
         for key, text in alerts.items():
             self.alert(key, text)
         set_label(self.summary, summary_text(model, organizer))
+        self.vault_stamp = extras.get("stamp")
         self._extras_shown(extras)
 
     def _scan_failed(self, error: BaseException) -> None:

@@ -65,6 +65,16 @@ def test_a_scan_asked_for_while_one_runs_follows_it(view, gui_app):
     _wait(gui_app, lambda: not view.scanning)
 
 
+def test_another_app_s_change_to_the_vault_is_seen_and_shown(view, gui_app, world):
+    assert view.vault_stamp is not None and not view.vault_moved()     # nothing new yet
+    ops = world.organizer.store.root / "ops.jsonl"            # another app journals an op
+    with open(ops, "ab") as f:
+        f.write(b'{"j":1}\n')
+    assert view.vault_moved() and view.scanning
+    _wait(gui_app, lambda: not view.scanning)
+    assert not view.vault_moved()                             # its own look moved nothing
+
+
 def test_the_table_selection_drives_the_detail_and_the_live_outline(view, gui_app):
     view.table.select(PIDS["cross"])
     gui_app.update()

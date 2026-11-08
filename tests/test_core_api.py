@@ -89,6 +89,7 @@ PINNED = {
     "scan_save_dir": ("function", "(folder: 'str | Path') -> 'SaveDirView'"),
     "set_app": ("function", "(name: 'str', version: 'str') -> 'AppIdentity'"),
     "vault_dir": ("function", "() -> 'Path'"),
+    "vault_stamp": ("function", "(vault_root: 'str | Path | None' = None) -> 'tuple[int, ...]'"),
     # the write side: an edit of a live save, and its undo
     "AddMember": ("fields", ("where", "name", "raw"), ()),
     "Insert": ("fields", ("where", "index", "raw"), ()),

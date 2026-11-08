@@ -358,6 +358,31 @@ def test_an_interrupted_edit_with_a_damaged_record_can_be_left(world, monkeypatc
     session.plan_edit(_slot(world), UNITS, what="y")          # the folder is usable again
 
 
+# --- CL8: an app can tell cheaply that another one changed the vault -----------------------
+
+
+def test_the_vault_stamp_moves_with_every_record_and_only_then(world):
+    session = _session(world)
+    session.refresh()
+    quiet = api.vault_stamp(world.vault_root)
+    session.refresh()                      # looking records nothing new: no refresh ping-pong
+    api.open_vault(world.vault_root, live_roots=()).entries()
+    assert api.vault_stamp(world.vault_root) == quiet
+    plan = session.plan_edit(_slot(world), UNITS, what="x")       # the edit is kept first
+    kept = api.vault_stamp(world.vault_root)
+    assert kept != quiet
+    done = session.write(plan, plan.confirmations)
+    written = api.vault_stamp(world.vault_root)
+    assert written != kept
+    undo = session.plan_undo(done.op_id)
+    session.write(undo, undo.confirmations)
+    assert api.vault_stamp(world.vault_root) != written
+
+
+def test_the_vault_stamp_of_a_folder_that_is_no_vault_is_still_a_stamp(tmp_path):
+    assert api.vault_stamp(tmp_path / "nowhere") == api.vault_stamp(tmp_path / "nowhere")
+
+
 # --- CL10: a core older than the vault's format never writes to it ------------------------
 
 

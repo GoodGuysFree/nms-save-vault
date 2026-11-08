@@ -40,8 +40,11 @@ from .liveops.context import OpContext
 from .liveops.edit import plan_edit
 from .liveops.errors import ConfirmationRequired, LiveOpError, TargetError
 from .liveops.model import OpOutcome, PlacePlan, Severity
-from .liveops.opjournal import machine_id, read_ops
+from .catalog import Vault
+from .liveops.opjournal import OPS, machine_id, read_ops
 from .organizer import Organizer, provenance
+from .organizer import store as orgstore
+from .store import versionstore
 from .organizer.journal import Journal
 from .organizer.model import LiveTarget, ModelError, pid_from_id
 from .organizer.provenance import AppChange, Before, KeptCopy
@@ -69,8 +72,8 @@ __all__ = [
     "API_VERSION", "CORE_VERSION", "PLATFORMS",
     # who is writing (every vault record names its app)
     "VAULT", "AppIdentity", "app_of", "current", "is_stamp", "set_app",
-    # where things are, and whether the game runs
-    "default_vault_dir", "game_running", "live_save_dirs", "vault_dir",
+    # where things are, whether the game runs, and whether another app changed the vault
+    "default_vault_dir", "game_running", "live_save_dirs", "vault_dir", "vault_stamp",
     # the saves on disk
     "MemberView", "SaveDirView", "SlotView", "platform_of", "scan_save_dir",
     # what is in a save
@@ -115,6 +118,30 @@ def game_running() -> bool | None:
     told. While it is not False, an app shows the saves but changes nothing (a write is
     refused then anyway)."""
     return safety.is_game_running()
+
+
+def vault_stamp(vault_root: str | Path | None = None) -> tuple[int, ...]:
+    """A token that changes whenever anything is recorded in the vault at ``vault_root``
+    (default :func:`vault_dir`) by any app: a version kept or removed, an operation and its
+    checks, the history, notes, the format. A few file stats, no reading: poll it every few
+    seconds and when the window gets focus, and refresh when it differs from the last one.
+    Compare tokens with ``==`` only; what is in one can change in any release."""
+    root = Path(vault_root) if vault_root is not None else vault_dir()
+    organizer = root / orgstore.DIRNAME
+    store = versionstore.store_root(root)
+    catalog = Vault(root, read_only=True)
+    paths = (store / versionstore.FORMAT_NAME, store / versionstore.ENTRIES,
+             organizer / orgstore.HEADER, organizer / orgstore.JOURNAL, organizer / orgstore.NOTES,
+             organizer / orgstore.LINEAGE, organizer / OPS, catalog.catalog_path,
+             catalog.oplog_path)
+    out: list[int] = []
+    for path in paths:
+        try:
+            st = os.stat(safety.long_path(path))
+            out += (st.st_size, st.st_mtime_ns, st.st_ino)
+        except OSError:
+            out += (-1, -1, -1)
+    return tuple(out)
 
 
 def platform_of(folder: str | Path) -> str:
