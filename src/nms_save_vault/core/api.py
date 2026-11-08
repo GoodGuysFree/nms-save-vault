@@ -9,7 +9,8 @@ can change in any release. What is here is versioned:
   all of that, so neither happens by accident.
 
 It reads where the saves and the vault are, the saves on disk and what is in them (every
-inventory slot by slot: :func:`inventories_of`), the
+inventory slot by slot: :func:`inventories_of`; every asset with the key that tells it apart
+across versions and saves: :func:`assets_of`), the
 vault's stored versions, and which versions an app made (the last version before it changed
 a slot). It writes one way only: an edit of a live Steam save, and its undo, through a
 :class:`LiveSession` - the same preserve, journal, check, rollback and undo as every write NMS
@@ -34,6 +35,8 @@ from . import discover, gameversion, locations, safety, savedir, state
 from . import platform as hostmod
 from .appinfo import CORE_VERSION, VAULT, AppIdentity, app_of, current, is_stamp, set_app
 from .index.extract import CtxInput, SaveInput, contexts_of
+from .index.assets import KINDS as ASSET_KINDS
+from .index.assets import Asset, assets_of
 from .index.inventory import Inventory, Slot, SpecialSlot, inventories_of
 from .index.nodes import PrivacyError, get, items
 from .liveops import context_for, execute, pending_recovery, plan_undo, resolve_recovery
@@ -83,6 +86,7 @@ __all__ = [
     "CtxInput", "DecodedSave", "SaveDecodeError", "SaveInput", "contexts_of", "decode_save",
     "PrivacyError", "get", "items", "known_game_version", "playthrough_of", "read_member",
     "Inventory", "Slot", "SpecialSlot", "inventories_of",
+    "ASSET_KINDS", "Asset", "assets_of",
     # the vault's stored versions
     "FileEntry", "StoreEntry", "StoreError", "StoreNotUpgraded", "StoreTooNew",
     "StoreUnavailable", "VaultReader", "open_vault",

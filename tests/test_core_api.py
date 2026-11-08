@@ -95,6 +95,10 @@ PINNED = {
                         "installed"), ()),
     "SpecialSlot": ("fields", ("x", "y", "kind"), ()),
     "inventories_of": ("function", "(root: 'dict') -> 'list[Inventory]'"),
+    "ASSET_KINDS": ("value", "tuple"),
+    "Asset": ("fields", ("context", "kind", "index", "where", "key", "name", "model", "cls",
+                         "current", "galaxy", "address", "facts"), ()),
+    "assets_of": ("function", "(root: 'dict') -> 'list[Asset]'"),
     "vault_stamp": ("function", "(vault_root: 'str | Path | None' = None) -> 'tuple[int, ...]'"),
     # the write side: an edit of a live save, and its undo
     "AddMember": ("fields", ("where", "name", "raw"), ()),
