@@ -141,9 +141,10 @@ def test_a_switched_off_folder_reached_through_a_junction_is_not_written(world, 
     _switch_off(world, real_spelling if settings_side == "real" else link, enabled=False)
     live_before = tree_hash(world.live)
     session = _session(world, link if settings_side == "real" else world.live)
-    with pytest.raises(api.TargetError):
+    with pytest.raises(api.TargetError) as refused:
         session.plan_edit(api.slot_of(link if settings_side == "real" else world.live, 1),
                           UNITS, what="x")
+    assert refused.value.code == "NOT_WRITABLE"
     assert tree_hash(world.live) == live_before
 
 
@@ -154,6 +155,33 @@ def test_a_folder_switched_off_during_a_session_is_not_written_after_a_refresh(w
     with pytest.raises(api.TargetError):
         session.plan_edit(_slot(world), UNITS, what="x")
 
+
+def test_a_folder_switched_off_after_the_plan_is_not_written(world):
+    session = _session(world)
+    plan = session.plan_edit(_slot(world), UNITS, what="x")
+    _switch_off(world, world.live, writable=False)              # no refresh by the app
+    live_before = tree_hash(world.live)
+    with pytest.raises(api.TargetError):
+        session.write(plan, plan.confirmations)
+    assert tree_hash(world.live) == live_before
+
+
+def test_the_settings_a_pointer_names_come_first_only_while_they_choose_its_vault(
+        world, tmp_path):
+    host = platform.Host.current()
+    vault_a, vault_b = tmp_path / "VaultA", tmp_path / "VaultB"
+    vault_a.mkdir()
+    vault_b.mkdir()
+    named = tmp_path / "kit" / "state.json"
+    named.parent.mkdir()
+    pointer = state.pointer_path(host)
+    pointer.parent.mkdir(parents=True, exist_ok=True)
+    pointer.write_text(json.dumps({"vault": str(vault_a), "state": str(named)}),
+                       encoding="utf-8")
+    world.own.write_text(json.dumps({"vault": None, "theme": "own"}), encoding="utf-8")
+    for chooses, first in ((vault_a, "kit"), (vault_b, "own")):
+        named.write_text(json.dumps({"vault": str(chooses), "theme": "kit"}), encoding="utf-8")
+        assert [s.theme for s in state.vault_settings(host)][0] == first
 
 @pytest.mark.parametrize("damaged", ["state", "pointer"])
 def test_unreadable_vault_settings_stop_the_session(world, damaged):
@@ -226,25 +254,33 @@ def test_only_this_app_s_operations_are_undone_here(world):
     appinfo.set_app("another-app", "1.0")
     with pytest.raises(api.EditRefused, match="not made by this app"):
         session.plan_undo(done.op_id)
-    with pytest.raises(api.EditRefused):
-        session.plan_undo("no-such-op")
+    assert session.plan_undo("no-such-op").blocked              # says why, as any undo
 
-
-def test_an_interrupted_edit_is_listed_and_put_back(world):
+def test_an_interrupted_edit_is_listed_and_put_back(world, monkeypatch):
     before = {n: (world.live / n).read_bytes() for n in ("save.hg", "save2.hg")}
     session = _session(world)
     plan = session.plan_edit(_slot(world), UNITS, what="x")
-    session._ctx.faults = FaultInjector({"swapped:2"})
+    make = session._make
+
+    def crashing():                         # the context the write runs in dies mid-write
+        ctx = make()
+        ctx.faults = FaultInjector({"swapped:2"})
+        return ctx
+
+    monkeypatch.setattr(session, "_make", crashing)
     with pytest.raises(SimulatedCrash):
         session.write(plan, plan.confirmations)
-    session._ctx.faults = None
+    monkeypatch.setattr(session, "_make", make)
     session.refresh()
     with pytest.raises(api.EditRefused, match="interrupted"):      # nothing new starts on it
         session.plan_edit(_slot(world), UNITS, what="y")
     (item,) = session.interrupted()
     assert item.app == SC and "back" in item.choices and item.recommended in item.choices
+    for wrong in ("Back", "none", "sideways"):
+        with pytest.raises(ValueError, match="not offered"):
+            session.resolve(item.op_id, wrong)
     result = session.resolve(item.op_id, "back")
-    assert result.status in api.WRITE_STATUSES and session.interrupted() == []
+    assert result.status == "rolled_back" and session.interrupted() == []
     assert {n: (world.live / n).read_bytes() for n in before} == before
 
 
@@ -254,9 +290,9 @@ def test_a_write_s_result_survives_a_refresh_that_fails(world, monkeypatch):
     make = session._make
     calls = []
 
-    def flaky():
+    def flaky():                            # the refresh after the write fails
         calls.append(1)
-        if len(calls) == 1:
+        if len(calls) == 2:
             raise OSError("the vault is busy")
         return make()
 

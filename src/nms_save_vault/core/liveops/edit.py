@@ -9,7 +9,8 @@ snapshot, journal, validation, rollback and undo as every live write. The plan n
 edited version as made by the operation (``PlacePlan.made``), so the records say who made it.
 
 Nothing is kept in the vault for an edit that could not be written now (the game running, an
-interrupted operation waiting, a vault that cannot be written).
+interrupted operation waiting, a vault that cannot be written); a plan the planner blocks for
+another reason (no room in the vault) leaves its edited version there, which is harmless.
 
 Steam saves only for now; an Xbox slot is refused (:class:`EditRefused`).
 """
@@ -36,7 +37,6 @@ from .steamwrite import file_names
 from .targets import resolve_account, resolve_target
 
 __all__ = ["EditRefused", "plan_edit"]
-
 
 
 def plan_edit(ctx: OpContext, target: LiveTarget, edits: Iterable[Edit], *,

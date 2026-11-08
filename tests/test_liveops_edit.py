@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import pytest
 
-from nms_save_vault.core import api, appinfo, savejson
+from nms_save_vault.core import api, appinfo, meta, savejson, slotmap
 from nms_save_vault.core.hashname import key as K
 from nms_save_vault.core.liveops import plan_undo
 from nms_save_vault.core.liveops.edit import EditRefused, plan_edit
@@ -75,6 +75,11 @@ def test_an_edit_goes_live_through_the_vault_and_names_what_it_made(tmp_path, sa
     assert execute(world.ctx, undo, undo.confirmations).status == "done"
     assert {n: (world.live / n).read_bytes() for n in ("save.hg", "save2.hg")} == {
         n: before[n] for n in ("save.hg", "save2.hg")}
+    for name, index in (("mf_save.hg", 0), ("mf_save2.hg", 1)):    # but the save time
+        ordinal = slotmap.storage_ordinal(slotmap.file_no(1, index))
+        old = meta.decrypt(before[name], ordinal)
+        new = meta.decrypt((world.live / name).read_bytes(), ordinal)
+        assert {i - i % 4 for i in range(len(old)) if old[i] != new[i]} <= {0x164}
 
 
 def test_nothing_is_written_when_an_edit_cannot_be_made(tmp_path, savecraft):

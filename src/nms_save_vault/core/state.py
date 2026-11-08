@@ -213,6 +213,10 @@ def configured_vault(host: platform.Host | None = None) -> Path | None:
     return None
 
 
+def _where(path: Path) -> str:
+    return f"{path.parent.name}{os.sep}{path.name}"
+
+
 def vault_settings(host: platform.Host | None = None) -> list[AppState]:
     """Every settings file of NMS Save Vault another app sharing the vault can find, the one in
     use first: the file the pointer names while it still chooses the pointer's vault, then the
@@ -223,12 +227,13 @@ def vault_settings(host: platform.Host | None = None) -> list[AppState]:
         try:
             raw = json.loads(path.read_bytes().decode("utf-8-sig"))
         except (OSError, ValueError) as exc:
-            raise ValueError(f"NMS Save Vault's settings ({path.name}) cannot be read") from exc
+            raise ValueError(f"NMS Save Vault's settings ({_where(path)}) cannot be read") from exc
         if not isinstance(raw, dict):
-            raise ValueError(f"NMS Save Vault's settings ({path.name}) cannot be read")
+            raise ValueError(f"NMS Save Vault's settings ({_where(path)}) cannot be read")
         return raw
 
     files: list[Path] = []
+    stale: list[Path] = []
     for path in state_candidates(host):
         if path.name != POINTER:
             files.append(path)
@@ -236,20 +241,20 @@ def vault_settings(host: platform.Host | None = None) -> list[AppState]:
             pointer = strict(path)
             named = pointer.get("state")
             if not isinstance(named, str) or not named.strip():
-                raise ValueError(f"NMS Save Vault's settings ({path.name}) cannot be read")
+                raise ValueError(f"NMS Save Vault's settings ({_where(path)}) cannot be read")
             settings = Path(named)
             in_use = settings.is_file() and isinstance(pointer.get("vault"), str) and (
                 _named_vault(settings) == Path(pointer["vault"]))
-            files.insert(0, settings) if in_use else files.append(settings)
+            (files if in_use else stale).append(settings)
     out, seen = [], set()
-    for path in files:
+    for path in files + stale:
         if _key(path) in seen or not path.is_file():
             continue
         seen.add(_key(path))
         try:
             out.append(AppState.from_dict(strict(path)))
         except (KeyError, TypeError, AttributeError) as exc:
-            raise ValueError(f"NMS Save Vault's settings ({path.name}) cannot be read") from exc
+            raise ValueError(f"NMS Save Vault's settings ({_where(path)}) cannot be read") from exc
     return out
 
 

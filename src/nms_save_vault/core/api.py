@@ -239,7 +239,6 @@ def open_history(vault_root: str | Path | None = None) -> VaultHistory:
     return VaultHistory(Journal(OrganizerStore(root, create=False, read_only=True), {}).replay())
 
 
-
 # --- an edit of a live save, and its undo ---------------------------------------------------
 
 #: How much a :class:`Notice` matters: ``"confirm"``, the user must agree first; ``"block"``,
@@ -337,7 +336,8 @@ class Interrupted:
 def _app_of_op(rec) -> str:
     """The app that started an operation, as its ``preparing`` event names it; ``unknown``
     when the journal does not say (never taken for this app)."""
-    preparing = next((e for e in rec.events if e.get("event") == "preparing"), None)         if rec is not None else None
+    preparing = next((e for e in rec.events if e.get("event") == "preparing"), None) \
+        if rec is not None else None
     return app_of(preparing.get("app") if preparing is not None else None)
 
 
@@ -382,11 +382,11 @@ class LiveSession:
 
     def plan_undo(self, op_id: str) -> WritePlan:
         """The plan that puts back what this app's operation ``op_id`` replaced; a plan that
-        says why (:attr:`WritePlan.blocked`) when it cannot be undone. Raises
-        :class:`EditRefused` for an operation another app made."""
+        says why (:attr:`WritePlan.blocked`) when it cannot be undone (an unknown ``op_id``
+        too). Raises :class:`EditRefused` for an operation another app made."""
         ctx = self._now()
         rec = read_ops(ctx).get(op_id)
-        if _app_of_op(rec) != current().name:
+        if rec is not None and _app_of_op(rec) != current().name:
             raise EditRefused("that operation was not made by this app; undo it in the app "
                               "that made it")
         return WritePlan(plan_undo(ctx, op_id))
@@ -394,14 +394,17 @@ class LiveSession:
     def write(self, plan: WritePlan, confirmed: Iterable[str] = ()) -> WriteResult:
         """Make ``plan``'s write. Raises :class:`ConfirmationRequired` when ``confirmed`` lacks
         a code of :attr:`WritePlan.confirmations`, and :class:`TargetError` for a slot no write
-        may use; every other result is a :class:`WriteResult`."""
-        out = execute(self._now(), plan._plan, frozenset(confirmed))
+        may use; every other result is a :class:`WriteResult`. NMS Save Vault's settings are
+        read again first, as for every write it makes itself."""
+        self.refresh()
+        out = execute(self._ctx, plan._plan, frozenset(confirmed))
         self._after_write()
         return _result(out)
 
     def interrupted(self) -> list[Interrupted]:
-        """Writes of this machine that stopped part-way and wait for a choice (those that can
-        be finished without one are finished here). Empty while a write runs."""
+        """Writes that stopped part-way and wait for a choice (those that can be finished
+        without one are finished here). Another machine's are listed too, with no choices:
+        they are resolved on that machine. Empty while a write runs."""
         ctx = self._now()
         ops = read_ops(ctx)
         out = []
@@ -414,8 +417,13 @@ class LiveSession:
 
     def resolve(self, op_id: str, choice: str, confirmed: Iterable[str] = ()) -> WriteResult:
         """Finish (``"forward"``), put back (``"back"``) or leave (``"leave"``) an
-        :class:`Interrupted` write, as the user chose."""
-        out = resolve_recovery(self._now(), op_id, choice, frozenset(confirmed))
+        :class:`Interrupted` write, as the user chose: one of its ``choices``, else
+        ``ValueError``."""
+        ctx = self._now()
+        offered = next((i.choices for i in pending_recovery(ctx) if i.op_id == op_id), ())
+        if choice not in offered:
+            raise ValueError(f"{choice!r} is not offered for that write")
+        out = resolve_recovery(ctx, op_id, choice, frozenset(confirmed))
         self._after_write()
         return _result(out)
 
