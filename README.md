@@ -344,6 +344,13 @@ HOME, the XDG folders and the install folder (state.json, accounts.ini) pointed 
 folders, and any write under the real ones (Windows, Linux or macOS user folders, the
 safety backup) is refused before it happens and fails the test (`tests/conftest.py`).
 
+**The core as a library.** `src/nms_save_vault/core` is also bundled by other apps that share
+the vault (NMS Savecraft, a save editor in its own repo). It imports nothing outside itself
+and the standard library (`tests/test_core_boundary.py`). Such an app uses only
+`nms_save_vault.core.api`, a read API for now; its names are pinned by
+`tests/test_core_api.py` and versioned by `api.API_VERSION`. An app names itself once with
+`api.set_app(...)`, and every vault record after that carries its stamp.
+
 ## Auto-configuration
 
 On first run the app **auto-detects** every save folder on the PC and records them in a
@@ -638,7 +645,7 @@ The vault lives outside `st_<id>`, so it is never scanned by the game or synced 
 ## Status
 
 Working. Core format/crypto and all operations are verified against the real save files and
-in a temp sandbox (2779 tests). Xbox / Game Pass saves are supported for reading **and**
+in a temp sandbox (2787 tests). Xbox / Game Pass saves are supported for reading **and**
 writing, including Steam ↔ Xbox moves (validated in the real game) — verified against a real install (reads) and synthetic `wgs` fixtures
 (writes). A full file-copy safety backup of the live folder was made before development
 (`C:\Devel\NMS-SaveBackup-SAFETY-2026-06-24`). The Organizer is in (see above); a
