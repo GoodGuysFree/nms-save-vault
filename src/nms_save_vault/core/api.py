@@ -43,7 +43,7 @@ from .index.nodes import PrivacyError, get, items
 from .liveops import context_for, execute, pending_recovery, plan_undo, resolve_recovery
 from .liveops.classic import _ad_hoc
 from .liveops.context import OpContext
-from .liveops.edit import plan_edit
+from .liveops.edit import plan_edit, plan_edits
 from .liveops.errors import ConfirmationRequired, LiveOpError, TargetError
 from .liveops.targets import resolve_target
 from .liveops.model import OpOutcome, PlacePlan, Severity
@@ -491,6 +491,16 @@ class LiveSession:
         be made exactly), :class:`TargetError` (a slot no write may use) or a
         :class:`StoreError` (the vault busy with another app's write, or unreachable)."""
         return WritePlan(plan_edit(self._now(), slot, list(edits), what=what, expected=expected))
+
+    def plan_edits(self, edits: Sequence[tuple[LiveTarget, Sequence[Replace | Remove | Insert | AddMember],
+                                          str | None]], *, what: str) -> WritePlan:
+        """The plan to edit several slots as one write (CL6: a move between two saves takes
+        from one and puts into the other): ``edits`` holds (slot, its edits, the SHA-256 of
+        the version they were made from or None), each as for :meth:`plan_edit`. All are kept
+        in the vault first, written together, rolled back together when one fails, and
+        undone together. Raises as :meth:`plan_edit` does."""
+        return WritePlan(plan_edits(self._now(), [(t, list(e), x) for t, e, x in edits],
+                                    what=what))
 
     def folder_of(self, slot: LiveTarget) -> Path | None:
         """The live save folder this session writes for ``slot``; None when it writes none.

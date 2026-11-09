@@ -20,7 +20,7 @@ import dataclasses
 import hashlib
 import shutil
 import tempfile
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from pathlib import Path
 
 from .. import meta, slotmap
@@ -31,12 +31,14 @@ from ..savepatch import Edit
 from ..store import CaptureScope
 from .context import OpContext
 from .model import PairSource, PlacePlan
-from .planner import game_warning, plan_place, recovery_pending, vault_problem
+from .planner import (SourceUnreadable, _plan, _plan_warnings, _slot_warnings, classify,
+                      durable, game_warning, load_source, plan_place, recovery_pending,
+                      vault_problem)
 from .slots import read_account
 from .steamwrite import file_names
 from .targets import resolve_account, resolve_target
 
-__all__ = ["EditRefused", "plan_edit"]
+__all__ = ["EditRefused", "plan_edit", "plan_edits"]
 
 
 def _sha256_text(value: object) -> str:
@@ -54,15 +56,66 @@ def plan_edit(ctx: OpContext, target: LiveTarget, edits: Iterable[Edit], *,
     plan. The edited version is in the vault before this returns. Raises
     :class:`EditRefused` (also when the edit could not be written now: the game running, an
     interrupted operation waiting) and ``savepatch.PatchRefused``."""
-    if target.platform != "steam":
-        raise EditRefused("only Steam saves can be edited for now")
+    _gates(ctx, [target])
+    source, new_vid = _stage(ctx, target, edits, what, expected)
+    plan = plan_place(ctx, source, target)
+    return dataclasses.replace(plan, made=(new_vid,))
+
+
+def plan_edits(ctx: OpContext, edits: Sequence[tuple[LiveTarget, Iterable[Edit], str | None]],
+               *, what: str) -> PlacePlan:
+    """The plan to edit several slots as one operation (CL6: a move between two saves takes
+    from one and puts into the other): ``edits`` holds (slot, its edits, the SHA-256 of the
+    version they were made from or None). Each edited version is in the vault before this
+    returns; then all are written together, rolled back together when one fails, and undone
+    together. Raises as :func:`plan_edit` does, and ``EditRefused`` for a slot named twice."""
+    targets = [t for t, _e, _x in edits]
+    if not targets:
+        raise EditRefused("nothing to edit")
+    if len({(t.platform, t.account_key, t.slot, t.instance) for t in targets}) != len(targets):
+        raise EditRefused("a slot is named twice")
+    _gates(ctx, targets)
+    staged = [(t, _stage(ctx, t, e, what, x)) for t, e, x in edits]
+    parts, warnings, labels = [], [], []
+    for target, (source, _vid) in staged:
+        rt = resolve_target(ctx, target)
+        now = read_account(ctx, resolve_account(ctx, target.ref))
+        slot = now.slots[target.slot]
+        try:
+            src = load_source(ctx, source)
+        except SourceUnreadable:
+            raise EditRefused(f"{rt.label}: the edited version cannot be read back") from None
+        kind = classify(src, slot)
+        warnings += _plan_warnings(ctx, src, target.ref, now)
+        warnings += _slot_warnings(ctx, src, now, slot, kind, rt.label,
+                                   {m.vid: durable(ctx, m.vid) for m in slot.present})
+        parts.append((rt, now, slot, src, source))
+        labels.append(rt.label)
+    plan = _plan(ctx, "place", parts, warnings, f"Change {' and '.join(labels)} together",
+                 source=None)
+    return dataclasses.replace(plan, made=tuple(vid for _t, (_s, vid) in staged))
+
+
+def _gates(ctx: OpContext, targets: list[LiveTarget]) -> None:
+    for target in targets:
+        if target.platform != "steam":
+            raise EditRefused("only Steam saves can be edited for now")
     if ctx.versions is None:
         raise EditRefused("the vault has no version store yet (upgrade it first)")
-    rt = resolve_target(ctx, target)
-    account = resolve_account(ctx, target.ref)
-    for gate in (vault_problem(ctx), game_warning(ctx), recovery_pending(ctx, [target.ref])):
+    for target in targets:
+        resolve_target(ctx, target)
+    for gate in (vault_problem(ctx), game_warning(ctx),
+                 recovery_pending(ctx, [t.ref for t in targets])):
         if gate is not None and gate.severity == "block":
             raise EditRefused(gate.text)
+
+
+def _stage(ctx: OpContext, target: LiveTarget, edits: Iterable[Edit], what: str,
+           expected: str | None) -> tuple[PairSource, str]:
+    """The slot's save with ``edits`` made, kept in the vault as a one-slot extract: the pair
+    to place, and the edited version's id."""
+    rt = resolve_target(ctx, target)
+    account = resolve_account(ctx, target.ref)
     now = read_account(ctx, account).slots[target.slot]
     if now.newer is None or now.member(now.newer) is None:
         raise EditRefused(f"{rt.label} holds no save to edit")
@@ -113,5 +166,4 @@ def plan_edit(ctx: OpContext, target: LiveTarget, edits: Iterable[Edit], *,
     source = PairSource(pair.get("A"), pair.get("B"), loaded.position,
                         Location(new_vid, "store", StoreRef(entry.id), target.slot,
                                  loaded.position, "steam", True))
-    plan = plan_place(ctx, source, target)
-    return dataclasses.replace(plan, made=(new_vid,))
+    return source, new_vid

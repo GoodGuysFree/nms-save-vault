@@ -90,8 +90,12 @@ def plan_undo(ctx: OpContext, op_id: str) -> PlacePlan:
         if code:
             warnings.append(warning(code))
     first = loaded[0][0].label
-    outcome = (f"Swap {first} and {loaded[1][0].label} back" if len(loaded) == 2
-               else f"Undo: put '{entries[0].evicted_name}' back into {first}")
+    if swap and len(loaded) == 2:
+        outcome = f"Swap {first} and {loaded[1][0].label} back"
+    elif len(loaded) >= 2:
+        outcome = f"Undo: put {' and '.join(part[0].label for part in loaded)} back"
+    else:
+        outcome = f"Undo: put '{entries[0].evicted_name}' back into {first}"
     return _plan(ctx, "undo", loaded, warnings, outcome,
                  source=_summary(loaded[0][3]) if len(loaded) == 1 else None, undo_of=op_id)
 

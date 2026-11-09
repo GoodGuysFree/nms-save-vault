@@ -854,9 +854,11 @@ def outcome_text(plan: PlacePlan, wts: list[OpTarget]) -> str:
     if plan.kind == "swap":
         return f"Swapped {label} and {wts[1].rt.label}."
     if plan.kind == "undo":
-        if len(wts) == 2:
-            return f"Swapped {label} and {wts[1].rt.label} back."
+        if len(wts) >= 2:
+            return f"Put {' and '.join(w.rt.label for w in wts)} back."
         return f"Put '{name}' back into {label}."
+    if len(wts) >= 2:                   # several slots changed together (an app's move)
+        return f"Changed {' and '.join(w.rt.label for w in wts)} together."
     text = f"Moved '{name}' into {label}."
     return text + (f" '{evicted}' is in the vault." if evicted else "")
 
@@ -865,8 +867,10 @@ def undo_offer(plan: PlacePlan, wts: list[OpTarget], op_id: str) -> UndoOffer | 
     wt = wts[0]
     if plan.kind == "panic_restore":
         return UndoOffer(op_id, "Undo: restore the folder from the safety snapshot")
-    if plan.kind == "swap" or len(wts) == 2:
+    if plan.kind == "swap":
         return UndoOffer(op_id, f"Undo: swap {wt.rt.label} and {wts[1].rt.label} back")
+    if len(wts) >= 2:
+        return UndoOffer(op_id, f"Undo: put {' and '.join(w.rt.label for w in wts)} back")
     if not wt.before.present:
         return None                       # undoing a fill would empty the slot (F8)
     name = wt.before.head.meta.name if wt.before.head is not None else ""

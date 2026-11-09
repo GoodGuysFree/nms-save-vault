@@ -671,3 +671,49 @@ def test_an_undo_names_the_change_it_undid(world):
     back = session.write(undo, undo.confirmations)
     changes = {c.op_id: c for c in api.open_history(world.vault_root).changes_by(SC)}
     assert changes[back.op_id].undo_of == done.op_id and changes[done.op_id].undo_of is None
+
+
+def _json_other(world):
+    """The other account's slot 3 holding a save of real JSON, as the game writes it."""
+    from .liveops_support import POLESTAR
+    for member, play, ts in ((0, 4000, T0 + 300), (1, 3900, T0 + 200)):
+        body = b'{"' + K("SaveName").encode() + b'":"Polestar","m":%d}' % member
+        steam_save(world.other, 3, member, "Polestar", play, POLESTAR, ts, payload=body + b"\x00")
+
+
+def _units_of(folder, slot):
+    name = slotmap.data_filename(slotmap.slot_file_numbers(slot)[0])
+    return savejson.decode_save((folder / name).read_bytes()).root.get(K("Units"))
+
+
+def test_two_saves_are_changed_as_one_write_and_undone_together(world):
+    """CL6: a move between saves takes from one and puts into the other in one operation."""
+    _json_other(world)
+    session = api.open_live(world.vault_root, live_dirs=[world.live, world.other])
+    a, b = _slot(world), api.slot_of(world.other, 3)
+    plan = session.plan_edits([(a, UNITS, None), (b, [api.AddMember((), "Units", b"7")], None)],
+                              what="move units")
+    assert not plan.blocked, plan.blocked
+    assert len(plan.made) == 2
+    result = session.write(plan, plan.confirmations)
+    assert result.status == "done", result
+    assert (_units_of(world.live, 1), _units_of(world.other, 3)) == (9, 7)
+    changes = api.open_history(world.vault_root).changes_by(SC)       # one per slot
+    assert {c.op_id for c in changes} == {result.op_id} and len(changes) == 2
+    undo = session.plan_undo(result.op_id)
+    assert not undo.blocked, undo.blocked
+    assert session.write(undo, undo.confirmations).status == "done"
+    assert (_units_of(world.live, 1), _units_of(world.other, 3)) == (None, None)
+
+
+def test_a_two_save_edit_that_cannot_be_made_on_one_side_writes_neither(world):
+    _json_other(world)
+    session = api.open_live(world.vault_root, live_dirs=[world.live, world.other])
+    before = tree_hash(world.live), tree_hash(world.other)
+    with pytest.raises(api.PatchRefused):
+        session.plan_edits([(_slot(world), UNITS, None),
+                            (api.slot_of(world.other, 3), [api.Replace(("NoSuchField",), b"1")], None)],
+                           what="x")
+    with pytest.raises(api.EditRefused, match="named twice"):
+        session.plan_edits([(_slot(world), UNITS, None), (_slot(world), UNITS, None)], what="x")
+    assert (tree_hash(world.live), tree_hash(world.other)) == before
