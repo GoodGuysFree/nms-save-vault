@@ -54,6 +54,9 @@ class ScanCache:
         self.vault_id = vault_id
         self.read_only = read_only     # used, never saved (the operation hook)
         self._files: dict[str, list] = {}        # path -> [size, mtime_ns, vid, whole, meta_sha]
+        # path -> the file's id (st_ino), apart from the records above: a released NMS Save
+        # Vault reads records of exactly five fields, and drops the whole cache otherwise
+        self._inos: dict[str, int] = {}
         self._entries: dict[str, dict] = {}      # entry id -> {"fp", "captures"}
         self._ids: dict[str, str] = {}           # vid -> data id hex, "0" for none
         self._legacy: dict[str, str] = {}        # vid -> legacy pid fixed at first sight
@@ -86,6 +89,10 @@ class ScanCache:
             log.warning("scan cache damaged, starting afresh: %s", exc)
             return cache
         cache._files, cache._entries, cache._ids, cache._legacy = files, entries, ids, legacy
+        inos = data.get("inos")
+        if isinstance(inos, dict) and all(isinstance(k, str) and isinstance(v, int)
+                                          and not isinstance(v, bool) for k, v in inos.items()):
+            cache._inos = {k: v for k, v in inos.items() if k in files}
         return cache
 
     # --- files ----------------------------------------------------------------
@@ -98,16 +105,22 @@ class ScanCache:
         hit = self._files.get(str(path))
         if hit is None or hit[0] != size or hit[1] != mtime_ns:
             return None
-        held = hit[5] if len(hit) > 5 else 0
+        held = self._inos.get(str(path), 0)
         if ino and held and held != ino:
             return None
         return FileHit(hit[2], hit[3], hit[4])
 
     def put_file(self, path: Path, size: int, mtime_ns: int, vid: str, whole: bool | None,
                  meta_sha: str, ino: int = 0) -> None:
-        value = [size, mtime_ns, vid, whole, meta_sha, ino]
+        value = [size, mtime_ns, vid, whole, meta_sha]
         if self._files.get(str(path)) != value:
             self._files[str(path)] = value
+            self._dirty = True
+        if ino and self._inos.get(str(path)) != ino:
+            self._inos[str(path)] = ino
+            self._dirty = True
+        elif not ino and str(path) in self._inos:
+            del self._inos[str(path)]
             self._dirty = True
 
     # --- entries --------------------------------------------------------------
@@ -169,7 +182,8 @@ class ScanCache:
         if self.path is None or self.read_only or not self._dirty:
             return
         data = {"schema": SCHEMA, "vault_id": self.vault_id, "files": self._files,
-                "entries": self._entries, "ids": self._ids, "legacy": self._legacy}
+                "entries": self._entries, "ids": self._ids, "legacy": self._legacy,
+                "inos": {k: v for k, v in self._inos.items() if k in self._files}}
         try:
             safety.atomic_write_bytes(
                 self.path, json.dumps(data, ensure_ascii=True, separators=(",", ":")).encode("ascii"))
