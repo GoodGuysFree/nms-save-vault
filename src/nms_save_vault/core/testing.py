@@ -36,13 +36,14 @@ def game_closed() -> Iterator[None]:
 
 
 class _CrashAt(FaultInjector):
-    def __init__(self, point: str, nth: int) -> None:
+    def __init__(self, point: str, nth: int, fired: list) -> None:
         super().__init__()
-        self.point, self.nth = point, nth
+        self.point, self.nth, self.fired = point, nth, fired
 
     def at(self, point: str) -> None:
         self.seen.append(point)
         if point == self.point and self.seen.count(point) == self.nth:
+            self.fired.append(point)
             raise SimulatedCrash(point)
 
 
@@ -52,14 +53,19 @@ def crash_during(session, point: str, nth: int = 1) -> Iterator[None]:
     it reaches ``point``, as if the app or the machine went down there: it raises
     :class:`SimulatedCrash` (a ``BaseException``, so no ``except Exception`` stops it) and
     leaves what a crash leaves, for the next session to find. Points, in the order a write
-    passes them: ``"after_preparing"``; ``"staged:<n>"`` and ``"swapped:<n>"`` (file ``n``
-    of a slot, again for each slot of a write over several); ``"after_writing"``;
-    ``"after_validated"``; ``"after_record"``. For tests only."""
+    passes them: ``"after_snapshot"`` and ``"in_preserve"`` (what the slot holds is being
+    kept in the vault); ``"after_preparing"``; ``"after_writing"`` (the write is journaled,
+    nothing is on disk yet); ``"staged:<n>"`` then ``"swapped:<n>"`` (file ``n`` of a slot,
+    again for each slot of a write over several); ``"after_validated"`` (written and
+    checked, not recorded); ``"after_oplog"``; ``"after_record"``. Raises AssertionError when
+    the block ends and no write reached ``point`` (a misspelt one would let the write go
+    through for real). For tests only."""
     make = session._make
+    fired: list = []
 
     def crashing():
         ctx = make()
-        ctx.faults = _CrashAt(point, nth)
+        ctx.faults = _CrashAt(point, nth, fired)
         return ctx
     session._make = crashing
     try:
@@ -67,6 +73,8 @@ def crash_during(session, point: str, nth: int = 1) -> Iterator[None]:
     finally:
         session._make = make
         session._ctx = None             # the next call reads everything again, without faults
+    if not fired:
+        raise AssertionError(f"crash_during: the write never reached {point!r} (time {nth})")
 
 
 def obfuscated(node: object) -> object:

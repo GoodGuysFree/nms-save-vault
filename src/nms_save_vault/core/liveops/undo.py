@@ -89,6 +89,11 @@ def plan_undo(ctx: OpContext, op_id: str) -> PlacePlan:
         code = {"mixed": "MIXED_SLOT", "partial": "PARTIAL_SLOT"}.get(slot.state)
         if code:
             warnings.append(warning(code))
+    if len(loaded) >= 2 and not swap:
+        # in the reverse order of the write: a move put the asset in its target first, so
+        # its undo puts it back in its source first; an undo that dies between the two
+        # leaves it in both, never in neither
+        loaded = loaded[::-1]
     first = loaded[0][0].label
     if swap and len(loaded) == 2:
         outcome = f"Swap {first} and {loaded[1][0].label} back"

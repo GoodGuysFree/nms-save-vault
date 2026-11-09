@@ -428,7 +428,7 @@ def _settled_as(settled: dict | None, target, name: str, now_sha: str | None) ->
     """Whether the file ``name`` of ``target`` still holds what it held when the op failed
     (its own damaged output). Records written before files were keyed by account name the
     slot alone; those are read too."""
-    if settled is None:
+    if not isinstance(settled, dict):  # none, or a damaged record: nothing is taken as its own
         return False
     held = settled.get(settled_key(target, name), _NOT_KEPT)
     if held is _NOT_KEPT:

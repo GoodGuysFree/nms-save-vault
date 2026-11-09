@@ -82,7 +82,8 @@ def plan_edits(ctx: OpContext, edits: Sequence[tuple[LiveTarget, Iterable[Edit],
     targets = [t for t, _e, _x in edits]
     if not targets:
         raise EditRefused("nothing to edit")
-    whats = [what] * len(targets) if slot_whats is None else list(slot_whats)
+    whats = [what] * len(targets) if slot_whats is None else (
+        [] if isinstance(slot_whats, str) else list(slot_whats))
     if len(whats) != len(targets) or not all(isinstance(w, str) for w in whats):
         raise EditRefused("slot_whats needs one text for each slot")
     if len({(t.platform, t.account_key, t.slot, t.instance) for t in targets}) != len(targets):

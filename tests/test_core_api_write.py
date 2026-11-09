@@ -783,12 +783,15 @@ def test_each_save_of_a_two_save_write_can_say_what_was_done_to_it(world):
     plan = session.plan_edits([(_slot(world), UNITS, None),
                                (api.slot_of(world.other, 3), [api.AddMember((), "Units", b"7")], None)],
                               what="move units", slot_whats=["move units out", "move units in"])
-    labels = {e.origin["edit_of"]: e.origin["what"] for e in api.open_vault(world.vault_root).entries()
-              if isinstance(getattr(e, "origin", None), dict) and "edit_of" in e.origin}
-    assert sorted(labels.values()) == ["move units in", "move units out"]
-    assert len(plan.made) == 2
+    labels = {m.vid: e.origin["what"] for e in api.open_vault(world.vault_root).entries()
+              if isinstance(getattr(e, "origin", None), dict) and "edit_of" in e.origin
+              for m in e.members}
+    assert [labels[vid] for vid in plan.made] == ["move units out", "move units in"]   # per slot
     with pytest.raises(api.EditRefused, match="one text for each"):
         session.plan_edits([(_slot(world), UNITS, None)], what="x", slot_whats=["a", "b"])
+    with pytest.raises(api.EditRefused, match="one text for each"):        # not split into letters
+        session.plan_edits([(_slot(world), UNITS, None),
+                            (api.slot_of(world.other, 3), UNITS, None)], what="x", slot_whats="ab")
 
 
 def test_an_edit_never_asks_about_a_second_copy_of_its_playthrough(world):
@@ -822,3 +825,61 @@ def test_a_two_save_write_gone_stale_names_both_saves(world):
     out = session.write(plan, plan.confirmations)
     assert out.status == "stale"
     assert "slot 1" in out.text and "slot 3" in out.text, out.text
+
+
+def test_crash_during_says_so_when_the_write_never_reached_its_point(world):
+    """Review F-7: a misspelt point would let the write go through for real."""
+    from nms_save_vault.core import testing
+    session = _session(world)
+    plan = session.plan_edit(_slot(world), UNITS, what="units")
+    with pytest.raises(AssertionError, match="never reached 'after_validatd'"):
+        with testing.crash_during(session, "after_validatd"):
+            session.write(plan, plan.confirmations)
+
+
+def test_a_failed_write_s_files_are_kept_under_both_keys_while_its_slot_is_unique(tmp_path):
+    """Review F-1: a release before the account was in the key reads "slot/name"; it is
+    written too when no other slot of the op has that number (else it would be ambiguous)."""
+    import importlib
+    from types import SimpleNamespace
+
+    from nms_save_vault.core.organizer.model import LiveTarget
+    execute = importlib.import_module("nms_save_vault.core.liveops.execute")
+
+    def wt(account, slot):
+        return SimpleNamespace(steam=SimpleNamespace(pre={"save.hg": None}), folder=tmp_path,
+                               rt=SimpleNamespace(target=LiveTarget("steam", account, slot)))
+    one = execute.settled_files([wt("st_1", 1), wt("st_1", 3)])
+    assert one["1/save.hg"] is None and one["3/save.hg"] is None
+    assert one[execute.settled_key(LiveTarget("steam", "st_1", 1), "save.hg")] is None
+    two = execute.settled_files([wt("st_1", 1), wt("st_2", 1)])
+    assert "1/save.hg" not in two and len(two) == 2
+
+
+def test_a_damaged_settled_record_is_never_taken_for_the_op_s_own_output():
+    """Review F-2: a record whose "settled" is not a mapping (hand-made, damaged) neither
+    raises nor matches."""
+    from nms_save_vault.core.liveops import recovery
+    from nms_save_vault.core.organizer.model import LiveTarget
+    target = LiveTarget("steam", "st_1", 1)
+    for bad in (["1/save.hg"], "1/save.hg", 5):
+        assert recovery._settled_as(bad, target, "save.hg", None) is False
+    assert recovery._settled_as({"1/save.hg": None}, target, "save.hg", None) is True   # old key
+    assert recovery._settled_as({}, target, "save.hg", None) is False
+
+
+def test_the_undo_of_a_two_save_write_writes_the_saves_in_reverse_order(world):
+    """Review F (Savecraft): a move writes the save it lands in first, so its undo writes the
+    save it came from first. An undo that dies between the two then leaves the asset in
+    both saves, never in neither."""
+    _json_other(world)
+    session = api.open_live(world.vault_root, live_dirs=[world.live, world.other])
+    a, b = _slot(world), api.slot_of(world.other, 3)
+    plan = session.plan_edits([(b, [api.AddMember((), "Units", b"7")], None), (a, UNITS, None)],
+                              what="move units")
+    done = session.write(plan, plan.confirmations)
+    undo = session.plan_undo(done.op_id)
+    order = [(t.target.account_key, t.target.slot) for t in plan._plan.targets]
+    assert [(t.target.account_key, t.target.slot) for t in undo._plan.targets] == order[::-1]
+    assert session.write(undo, undo.confirmations).status == "done"
+    assert (_units_of(world.live, 1), _units_of(world.other, 3)) == (None, None)

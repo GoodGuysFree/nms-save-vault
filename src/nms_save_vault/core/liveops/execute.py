@@ -643,11 +643,17 @@ def settled_files(wts: list[OpTarget]) -> dict:
     """Steam: what each file of the op's slots holds at the moment it failed, so recovery can
     tell the op's own damaged output (still as it was left) from a save the game wrote since."""
     out = {}
+    numbers = [wt.rt.target.slot for wt in wts if wt.steam is not None]
     for wt in wts:
         if wt.steam is not None:
             for name in wt.steam.pre:
                 state = steamwrite.file_state(wt.folder / name)
-                out[settled_key(wt.rt.target, name)] = state.sha256 if state else None
+                value = state.sha256 if state else None
+                out[settled_key(wt.rt.target, name)] = value
+                if numbers.count(wt.rt.target.slot) == 1:
+                    # what releases before the account was in the key read; never written
+                    # when two slots of the op share a number (it would name either)
+                    out[f"{wt.rt.target.slot}/{name}"] = value
     return out
 
 
