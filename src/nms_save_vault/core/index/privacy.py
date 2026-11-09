@@ -78,10 +78,15 @@ def _kind(record: dict) -> object:
     return record[key("BaseType")].get(key("PersistentBaseTypes"))
 
 
-def save_owner(psds: Iterable[object]) -> dict | None:
+#: The owner block's platform code (``PTK``) of each platform's players.
+PLATFORM_CODES = {"steam": "ST", "xbox": "XB"}
+
+
+def save_owner(psds: Iterable[object], prefer: str | None = None) -> dict | None:
     """The owner ids (by key: UID, LID, USN, PTK; not the timestamp TS, which says when a
     record was made) the own bases of the first of ``psds`` (PlayerStateData) that has one
-    carry most; None when none has a base of its player's with an id."""
+    carry most, those whose platform code is ``prefer`` first; None when none has a base of
+    its player's with an id."""
     names = [key(f) for f in ("UID", "LID", "USN", "PTK")]
     for psd in psds:
         bases = psd.get(key("PersistentPlayerBases")) if isinstance(psd, dict) else None
@@ -93,8 +98,9 @@ def save_owner(psds: Iterable[object]) -> dict | None:
             ids = tuple(block.get(n) for n in names)
             if all(isinstance(v, str) for v in ids) and ids[0]:
                 found[ids] += 1
-        if found:
-            return dict(zip(names, found.most_common(1)[0][0]))
+        mine = Counter({ids: n for ids, n in found.items() if prefer and ids[3] == prefer})
+        if mine or found:
+            return dict(zip(names, (mine or found).most_common(1)[0][0]))
     return None
 
 

@@ -93,6 +93,21 @@ def test_an_unreachable_chosen_vault_is_waited_for_never_replaced(machine):
     assert not gone.exists() and not (tmp_path / "default_vault").exists()
 
 
+def test_the_user_may_start_another_vault_while_the_chosen_one_cannot_be_found(machine):
+    """S16 (GGF, 2026-11-09): Savecraft asks "Connect the drive and press Retry, or start a new
+    vault in the default place?"; when the user chooses the new one, it is started there."""
+    import json
+    tmp_path, _live = machine
+    gone = Path(f"{_free_drive()}:/unplugged/vault")
+    (tmp_path / "own").mkdir(exist_ok=True)
+    (tmp_path / "own" / "state.json").write_text(json.dumps({"vault": str(gone)}), encoding="utf-8")
+    where = tmp_path / "new_vault"
+    with pytest.raises(api.StoreUnavailable, match="cannot be found"):
+        api.create_vault(where)                         # never without the user's say
+    assert api.create_vault(where, chosen_missing_ok=True) == where
+    assert api.open_vault(where, live_roots=()) is not None and not gone.exists()
+
+
 def test_a_vault_that_fails_half_way_is_cleared_and_can_be_started_again(machine, monkeypatch):
     tmp_path, _live = machine
     root = tmp_path / "v"

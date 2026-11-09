@@ -50,6 +50,16 @@ def test_a_base_from_another_save_takes_the_owner_the_target_s_own_bases_carry_m
     assert (got["UserData"], got["Name"]) == (0, "")         # the rest as it was
 
 
+def test_the_owner_of_the_target_s_platform_comes_first():
+    """Review M6-5: a cross-save player keeps more bases of their old platform; a copy into a
+    Steam save is the Steam player's."""
+    target = save(base("HomePlanetBase", OTHER), base("HomePlanetBase", OTHER),
+                  base("FreighterBase", MINE))
+    assert owner(readable(api.rehomed(layout(), target, platform="steam")))["UID"] == "1001"
+    assert owner(readable(api.rehomed(layout(), target, platform="xbox")))["UID"] == "2002"
+    assert owner(readable(api.rehomed(layout(), target)))["UID"] == "2002"   # the most, else
+
+
 def test_the_other_game_of_the_target_gives_the_owner_when_this_one_has_no_base_of_its_player():
     target = save(base("ExternalPlanetBase", OTHER), expedition=(base("HomePlanetBase", OLDER),))
     assert owner(readable(api.rehomed(layout(), target)))["LID"] == "L0"

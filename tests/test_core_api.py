@@ -82,8 +82,8 @@ PINNED = {
     "items": ("function", "(node: 'object', *path: 'str') -> 'list'"),
     "known_game_version": ("function", "(member: 'MemberView', *, platform: 'str') -> 'bool'"),
     "read_account": ("function", "(folder: 'str | Path') -> 'dict | None'"),
-    "rehomed": ("function", "(entry: 'object', target: 'dict', context: 'str' = 'base') -> "
-                            "'bytes'"),
+    "rehomed": ("function", "(entry: 'object', target: 'dict', context: 'str' = 'base', *, "
+                            "platform: 'str | None' = None) -> 'bytes'"),
     "live_save_dirs": ("function", "() -> 'list[Path]'"),
     "open_vault": ("function", "(vault_root: 'str | Path | None' = None, *, "
                                "live_roots: 'Sequence[Path] | None' = None) -> 'VaultReader'"),
@@ -92,7 +92,8 @@ PINNED = {
     "scan_save_dir": ("function", "(folder: 'str | Path') -> 'SaveDirView'"),
     "set_app": ("function", "(name: 'str', version: 'str') -> 'AppIdentity'"),
     "vault_dir": ("function", "() -> 'Path'"),
-    "create_vault": ("function", "(vault_root: 'str | Path | None' = None) -> 'Path'"),
+    "create_vault": ("function", "(vault_root: 'str | Path | None' = None, *, "
+                                 "chosen_missing_ok: 'bool' = False) -> 'Path'"),
     "Inventory": ("fields", ("context", "owner", "index", "field", "where", "width", "height",
                              "valid", "special", "inventory_class", "stack_group", "slots"), ()),
     "Slot": ("fields", ("number", "item", "kind", "amount", "max_amount", "x", "y", "damage",

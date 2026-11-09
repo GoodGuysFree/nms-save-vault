@@ -592,9 +592,10 @@ def _created_utc(entry: CatalogEntry) -> int | None:
 def live_refs(sources: Sequence[Source]) -> list[LiveRef]:
     """One LiveRef per source: its folder name, plus an instance tag only when two live
     folders of one platform share that name here (two Proton prefixes). A folder an app
-    brought for one session (``ORIGIN_APP``) never renames the vault's own: it is the one
-    tagged when a folder of the vault's has its name, and the vault's folders are tagged only
-    when two of them share one, as the vault names them."""
+    brought for one session (``ORIGIN_APP``) is always named by its path (tagged), so a
+    folder of its name the vault lists later never takes its slots' history (review M6-1);
+    the vault's own folders are tagged only when two of them share a name, as the vault
+    names them."""
     def platform_of(s: Source) -> Platform:
         return "xbox" if s.platform == "xbox" else "steam"
 
@@ -602,8 +603,8 @@ def live_refs(sources: Sequence[Source]) -> list[LiveRef]:
     own = [key for source, key in zip(sources, names) if source.origin != ORIGIN_APP]
     out = []
     for source, key in zip(sources, names):
-        shared = (names if source.origin == ORIGIN_APP else own).count(key) > 1
-        out.append(LiveRef(key[0], key[1], instance_of(source.path) if shared else ""))
+        tagged = source.origin == ORIGIN_APP or own.count(key) > 1
+        out.append(LiveRef(key[0], key[1], instance_of(source.path) if tagged else ""))
     return out
 
 

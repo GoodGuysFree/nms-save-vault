@@ -81,8 +81,9 @@ def test_two_folders_of_one_name_need_the_instance_tag(tmp_path):
 
 
 def test_a_folder_an_app_brings_never_renames_the_vault_s_folder_of_that_name(tmp_path):
-    """An app's folder for one session (ORIGIN_APP) of a name the vault's folder has is the
-    one tagged: the vault's keeps the name the vault gives its slots, and a name alone is it."""
+    """An app's folder for one session (ORIGIN_APP) is named by its path, alone too (review
+    M6-1); the vault's folder of its name keeps the name the vault gives its slots, and a
+    name alone is it."""
     listed = steam_dir(tmp_path / "prefix1")
     brought = steam_dir(tmp_path / "prefix2")
     ctx = make_ctx(tmp_path, [live_source(listed),
@@ -93,7 +94,7 @@ def test_a_folder_an_app_brings_never_renames_the_vault_s_folder_of_that_name(tm
     rt = resolve_target(ctx, LiveTarget("steam", STEAM_ACCOUNT, 3, instance_of(brought)))
     assert rt.folder == brought
     alone = make_ctx(tmp_path, [replace(live_source(brought), origin=state.ORIGIN_APP)])
-    assert live_refs(alone.sources) == [LiveRef("steam", STEAM_ACCOUNT)]   # no other: no tag
+    assert live_refs(alone.sources) == [LiveRef("steam", STEAM_ACCOUNT, instance_of(brought))]
 
 
 def test_the_vault_and_folders_inside_it_are_never_targets(tmp_path):

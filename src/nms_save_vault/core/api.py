@@ -126,17 +126,20 @@ def default_vault_dir() -> Path:
     return locations.default_vault_dir()
 
 
-def create_vault(vault_root: str | Path | None = None) -> Path:
+def create_vault(vault_root: str | Path | None = None, *,
+                 chosen_missing_ok: bool = False) -> Path:
     """Start the vault for a user without NMS Save Vault (CL9): at ``vault_root`` (default
     :func:`vault_dir`, which is :func:`default_vault_dir` until NMS Save Vault chooses one),
     laid out as NMS Save Vault lays out a vault it creates, so a later install of it takes the
     vault as its own. A vault already there is left as it is. Returns the vault's folder.
     Raises :class:`StoreNotUpgraded` for a vault of NMS Save Vault's older layout (only NMS
     Save Vault upgrades one, when its user asks) and :class:`StoreUnavailable` when the folder
-    cannot be made."""
+    cannot be made, or when the vault NMS Save Vault chose cannot be found (its drive not
+    connected): no other vault is started then, unless the user chose to start this one
+    instead (``chosen_missing_ok``; Savecraft's S16 question)."""
     root = Path(vault_root) if vault_root is not None else vault_dir()
     chosen = state.chosen_vault()
-    if chosen is not None and not chosen.is_dir():
+    if chosen is not None and not chosen.is_dir() and not chosen_missing_ok:
         raise StoreUnavailable("The vault chosen in NMS Save Vault cannot be found: connect "
                                "the drive it is on. No other vault is started meanwhile.")
     if versionstore.vault_mode(root) != "legacy":
@@ -275,11 +278,14 @@ def read_account(folder: str | Path) -> dict | None:
     return accountdata.read(folder, platform_of(folder))
 
 
-def rehomed(entry: object, target: dict, context: str = "base") -> bytes:
+def rehomed(entry: object, target: dict, context: str = "base", *,
+            platform: str | None = None) -> bytes:
     """The base record ``entry`` of another save (a corvette's layout) as :func:`dumps` writes
     it, made the player's of the decoded save ``target``: its owner ids (``Owner``: UID, LID,
     USN, PTK) become the ones the target's own bases carry most, in ``context`` ("base", the
-    main game, or "expedition"), else in its other game; when it was made (``Owner.TS``)
+    main game, or "expedition"), else in its other game; of those, the ones of the target's
+    ``platform`` ("steam", "xbox") first (a cross-save player keeps bases of both); when it
+    was made (``Owner.TS``)
     stays, and who last edited it, when set, is cleared. The ids never leave the core: the
     bytes go into an edit as they are. Raises :class:`EditRefused` for what is not a base
     record and for a target with no base of its player's to take the owner from."""
@@ -292,7 +298,7 @@ def rehomed(entry: object, target: dict, context: str = "base") -> bytes:
     flat = get(target, "PlayerStateData")
     psds = [flat] if isinstance(flat, dict) else [get(target, outer[c], "PlayerStateData")
                                                   for c in order]
-    owner = privacy.save_owner(psds)
+    owner = privacy.save_owner(psds, privacy.PLATFORM_CODES.get(platform or ""))
     if owner is None:
         raise EditRefused("that save has no base of its player's to take the owner from")
     return dumps(privacy.rehome(entry, owner))
@@ -552,8 +558,9 @@ class LiveSession:
         be made exactly), :class:`TargetError` (a slot no write may use) or a
         :class:`StoreError` (the vault busy with another app's write, or unreachable).
         ``edits`` may be :class:`Steps`: changes the app held, each batch made in turn."""
-        return WritePlan(plan_edit(self._now(), slot, savepatch.as_steps(edits), what=what,
-                                   expected=expected))
+        ctx = self._now()
+        return WritePlan(plan_edit(ctx, _canonical(ctx, slot), savepatch.as_steps(edits),
+                                   what=what, expected=expected))
 
     def plan_edits(self, edits: Sequence[tuple[LiveTarget,
                                                Sequence[Replace | Remove | Insert | AddMember] | Steps,
@@ -570,7 +577,9 @@ class LiveSession:
         such a crash can only leave a copy in both, never in neither. When the game then
         saves one of them, the write can only be left as it is (it is not put back slot by
         slot). Raises as :meth:`plan_edit` does."""
-        return WritePlan(plan_edits(self._now(), [(t, savepatch.as_steps(e), x) for t, e, x in edits],
+        ctx = self._now()
+        return WritePlan(plan_edits(ctx, [(_canonical(ctx, t), savepatch.as_steps(e), x)
+                                          for t, e, x in edits],
                                     what=what, slot_whats=slot_whats))
 
     def slot_at(self, folder: str | Path, slot: int) -> LiveTarget | None:
@@ -661,6 +670,21 @@ class LiveSession:
             self._ctx = None
 
 
+def _canonical(ctx: OpContext, slot: LiveTarget) -> LiveTarget:
+    """``slot`` under the name the session gives its folder (an app may name it by its name
+    alone, :func:`slot_of`): the vault journals a write under that name, so its undo finds
+    the same folder however the folders of that name change later (review M6-1). A slot that
+    names no folder is left as given (planning it says why)."""
+    try:
+        rt = resolve_target(ctx, slot)
+    except TargetError:
+        return slot
+    for source, ref in zip(ctx.sources, live_refs(list(ctx.sources))):
+        if source.id == rt.source_id:
+            return ref.target(slot.slot)
+    return slot
+
+
 def _key(path: str | Path) -> str:
     """One spelling per folder: links, junctions, short names and substituted drives
     resolved, case folded."""
@@ -683,8 +707,10 @@ def _sources(live_dirs: Sequence[Path] | None, host: hostmod.Host) -> list[state
     off = {_key(s.path) for s in configured
            if not s.enabled or not s.writable or s.role != state.ROLE_LIVE}
     base = list(settings[0].live_sources) if settings else []
-    extra = ([_ad_hoc(Path(d)) for d in live_dirs] if live_dirs is not None
-             else list(discover.discover_live_sources()))
+    # the session's own folders, besides NMS Save Vault's: each named by its path (M6-1)
+    extra = [replace(s, origin=state.ORIGIN_APP) for s in (
+        [_ad_hoc(Path(d)) for d in live_dirs] if live_dirs is not None
+        else discover.discover_live_sources())]
     known = {_key(s.path) for s in base}
     vaults_names = {(s.platform == "xbox", Path(s.path).name.lower()) for s in base}
     out = list(base)

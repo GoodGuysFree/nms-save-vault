@@ -271,9 +271,45 @@ def test_a_folder_with_the_name_of_one_nms_save_vault_uses_is_written_by_its_pat
     assert _units(world) == 9 and tree_hash(listed) == listed_before
 
 
-def test_a_session_names_the_one_folder_of_a_name_as_the_vault_does(world):
+def test_an_app_s_folder_is_named_by_its_path_and_a_name_alone_still_finds_it(world):
+    """A folder NMS Save Vault does not list is named by its path, so a folder of its name
+    that the vault lists later never takes its slots' history (review M6-1)."""
     session = _session(world)
-    assert session.slot_at(world.live, 4) == api.slot_of(world.live, 4)    # no tag needed
+    mine = session.slot_at(world.live, 4)
+    assert mine.instance and (mine.platform, mine.account_key, mine.slot) == (
+        "steam", world.live.name, 4)
+    assert session.folder_of(api.slot_of(world.live, 4)) == world.live
+
+
+def test_a_change_is_journaled_under_the_folder_s_own_name_however_the_app_named_it(world):
+    session = _session(world)
+    plan = session.plan_edit(api.slot_of(world.live, 1), UNITS, what="x")   # its name alone
+    done = session.write(plan, plan.confirmations)
+    assert done.status == "done"
+    (change,) = api.open_history(world.vault_root).changes_by(SC)
+    assert change.target == session.slot_at(world.live, 1)
+
+
+def test_an_undo_lands_in_the_folder_the_change_was_written_to(world, tmp_path):
+    """Review M6-1: an app writes its folder; NMS Save Vault then lists a copy of it (same
+    name, another place). The undo puts back the app's folder, never the copy."""
+    session = _session(world)
+    mine = session.slot_at(world.live, 1)
+    plan = session.plan_edit(mine, UNITS, what="x")
+    done = session.write(plan, plan.confirmations)
+    assert done.status == "done" and _units(world) == 9
+    listed = tmp_path / "copy" / world.live.name
+    listed.mkdir(parents=True)
+    for name in SLOT1:
+        (listed / name).write_bytes((world.live / name).read_bytes())
+    _switch_off(world, listed, enabled=True)              # NMS Save Vault lists the copy
+    listed_before = tree_hash(listed)
+    later = _session(world)
+    assert later.slot_at(world.live, 1) == mine
+    undo = later.plan_undo(done.op_id)
+    assert not undo.blocked, undo.blocked
+    assert later.write(undo, undo.confirmations).status == "done"
+    assert _units(world) is None and tree_hash(listed) == listed_before
 
 
 def test_a_slot_the_game_saved_after_the_plan_is_not_written(world):
