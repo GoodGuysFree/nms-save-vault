@@ -60,6 +60,7 @@ def steam_to_xbox(plain: bytes, data: bytes, ts: int) -> bytes:
     total = chunk_total(data)
     info = meta.parse(plain, 0)
     _refuse_newer("steam", info.meta_format, info.base_version)
+    _refuse_newer("xbox", info.meta_format, info.base_version)      # its game there may not load it
     if info.size_decompressed != total:
         raise ConvertUnsupported("size_mismatch", "the Steam meta's size does not match its data")
     if any(plain[_OFF_HASH_AREA:_HASH_AREA_END]) or any(plain[_OFF_PROFILE_HASH:_OFF_PROFILE_HASH + 4]) \
@@ -99,6 +100,7 @@ def xbox_to_steam_plain(xmeta: bytes, data: bytes, ts: int) -> bytes:
     if fmt != formats.META_FORMAT_4:
         raise ConvertUnsupported("meta_format", f"an Xbox meta of format {fmt}")
     _refuse_newer("xbox", fmt, fields["base_version"])
+    _refuse_newer("steam", fmt, fields["base_version"])     # its game there may not load it
     total = chunk_total(data)
     out = bytearray(STEAM_LEN)
     struct.pack_into("<I", out, formats.OFF_HEADER, formats.META_HEADER)

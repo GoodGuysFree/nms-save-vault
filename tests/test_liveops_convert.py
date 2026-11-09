@@ -147,6 +147,30 @@ def test_game_newer_is_refused_both_ways():
     assert err.value.reason == "GAME_NEWER"
 
 
+def test_a_save_newer_than_the_target_platform_knows_is_refused(monkeypatch):
+    """After a game update one platform's guard can rise before the other's (the Xbox app
+    updates later). A save the target platform's game version may not load yet never
+    crosses: its game there would refuse it."""
+    data = _data()
+    monkeypatch.setitem(gameversion.KNOWN, "steam",
+                        gameversion.KnownFormat(formats.META_FORMAT_4, 4234, ()))
+    monkeypatch.setitem(gameversion.KNOWN, "xbox",
+                        gameversion.KnownFormat(formats.META_FORMAT_4, 4233, ()))
+    with pytest.raises(ConvertUnsupported) as err:
+        convert.steam_to_xbox(bytes(_steam_plain(data, base=4234)), data, TS)
+    assert err.value.reason == "GAME_NEWER"
+    assert convert.steam_to_xbox(bytes(_steam_plain(data, base=4233)), data, TS)
+    monkeypatch.setitem(gameversion.KNOWN, "steam",
+                        gameversion.KnownFormat(formats.META_FORMAT_4, 4233, ()))
+    monkeypatch.setitem(gameversion.KNOWN, "xbox",
+                        gameversion.KnownFormat(formats.META_FORMAT_4, 4234, ()))
+    x = bytearray(xbox_meta("W", ts=TS, pid=PID, size=convert.chunk_total(data)))
+    struct.pack_into("<I", x, 0, 4234)
+    with pytest.raises(ConvertUnsupported) as err:
+        convert.xbox_to_steam_plain(bytes(x), data, TS)
+    assert err.value.reason == "GAME_NEWER"
+
+
 def test_steam_meta_with_unmapped_data_or_wrong_size_is_refused():
     data = _data()
     for offset in (0x10, 0x40, 0x1AC):                      # hash area, profile hash, tail

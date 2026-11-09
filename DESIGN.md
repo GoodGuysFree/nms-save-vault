@@ -391,6 +391,10 @@ null, each with a `_why` note. **Owner decision (2026-11-07):** that evidence is
 is. While `same_release` is true, the Xbox guard is raised with the Steam guard, without
 waiting for an Xbox save from the new game.
 
+A save crosses platforms (Steam to Xbox, Xbox to Steam) only when both platforms' guards know
+its version. While one platform's app is still on the older game, a save from the newer game
+stays on its own platform: the older game would refuse to load it.
+
 `tools/check_upstream.py` is a development tool: the app never imports it and never calls the
 network for this.
 
