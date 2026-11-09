@@ -9,6 +9,8 @@ from nms_save_vault.core import api, gameversion, testing
 from nms_save_vault.core.hashname import key
 
 PINNED = {
+    "SimulatedCrash": "class",
+    "crash_during": "(session, point: 'str', nth: 'int' = 1) -> 'Iterator[None]'",
     "game_closed": "() -> 'Iterator[None]'",
     "obfuscated": "(node: 'object') -> 'object'",
     "write_steam_save": (
@@ -21,7 +23,8 @@ PINNED = {
 
 def test_the_testing_names_and_signatures_are_pinned():
     assert sorted(testing.__all__) == sorted(PINNED)
-    assert {n: str(inspect.signature(getattr(testing, n))) for n in testing.__all__} == PINNED
+    assert {n: "class" if isinstance(getattr(testing, n), type)
+            else str(inspect.signature(getattr(testing, n))) for n in testing.__all__} == PINNED
 
 
 def test_readable_names_become_the_game_s_keys():

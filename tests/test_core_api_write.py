@@ -717,3 +717,18 @@ def test_a_two_save_edit_that_cannot_be_made_on_one_side_writes_neither(world):
     with pytest.raises(api.EditRefused, match="named twice"):
         session.plan_edits([(_slot(world), UNITS, None), (_slot(world), UNITS, None)], what="x")
     assert (tree_hash(world.live), tree_hash(world.other)) == before
+
+
+def test_crash_during_stops_a_write_where_named_and_the_next_session_finds_it(world):
+    """core.testing.crash_during, for an app's crash tests: the write dies at the point
+    named, unrecorded, and the next session finishes it (written and checked already)."""
+    from nms_save_vault.core import testing
+    session = _session(world)
+    plan = session.plan_edit(_slot(world), UNITS, what="units")
+    with testing.crash_during(session, "after_validated"):
+        with pytest.raises(testing.SimulatedCrash, match="after_validated"):
+            session.write(plan, plan.confirmations)
+    assert api.open_history(world.vault_root).changes_by(SC) == []
+    assert _session(world).interrupted() == []
+    (done,) = api.open_history(world.vault_root).changes_by(SC)
+    assert done.target.slot == 1

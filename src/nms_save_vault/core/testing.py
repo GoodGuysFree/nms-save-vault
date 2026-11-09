@@ -15,8 +15,9 @@ from pathlib import Path
 
 from . import formats, gameversion, lz4_block, meta, slotmap
 from .hashname import key
+from .liveops.faults import FaultInjector, SimulatedCrash
 
-__all__ = ["game_closed", "obfuscated", "write_steam_save"]
+__all__ = ["SimulatedCrash", "crash_during", "game_closed", "obfuscated", "write_steam_save"]
 
 
 @contextmanager
@@ -32,6 +33,40 @@ def game_closed() -> Iterator[None]:
         yield
     finally:
         safety.is_game_running = saved
+
+
+class _CrashAt(FaultInjector):
+    def __init__(self, point: str, nth: int) -> None:
+        super().__init__()
+        self.point, self.nth = point, nth
+
+    def at(self, point: str) -> None:
+        self.seen.append(point)
+        if point == self.point and self.seen.count(point) == self.nth:
+            raise SimulatedCrash(point)
+
+
+@contextmanager
+def crash_during(session, point: str, nth: int = 1) -> Iterator[None]:
+    """Inside it, a write of ``session`` (an ``api.LiveSession``) stops dead the ``nth`` time
+    it reaches ``point``, as if the app or the machine went down there: it raises
+    :class:`SimulatedCrash` (a ``BaseException``, so no ``except Exception`` stops it) and
+    leaves what a crash leaves, for the next session to find. Points, in the order a write
+    passes them: ``"after_preparing"``; ``"staged:<n>"`` and ``"swapped:<n>"`` (file ``n``
+    of a slot, again for each slot of a write over several); ``"after_writing"``;
+    ``"after_validated"``; ``"after_record"``. For tests only."""
+    make = session._make
+
+    def crashing():
+        ctx = make()
+        ctx.faults = _CrashAt(point, nth)
+        return ctx
+    session._make = crashing
+    try:
+        yield
+    finally:
+        session._make = make
+        session._ctx = None             # the next call reads everything again, without faults
 
 
 def obfuscated(node: object) -> object:
