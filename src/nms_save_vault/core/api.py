@@ -500,8 +500,12 @@ class LiveSession:
         the version they were made from or None), each as for :meth:`plan_edit`. All are kept
         in the vault first, written together, rolled back together when one fails, and
         undone together. ``slot_whats`` labels each slot's edited version in the vault (the
-        source of a move "moved out", its target "moved in"; default ``what``). Raises as
-        :meth:`plan_edit` does."""
+        source of a move "moved out", its target "moved in"; default ``what``). The slots are
+        written in the order given, and undone in the reverse order. A crash between two of
+        them leaves the ones before it written: list the slot that receives first, so that
+        such a crash can only leave a copy in both, never in neither. When the game then
+        saves one of them, the write can only be left as it is (it is not put back slot by
+        slot). Raises as :meth:`plan_edit` does."""
         return WritePlan(plan_edits(self._now(), [(t, list(e), x) for t, e, x in edits],
                                     what=what, slot_whats=slot_whats))
 
