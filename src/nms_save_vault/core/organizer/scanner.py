@@ -450,14 +450,16 @@ class _Run:
         path = mv.data_path
         try:
             st = path.stat()
-            hit = None if self.deep else self.cache.file(path, st.st_size, st.st_mtime_ns)
+            hit = None if self.deep else self.cache.file(path, st.st_size, st.st_mtime_ns,
+                                                         st.st_ino)
             data = None
             # The verdict ties the data to its meta: a new meta beside the same data (moved,
             # promoted, edited) is checked again.
             if hit is None or (live and (hit.whole is None or hit.meta_sha != mv.meta_sha256)):
                 data = path.read_bytes()
                 vid, ok = safety.sha256_bytes(data), (_whole(mv, data, platform) if live else None)
-                self.cache.put_file(path, st.st_size, st.st_mtime_ns, vid, ok, mv.meta_sha256)
+                self.cache.put_file(path, st.st_size, st.st_mtime_ns, vid, ok, mv.meta_sha256,
+                                    st.st_ino)
             else:
                 vid, ok = hit.vid, hit.whole
         except OSError as exc:

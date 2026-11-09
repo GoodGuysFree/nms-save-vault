@@ -90,16 +90,22 @@ class ScanCache:
 
     # --- files ----------------------------------------------------------------
 
-    def file(self, path: Path, size: int, mtime_ns: int) -> FileHit | None:
-        """What is known of a data file that has not changed since, else None."""
+    def file(self, path: Path, size: int, mtime_ns: int, ino: int = 0) -> FileHit | None:
+        """What is known of a data file that has not changed since, else None. ``ino``: the
+        file's id (``st_ino``); a file replaced by a write gets a new one, so two writes of
+        the same size stamped within one second (the save time is whole seconds) are told
+        apart. 0 where the file system gives none, and in records made before it was kept."""
         hit = self._files.get(str(path))
         if hit is None or hit[0] != size or hit[1] != mtime_ns:
+            return None
+        held = hit[5] if len(hit) > 5 else 0
+        if ino and held and held != ino:
             return None
         return FileHit(hit[2], hit[3], hit[4])
 
     def put_file(self, path: Path, size: int, mtime_ns: int, vid: str, whole: bool | None,
-                 meta_sha: str) -> None:
-        value = [size, mtime_ns, vid, whole, meta_sha]
+                 meta_sha: str, ino: int = 0) -> None:
+        value = [size, mtime_ns, vid, whole, meta_sha, ino]
         if self._files.get(str(path)) != value:
             self._files[str(path)] = value
             self._dirty = True
@@ -178,9 +184,10 @@ def _below(path: str, root: str) -> bool:
 
 
 def _file_ok(value: object) -> bool:
-    return (isinstance(value, list) and len(value) == 5 and isinstance(value[0], int)
+    return (isinstance(value, list) and len(value) in (5, 6) and isinstance(value[0], int)
             and isinstance(value[1], int) and is_vid(value[2])
-            and (value[3] is None or isinstance(value[3], bool)) and isinstance(value[4], str))
+            and (value[3] is None or isinstance(value[3], bool)) and isinstance(value[4], str)
+            and (len(value) == 5 or (isinstance(value[5], int) and not isinstance(value[5], bool))))
 
 
 def _is_legacy(value: object) -> bool:

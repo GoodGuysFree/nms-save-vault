@@ -1056,3 +1056,15 @@ def test_a_written_op_that_cannot_be_finished_can_be_put_back(world, monkeypatch
     assert again.resolve(item.op_id, "forward").status == "refused"
     assert again.resolve(item.op_id, "back").status == "rolled_back"
     assert tree_hash(world.live) == before
+
+
+def test_quick_edits_of_the_same_size_are_each_read_as_they_are(world):
+    """Milestone review 2 (Savecraft #5): the save time is whole seconds, so two writes of
+    the same size within one second leave size and time alike; the scan cache took the
+    second for the first, and every later edit was refused as "changed while it was read"."""
+    session = _session(world)
+    for n in (b"1", b"2", b"3", b"4"):
+        change = [api.AddMember((), "Units", n)] if n == b"1" else [api.Replace(("Units",), n)]
+        plan = session.plan_edit(_slot(world), change, what=f"units {n.decode()}")
+        assert session.write(plan, plan.confirmations).status == "done"
+        assert _units_of(world.live, 1) == int(n)
