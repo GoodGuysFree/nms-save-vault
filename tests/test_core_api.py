@@ -82,6 +82,7 @@ PINNED = {
     "items": ("function", "(node: 'object', *path: 'str') -> 'list'"),
     "known_game_version": ("function", "(member: 'MemberView', *, platform: 'str') -> 'bool'"),
     "read_account": ("function", "(folder: 'str | Path') -> 'dict | None'"),
+    "owner_time": ("function", "(base: 'object') -> 'int | None'"),
     "rehomed": ("function", "(entry: 'object', target: 'dict', context: 'str' = 'base', *, "
                             "platform: 'str | None' = None) -> 'bytes'"),
     "live_save_dirs": ("function", "() -> 'list[Path]'"),

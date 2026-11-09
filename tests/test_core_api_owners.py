@@ -73,6 +73,14 @@ def test_a_target_with_no_base_of_its_player_is_refused():
             api.rehomed(layout(), target)
 
 
+def test_an_app_reads_when_a_base_s_owner_block_was_made_and_nothing_else_of_it():
+    record = obfuscated(base("PlayerShipBase", MINE, ts=1790000001))
+    assert api.owner_time(record) == 1790000001
+    assert api.owner_time(obfuscated({"Name": "x"})) is None
+    with pytest.raises(api.PrivacyError):
+        api.get(record, "Owner", "TS")                  # the block itself stays closed
+
+
 def test_only_a_base_record_is_rehomed():
     with pytest.raises(api.EditRefused, match="not a base"):
         api.rehomed(obfuscated({"Name": "x"}), save(base("HomePlanetBase", MINE)))

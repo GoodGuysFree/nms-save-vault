@@ -92,7 +92,7 @@ __all__ = [
     # what is in a save
     "CtxInput", "DecodedSave", "SaveDecodeError", "SaveInput", "contexts_of", "decode_save",
     "PrivacyError", "get", "items", "known_game_version", "playthrough_of", "read_member",
-    "read_account", "rehomed",
+    "owner_time", "read_account", "rehomed",
     "Inventory", "Slot", "SpecialSlot", "inventories_of",
     "ASSET_KINDS", "Asset", "INDEX_VERSION", "assets_of", "state_of",
     # the vault's stored versions
@@ -268,6 +268,13 @@ def parse_text(text: bytes) -> dict:
     """The root of a save's JSON text, as :func:`decode_save` gives it (``DecodedSave.root``).
     Raises :class:`SaveDecodeError` when it does not parse."""
     return savejson.parse_text(text)
+
+
+def owner_time(base: object) -> int | None:
+    """When the owner block of the base record ``base`` was made (``Owner.TS``, unix
+    seconds), or None: a time, never an id or a name (the rest of the block stays closed to
+    :func:`get`). It ties an old corvette interior to its corvette by time."""
+    return privacy.owner_time(base)
 
 
 def read_account(folder: str | Path) -> dict | None:
