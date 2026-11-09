@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING
 from .. import catalog, discover, formats, lz4_block, msstore, playtime, safety, savedir
 from ..catalog import CatalogEntry, Vault
 from ..savedir import MemberView, SlotView
-from ..state import Source
+from ..state import ORIGIN_APP, Source
 from .cache import ScanCache
 from .model import (
     Capture,
@@ -591,13 +591,20 @@ def _created_utc(entry: CatalogEntry) -> int | None:
 
 def live_refs(sources: Sequence[Source]) -> list[LiveRef]:
     """One LiveRef per source: its folder name, plus an instance tag only when two live
-    folders of one platform share that name here (two Proton prefixes)."""
+    folders of one platform share that name here (two Proton prefixes). A folder an app
+    brought for one session (``ORIGIN_APP``) never renames the vault's own: it is the one
+    tagged when a folder of the vault's has its name, and the vault's folders are tagged only
+    when two of them share one, as the vault names them."""
     def platform_of(s: Source) -> Platform:
         return "xbox" if s.platform == "xbox" else "steam"
 
     names = [(platform_of(s), Path(s.path).name) for s in sources]
-    return [LiveRef(key[0], key[1], instance_of(source.path) if names.count(key) > 1 else "")
-            for source, key in zip(sources, names)]
+    own = [key for source, key in zip(sources, names) if source.origin != ORIGIN_APP]
+    out = []
+    for source, key in zip(sources, names):
+        shared = (names if source.origin == ORIGIN_APP else own).count(key) > 1
+        out.append(LiveRef(key[0], key[1], instance_of(source.path) if shared else ""))
+    return out
 
 
 def instance_of(folder: str | Path) -> str:

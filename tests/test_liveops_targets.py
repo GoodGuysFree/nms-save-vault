@@ -2,15 +2,16 @@
 its platform outside the vault (D5 2.3.6, C29; T-T1)."""
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
-from nms_save_vault.core import aliases
+from nms_save_vault.core import aliases, state
 from nms_save_vault.core.liveops import TargetError
 from nms_save_vault.core.liveops.targets import account_label, resolve_account, resolve_target
 from nms_save_vault.core.organizer.model import LiveRef, LiveTarget
-from nms_save_vault.core.organizer.scanner import instance_of
+from nms_save_vault.core.organizer.scanner import instance_of, live_refs
 
 from .conftest import steam_save
 from .liveops_support import (
@@ -77,6 +78,22 @@ def test_two_folders_of_one_name_need_the_instance_tag(tmp_path):
     rt = resolve_target(ctx, LiveTarget("steam", STEAM_ACCOUNT, 3, instance_of(second)))
     assert rt.folder == second
     assert rt.label == "Steam slot 3 (Steam 2)"     # several Steam accounts: say which
+
+
+def test_a_folder_an_app_brings_never_renames_the_vault_s_folder_of_that_name(tmp_path):
+    """An app's folder for one session (ORIGIN_APP) of a name the vault's folder has is the
+    one tagged: the vault's keeps the name the vault gives its slots, and a name alone is it."""
+    listed = steam_dir(tmp_path / "prefix1")
+    brought = steam_dir(tmp_path / "prefix2")
+    ctx = make_ctx(tmp_path, [live_source(listed),
+                              replace(live_source(brought), origin=state.ORIGIN_APP)])
+    assert live_refs(ctx.sources) == [LiveRef("steam", STEAM_ACCOUNT),
+                                      LiveRef("steam", STEAM_ACCOUNT, instance_of(brought))]
+    assert resolve_target(ctx, LiveTarget("steam", STEAM_ACCOUNT, 3)).folder == listed
+    rt = resolve_target(ctx, LiveTarget("steam", STEAM_ACCOUNT, 3, instance_of(brought)))
+    assert rt.folder == brought
+    alone = make_ctx(tmp_path, [replace(live_source(brought), origin=state.ORIGIN_APP)])
+    assert live_refs(alone.sources) == [LiveRef("steam", STEAM_ACCOUNT)]   # no other: no tag
 
 
 def test_the_vault_and_folders_inside_it_are_never_targets(tmp_path):

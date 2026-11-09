@@ -56,6 +56,7 @@ from .store.damage import DAMAGE_JSON
 from .organizer.journal import Journal
 from .organizer.model import LiveTarget, ModelError, pid_from_id
 from .organizer.provenance import AppChange, Before, KeptCopy
+from .organizer.scanner import live_refs
 from .organizer.store import OrganizerStore
 from . import saveedit, savejson, savepatch
 from .saveedit import EditRefused
@@ -539,6 +540,19 @@ class LiveSession:
         return WritePlan(plan_edits(self._now(), [(t, savepatch.as_steps(e), x) for t, e, x in edits],
                                     what=what, slot_whats=slot_whats))
 
+    def slot_at(self, folder: str | Path, slot: int) -> LiveTarget | None:
+        """How this session names slot ``slot`` of exactly the save folder ``folder``: the
+        slot to plan a change to a save read from there. None when the session holds no such
+        folder. Two folders can share a name (a copy, a second Proton prefix), and
+        :func:`slot_of` names a slot by its folder's name alone: the one NMS Save Vault
+        lists."""
+        ctx = self._now()
+        here = _key(folder)
+        for source, ref in zip(ctx.sources, live_refs(list(ctx.sources))):
+            if source.role == state.ROLE_LIVE and _key(source.path) == here:
+                return ref.target(slot)
+        return None
+
     def folder_of(self, slot: LiveTarget) -> Path | None:
         """The live save folder this session writes for ``slot``; None when it writes none.
         Two folders can share a name (a Steam folder NMS Save Vault lists and another found
@@ -627,7 +641,10 @@ def _sources(live_dirs: Sequence[Path] | None, host: hostmod.Host) -> list[state
     """The live folders a session uses. With NMS Save Vault's settings: its live folders as
     it lists them (so both apps name every slot alike), then the extra folders it lacks
     (``live_dirs``, else the ones found on this machine). A folder any of its settings files
-    switches off, marks read-only or keeps as a backup source is only read."""
+    switches off, marks read-only or keeps as a backup source is only read. An extra folder
+    of a name one of its folders has is used only when the app gave it (``live_dirs``): it
+    is told apart by its path (:meth:`LiveSession.slot_at`), and its folder keeps the name
+    NMS Save Vault gives its slots."""
     settings = state.vault_settings(host)
     configured = [s for st in settings for s in st.sources]
     off = {_key(s.path) for s in configured
@@ -641,12 +658,8 @@ def _sources(live_dirs: Sequence[Path] | None, host: hostmod.Host) -> list[state
     for s in extra:
         if _key(s.path) in known:
             continue
-        if (s.platform == "xbox", Path(s.path).name.lower()) in vaults_names:
-            # a second folder of one name would rename the slots of NMS Save Vault's folder
-            if live_dirs is None:
-                continue                # found on this machine: NMS Save Vault does not use it
-            raise ValueError(f"the save folder {Path(s.path).name} cannot be used: NMS Save "
-                             "Vault uses another folder of that name")
+        if live_dirs is None and (s.platform == "xbox", Path(s.path).name.lower()) in vaults_names:
+            continue                    # found on this machine: NMS Save Vault does not use it
         known.add(_key(s.path))
         out.append(s)
     return [replace(s, writable=False) if _key(s.path) in off else s for s in out]
@@ -660,8 +673,9 @@ def open_live(vault_root: str | Path | None = None, *,
     write is refused to an app that has not named itself. Raises :class:`StoreUnavailable`,
     :class:`StoreNotUpgraded` or :class:`StoreTooNew` when there is no vault there to write
     through, and ``ValueError`` when NMS Save Vault's settings cannot be read (what they
-    switch off is then not known) or a folder of ``live_dirs`` has the name of another folder
-    they list. The settings are read again at every refresh."""
+    switch off is then not known). A folder of ``live_dirs`` may have the name of another
+    folder: name its slots with :meth:`LiveSession.slot_at`. The settings are read again at
+    every refresh."""
     if current().name == VAULT:
         raise ValueError("name the app with set_app() before writing")
     root = Path(vault_root) if vault_root is not None else vault_dir()

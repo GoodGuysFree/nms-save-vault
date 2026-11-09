@@ -33,6 +33,7 @@ PLATFORM_XBOX = "xbox"
 
 ORIGIN_AUTO = "auto"      # added by discovery; a rescan may refresh it
 ORIGIN_MANUAL = "manual"  # added/edited by the user; a rescan never touches it
+ORIGIN_APP = "app"        # a folder an app brought for one session; never saved
 
 
 @dataclass

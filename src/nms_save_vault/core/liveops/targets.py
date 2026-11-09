@@ -102,9 +102,13 @@ def _platform(source: Source) -> str:
 
 
 def _the_source(sources, account: LiveRef) -> Source:
-    found = [s for s in _live(sources, account.platform)
-             if Path(s.path).name == account.account_key
-             and (not account.instance or instance_of(s.path) == account.instance)]
+    """The folder named so; the one named exactly so first (a folder of the vault's and one
+    an app brought, of one name: the name alone is the vault's)."""
+    live = _live(sources, account.platform)
+    named = [s for s, ref in zip(sources, live_refs(list(sources))) if ref == account]
+    found = [s for s in named if s in live] or [
+        s for s in live if Path(s.path).name == account.account_key
+        and (not account.instance or instance_of(s.path) == account.instance)]
     if not found:
         raise TargetError("UNKNOWN_ACCOUNT", "no enabled live source holds that account")
     if len(found) > 1:

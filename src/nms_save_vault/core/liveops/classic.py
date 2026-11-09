@@ -27,7 +27,7 @@ from ..catalog import Vault
 from ..organizer import Organizer
 from ..organizer.model import LiveRef, LiveTarget
 from ..organizer.recorder import LiveOpBusy
-from ..state import Source
+from ..state import ORIGIN_APP, Source
 from ..store import listing
 from .context import OpContext, context_for
 from .errors import LiveOpError
@@ -582,7 +582,7 @@ def _ad_hoc(live_dir: Path) -> Source:
     tag = hashlib.sha1(str(live_dir).encode("utf-8")).hexdigest()[:6]
     return Source(id=f"{platform}-{live_dir.name}-{tag}", platform=platform,
                   account=live_dir.name, path=str(live_dir), label="", writable=True,
-                  enabled=True)
+                  origin=ORIGIN_APP, enabled=True)
 
 
 def target_of(ref: LiveRef, slot: int) -> LiveTarget:

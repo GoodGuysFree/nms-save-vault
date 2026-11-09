@@ -127,6 +127,7 @@ PINNED = {
                      "edits: 'Sequence[Replace | Remove | Insert | AddMember] | Steps', *, "
                      "what: 'str', expected: 'str | None' = None) -> 'WritePlan'",
         "folder_of": "(self, slot: 'LiveTarget') -> 'Path | None'",
+        "slot_at": "(self, folder: 'str | Path', slot: 'int') -> 'LiveTarget | None'",
         "plan_edits": "(self, edits: 'Sequence[tuple[LiveTarget, Sequence[Replace | Remove | "
                       "Insert | AddMember] | Steps, str | None]]', *, what: 'str', "
                       "slot_whats: 'Sequence[str] | None' = None) -> 'WritePlan'",

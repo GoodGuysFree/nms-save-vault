@@ -248,12 +248,32 @@ def test_settings_the_pointer_names_that_are_gone_stop_the_session(world, tmp_pa
     assert tree_hash(world.live) == live_before
 
 
-def test_a_folder_with_the_name_of_one_nms_save_vault_uses_is_refused(world, tmp_path):
-    elsewhere = tmp_path / "copy" / world.live.name
-    elsewhere.mkdir(parents=True)
-    _switch_off(world, elsewhere, enabled=True)           # Vault lists another folder so named
-    with pytest.raises(ValueError, match="another folder of that name"):
-        _session(world)
+def test_a_folder_with_the_name_of_one_nms_save_vault_uses_is_written_by_its_path(world,
+                                                                                tmp_path):
+    """Two folders can share a name (a copy, a second Proton prefix): a session names a save
+    by its folder's path (slot_at) and writes exactly that folder; the one NMS Save Vault
+    lists keeps the name the vault gives its slots, which a name alone (slot_of) still is."""
+    listed = tmp_path / "copy" / world.live.name
+    listed.mkdir(parents=True)
+    for name in SLOT1:
+        (listed / name).write_bytes((world.live / name).read_bytes())
+    _switch_off(world, listed, enabled=True)              # Vault lists another folder so named
+    session = _session(world)
+    mine = session.slot_at(world.live, 1)
+    assert mine is not None and mine.instance and mine.slot == 1
+    assert session.folder_of(mine) == world.live
+    assert session.slot_at(listed, 1) == api.slot_of(listed, 1)
+    assert session.folder_of(api.slot_of(world.live, 1)) == listed
+    assert session.slot_at(tmp_path / "nowhere" / world.live.name, 1) is None
+    listed_before = tree_hash(listed)
+    plan = session.plan_edit(mine, UNITS, what="x")
+    assert session.write(plan, plan.confirmations).status == "done"
+    assert _units(world) == 9 and tree_hash(listed) == listed_before
+
+
+def test_a_session_names_the_one_folder_of_a_name_as_the_vault_does(world):
+    session = _session(world)
+    assert session.slot_at(world.live, 4) == api.slot_of(world.live, 4)    # no tag needed
 
 
 def test_a_slot_the_game_saved_after_the_plan_is_not_written(world):
