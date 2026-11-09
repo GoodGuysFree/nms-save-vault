@@ -883,3 +883,176 @@ def test_the_undo_of_a_two_save_write_writes_the_saves_in_reverse_order(world):
     assert [(t.target.account_key, t.target.slot) for t in undo._plan.targets] == order[::-1]
     assert session.write(undo, undo.confirmations).status == "done"
     assert (_units_of(world.live, 1), _units_of(world.other, 3)) == (None, None)
+
+
+# --- milestone review 2 (1547391) ---------------------------------------------------------
+
+
+def _progress(folder, slot, name, play, ident, units):
+    import time
+    body = b'{"' + K("SaveName").encode() + b'":"%s","m":0,"%s":%d}' % (
+        name.encode(), K("Units").encode(), units)
+    steam_save(folder, slot, 0, name, play, ident, int(time.time()) + 600, payload=body + b"\x00")
+
+
+def test_no_value_a_save_cannot_hold_is_written():
+    """M2-2, M2-10: NaN and infinity are not JSON, and a lone surrogate is not text; each is
+    refused as a patch, never written."""
+    for value in (float("nan"), 1e400, float("-inf"), "\ud800"):
+        with pytest.raises(api.PatchRefused):
+            api.dumps(value)
+    with pytest.raises(api.PatchRefused):
+        api.dumps_named({"Name": "\ud800"})
+
+
+def test_a_raw_value_that_is_not_json_is_refused(world):
+    session = _session(world)
+    for raw in (b"-Infinity", b"NaN", b"Infinity"):
+        with pytest.raises(api.PatchRefused):
+            session.plan_edit(_slot(world), [api.AddMember((), "Units", raw)], what="units")
+
+
+@pytest.mark.parametrize("what", ["other_playthrough", "played_more"])
+def test_a_slot_that_changes_while_the_edit_is_made_is_never_written_over(world, monkeypatch, what):
+    """M2-1: the save the edit was made from must still be the one the slot loads when the
+    plan is made; else the edit of the old one would replace the new one."""
+    import hashlib
+    import importlib
+    from .liveops_support import POLESTAR
+    editmod = importlib.import_module("nms_save_vault.core.liveops.edit")
+    real = editmod.rebuild
+
+    def slow(*args, **kwargs):
+        out = real(*args, **kwargs)
+        if what == "other_playthrough":         # NMS Save Vault put another save there meanwhile
+            _progress(world.live, 1, "Polestar", 4000, POLESTAR, 1)
+        else:
+            _progress(world.live, 1, "Main", 7200 + 3600, MAIN, 5)
+        return out
+    monkeypatch.setattr(editmod, "rebuild", slow)
+    session = _session(world)
+    data = (world.live / "save.hg").read_bytes()
+    with pytest.raises(api.EditRefused, match="changed while the edit was made"):
+        session.plan_edit(_slot(world), UNITS, what="units",
+                          expected=hashlib.sha256(data).hexdigest())
+
+
+def test_a_write_s_crash_points_are_passed_in_the_order_crash_during_gives():
+    """M2-8: the order the docstring of core.testing.crash_during lists."""
+    from nms_save_vault.core import testing
+    doc = testing.crash_during.__doc__
+    order = ["after_preparing", "in_preserve", "after_snapshot", "after_writing", "staged:",
+             "swapped:", "after_validated", "after_oplog", "after_record"]
+    places = [doc.index(f'"{p}') for p in order]
+    assert places == sorted(places)
+
+
+def test_the_crash_points_come_in_that_order(world):
+    import importlib
+    faults = importlib.import_module("nms_save_vault.core.liveops.faults")
+    session = _session(world)
+    plan = session.plan_edit(_slot(world), UNITS, what="units")
+    make, seen = session._make, []
+
+    def recording():
+        ctx = make()
+        ctx.faults = faults.FaultInjector()
+        seen.append(ctx.faults)
+        return ctx
+    session._make = recording
+    try:
+        assert session.write(plan, plan.confirmations).status == "done"
+    finally:
+        session._make = make
+    points = seen[0].seen
+    order = ["after_preparing", "in_preserve", "after_snapshot", "after_writing", "staged:1",
+             "swapped:1", "after_validated", "after_oplog", "after_record"]
+    assert [points.index(p) for p in order] == sorted(points.index(p) for p in order)
+
+
+def test_an_undo_over_two_played_saves_tells_of_both(world):
+    """M2-5: one notice per save played since, not one for the first only."""
+    from .liveops_support import POLESTAR
+    _json_other(world)
+    session = api.open_live(world.vault_root, live_dirs=[world.live, world.other])
+    a, b = _slot(world), api.slot_of(world.other, 3)
+    plan = session.plan_edits([(b, [api.AddMember((), "Units", b"7")], None), (a, UNITS, None)],
+                              what="move units")
+    done = session.write(plan, plan.confirmations)
+    _progress(world.live, 1, "Main", 7200 + 3600, MAIN, 111)
+    _progress(world.other, 3, "Polestar", 4000 + 18000, POLESTAR, 222)
+    session.refresh()
+    undo = session.plan_undo(done.op_id)
+    played = [n.text for n in undo.warnings if n.code == "PLAYED_SINCE"]
+    assert len(played) == 2 and any("slot 1" in t for t in played) and any("slot 3" in t for t in played)
+
+
+def test_a_vault_that_cannot_record_the_write_is_a_refusal_not_an_error(world, monkeypatch):
+    """M2-6: an OSError while the write is journaled (the vault drive full or gone) is a
+    WriteResult, and nothing live changed."""
+    import importlib
+    opjournal = importlib.import_module("nms_save_vault.core.liveops.opjournal")
+    session = _session(world)
+    plan = session.plan_edit(_slot(world), UNITS, what="units")
+    before = tree_hash(world.live)
+    real = opjournal._write_line
+    for event in (b'"event":"preparing"', b'"event":"writing"'):
+        def full(path, data, event=event):
+            if event in data:
+                raise OSError(28, "No space left on device")
+            return real(path, data)
+        monkeypatch.setattr(opjournal, "_write_line", full)
+        out = session.write(plan, plan.confirmations)
+        assert out.status == "refused" and "could not record" in out.text, out
+        assert tree_hash(world.live) == before
+    monkeypatch.setattr(opjournal, "_write_line", real)
+
+
+def test_a_busy_vault_while_settling_a_stopped_write_is_a_refusal(world, monkeypatch):
+    """M2-7: the organizer's busy error is not one an app can catch through the API."""
+    import importlib
+    from nms_save_vault.core import testing
+    opjournal = importlib.import_module("nms_save_vault.core.liveops.opjournal")
+    orgstore = importlib.import_module("nms_save_vault.core.organizer.store")
+    session = _session(world)
+    plan = session.plan_edit(_slot(world), UNITS, what="units")
+    with testing.crash_during(session, "swapped:2"):
+        with pytest.raises(testing.SimulatedCrash):
+            session.write(plan, plan.confirmations)
+    again = _session(world)
+    (item,) = again.interrupted()
+    real = opjournal.append
+
+    def busy(ctx, op_id, event, payload=None):
+        if event == "recovered":
+            raise orgstore.StoreBusy()
+        return real(ctx, op_id, event, payload)
+    monkeypatch.setattr(opjournal, "append", busy)
+    out = again.resolve(item.op_id, item.recommended)
+    assert out.status == "refused" and out.code == "BUSY", out
+    monkeypatch.setattr(opjournal, "append", real)
+    assert _session(world).resolve(item.op_id, item.recommended).status in ("done", "rolled_back")
+
+
+def test_a_written_op_that_cannot_be_finished_can_be_put_back(world, monkeypatch):
+    """M2-4: all files written, then finishing fails: "back" is offered, as its text says."""
+    import importlib
+    from nms_save_vault.core import testing
+    recovery = importlib.import_module("nms_save_vault.core.liveops.recovery")
+    errors = importlib.import_module("nms_save_vault.core.liveops.errors")
+    before = tree_hash(world.live)
+    session = _session(world)
+    plan = session.plan_edit(_slot(world), UNITS, what="units")
+    with testing.crash_during(session, "swapped:4"):
+        with pytest.raises(testing.SimulatedCrash):
+            session.write(plan, plan.confirmations)
+
+    def unreadable(ctx, wt):
+        raise errors.SourceUnreadable("version cannot be read")
+    monkeypatch.setattr(recovery, "_rederive", unreadable)
+    again = _session(world)
+    (item,) = again.interrupted()
+    assert item.choices == ("forward", "back") and item.recommended == "forward"
+    assert again.resolve(item.op_id, "forward").status == "refused"
+    assert again.resolve(item.op_id, "back").status == "rolled_back"
+    assert tree_hash(world.live) == before

@@ -66,7 +66,7 @@ Choice = Literal["forward", "back", "leave"]
 TEXTS = {
     "not_started": "A move into {labels} was stopped before anything was written. Nothing changed.",
     "complete": "A move into {labels} was interrupted after it was written. Finish it "
-                "(recommended).",
+                "(recommended) or put the slot back.",
     "torn": "A move into {labels} was interrupted half-way. Finish it (recommended) or put "
             "the slot back.",
     "superseded": "A move into {labels} was interrupted, and the slot has changed since. The "
@@ -179,7 +179,7 @@ def _classify(ctx: OpContext, op: _Open, game_free: bool) -> RecoveryItem:
     elif rec.status == "failed":
         item = _item(rec, "failed", "back", ("back", "leave"))
     elif rec.status == "validated" or op.state == "post":
-        item = _item(rec, "complete", "forward", ("forward",))
+        item = _item(rec, "complete", "forward", ("forward", "back"))
     elif op.state == "pre":
         item = _item(rec, "not_started", "back", ("back",))
     else:

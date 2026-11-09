@@ -53,13 +53,14 @@ def crash_during(session, point: str, nth: int = 1) -> Iterator[None]:
     it reaches ``point``, as if the app or the machine went down there: it raises
     :class:`SimulatedCrash` (a ``BaseException``, so no ``except Exception`` stops it) and
     leaves what a crash leaves, for the next session to find. Points, in the order a write
-    passes them: ``"after_snapshot"`` and ``"in_preserve"`` (what the slot holds is being
-    kept in the vault); ``"after_preparing"``; ``"after_writing"`` (the write is journaled,
+    passes them: ``"after_preparing"``; ``"in_preserve"`` and ``"after_snapshot"`` (what
+    the slot holds is kept in the vault); ``"after_writing"`` (the write is journaled,
     nothing is on disk yet); ``"staged:<n>"`` then ``"swapped:<n>"`` (file ``n`` of a slot,
     again for each slot of a write over several); ``"after_validated"`` (written and
     checked, not recorded); ``"after_oplog"``; ``"after_record"``. Raises AssertionError when
     the block ends and no write reached ``point`` (a misspelt one would let the write go
-    through for real). For tests only."""
+    through for real). Only :meth:`~api.LiveSession.write` is stopped, not ``resolve``.
+    For tests only."""
     make = session._make
     fired: list = []
 

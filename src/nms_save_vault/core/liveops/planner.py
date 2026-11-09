@@ -803,10 +803,15 @@ def _where(ctx: OpContext, target: LiveTarget) -> str:
         return slot_label(target.platform, target.slot, account_key=target.account_key)
 
 
+#: Notices that name their slot: one for each slot of a write over several, not one in all.
+_PER_SLOT = frozenset({"PLAYED_SINCE"})
+
+
 def _unique(warnings: Iterable[Warning]) -> list[Warning]:
     seen, out = set(), []
     for w in warnings:
-        if w.code not in seen:
-            seen.add(w.code)
+        key = (w.code, w.text) if w.code in _PER_SLOT else w.code
+        if key not in seen:
+            seen.add(key)
             out.append(w)
     return out

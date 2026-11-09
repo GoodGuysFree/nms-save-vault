@@ -84,9 +84,14 @@ def dumps(value: Any) -> bytes:
     """A Python value as compact JSON text, the way the game writes JSON (UTF-8, no spaces).
     Text read from a save keeps its undecodable bytes (``surrogateescape``) and gets them back.
     An object's member names are written as given: the save's own keys (a subtree read from a
-    save); for an object given by readable field names use :func:`dumps_named`."""
-    return json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode(
-        "utf-8", "surrogateescape")
+    save); for an object given by readable field names use :func:`dumps_named`. Raises
+    :class:`PatchRefused` for what JSON cannot hold (NaN, infinity, text that is not
+    text: a lone surrogate)."""
+    try:
+        return json.dumps(value, ensure_ascii=False, separators=(",", ":"),
+                          allow_nan=False).encode("utf-8", "surrogateescape")
+    except ValueError as exc:            # UnicodeEncodeError is one too
+        raise PatchRefused(f"a value JSON cannot hold: {exc}") from None
 
 
 def dumps_named(value: Any) -> bytes:
@@ -361,13 +366,18 @@ def _no_duplicates(pairs: list) -> dict:
     return out
 
 
-def _loads(text: bytes, *, repair: bool) -> Any:
+def _loads(text: bytes, *, repair: bool, constants: bool = True) -> Any:
     """JSON as the game reads it (raw control characters in strings, undecodable bytes kept),
     but strict where a proof needs it: a duplicate field is an error. ``repair``: the escape
-    repair NMS Save Vault applies to saves (savejson); never for a new value."""
+    repair NMS Save Vault applies to saves (savejson); never for a new value. ``constants``:
+    NaN and Infinity are read (a save may hold what the game wrote); never in a new value."""
+    def refuse(name: str) -> Any:
+        raise ValueError(f"{name} is not JSON")
+
     def go(data: bytes) -> Any:
         return json.loads(data.decode("utf-8", errors="surrogateescape"), strict=False,
-                          object_pairs_hook=_no_duplicates)
+                          object_pairs_hook=_no_duplicates,
+                          **({} if constants else {"parse_constant": refuse}))
     try:
         return go(text)
     except json.JSONDecodeError as exc:
@@ -382,7 +392,7 @@ def _parse_value(raw: bytes) -> Any:
     if b"\x00" in raw:
         raise PatchRefused("a value holds a NUL byte")
     try:
-        got = _loads(b"[" + raw + b"]", repair=False)
+        got = _loads(b"[" + raw + b"]", repair=False, constants=False)
     except (ValueError, RecursionError):
         raise PatchRefused(f"a value is not JSON: {raw[:40]!r}") from None
     if len(got) != 1:

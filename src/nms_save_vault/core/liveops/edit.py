@@ -57,9 +57,22 @@ def plan_edit(ctx: OpContext, target: LiveTarget, edits: Iterable[Edit], *,
     :class:`EditRefused` (also when the edit could not be written now: the game running, an
     interrupted operation waiting) and ``savepatch.PatchRefused``."""
     _gates(ctx, [target])
-    source, new_vid = _stage(ctx, target, edits, what, expected)
+    source, new_vid, base = _stage(ctx, target, edits, what, expected)
     plan = plan_place(ctx, source, target)
+    _still(ctx, target, base)
     return _no_twin(dataclasses.replace(plan, made=(new_vid,)))
+
+
+def _still(ctx: OpContext, target: LiveTarget, base: str) -> None:
+    """The slot still loads ``base``, the save the edit was made from. Making the edit takes
+    a while (a big save is compressed in pure Python); a save placed in the slot meanwhile
+    (by NMS Save Vault, a sync) would else be replaced by the edit of the old one."""
+    now = read_account(ctx, resolve_account(ctx, target.ref)).slots[target.slot]
+    head = now.member(now.newer) if now.newer is not None else None
+    if head is None or head.vid != base:
+        raise EditRefused(f"{resolve_target(ctx, target).label} changed while the edit was "
+                          f"made (the game or another app saved it); read it again and make "
+                          f"the change again")
 
 
 def _no_twin(plan: PlacePlan) -> PlacePlan:
@@ -91,7 +104,8 @@ def plan_edits(ctx: OpContext, edits: Sequence[tuple[LiveTarget, Iterable[Edit],
     _gates(ctx, targets)
     staged = [(t, _stage(ctx, t, e, w, x)) for (t, e, x), w in zip(edits, whats)]
     parts, warnings, labels = [], [], []
-    for target, (source, _vid) in staged:
+    for target, (source, _vid, base) in staged:
+        _still(ctx, target, base)
         rt = resolve_target(ctx, target)
         now = read_account(ctx, resolve_account(ctx, target.ref))
         slot = now.slots[target.slot]
@@ -107,7 +121,7 @@ def plan_edits(ctx: OpContext, edits: Sequence[tuple[LiveTarget, Iterable[Edit],
         labels.append(rt.label)
     plan = _plan(ctx, "place", parts, warnings, f"Change {' and '.join(labels)} together",
                  source=None)
-    return _no_twin(dataclasses.replace(plan, made=tuple(vid for _t, (_s, vid) in staged)))
+    return _no_twin(dataclasses.replace(plan, made=tuple(vid for _t, (_s, vid, _b) in staged)))
 
 
 def _gates(ctx: OpContext, targets: list[LiveTarget]) -> None:
@@ -125,9 +139,9 @@ def _gates(ctx: OpContext, targets: list[LiveTarget]) -> None:
 
 
 def _stage(ctx: OpContext, target: LiveTarget, edits: Iterable[Edit], what: str,
-           expected: str | None) -> tuple[PairSource, str]:
+           expected: str | None) -> tuple[PairSource, str, str]:
     """The slot's save with ``edits`` made, kept in the vault as a one-slot extract: the pair
-    to place, and the edited version's id."""
+    to place, the edited version's id, and the id of the version it was made from."""
     rt = resolve_target(ctx, target)
     account = resolve_account(ctx, target.ref)
     now = read_account(ctx, account).slots[target.slot]
@@ -180,4 +194,4 @@ def _stage(ctx: OpContext, target: LiveTarget, edits: Iterable[Edit], what: str,
     source = PairSource(pair.get("A"), pair.get("B"), loaded.position,
                         Location(new_vid, "store", StoreRef(entry.id), target.slot,
                                  loaded.position, "steam", True))
-    return source, new_vid
+    return source, new_vid, loaded.vid

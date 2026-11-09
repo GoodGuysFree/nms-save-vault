@@ -562,7 +562,13 @@ class LiveSession:
         if choice not in offered:
             raise ValueError(f"{choice!r} is not offered for that write")
         # never agreed for the user: an app writes only with the game known to be closed
-        out = resolve_recovery(ctx, op_id, choice, frozenset(confirmed) - _APP_BLOCKS)
+        try:
+            out = resolve_recovery(ctx, op_id, choice, frozenset(confirmed) - _APP_BLOCKS)
+        except (orgstore.StoreBusy, orgstore.StoreReadOnly, OSError) as exc:
+            # the vault could not record a step: the write stays open, offered again
+            self._after_write()
+            return WriteResult(op_id, "refused", f"The vault is busy or cannot be written "
+                               f"now ({exc}). Try again in a moment.", "BUSY", (), None)
         self._after_write()
         return _result(out)
 

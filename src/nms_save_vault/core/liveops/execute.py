@@ -135,6 +135,10 @@ def _run(ctx: OpContext, plan: PlacePlan, confirmed: frozenset[str],
             "plan_digest": plan.fingerprint, "made": list(plan.made)})
     except (OrganizerBusy, StoreReadOnly) as exc:
         return refused(None, "BUSY", f"The vault is busy. Try again. ({exc})")
+    except OSError as exc:              # the vault drive is full or gone: nothing was written
+        return refused(None, "VAULT_WRITE_FAILED",
+                       f"The vault could not record the move ({exc.strerror or exc}). "
+                       f"Nothing was changed.")
     at(ctx.faults, "after_preparing")
     try:
         wts = _prepare(ctx, plan, rts, op_id, tag, progress, scanned)
@@ -153,6 +157,11 @@ def _run(ctx: OpContext, plan: PlacePlan, confirmed: frozenset[str],
     except (OrganizerBusy, StoreReadOnly) as exc:
         append_quietly(ctx, op_id, "abandoned", {"reason": "not_started"})
         return refused(op_id, "BUSY", f"The vault is busy. Try again. ({exc})")
+    except OSError as exc:
+        append_quietly(ctx, op_id, "abandoned", {"reason": "not_started"})
+        return refused(op_id, "VAULT_WRITE_FAILED",
+                       f"The vault could not record the move ({exc.strerror or exc}). "
+                       f"Nothing was changed.")
     at(ctx.faults, "after_writing")
     opjournal.write_marker(ctx, op_id, [wt.rt.label for wt in wts])
     game = _game_problem(ctx, confirmed)
