@@ -39,6 +39,7 @@ from .index.assets import INDEX_VERSION
 from .index.assets import KINDS as ASSET_KINDS
 from .index.assets import Asset, assets_of, state_of
 from .index.inventory import Inventory, Slot, SpecialSlot, inventories_of
+from .index import privacy
 from .index.nodes import PrivacyError, get, items
 from .liveops import context_for, execute, pending_recovery, plan_undo, resolve_recovery
 from .liveops.classic import _ad_hoc
@@ -91,6 +92,7 @@ __all__ = [
     # what is in a save
     "CtxInput", "DecodedSave", "SaveDecodeError", "SaveInput", "contexts_of", "decode_save",
     "PrivacyError", "get", "items", "known_game_version", "playthrough_of", "read_member",
+    "rehomed",
     "Inventory", "Slot", "SpecialSlot", "inventories_of",
     "ASSET_KINDS", "Asset", "INDEX_VERSION", "assets_of", "state_of",
     # the vault's stored versions
@@ -263,6 +265,29 @@ def parse_text(text: bytes) -> dict:
     """The root of a save's JSON text, as :func:`decode_save` gives it (``DecodedSave.root``).
     Raises :class:`SaveDecodeError` when it does not parse."""
     return savejson.parse_text(text)
+
+
+def rehomed(entry: object, target: dict, context: str = "base") -> bytes:
+    """The base record ``entry`` of another save (a corvette's layout) as :func:`dumps` writes
+    it, made the player's of the decoded save ``target``: its owner ids (``Owner``: UID, LID,
+    USN, PTK) become the ones the target's own bases carry most, in ``context`` ("base", the
+    main game, or "expedition"), else in its other game; when it was made (``Owner.TS``)
+    stays, and who last edited it, when set, is cleared. The ids never leave the core: the
+    bytes go into an edit as they are. Raises :class:`EditRefused` for what is not a base
+    record and for a target with no base of its player's to take the owner from."""
+    if not privacy.is_base(entry):
+        raise EditRefused("that is not a base record")
+    outer = {"base": "BaseContext", "expedition": "ExpeditionContext"}
+    if context not in outer:
+        raise ValueError(f"context {context!r} is not 'base' or 'expedition'")
+    order = [context] + [c for c in outer if c != context]
+    flat = get(target, "PlayerStateData")
+    psds = [flat] if isinstance(flat, dict) else [get(target, outer[c], "PlayerStateData")
+                                                  for c in order]
+    owner = privacy.save_owner(psds)
+    if owner is None:
+        raise EditRefused("that save has no base of its player's to take the owner from")
+    return dumps(privacy.rehome(entry, owner))
 
 
 def known_game_version(member: MemberView, *, platform: str) -> bool:

@@ -73,7 +73,9 @@ def test_no_index_code_names_a_denied_field_outside_the_privileged_reader():
     offenders = []
     for path in sorted(INDEX_SRC.rglob("*.py")):
         for line, literal, func in _denied_literals(path):
-            allowed = path.name == "privacy.py" and func in ("owner_platform", "owner_time", "DENIED")
+            allowed = path.name == "privacy.py" and func in (
+                "owner_platform", "owner_time", "DENIED",
+                "is_base", "save_owner", "rehome")      # owner rewrites of copies (GGF 2026-11-09)
             if not allowed:
                 offenders.append(f"{path.name}:{line} {literal}")
     assert offenders == []
