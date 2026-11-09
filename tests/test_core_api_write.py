@@ -732,3 +732,93 @@ def test_crash_during_stops_a_write_where_named_and_the_next_session_finds_it(wo
     assert _session(world).interrupted() == []
     (done,) = api.open_history(world.vault_root).changes_by(SC)
     assert done.target.slot == 1
+
+
+def test_a_failed_two_save_write_over_two_accounts_can_still_be_put_back(world, monkeypatch):
+    """Review CL6-3: slot 1 of two accounts in one write. Validation fails, then so does the
+    rollback. Recovery tells each account's files apart (they were keyed by slot number
+    alone, so one account's own output read as a save the game wrote, and only "leave" was
+    offered)."""
+    from nms_save_vault.core.liveops import FaultInjector, steamwrite
+    from .liveops_support import POLESTAR
+    for member, play, ts in ((0, 4000, T0 + 300), (1, 3900, T0 + 200)):
+        body = b'{"' + K("SaveName").encode() + b'":"Polestar","m":%d}' % member
+        steam_save(world.other, 1, member, "Polestar", play, POLESTAR, ts, payload=body + b"\x00")
+    before = tree_hash(world.live), tree_hash(world.other)
+    session = api.open_live(world.vault_root, live_dirs=[world.live, world.other])
+    plan = session.plan_edits([(_slot(world), UNITS, None),
+                               (api.slot_of(world.other, 1), [api.AddMember((), "Units", b"7")], None)],
+                              what="two accounts")
+    hit = []
+
+    def corrupt():
+        hit.append(1)
+        if len(hit) == 2:               # the second slot starts: the first is written; break it
+            (world.live / "save.hg").write_bytes(b"broken")
+    make = session._make
+
+    def faulty():
+        ctx = make()
+        ctx.faults = FaultInjector(actions={"swapped:1": corrupt})
+        return ctx
+    monkeypatch.setattr(session, "_make", faulty)
+    real = steamwrite.rollback
+    monkeypatch.setattr(steamwrite, "rollback",
+                        lambda *a, **k: (_ for _ in ()).throw(OSError(5, "held open")))
+    out = session.write(plan, plan.confirmations)
+    assert out.status == "failed", out
+    monkeypatch.setattr(steamwrite, "rollback", real)
+    monkeypatch.setattr(session, "_make", make)
+    again = api.open_live(world.vault_root, live_dirs=[world.live, world.other])
+    (item,) = again.interrupted()
+    assert "back" in item.choices, item
+    assert again.resolve(item.op_id, "back").status == "rolled_back"
+    assert (tree_hash(world.live), tree_hash(world.other)) == before
+
+
+def test_each_save_of_a_two_save_write_can_say_what_was_done_to_it(world):
+    """Review CL6-4: the source of a move is not "moved in from another save"."""
+    _json_other(world)
+    session = api.open_live(world.vault_root, live_dirs=[world.live, world.other])
+    plan = session.plan_edits([(_slot(world), UNITS, None),
+                               (api.slot_of(world.other, 3), [api.AddMember((), "Units", b"7")], None)],
+                              what="move units", slot_whats=["move units out", "move units in"])
+    labels = {e.origin["edit_of"]: e.origin["what"] for e in api.open_vault(world.vault_root).entries()
+              if isinstance(getattr(e, "origin", None), dict) and "edit_of" in e.origin}
+    assert sorted(labels.values()) == ["move units in", "move units out"]
+    assert len(plan.made) == 2
+    with pytest.raises(api.EditRefused, match="one text for each"):
+        session.plan_edits([(_slot(world), UNITS, None)], what="x", slot_whats=["a", "b"])
+
+
+def test_an_edit_never_asks_about_a_second_copy_of_its_playthrough(world):
+    """Review CL6-5: an edit, or a move between two saves of one playthrough, makes no new
+    copy of it; "a second copy makes two separate branches" is not asked."""
+    for member, play, ts in ((0, 7000, T0 + 90), (1, 6900, T0 + 40)):
+        body = b'{"' + K("SaveName").encode() + b'":"Main","m":%d}' % member
+        steam_save(world.live, 2, member, "Main", play, MAIN, ts, payload=body + b"\x00")
+    session = _session(world)
+    one = session.plan_edit(_slot(world), UNITS, what="units")
+    both = session.plan_edits([(_slot(world), UNITS, None),
+                               (api.slot_of(world.live, 2), [api.AddMember((), "Units", b"7")], None)],
+                              what="move units")
+    for plan in (one, both):
+        assert "TWIN_LIVE" not in plan.confirmations
+        assert all(n.code != "TWIN_LIVE" for n in plan.warnings)
+    assert session.write(both, both.confirmations).status == "done"
+
+
+def test_a_two_save_write_gone_stale_names_both_saves(world):
+    """Review CL6-5: the save that changed may be the second one; the text does not blame
+    the first."""
+    _json_other(world)
+    session = api.open_live(world.vault_root, live_dirs=[world.live, world.other])
+    plan = session.plan_edits([(_slot(world), UNITS, None),
+                               (api.slot_of(world.other, 3), [api.AddMember((), "Units", b"7")], None)],
+                              what="move units")
+    from .liveops_support import POLESTAR
+    body = b'{"' + K("SaveName").encode() + b'":"Polestar","m":9}'
+    steam_save(world.other, 3, 0, "Polestar", 5000, POLESTAR, T0 + 900, payload=body + b"\x00")
+    out = session.write(plan, plan.confirmations)
+    assert out.status == "stale"
+    assert "slot 1" in out.text and "slot 3" in out.text, out.text

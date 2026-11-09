@@ -39,6 +39,7 @@ from . import convert
 from .execute import (
     LIVEOP_TIMEOUT,
     OpTarget,
+    settled_key,
     plan_key,
     append_quietly,
     finalize,
@@ -420,6 +421,21 @@ def _before(target: LiveTarget, pre: dict, newer: str | None) -> SlotNow:
     return SlotNow(target, state, members.get("A"), members.get("B"), newer, ())
 
 
+_NOT_KEPT = object()
+
+
+def _settled_as(settled: dict | None, target, name: str, now_sha: str | None) -> bool:
+    """Whether the file ``name`` of ``target`` still holds what it held when the op failed
+    (its own damaged output). Records written before files were keyed by account name the
+    slot alone; those are read too."""
+    if settled is None:
+        return False
+    held = settled.get(settled_key(target, name), _NOT_KEPT)
+    if held is _NOT_KEPT:
+        held = settled.get(f"{target.slot}/{name}", _NOT_KEPT)
+    return held is not _NOT_KEPT and held == now_sha
+
+
 def _state(wt: OpTarget, op_id: str, settled: dict | None = None) -> str:
     """pre / post / torn / other for one target. ``settled``: what a failed op's files held
     when it failed; a file still so is the op's own damaged output, not someone's save."""
@@ -432,7 +448,7 @@ def _state(wt: OpTarget, op_id: str, settled: dict | None = None) -> str:
             pre_sha = pre.sha256 if pre else None
             if pre_sha == posts.get(name) and now_sha == pre_sha:
                 continue                                  # unchanged by the write either way
-            own = settled is not None and f"{wt.rt.target.slot}/{name}" in settled and                 settled[f"{wt.rt.target.slot}/{name}"] == now_sha
+            own = _settled_as(settled, wt.rt.target, name, now_sha)
             kinds.add("pre" if now_sha == pre_sha else "post" if now_sha == posts.get(name) or own
                       else "other")
         return _combine(kinds)

@@ -493,14 +493,17 @@ class LiveSession:
         return WritePlan(plan_edit(self._now(), slot, list(edits), what=what, expected=expected))
 
     def plan_edits(self, edits: Sequence[tuple[LiveTarget, Sequence[Replace | Remove | Insert | AddMember],
-                                          str | None]], *, what: str) -> WritePlan:
+                                          str | None]], *, what: str,
+                   slot_whats: Sequence[str] | None = None) -> WritePlan:
         """The plan to edit several slots as one write (CL6: a move between two saves takes
         from one and puts into the other): ``edits`` holds (slot, its edits, the SHA-256 of
         the version they were made from or None), each as for :meth:`plan_edit`. All are kept
         in the vault first, written together, rolled back together when one fails, and
-        undone together. Raises as :meth:`plan_edit` does."""
+        undone together. ``slot_whats`` labels each slot's edited version in the vault (the
+        source of a move "moved out", its target "moved in"; default ``what``). Raises as
+        :meth:`plan_edit` does."""
         return WritePlan(plan_edits(self._now(), [(t, list(e), x) for t, e, x in edits],
-                                    what=what))
+                                    what=what, slot_whats=slot_whats))
 
     def folder_of(self, slot: LiveTarget) -> Path | None:
         """The live save folder this session writes for ``slot``; None when it writes none.

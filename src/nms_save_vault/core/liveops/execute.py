@@ -633,6 +633,12 @@ def rollback_and_report(ctx: OpContext, op_id: str, plan: PlacePlan, applied: li
                      "n/a", str(exc), "ROLLED_BACK")
 
 
+def settled_key(target, name: str) -> str:
+    """A file of one slot of one account in :func:`settled_files` (a slot number alone is not
+    enough: slot 1 of two accounts can be in one op)."""
+    return f"{target.platform}/{target.account_key}/{target.instance}/{target.slot}/{name}"
+
+
 def settled_files(wts: list[OpTarget]) -> dict:
     """Steam: what each file of the op's slots holds at the moment it failed, so recovery can
     tell the op's own damaged output (still as it was left) from a save the game wrote since."""
@@ -641,7 +647,7 @@ def settled_files(wts: list[OpTarget]) -> dict:
         if wt.steam is not None:
             for name in wt.steam.pre:
                 state = steamwrite.file_state(wt.folder / name)
-                out[f"{wt.rt.target.slot}/{name}"] = state.sha256 if state else None
+                out[settled_key(wt.rt.target, name)] = state.sha256 if state else None
     return out
 
 
@@ -812,7 +818,10 @@ def refused(op_id: str | None, code: str, text: str) -> OpOutcome:
 def _stale(ctx: OpContext, plan: PlacePlan, op_id: str | None = None) -> OpOutcome:
     from . import planner
 
-    label = plan.targets[0].label if plan.targets else "The slot"
+    if len(plan.targets) > 1:           # which one changed is not known here: both are named
+        label = "One of " + " and ".join(t.label for t in plan.targets)
+    else:
+        label = plan.targets[0].label if plan.targets else "The slot"
     text = f"{label} changed since you opened this. Please check again."
     replan = None
     tp = plan.targets[0] if plan.targets else None

@@ -59,23 +59,36 @@ def plan_edit(ctx: OpContext, target: LiveTarget, edits: Iterable[Edit], *,
     _gates(ctx, [target])
     source, new_vid = _stage(ctx, target, edits, what, expected)
     plan = plan_place(ctx, source, target)
-    return dataclasses.replace(plan, made=(new_vid,))
+    return _no_twin(dataclasses.replace(plan, made=(new_vid,)))
+
+
+def _no_twin(plan: PlacePlan) -> PlacePlan:
+    """An edit changes a slot's own save: it makes no second copy of its playthrough, so the
+    question a placement asks when another slot holds that playthrough is not asked."""
+    return dataclasses.replace(
+        plan, warnings=tuple(w for w in plan.warnings if w.code != "TWIN_LIVE"),
+        confirmations=plan.confirmations - {"TWIN_LIVE"})
 
 
 def plan_edits(ctx: OpContext, edits: Sequence[tuple[LiveTarget, Iterable[Edit], str | None]],
-               *, what: str) -> PlacePlan:
+               *, what: str, slot_whats: Sequence[str] | None = None) -> PlacePlan:
     """The plan to edit several slots as one operation (CL6: a move between two saves takes
     from one and puts into the other): ``edits`` holds (slot, its edits, the SHA-256 of the
     version they were made from or None). Each edited version is in the vault before this
     returns; then all are written together, rolled back together when one fails, and undone
-    together. Raises as :func:`plan_edit` does, and ``EditRefused`` for a slot named twice."""
+    together. ``slot_whats``: what each slot's edited version is labelled with in the vault
+    (default ``what`` for all). Raises as :func:`plan_edit` does, and ``EditRefused`` for a
+    slot named twice."""
     targets = [t for t, _e, _x in edits]
     if not targets:
         raise EditRefused("nothing to edit")
+    whats = [what] * len(targets) if slot_whats is None else list(slot_whats)
+    if len(whats) != len(targets) or not all(isinstance(w, str) for w in whats):
+        raise EditRefused("slot_whats needs one text for each slot")
     if len({(t.platform, t.account_key, t.slot, t.instance) for t in targets}) != len(targets):
         raise EditRefused("a slot is named twice")
     _gates(ctx, targets)
-    staged = [(t, _stage(ctx, t, e, what, x)) for t, e, x in edits]
+    staged = [(t, _stage(ctx, t, e, w, x)) for (t, e, x), w in zip(edits, whats)]
     parts, warnings, labels = [], [], []
     for target, (source, _vid) in staged:
         rt = resolve_target(ctx, target)
@@ -93,7 +106,7 @@ def plan_edits(ctx: OpContext, edits: Sequence[tuple[LiveTarget, Iterable[Edit],
         labels.append(rt.label)
     plan = _plan(ctx, "place", parts, warnings, f"Change {' and '.join(labels)} together",
                  source=None)
-    return dataclasses.replace(plan, made=tuple(vid for _t, (_s, vid) in staged))
+    return _no_twin(dataclasses.replace(plan, made=tuple(vid for _t, (_s, vid) in staged)))
 
 
 def _gates(ctx: OpContext, targets: list[LiveTarget]) -> None:
