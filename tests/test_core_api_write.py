@@ -1068,3 +1068,21 @@ def test_quick_edits_of_the_same_size_are_each_read_as_they_are(world):
         plan = session.plan_edit(_slot(world), change, what=f"units {n.decode()}")
         assert session.write(plan, plan.confirmations).status == "done"
         assert _units_of(world.live, 1) == int(n)
+
+
+def test_the_other_member_replaced_while_the_edit_is_made_is_never_written_over(world, monkeypatch):
+    """Review G-4: the slot's other member is staged as it was and written back; one placed
+    there meanwhile (the loaded member unchanged) must not be replaced by that copy."""
+    import importlib
+    from .liveops_support import POLESTAR
+    editmod = importlib.import_module("nms_save_vault.core.liveops.edit")
+    real = editmod.plan_place
+
+    def meanwhile(*args, **kwargs):
+        body = b'{"' + K("SaveName").encode() + b'":"Polestar","m":1}'
+        steam_save(world.live, 1, 1, "Polestar", 4000, POLESTAR, T0 + 60, payload=body + b"\x00")
+        return real(*args, **kwargs)
+    monkeypatch.setattr(editmod, "plan_place", meanwhile)
+    session = _session(world)
+    with pytest.raises(api.EditRefused, match="changed while the edit was made"):
+        session.plan_edit(_slot(world), UNITS, what="units")

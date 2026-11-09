@@ -63,13 +63,13 @@ def plan_edit(ctx: OpContext, target: LiveTarget, edits: Iterable[Edit], *,
     return _no_twin(dataclasses.replace(plan, made=(new_vid,)))
 
 
-def _still(ctx: OpContext, target: LiveTarget, base: str) -> None:
-    """The slot still loads ``base``, the save the edit was made from. Making the edit takes
-    a while (a big save is compressed in pure Python); a save placed in the slot meanwhile
-    (by NMS Save Vault, a sync) would else be replaced by the edit of the old one."""
+def _still(ctx: OpContext, target: LiveTarget, base: dict) -> None:
+    """The slot still holds ``base`` (each member's version as the edit was staged): the save
+    the edit was made from, and the other member, which is written back as it was. Making
+    the edit takes a while (a big save is compressed in pure Python); a save placed in the
+    slot meanwhile (by NMS Save Vault, a sync) would else be replaced."""
     now = read_account(ctx, resolve_account(ctx, target.ref)).slots[target.slot]
-    head = now.member(now.newer) if now.newer is not None else None
-    if head is None or head.vid != base:
+    if {m.position: m.vid for m in now.present} != base:
         raise EditRefused(f"{resolve_target(ctx, target).label} changed while the edit was "
                           f"made (the game or another app saved it); read it again and make "
                           f"the change again")
@@ -139,9 +139,9 @@ def _gates(ctx: OpContext, targets: list[LiveTarget]) -> None:
 
 
 def _stage(ctx: OpContext, target: LiveTarget, edits: Iterable[Edit], what: str,
-           expected: str | None) -> tuple[PairSource, str, str]:
+           expected: str | None) -> tuple[PairSource, str, dict]:
     """The slot's save with ``edits`` made, kept in the vault as a one-slot extract: the pair
-    to place, the edited version's id, and the id of the version it was made from."""
+    to place, the edited version's id, and each member's version as it was staged."""
     rt = resolve_target(ctx, target)
     account = resolve_account(ctx, target.ref)
     now = read_account(ctx, account).slots[target.slot]
@@ -194,4 +194,4 @@ def _stage(ctx: OpContext, target: LiveTarget, edits: Iterable[Edit], what: str,
     source = PairSource(pair.get("A"), pair.get("B"), loaded.position,
                         Location(new_vid, "store", StoreRef(entry.id), target.slot,
                                  loaded.position, "steam", True))
-    return source, new_vid, loaded.vid
+    return source, new_vid, {m.position: m.vid for m in now.present}
