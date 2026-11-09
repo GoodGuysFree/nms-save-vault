@@ -660,3 +660,14 @@ def test_dumps_named_refuses_a_name_that_is_not_text():
     for bad in (5, True, None, 1.5):
         with pytest.raises(api.PatchRefused):
             api.dumps_named({bad: 1})
+
+
+
+def test_an_undo_names_the_change_it_undid(world):
+    session = _session(world)
+    plan = session.plan_edit(_slot(world), UNITS, what="x")
+    done = session.write(plan, plan.confirmations)
+    undo = session.plan_undo(done.op_id)
+    back = session.write(undo, undo.confirmations)
+    changes = {c.op_id: c for c in api.open_history(world.vault_root).changes_by(SC)}
+    assert changes[back.op_id].undo_of == done.op_id and changes[done.op_id].undo_of is None

@@ -210,6 +210,7 @@ def chosen_vault(host: platform.Host | None = None) -> Path | None:
 
 def _chosen(host: platform.Host | None, *, must_exist: bool) -> Path | None:
     trusted: tuple[Path, float] | None = None      # a pointer whose settings cannot say
+    newer: list[tuple[float, Path]] = []            # choices made after that pointer
     for path in state_candidates(host):
         chosen = _named_vault(path, must_exist)
         if chosen is None:
@@ -228,9 +229,12 @@ def _chosen(host: platform.Host | None, *, must_exist: bool) -> Path | None:
             if _named_vault(Path(settings), must_exist) != chosen:
                 continue
             return chosen
-        if trusted is not None and (not chosen.is_dir() or _mtime(path) <= trusted[1]):
-            continue
-        return chosen
+        if trusted is None:
+            return chosen
+        if chosen.is_dir() and _mtime(path) > trusted[1]:
+            newer.append((_mtime(path), chosen))
+    if newer:
+        return max(newer, key=lambda pair: pair[0])[1]      # the newest choice
     return trusted[0] if trusted is not None else None
 
 
@@ -240,6 +244,8 @@ def _mtime(path: Path) -> float:
     except OSError:
         return 0.0
 
+
+_realpath, _exists, _ismount = os.path.realpath, os.path.exists, os.path.ismount
 
 #: Where removable drives are mounted off Windows (SD cards, USB sticks, a Steam Deck's card).
 REMOVABLE_MOUNTS = ("/media/", "/run/media/", "/mnt/", "/Volumes/")
@@ -251,11 +257,19 @@ def unplugged(path, posix: bool | None = None) -> bool:
     folder where removable drives are mounted counts as unplugged."""
     posix = os.name != "nt" if posix is None else posix
     if posix:
-        text = str(path).replace("\\", "/")
+        text = _realpath(str(path).replace("\\", "/"))   # a link to a card counts as the card
         if not text.startswith(REMOVABLE_MOUNTS):
             return False
         try:
-            return not Path(text).exists()
+            if _exists(text):
+                return False
+            # the nearest folder that is there: a mounted disk means the folder was deleted
+            parent = text.rstrip("/")
+            while parent and not _exists(parent):
+                parent = parent.rsplit("/", 1)[0] or "/"
+                if parent == "/":
+                    break
+            return not _ismount(parent or "/") or parent in ("", "/")
         except OSError:
             return True
     anchor = Path(path).anchor
@@ -297,6 +311,10 @@ def vault_settings(host: platform.Host | None = None) -> list[AppState]:
                 raise ValueError(f"NMS Save Vault's settings ({_where(path)}) cannot be read")
             settings = Path(named)
             if not settings.is_file():
+                vault = pointer.get("vault")
+                if unplugged(settings) and isinstance(vault, str) and \
+                        chosen_vault(host) not in (None, Path(vault)):
+                    continue        # a newer choice beat this stale pointer (_chosen)
                 raise ValueError(f"NMS Save Vault's settings ({_where(settings)}) cannot be "
                                  "found: connect the drive they are on, or choose the vault "
                                  "folder in NMS Save Vault again")

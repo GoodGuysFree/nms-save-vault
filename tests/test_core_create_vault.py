@@ -193,9 +193,12 @@ def test_dumps_named_refuses_what_cannot_be_a_field_name():
 @pytest.mark.parametrize("path, gone", [
     ("/media/deck/SD/vault", True), ("/run/media/u/USB/vault", True), ("/mnt/usb/vault", True),
     ("/Volumes/Kit/vault", True), ("/home/u/deleted/vault", False), ("relative/vault", False)])
-def test_off_windows_a_missing_vault_on_a_removable_mount_counts_as_unplugged(path, gone):
+def test_off_windows_a_missing_vault_on_a_removable_mount_counts_as_unplugged(monkeypatch, path, gone):
     from nms_save_vault.core import state
     from pathlib import PurePosixPath
+    monkeypatch.setattr(state, "_realpath", lambda p: p)       # a POSIX machine's view
+    monkeypatch.setattr(state, "_exists", lambda p: p == "/")
+    monkeypatch.setattr(state, "_ismount", lambda p: p == "/")
     assert state.unplugged(PurePosixPath(path), posix=True) is gone
 
 
@@ -217,3 +220,77 @@ def test_a_newer_choice_beats_a_pointer_trusted_only_for_its_unplugged_settings(
     assert api.vault_dir() == new
     os.utime(later, (1_600_000_000, 1_600_000_000))           # older than the pointer
     assert api.vault_dir() == Path(f"{drive}:/Kit/vault")
+
+
+
+def test_a_newer_choice_also_lets_an_app_write_through_it(machine):
+    """The pointer is stale (its settings on an unplugged drive, a newer settings file chose
+    another vault): the app writes through the newer choice instead of refusing."""
+    import os
+    from nms_save_vault.core import state
+    tmp_path, live = machine
+    drive = _free_drive()
+    new = api.create_vault(tmp_path / "NewVault")
+    pointer = state.pointer_path()
+    _settings(tmp_path, pointer=(pointer, {"vault": f"{drive}:/Kit/vault",
+                                           "state": f"{drive}:/Kit/state.json"}))
+    later = state.state_candidates()[-1]
+    _settings(tmp_path, later=(later, {"vault": str(new)}))
+    os.utime(pointer, (1_700_000_000, 1_700_000_000))
+    assert api.vault_dir() == new
+    assert api.open_live(live_dirs=[live]) is not None          # no "connect the drive"
+
+
+def test_of_several_newer_choices_the_newest_wins(machine):
+    import os
+    from nms_save_vault.core import state
+    tmp_path, _live = machine
+    drive = _free_drive()
+    a, b = tmp_path / "A", tmp_path / "B"
+    a.mkdir()
+    b.mkdir()
+    pointer = state.pointer_path()
+    _settings(tmp_path, pointer=(pointer, {"vault": f"{drive}:/Kit/vault",
+                                           "state": f"{drive}:/Kit/state.json"}))
+    first, *rest = [c for c in state.state_candidates() if c != pointer]
+    last = rest[-1]
+    _settings(tmp_path, first=(first, {"vault": str(a)}), last=(last, {"vault": str(b)}))
+    os.utime(pointer, (1_700_000_000, 1_700_000_000))
+    os.utime(first, (1_700_000_100, 1_700_000_100))
+    os.utime(last, (1_800_000_000, 1_800_000_000))
+    assert api.vault_dir() == b
+
+
+@pytest.mark.parametrize("path, mounts, present, gone", [
+    ("/media/deck/SD/vault", {"/"}, {"/", "/media", "/media/deck"}, True),     # card out
+    ("/mnt/data/deleted", {"/", "/mnt/data"}, {"/", "/mnt", "/mnt/data"}, False),  # disk there
+    ("/home/u/deleted", {"/"}, {"/", "/home", "/home/u"}, False),
+])
+def test_off_windows_only_a_missing_removable_mount_is_unplugged(monkeypatch, path, mounts, present, gone):
+    from pathlib import PurePosixPath
+    from nms_save_vault.core import state
+    monkeypatch.setattr(state, "_realpath", lambda p: p)
+    monkeypatch.setattr(state, "_exists", lambda p: p in present)
+    monkeypatch.setattr(state, "_ismount", lambda p: p in mounts)
+    assert state.unplugged(PurePosixPath(path), posix=True) is gone
+
+
+def test_off_windows_a_link_to_a_card_is_followed(monkeypatch):
+    from pathlib import PurePosixPath
+    from nms_save_vault.core import state
+    monkeypatch.setattr(state, "_realpath", lambda p: "/run/media/deck/SD/vault"
+                        if p == "/home/deck/sdvault" else p)
+    monkeypatch.setattr(state, "_exists", lambda p: p in {"/", "/run", "/run/media", "/run/media/deck"})
+    monkeypatch.setattr(state, "_ismount", lambda p: p == "/")
+    assert state.unplugged(PurePosixPath("/home/deck/sdvault"), posix=True) is True
+
+
+def test_dumps_named_keys_tuples_and_refuses_what_json_cannot_hold():
+    import json as _json
+    from types import MappingProxyType
+    from nms_save_vault.core.hashname import key
+    held = _json.loads(api.dumps_named({"Units": ({"Name": 1},)}))
+    assert held == {key("Units"): [{key("Name"): 1}]}
+    for bad in (MappingProxyType({"Name": 1}), {1, 2}, object()):
+        with pytest.raises(api.PatchRefused):
+            api.dumps_named({"Units": bad})

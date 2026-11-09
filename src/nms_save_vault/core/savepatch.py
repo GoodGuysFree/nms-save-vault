@@ -97,9 +97,11 @@ def dumps_named(value: Any) -> bytes:
     def keyed(node: Any) -> Any:
         if isinstance(node, dict):
             return {_k(k): keyed(v) for k, v in node.items()}     # _k refuses non-text
-        if isinstance(node, list):
+        if isinstance(node, (list, tuple)):
             return [keyed(v) for v in node]
-        return node
+        if node is None or isinstance(node, (str, int, float, bool)):
+            return node
+        raise PatchRefused(f"a {type(node).__name__} cannot be written into a save")
     return dumps(keyed(value))
 
 

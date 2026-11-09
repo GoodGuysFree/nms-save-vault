@@ -24,7 +24,7 @@ from .store_helpers import fingerprint, new_vault, open_vault_store, steam_live
 PINNED = {
     "API_VERSION": ("value", "int"),
     "AppChange": ("fields", ("op_id", "kind", "at", "app", "target", "placed", "evicted", "kept",
-                             "snapshot", "made", "seq"), ()),
+                             "snapshot", "made", "seq", "undo_of"), ()),
     "Before": ("fields", ("change", "pair", "kept"), ()),
     "KeptCopy": ("fields", ("kind", "entry", "slot", "member"), ()),
     "LiveTarget": ("fields", ("platform", "account_key", "slot", "instance"), ("ref",)),

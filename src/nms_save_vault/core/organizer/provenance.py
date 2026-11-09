@@ -69,6 +69,7 @@ class AppChange:
     snapshot: str | None                    # the entry the slot's folder was kept in first
     made: tuple[Vid, ...] = ()              # the versions it wrote new content into
     seq: int = 0
+    undo_of: str | None = None              # the operation it undid, when it is an undo
 
 
 @dataclass(frozen=True)
@@ -107,7 +108,7 @@ def _change(rec: OpRecord) -> AppChange:
         if copy is not None:
             kept[vid] = copy
     return AppChange(rec.op_id, rec.kind, rec.at, rec.app, rec.target, rec.pair, rec.evicted,
-                     kept, rec.snapshot, tuple(rec.made), rec.seq)
+                     kept, rec.snapshot, tuple(rec.made), rec.seq, rec.undo_of)
 
 
 def changes_by(state: JournalState, app: str) -> list[AppChange]:
