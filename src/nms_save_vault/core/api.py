@@ -57,10 +57,12 @@ from .organizer.journal import Journal
 from .organizer.model import LiveTarget, ModelError, pid_from_id
 from .organizer.provenance import AppChange, Before, KeptCopy
 from .organizer.store import OrganizerStore
+from . import saveedit, savejson, savepatch
 from .saveedit import EditRefused
 from .savedir import MemberView, SaveDirView, SlotView
 from .savejson import DecodedSave, SaveDecodeError, decode_save
-from .savepatch import AddMember, Insert, PatchRefused, Remove, Replace, dumps, dumps_named
+from .savepatch import (AddMember, Insert, PatchRefused, Remove, Replace, Steps, dumps,
+                        dumps_named)
 from .store import (
     FileEntry,
     StoreEntry,
@@ -98,6 +100,8 @@ __all__ = [
     "slot_of",
     # an edit of a live save, and its undo
     "AddMember", "Insert", "Remove", "Replace", "dumps", "dumps_named",
+    # changes an app holds before it writes them: shown first, then written as one
+    "Steps", "edit_text", "parse_text", "save_text",
     "ConfirmationRequired", "EditRefused", "LiveOpError", "PatchRefused", "TargetError",
     "Interrupted", "LiveSession", "Notice", "SEVERITIES", "WRITE_STATUSES", "WritePlan",
     "WriteResult", "open_live",
@@ -236,6 +240,28 @@ def read_member(member: MemberView) -> DecodedSave:
     the file cannot be read and :class:`SaveDecodeError` when it is damaged."""
     hint = member.info.size_decompressed if member.info is not None else None
     return decode_save(Path(member.data_path).read_bytes(), bare_size_hint=hint or None)
+
+
+def save_text(data: bytes) -> bytes:
+    """The JSON text of a save data file (a current container), without its NUL: the text
+    the edits of :meth:`LiveSession.plan_edit` name their places in. Raises
+    :class:`EditRefused` for a container this core does not edit (an old one)."""
+    return saveedit.body_of(data)
+
+
+def edit_text(text: bytes, edits: Sequence[Replace | Remove | Insert | AddMember] | Steps
+              ) -> bytes:
+    """``text`` (:func:`save_text`) with ``edits`` made and proven, as a write makes them;
+    nothing is written. An app that holds changes before writing them shows each with
+    :func:`parse_text`, then writes them all as :class:`Steps`. Raises :class:`PatchRefused`
+    (or ``TypeError`` for a step that is not a sequence of edits)."""
+    return savepatch.apply_steps(text, savepatch.as_steps(edits))
+
+
+def parse_text(text: bytes) -> dict:
+    """The root of a save's JSON text, as :func:`decode_save` gives it (``DecodedSave.root``).
+    Raises :class:`SaveDecodeError` when it does not parse."""
+    return savejson.parse_text(text)
 
 
 def known_game_version(member: MemberView, *, platform: str) -> bool:
@@ -477,7 +503,8 @@ class LiveSession:
             self.refresh()
         return self._ctx
 
-    def plan_edit(self, slot: LiveTarget, edits: Sequence[Replace | Remove | Insert | AddMember],
+    def plan_edit(self, slot: LiveTarget,
+                  edits: Sequence[Replace | Remove | Insert | AddMember] | Steps,
                   *, what: str, expected: str | None = None) -> WritePlan:
         """The plan to put the save ``slot`` (:func:`slot_of`) loads back with ``edits`` made,
         each proven: the edited save reads back as the original with exactly those changes.
@@ -489,11 +516,14 @@ class LiveSession:
         slot, a newer game, an old container; or one that cannot be written now: the game
         running, an interrupted write waiting), :class:`PatchRefused` (an edit that cannot
         be made exactly), :class:`TargetError` (a slot no write may use) or a
-        :class:`StoreError` (the vault busy with another app's write, or unreachable)."""
-        return WritePlan(plan_edit(self._now(), slot, list(edits), what=what, expected=expected))
+        :class:`StoreError` (the vault busy with another app's write, or unreachable).
+        ``edits`` may be :class:`Steps`: changes the app held, each batch made in turn."""
+        return WritePlan(plan_edit(self._now(), slot, savepatch.as_steps(edits), what=what,
+                                   expected=expected))
 
-    def plan_edits(self, edits: Sequence[tuple[LiveTarget, Sequence[Replace | Remove | Insert | AddMember],
-                                          str | None]], *, what: str,
+    def plan_edits(self, edits: Sequence[tuple[LiveTarget,
+                                               Sequence[Replace | Remove | Insert | AddMember] | Steps,
+                                               str | None]], *, what: str,
                    slot_whats: Sequence[str] | None = None) -> WritePlan:
         """The plan to edit several slots as one write (CL6: a move between two saves takes
         from one and puts into the other): ``edits`` holds (slot, its edits, the SHA-256 of
@@ -506,7 +536,7 @@ class LiveSession:
         such a crash can only leave a copy in both, never in neither. When the game then
         saves one of them, the write can only be left as it is (it is not put back slot by
         slot). Raises as :meth:`plan_edit` does."""
-        return WritePlan(plan_edits(self._now(), [(t, list(e), x) for t, e, x in edits],
+        return WritePlan(plan_edits(self._now(), [(t, savepatch.as_steps(e), x) for t, e, x in edits],
                                     what=what, slot_whats=slot_whats))
 
     def folder_of(self, slot: LiveTarget) -> Path | None:

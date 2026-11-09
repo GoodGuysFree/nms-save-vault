@@ -96,6 +96,11 @@ def decode_save(data: bytes, *, bare_size_hint: int | None = None,
     )
 
 
+def parse_text(body: bytes) -> dict[str, Any]:
+    """The root of a save's JSON text (without its NUL), as :func:`decode_save` parses it."""
+    return _parse(body)[0]
+
+
 def _parse(body: bytes) -> tuple[dict[str, Any], int]:
     repaired = 0
     try:

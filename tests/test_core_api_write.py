@@ -107,6 +107,42 @@ def test_an_edit_and_its_undo_go_through_the_session(world):
                                slotmap.file_no(1, 1)) <= {0x164}
 
 
+def test_changes_held_one_after_another_are_written_as_one(world):
+    """An app holds several changes to a save before writing them: each names its places in
+    the text the ones before it left. Shown first without writing anything, then written as
+    one edit, which reads back exactly as shown."""
+    data = (world.live / "save.hg").read_bytes()
+    text = api.save_text(data)
+    first = [api.AddMember((), "Units", api.dumps(5))]
+    shown = api.edit_text(text, first)
+    second = [api.Replace(("Units",), api.dumps(7)), api.AddMember((), "Nanites", api.dumps(3))]
+    shown = api.edit_text(shown, second)
+    root = api.parse_text(shown)
+    assert (root[K("Units")], root[K("Nanites")]) == (7, 3)
+    assert (world.live / "save.hg").read_bytes() == data                   # nothing written
+    session = _session(world)
+    plan = session.plan_edit(_slot(world), api.Steps([first, second]), what="held changes",
+                             expected=hashlib.sha256(data).hexdigest())
+    assert not plan.blocked
+    assert session.write(plan, plan.confirmations).status == "done"
+    assert api.save_text((world.live / "save.hg").read_bytes()) == shown
+    with pytest.raises(api.PatchRefused):          # in one batch they name the same bytes
+        api.edit_text(text, first + [api.Replace(("Units",), api.dumps(7))])
+
+
+def test_held_changes_are_edits_only():
+    with pytest.raises(TypeError):
+        api.Steps([[b"raw"]])
+    with pytest.raises(TypeError):
+        api.Steps([api.Replace(("Units",), b"1")])          # a batch, not an edit, per step
+    assert api.Steps([]) == () and api.Steps([[], [api.Remove(("A",))]])[1] == (api.Remove(("A",)),)
+
+
+def test_a_save_text_that_does_not_parse_is_refused():
+    with pytest.raises(api.SaveDecodeError):
+        api.parse_text(b'{"a": ')
+
+
 def test_an_app_that_has_not_named_itself_cannot_open_a_session(world):
     appinfo.set_app(appinfo.VAULT, "1.0")
     with pytest.raises(ValueError, match="set_app"):

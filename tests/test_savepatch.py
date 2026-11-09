@@ -78,6 +78,18 @@ def test_edits_name_places_in_the_original_even_when_they_shift_each_other():
     assert psd(new)[K("Ships")] == [{"n": "b"}, {"n": "C"}, {"n": "d"}, {"n": "e"}]
 
 
+def test_steps_are_made_one_after_another_each_proven():
+    body = save(Ships=[{"n": "a"}, {"n": "b"}, {"n": "c"}])
+    steps = sp.Steps([[X(PSD + ("Ships", 0))],                     # b, c
+                      [R(PSD + ("Ships", 0), b'{"n":"B"}')],       # the first is b by now
+                      []])
+    new = sp.apply_steps(body, steps)
+    assert psd(new)[K("Ships")] == [{"n": "B"}, {"n": "c"}]
+    assert new == sp.apply(sp.apply(body, steps[0]), steps[1])
+    with pytest.raises(sp.PatchRefused):
+        sp.apply_steps(body, sp.Steps([[R(PSD + ("Ships", 5), b"1")]]))
+
+
 def test_a_value_copied_from_another_save_arrives_as_that_save_wrote_it():
     source = b'{"' + K("PlayerStateData").encode() + b'":{"' + K("Units").encode() + b'":1.50E+2}}'
     raw = sp.value_bytes(source, PSD + ("Units",))

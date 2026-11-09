@@ -78,6 +78,33 @@ class AddMember:
 
 
 Edit = Union[Replace, Remove, Insert, AddMember]
+_EDITS = (Replace, Remove, Insert, AddMember)
+
+
+class Steps(tuple):
+    """Batches of edits made one after another: an app that held several changes to a save
+    before writing them writes them as one. Each batch names its places in the text the
+    batches before it left, and each is proven as :func:`apply` proves one batch."""
+
+    def __new__(cls, batches: Iterable[Iterable[Edit]] = ()) -> Steps:
+        if isinstance(batches, _EDITS):
+            raise TypeError("Steps takes batches of edits, not one edit")
+        out = tuple(tuple(batch) for batch in batches)
+        if not all(isinstance(e, _EDITS) for batch in out for e in batch):
+            raise TypeError("each step is a sequence of edits")
+        return super().__new__(cls, out)
+
+
+def as_steps(edits: Iterable[Edit] | Steps) -> Steps:
+    """``edits`` as steps: themselves, or one batch."""
+    return edits if isinstance(edits, Steps) else Steps([edits])
+
+
+def apply_steps(body: bytes, steps: Steps) -> bytes:
+    """``body`` with each batch of ``steps`` made in turn (:func:`apply`, proven each)."""
+    for batch in steps:
+        body = apply(body, batch)
+    return body
 
 
 def dumps(value: Any) -> bytes:

@@ -110,6 +110,12 @@ PINNED = {
     "Replace": ("fields", ("where", "raw"), ()),
     "dumps": ("function", "(value: 'Any') -> 'bytes'"),
     "dumps_named": ("function", "(value: 'Any') -> 'bytes'"),
+    # changes an app holds before it writes them
+    "Steps": ("class", {}, ()),
+    "save_text": ("function", "(data: 'bytes') -> 'bytes'"),
+    "edit_text": ("function", "(text: 'bytes', edits: 'Sequence[Replace | Remove | Insert | "
+                              "AddMember] | Steps') -> 'bytes'"),
+    "parse_text": ("function", "(text: 'bytes') -> 'dict'"),
     "ConfirmationRequired": ("error", ("LiveOpError", "OperationError")),
     "EditRefused": ("error", ("ValueError", "Exception")),
     "LiveOpError": ("error", ("OperationError", "Exception")),
@@ -118,11 +124,11 @@ PINNED = {
     "LiveSession": ("class", {
         "refresh": "(self) -> 'None'",
         "plan_edit": "(self, slot: 'LiveTarget', "
-                     "edits: 'Sequence[Replace | Remove | Insert | AddMember]', *, "
+                     "edits: 'Sequence[Replace | Remove | Insert | AddMember] | Steps', *, "
                      "what: 'str', expected: 'str | None' = None) -> 'WritePlan'",
         "folder_of": "(self, slot: 'LiveTarget') -> 'Path | None'",
         "plan_edits": "(self, edits: 'Sequence[tuple[LiveTarget, Sequence[Replace | Remove | "
-                      "Insert | AddMember], str | None]]', *, what: 'str', "
+                      "Insert | AddMember] | Steps, str | None]]', *, what: 'str', "
                       "slot_whats: 'Sequence[str] | None' = None) -> 'WritePlan'",
         "plan_undo": "(self, op_id: 'str') -> 'WritePlan'",
         "write": "(self, plan: 'WritePlan', confirmed: 'Iterable[str]' = ()) -> 'WriteResult'",

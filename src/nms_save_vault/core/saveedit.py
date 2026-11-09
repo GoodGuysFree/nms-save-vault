@@ -68,11 +68,13 @@ def body_of(data: bytes) -> bytes:
 
 
 def rebuild(platform: str, data: bytes, meta_plain: bytes,
-            edits: Iterable[savepatch.Edit]) -> Rebuilt:
-    """``data`` with ``edits`` made (each proven, :func:`savepatch.apply`), compressed again,
-    and ``meta_plain`` with its sizes set. Refused with :class:`EditRefused`, or
-    :class:`savepatch.PatchRefused` for an edit that cannot be made exactly."""
-    edits = list(edits)
+            edits: Iterable[savepatch.Edit] | savepatch.Steps) -> Rebuilt:
+    """``data`` with ``edits`` made (each proven, :func:`savepatch.apply`; :class:`savepatch.Steps`
+    one batch after another), compressed again, and ``meta_plain`` with its sizes set. Refused
+    with :class:`EditRefused`, or :class:`savepatch.PatchRefused` for an edit that cannot be
+    made exactly."""
+    steps = savepatch.as_steps(edits)
+    edits = [e for batch in steps for e in batch]
     if platform == "steam":
         recorded, base_version, meta_format = _steam_fields(meta_plain)
     elif platform == "xbox":
@@ -85,7 +87,7 @@ def rebuild(platform: str, data: bytes, meta_plain: bytes,
     chunks, _ = lz4_block.walk_chunks(data)
     if sum(c.decompressed_size for c in chunks) != recorded:
         raise EditRefused("the meta's size does not match its own data; not touching it")
-    new_body = savepatch.apply(body, edits)
+    new_body = savepatch.apply_steps(body, steps)
     raw = new_body + b"\x00"
     try:
         new_data = lz4_block.compress(raw)
