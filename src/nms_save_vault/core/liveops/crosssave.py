@@ -1,7 +1,8 @@
 """Whether Hello Games cross-save is on for an account (D5 2.3.3 ``CROSS_SAVE_ON``).
 
-The account's ``accountdata.hg`` carries a ``CrossSaves`` flag. It is read with D4's
-``decode_save`` and the computed save key (core.hashname); nothing is indexed or cached.
+The account's ``accountdata.hg`` carries a ``CrossSaves`` flag. It is read as the game writes
+it (:mod:`core.accountdata`: plain JSON text) with the computed save key (core.hashname);
+nothing is indexed or cached.
 ``None`` means unknown: no file, an Xbox account (its account data lives in a container
 this reader does not open), unreadable data, or no such flag.
 """
@@ -9,18 +10,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .. import formats, hashname, savejson
+from .. import accountdata, hashname
 
 FLAG = "CrossSaves"
 
 
 def cross_save_on(folder: Path, platform: str) -> bool | None:
-    if platform != "steam":
-        return None
-    try:
-        data = (folder / formats.ACCOUNT_DATA_NAME).read_bytes()
-        root = savejson.decode_save(data).root
-    except (OSError, savejson.SaveDecodeError, ValueError):
+    root = accountdata.read(folder, platform)
+    if root is None:
         return None
     found = _find(root, hashname.key(FLAG))
     if isinstance(found, bool):

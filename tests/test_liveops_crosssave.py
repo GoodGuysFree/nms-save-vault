@@ -41,6 +41,14 @@ def test_the_flag_is_read_from_decoded_account_data(tmp_path, payload, expected)
     assert crosssave.cross_save_on(world.live, "steam") is expected
 
 
+def test_account_data_as_the_game_writes_it_is_read(tmp_path):
+    """The game writes accountdata.hg as plain JSON text ending in one NUL (a real account
+    file, 2026-11-10), not in LZ4 chunks as a save."""
+    world = steam_world(tmp_path)
+    (world.live / "accountdata.hg").write_bytes(b'{"UD":{"%s":true}}\x00' % KEY.encode())
+    assert crosssave.cross_save_on(world.live, "steam") is True
+
+
 def test_unknown_when_unreadable_missing_or_xbox(tmp_path):
     world = steam_world(tmp_path)
     assert crosssave.cross_save_on(world.live, "steam") is None        # "account data": not a save

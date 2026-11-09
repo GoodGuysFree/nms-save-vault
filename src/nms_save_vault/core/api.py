@@ -31,7 +31,7 @@ from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from . import discover, gameversion, locations, safety, savedir, state
+from . import accountdata, discover, gameversion, locations, safety, savedir, state
 from . import platform as hostmod
 from .appinfo import CORE_VERSION, VAULT, AppIdentity, app_of, current, is_stamp, set_app
 from .index.extract import CtxInput, SaveInput, contexts_of
@@ -92,7 +92,7 @@ __all__ = [
     # what is in a save
     "CtxInput", "DecodedSave", "SaveDecodeError", "SaveInput", "contexts_of", "decode_save",
     "PrivacyError", "get", "items", "known_game_version", "playthrough_of", "read_member",
-    "rehomed",
+    "read_account", "rehomed",
     "Inventory", "Slot", "SpecialSlot", "inventories_of",
     "ASSET_KINDS", "Asset", "INDEX_VERSION", "assets_of", "state_of",
     # the vault's stored versions
@@ -265,6 +265,14 @@ def parse_text(text: bytes) -> dict:
     """The root of a save's JSON text, as :func:`decode_save` gives it (``DecodedSave.root``).
     Raises :class:`SaveDecodeError` when it does not parse."""
     return savejson.parse_text(text)
+
+
+def read_account(folder: str | Path) -> dict | None:
+    """The account data of the Steam save folder ``folder`` (settings and the rewards unlocked
+    for the whole account: ``UserSettingsData`` ``UnlockedSpecials``, ...), read now, as a
+    decoded root to read with :func:`get`; None when there is none to read (no file,
+    unreadable data, an Xbox account, whose account data is not read yet)."""
+    return accountdata.read(folder, platform_of(folder))
 
 
 def rehomed(entry: object, target: dict, context: str = "base") -> bytes:
