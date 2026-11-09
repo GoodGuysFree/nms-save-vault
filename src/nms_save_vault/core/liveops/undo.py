@@ -22,7 +22,7 @@ from .model import Estimate, OpSummary, PairSource, PlacePlan, Warning
 from .planner import _live_pair, _plan, _plan_warnings, _refusal, _summary, duration, durable, warning
 from .slots import SlotNow, read_account
 from .source import load_source
-from .targets import resolve_account, resolve_target, slot_label
+from .targets import canonical, resolve_account, resolve_target, same_folder, slot_label
 
 VERIFY_ORDER = ("reverted", "deleted", "replaced", "pending", "expired", "superseded",
                 "confirmed")
@@ -39,6 +39,8 @@ def plan_undo(ctx: OpContext, op_id: str) -> PlacePlan:
         entries = [_Entry.of(t) for t in writing["targets"]]
     except (KeyError, TypeError, ValueError, opjournal.JournalError, LiveOpError):
         return _unavailable(ctx)
+    for e in entries:                   # each folder under the name it has now (R7-1)
+        e.target = canonical(ctx, e.target)
     if rec.kind == "panic_restore":          # the inverse is the restore of its own snapshot
         from .panic import plan_panic_restore
 
@@ -108,9 +110,17 @@ def plan_undo(ctx: OpContext, op_id: str) -> PlacePlan:
 def op_history(ctx: OpContext, target: LiveTarget) -> list[OpSummary]:
     """The ops that touched ``target``, newest first, for the history list."""
     oplog = {r.get("op_id"): r for r in ctx.vault.read_oplog() if r.get("v") == 2}
-    out = []
+    out, same = [], {}
+
+    def mine(t: LiveTarget) -> bool:            # the same folder, however it was named
+        if t.slot != target.slot:
+            return False
+        if t.ref not in same:
+            same[t.ref] = same_folder(ctx, t.ref, target.ref)
+        return same[t.ref]
+
     for rec in reversed(list(opjournal.read_ops(ctx).values())):
-        if target not in rec.targets:
+        if not any(mine(t) for t in rec.targets):
             continue
         out.append(OpSummary(
             rec.op_id, rec.kind, _local(rec.started), tuple(_labels(rec)),

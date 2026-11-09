@@ -290,6 +290,26 @@ def test_a_change_is_journaled_under_the_folder_s_own_name_however_the_app_named
     assert change.target == session.slot_at(world.live, 1)
 
 
+def test_the_slot_s_history_keeps_an_app_s_writes_once_the_vault_lists_that_folder(world):
+    """Review R7-1: an app wrote a folder NMS Save Vault did not list (named by its path);
+    NMS Save Vault then lists that same folder (named without the tag): the write stays in
+    the slot's history (ops log, Undo slot), and its undo still finds the folder."""
+    from nms_save_vault.core import liveops
+    session = _session(world)
+    plan = session.plan_edit(session.slot_at(world.live, 1), UNITS, what="x")
+    done = session.write(plan, plan.confirmations)
+    assert done.status == "done"
+    _switch_off(world, world.live, enabled=True)          # NMS Save Vault lists the same folder
+    later = _session(world)
+    target = later.slot_at(world.live, 1)
+    assert not target.instance                            # the vault's name for it now
+    assert done.op_id in [s.op_id for s in liveops.op_history(later._now(), target)]
+    undo = later.plan_undo(done.op_id)
+    assert not undo.blocked, undo.blocked
+    result = later.write(undo, undo.confirmations)
+    assert result.status == "done", result.text
+
+
 def test_an_undo_lands_in_the_folder_the_change_was_written_to(world, tmp_path):
     """Review M6-1: an app writes its folder; NMS Save Vault then lists a copy of it (same
     name, another place). The undo puts back the app's folder, never the copy."""

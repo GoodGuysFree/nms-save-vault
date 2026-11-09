@@ -106,6 +106,9 @@ def test_the_user_may_start_another_vault_while_the_chosen_one_cannot_be_found(m
         api.create_vault(where)                         # never without the user's say
     assert api.create_vault(where, chosen_missing_ok=True) == where
     assert api.open_vault(where, live_roots=()) is not None and not gone.exists()
+    # review R7-4: with no folder given, never in the missing one's own place
+    other = api.create_vault(chosen_missing_ok=True)
+    assert other == api.default_vault_dir() and other != gone and not gone.exists()
 
 
 def test_a_vault_that_fails_half_way_is_cleared_and_can_be_started_again(machine, monkeypatch):

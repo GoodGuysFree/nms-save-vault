@@ -46,7 +46,7 @@ from .liveops.classic import _ad_hoc
 from .liveops.context import OpContext
 from .liveops.edit import plan_edit, plan_edits
 from .liveops.errors import ConfirmationRequired, LiveOpError, TargetError
-from .liveops.targets import resolve_target
+from .liveops.targets import canonical, resolve_target
 from .liveops.model import OpOutcome, PlacePlan, Severity
 from .catalog import Vault
 from .liveops.opjournal import OPS, machine_id, read_ops
@@ -137,9 +137,13 @@ def create_vault(vault_root: str | Path | None = None, *,
     cannot be made, or when the vault NMS Save Vault chose cannot be found (its drive not
     connected): no other vault is started then, unless the user chose to start this one
     instead (``chosen_missing_ok``; Savecraft's S16 question)."""
-    root = Path(vault_root) if vault_root is not None else vault_dir()
     chosen = state.chosen_vault()
-    if chosen is not None and not chosen.is_dir() and not chosen_missing_ok:
+    missing = chosen is not None and not chosen.is_dir()
+    # a vault started instead of a missing chosen one goes to the default place, never to
+    # the missing one's own path (an unmounted drive's mount point: review R7-4)
+    root = Path(vault_root) if vault_root is not None else (
+        default_vault_dir() if missing and chosen_missing_ok else vault_dir())
+    if missing and not chosen_missing_ok:
         raise StoreUnavailable("The vault chosen in NMS Save Vault cannot be found: connect "
                                "the drive it is on. No other vault is started meanwhile.")
     if versionstore.vault_mode(root) != "legacy":
@@ -682,14 +686,7 @@ def _canonical(ctx: OpContext, slot: LiveTarget) -> LiveTarget:
     alone, :func:`slot_of`): the vault journals a write under that name, so its undo finds
     the same folder however the folders of that name change later (review M6-1). A slot that
     names no folder is left as given (planning it says why)."""
-    try:
-        rt = resolve_target(ctx, slot)
-    except TargetError:
-        return slot
-    for source, ref in zip(ctx.sources, live_refs(list(ctx.sources))):
-        if source.id == rt.source_id:
-            return ref.target(slot.slot)
-    return slot
+    return canonical(ctx, slot)
 
 
 def _key(path: str | Path) -> str:

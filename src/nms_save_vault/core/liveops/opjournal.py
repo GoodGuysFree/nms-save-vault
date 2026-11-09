@@ -311,9 +311,11 @@ def last_activity(ctx: OpContext, ref: LiveRef) -> float | None:
     """When this machine's most recent op on ``ref`` last wrote a lifecycle event (epoch
     seconds): the app's own last write to that account cannot be told from the game's or
     a sync's without it. ``verify`` events are later looks, not writes."""
+    from .targets import same_folder
     latest = None
     for rec in read_ops(ctx).values():
-        if rec.machine != ctx.machine_id or not any(t.ref == ref for t in rec.targets):
+        if rec.machine != ctx.machine_id or not any(
+                t.ref == ref or same_folder(ctx, t.ref, ref) for t in rec.targets):
             continue
         for e in rec.events:
             if e["event"] == "verify":

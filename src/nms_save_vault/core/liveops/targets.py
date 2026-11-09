@@ -116,6 +116,39 @@ def _the_source(sources, account: LiveRef) -> Source:
     return found[0]
 
 
+def canonical(ctx: OpContext, target: LiveTarget) -> LiveTarget:
+    """``target`` under the name ``ctx`` gives its folder now: an app may name a folder by
+    its name alone, and a write journaled under an app's tagged name is undone after NMS
+    Save Vault lists that folder untagged (review M6-1, R7-1). A target that names no folder
+    is left as it is (resolving it says why)."""
+    try:
+        source = _the_source(ctx.sources, target.ref)
+    except TargetError:
+        return target
+    for s, ref in zip(ctx.sources, live_refs(list(ctx.sources))):
+        if s == source:
+            return ref.target(target.slot)
+    return target
+
+
+def same_folder(ctx: OpContext, a: LiveRef, b: LiveRef) -> bool:
+    """Whether two names of a live account folder name the same folder here: equal, or one
+    tagged with the location hash of the folder the other, untagged, names. An app's own
+    folder is named by its path (tagged); when NMS Save Vault lists that folder later, it
+    names it without the tag, and the app's writes are still that folder's (review R7-1)."""
+    if a == b:
+        return True
+    if (a.platform, a.account_key) != (b.platform, b.account_key) or \
+            bool(a.instance) == bool(b.instance):
+        return False
+    tagged, plain = (a, b) if a.instance else (b, a)
+    try:
+        folder = _the_source(ctx.sources, plain).path
+    except TargetError:
+        return False
+    return instance_of(folder) == tagged.instance
+
+
 def _outside_vault(folder: Path, vault_root: Path) -> None:
     here, vault = folder.resolve(), Path(vault_root).resolve()
     if here == vault or vault in here.parents:
