@@ -40,3 +40,19 @@ def test_the_cache_file_stays_readable_by_a_released_nms_save_vault(tmp_path):
     (tmp_path / "c.json").write_text(json.dumps(data), encoding="utf-8")
     older = ScanCache.load(tmp_path / "c.json", "v1")
     assert older.file(path, 10, 5, ino=8).vid == VID               # no id kept: size and time
+
+
+def test_a_record_with_the_id_inside_is_rewritten_apart_on_load(tmp_path):
+    """Review I-9: a cache written while the id was a sixth field kept that field on a hit
+    (so a released NMS Save Vault dropped the cache once more) and the id was not used."""
+    import json
+    path = Path(tmp_path / "save.hg")
+    data = {"schema": 2, "vault_id": "v1", "files": {str(path): [10, 5, VID, True, "m", 7]},
+            "entries": {}, "ids": {}, "legacy": {}}
+    (tmp_path / "c.json").write_text(json.dumps(data), encoding="utf-8")
+    cache = ScanCache.load(tmp_path / "c.json", "v1")
+    assert cache.file(path, 10, 5, ino=8) is None and cache.file(path, 10, 5, ino=7).vid == VID
+    cache.save()                                                   # nothing else changed
+    again = json.loads((tmp_path / "c.json").read_text(encoding="utf-8"))
+    assert again["files"] == {str(path): [10, 5, VID, True, "m"]}
+    assert again["inos"] == {str(path): 7}

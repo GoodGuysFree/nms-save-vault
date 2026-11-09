@@ -93,6 +93,12 @@ class ScanCache:
         if isinstance(inos, dict) and all(isinstance(k, str) and isinstance(v, int)
                                           and not isinstance(v, bool) for k, v in inos.items()):
             cache._inos = {k: v for k, v in inos.items() if k in files}
+        for key, value in files.items():        # the id once kept as a sixth field: apart now
+            if len(value) == 6:
+                files[key] = value[:5]
+                if value[5]:
+                    cache._inos.setdefault(key, value[5])
+                cache._dirty = True
         return cache
 
     # --- files ----------------------------------------------------------------
