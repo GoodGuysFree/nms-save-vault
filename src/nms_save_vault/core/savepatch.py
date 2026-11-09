@@ -96,7 +96,7 @@ def dumps_named(value: Any) -> bytes:
     :class:`PatchRefused` for a name that cannot be a field name."""
     def keyed(node: Any) -> Any:
         if isinstance(node, dict):
-            return {_k(k) if isinstance(k, str) else k: keyed(v) for k, v in node.items()}
+            return {_k(k): keyed(v) for k, v in node.items()}     # _k refuses non-text
         if isinstance(node, list):
             return [keyed(v) for v in node]
         return node

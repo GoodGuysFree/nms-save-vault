@@ -166,10 +166,6 @@ def create_vault(vault_root: str | Path | None = None) -> Path:
     raise StoreUnavailable("The vault could not be started here.")
 
 
-def _same_path(a: Path, b: Path) -> bool:
-    return os.path.normcase(os.path.abspath(a)) == os.path.normcase(os.path.abspath(b))
-
-
 def _undo_new_vault(root: Path, existed: bool, made: list[Path]) -> None:
     """A vault this call was starting failed part-way: remove the folders it made (the store,
     the lock's folder) and the vault folder when this call made it and it is empty again, so a

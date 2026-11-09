@@ -39,6 +39,14 @@ from .targets import resolve_account, resolve_target
 __all__ = ["EditRefused", "plan_edit"]
 
 
+def _sha256_text(value: object) -> str:
+    """``value`` as a SHA-256 in lower-case hex; ValueError for anything else."""
+    if not isinstance(value, str) or len(value) != 64 or any(
+            c not in "0123456789abcdefABCDEF" for c in value):
+        raise ValueError("expected must be a SHA-256 in hex (64 characters)")
+    return value.lower()
+
+
 def plan_edit(ctx: OpContext, target: LiveTarget, edits: Iterable[Edit], *,
               what: str, expected: str | None = None) -> PlacePlan:
     """The plan to put the save in ``target`` back with ``edits`` made. ``what`` says what the
@@ -65,7 +73,7 @@ def plan_edit(ctx: OpContext, target: LiveTarget, edits: Iterable[Edit], *,
     data = (rt.folder / data_name).read_bytes()
     if hashlib.sha256(data).hexdigest() != loaded.vid:
         raise EditRefused(f"{rt.label} changed while it was read; try again")
-    if expected is not None and loaded.vid != expected:
+    if expected is not None and loaded.vid != _sha256_text(expected):
         # the edits name places in the version the app read; in another they mean other things
         raise EditRefused(f"{rt.label} changed since it was read (the game or another app "
                           f"saved it); read it again and make the change again")

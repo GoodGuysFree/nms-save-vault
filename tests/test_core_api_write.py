@@ -644,3 +644,19 @@ def test_an_edit_made_from_an_older_version_is_refused(world):
     assert not session.plan_edit(_slot(world), UNITS, what="x", expected=read).blocked
     with pytest.raises(api.EditRefused, match="changed since it was read"):
         session.plan_edit(_slot(world), UNITS, what="x", expected="0" * 64)
+
+
+
+def test_the_expected_version_is_hex_of_any_case_and_nothing_else(world):
+    session = _session(world)
+    read = hashlib.sha256((world.live / "save.hg").read_bytes()).hexdigest()
+    assert not session.plan_edit(_slot(world), UNITS, what="x", expected=read.upper()).blocked
+    for bad in ("", "xyz", read[:-1], read + "0"):
+        with pytest.raises(ValueError):
+            session.plan_edit(_slot(world), UNITS, what="x", expected=bad)
+
+
+def test_dumps_named_refuses_a_name_that_is_not_text():
+    for bad in (5, True, None, 1.5):
+        with pytest.raises(api.PatchRefused):
+            api.dumps_named({bad: 1})

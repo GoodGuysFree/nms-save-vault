@@ -187,3 +187,33 @@ def test_dumps_named_refuses_what_cannot_be_a_field_name():
         with pytest.raises(api.PatchRefused):
             api.dumps_named({bad: 1})
     assert api.dumps_named({"DiscoveryData-v1": 1})            # a real name with a hyphen
+
+
+
+@pytest.mark.parametrize("path, gone", [
+    ("/media/deck/SD/vault", True), ("/run/media/u/USB/vault", True), ("/mnt/usb/vault", True),
+    ("/Volumes/Kit/vault", True), ("/home/u/deleted/vault", False), ("relative/vault", False)])
+def test_off_windows_a_missing_vault_on_a_removable_mount_counts_as_unplugged(path, gone):
+    from nms_save_vault.core import state
+    from pathlib import PurePosixPath
+    assert state.unplugged(PurePosixPath(path), posix=True) is gone
+
+
+def test_a_newer_choice_beats_a_pointer_trusted_only_for_its_unplugged_settings(machine):
+    """Every released NMS Save Vault leaves the pointer as it was when it switches vaults: a
+    settings file written after the pointer, naming another vault that is there, wins."""
+    import os
+    from nms_save_vault.core import state
+    tmp_path, _live = machine
+    drive = _free_drive()
+    new = tmp_path / "NewVault"
+    new.mkdir()
+    pointer = state.pointer_path()
+    _settings(tmp_path, pointer=(pointer, {"vault": f"{drive}:/Kit/vault",
+                                           "state": f"{drive}:/Kit/state.json"}))
+    later = state.state_candidates()[-1]
+    _settings(tmp_path, later=(later, {"vault": str(new)}))
+    os.utime(pointer, (1_700_000_000, 1_700_000_000))
+    assert api.vault_dir() == new
+    os.utime(later, (1_600_000_000, 1_600_000_000))           # older than the pointer
+    assert api.vault_dir() == Path(f"{drive}:/Kit/vault")

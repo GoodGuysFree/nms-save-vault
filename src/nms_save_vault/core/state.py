@@ -209,6 +209,7 @@ def chosen_vault(host: platform.Host | None = None) -> Path | None:
 
 
 def _chosen(host: platform.Host | None, *, must_exist: bool) -> Path | None:
+    trusted: tuple[Path, float] | None = None      # a pointer whose settings cannot say
     for path in state_candidates(host):
         chosen = _named_vault(path, must_exist)
         if chosen is None:
@@ -217,19 +218,46 @@ def _chosen(host: platform.Host | None, *, must_exist: bool) -> Path | None:
             settings = _read_json(path).get("state")
             # The pointer holds only while the settings that wrote it still choose that vault:
             # an older NMS Save Vault that switched vaults leaves it stale. Settings on a drive
-            # that is not connected cannot say: then the pointer is trusted (a portable kit).
+            # that is not connected cannot say: then the pointer is trusted (a portable kit),
+            # unless a settings file written after it chooses another vault that is there.
             if not isinstance(settings, str):
                 continue
-            if not (not must_exist and unplugged(Path(settings))) and \
-                    _named_vault(Path(settings), must_exist) != chosen:
+            if not must_exist and unplugged(Path(settings)):
+                trusted = (chosen, _mtime(path))
                 continue
+            if _named_vault(Path(settings), must_exist) != chosen:
+                continue
+            return chosen
+        if trusted is not None and (not chosen.is_dir() or _mtime(path) <= trusted[1]):
+            continue
         return chosen
-    return None
+    return trusted[0] if trusted is not None else None
 
 
-def unplugged(path: Path) -> bool:
+def _mtime(path: Path) -> float:
+    try:
+        return path.stat().st_mtime
+    except OSError:
+        return 0.0
+
+
+#: Where removable drives are mounted off Windows (SD cards, USB sticks, a Steam Deck's card).
+REMOVABLE_MOUNTS = ("/media/", "/run/media/", "/mnt/", "/Volumes/")
+
+
+def unplugged(path, posix: bool | None = None) -> bool:
     """Whether ``path`` is on a drive (or share) that is not there now - not merely a folder
-    that is gone from a drive that is."""
+    that is gone from a drive that is. Off Windows every path starts at "/", so a missing
+    folder where removable drives are mounted counts as unplugged."""
+    posix = os.name != "nt" if posix is None else posix
+    if posix:
+        text = str(path).replace("\\", "/")
+        if not text.startswith(REMOVABLE_MOUNTS):
+            return False
+        try:
+            return not Path(text).exists()
+        except OSError:
+            return True
     anchor = Path(path).anchor
     try:
         return bool(anchor) and not Path(anchor).exists()
