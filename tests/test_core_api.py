@@ -119,7 +119,7 @@ PINNED = {
         "refresh": "(self) -> 'None'",
         "plan_edit": "(self, slot: 'LiveTarget', "
                      "edits: 'Sequence[Replace | Remove | Insert | AddMember]', *, "
-                     "what: 'str') -> 'WritePlan'",
+                     "what: 'str', expected: 'str | None' = None) -> 'WritePlan'",
         "folder_of": "(self, slot: 'LiveTarget') -> 'Path | None'",
         "plan_undo": "(self, op_id: 'str') -> 'WritePlan'",
         "write": "(self, plan: 'WritePlan', confirmed: 'Iterable[str]' = ()) -> 'WriteResult'",

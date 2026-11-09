@@ -634,3 +634,13 @@ def test_settling_a_stopped_write_waits_too_while_the_game_cannot_be_checked(wor
     result = session.resolve(item.op_id, "back", {"GAME_STATE_UNKNOWN"})
     assert result.status == "refused" and result.code == "GAME_STATE_UNKNOWN"
     assert {n: (world.live / n).read_bytes() for n in SLOT1} == torn
+
+
+def test_an_edit_made_from_an_older_version_is_refused(world):
+    """The edits name places in the version the app read: when the slot loads another one
+    now (the game or another app saved), they would mean other things there."""
+    session = _session(world)
+    read = hashlib.sha256((world.live / "save.hg").read_bytes()).hexdigest()
+    assert not session.plan_edit(_slot(world), UNITS, what="x", expected=read).blocked
+    with pytest.raises(api.EditRefused, match="changed since it was read"):
+        session.plan_edit(_slot(world), UNITS, what="x", expected="0" * 64)

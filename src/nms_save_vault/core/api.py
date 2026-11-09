@@ -482,17 +482,19 @@ class LiveSession:
         return self._ctx
 
     def plan_edit(self, slot: LiveTarget, edits: Sequence[Replace | Remove | Insert | AddMember],
-                  *, what: str) -> WritePlan:
+                  *, what: str, expected: str | None = None) -> WritePlan:
         """The plan to put the save ``slot`` (:func:`slot_of`) loads back with ``edits`` made,
         each proven: the edited save reads back as the original with exactly those changes.
         Every field name in an edit is a readable one. ``what`` says what the edit does, for
-        the vault's label ("rename ship 'Ark'"). The edited version is kept in the vault before
+        the vault's label ("rename ship 'Ark'"). ``expected``: the SHA-256 of the save data the
+        edits were made from; when the slot loads another version now, the edit is refused
+        (its places mean other things there). The edited version is kept in the vault before
         this returns. Raises :class:`EditRefused` (a save this core does not edit: an Xbox
         slot, a newer game, an old container; or one that cannot be written now: the game
         running, an interrupted write waiting), :class:`PatchRefused` (an edit that cannot
         be made exactly), :class:`TargetError` (a slot no write may use) or a
         :class:`StoreError` (the vault busy with another app's write, or unreachable)."""
-        return WritePlan(plan_edit(self._now(), slot, list(edits), what=what))
+        return WritePlan(plan_edit(self._now(), slot, list(edits), what=what, expected=expected))
 
     def folder_of(self, slot: LiveTarget) -> Path | None:
         """The live save folder this session writes for ``slot``; None when it writes none.

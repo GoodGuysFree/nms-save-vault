@@ -40,7 +40,7 @@ __all__ = ["EditRefused", "plan_edit"]
 
 
 def plan_edit(ctx: OpContext, target: LiveTarget, edits: Iterable[Edit], *,
-              what: str) -> PlacePlan:
+              what: str, expected: str | None = None) -> PlacePlan:
     """The plan to put the save in ``target`` back with ``edits`` made. ``what`` says what the
     edit does, for the vault's label ("rename ship 'Ark'"). Run it with ``execute`` as any
     plan. The edited version is in the vault before this returns. Raises
@@ -65,6 +65,10 @@ def plan_edit(ctx: OpContext, target: LiveTarget, edits: Iterable[Edit], *,
     data = (rt.folder / data_name).read_bytes()
     if hashlib.sha256(data).hexdigest() != loaded.vid:
         raise EditRefused(f"{rt.label} changed while it was read; try again")
+    if expected is not None and loaded.vid != expected:
+        # the edits name places in the version the app read; in another they mean other things
+        raise EditRefused(f"{rt.label} changed since it was read (the game or another app "
+                          f"saved it); read it again and make the change again")
     ordinal = slotmap.storage_ordinal(slotmap.file_no(target.slot,
                                                       slotmap.member_index(loaded.position)))
     blob = (rt.folder / meta_name).read_bytes()
