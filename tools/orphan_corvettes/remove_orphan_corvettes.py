@@ -2,14 +2,14 @@
 
 READ README.md IN THIS FOLDER FIRST. This edits save data, which NMS Save Vault itself never does.
 
-A corvette in ShipOwnership is tied to its PlayerShipBase layout by time: the ship's
-Resource.Seed is its creation time, and the layout's Owner.TS is that time or one second later
-(36 of 36 corvettes on the author's account, 2026-11-07). A layout that no corvette claims that
-way is an orphan. A layout whose UserData happens to be a corvette's slot is kept unless
---include-ud-linked is given.
+The game finds a corvette's PlayerShipBase layout by the corvette's ship slot: the layout's
+UserData is that slot (NMS-Unpack's reading of NMS.exe, 2026-11-10). A layout whose UserData
+names no corvette is an orphan. This tool first tied layouts to corvettes by time instead (the
+ship's Resource.Seed is its creation time and the layout's Owner.TS that time or one second
+later); a layout only that rule ties to a corvette is kept unless --include-ts-linked is given.
 
     uv run --with lz4 python tools/orphan_corvettes/remove_orphan_corvettes.py <st_ folder> <slot>...
-            [--write] [--include-ud-linked] [--vault DIR]
+            [--write] [--include-ts-linked] [--vault DIR]
 
 Without --write it only reports. With --write: the game must be known closed; each slot to change
 is kept in the vault first (the app's own ``keep``), and the vault must then hold every file of
@@ -27,8 +27,6 @@ import struct
 import subprocess
 import sys
 from pathlib import Path
-
-import lz4.block
 
 from nms_save_vault import __version__
 from nms_save_vault.core import formats, locations, lz4_block, meta, safety
@@ -77,7 +75,7 @@ def contexts(root: dict):
             yield name, psd
 
 
-def orphans_in(psd: dict, include_ud_linked: bool) -> tuple[list[int], list[str]]:
+def orphans_in(psd: dict, include_ts_linked: bool) -> tuple[list[int], list[str]]:
     """Indexes into PersistentPlayerBases to remove, and a line per layout for the report."""
     corvettes = {i: seed_of(s) for i, s in enumerate(g(psd, "ShipOwnership") or [])
                  if CORVETTE_FOLDER in str(g(s, "Resource", "Filename") or "")}
@@ -88,21 +86,26 @@ def orphans_in(psd: dict, include_ud_linked: bool) -> tuple[list[int], list[str]
         ts = g(b, "Owner", "TS")
         return seed is not None and isinstance(ts, int) and 0 <= ts - seed <= 1
 
-    for slot, seed in corvettes.items():
-        n = sum(1 for _i, b in layouts if claims(seed, b))
-        if n != 1:
-            raise Refused(f"the corvette in ship slot {slot} matches {n} layouts by time; "
-                          "the rule this tool relies on does not hold in this save")
+    def slot_of(b):
+        ud = g(b, "UserData")
+        return ud if isinstance(ud, int) and not isinstance(ud, bool) else None
+
+    for slot in corvettes:
+        n = sum(1 for _i, b in layouts if slot_of(b) == slot)
+        if n > 1:
+            raise Refused(f"the corvette in ship slot {slot} is named by {n} layouts; the game "
+                          "uses one, and this tool cannot tell which")
     remove, report = [], []
     for i, b in layouts:
-        owner = next((slot for slot, seed in corvettes.items() if claims(seed, b)), None)
-        ud = g(b, "UserData")
+        ud = slot_of(b)
+        by_time = next((slot for slot, seed in corvettes.items() if claims(seed, b)), None)
         parts = len(g(b, "Objects") or [])
-        if owner is not None:
-            state = f"kept: layout of the corvette in ship slot {owner}"
-        elif ud in corvettes and not include_ud_linked:
-            state = (f"kept: no corvette claims it by time, but UserData {ud} is a corvette slot "
-                     "(see --include-ud-linked)")
+        if ud in corvettes:
+            state = f"kept: layout of the corvette in ship slot {ud}"
+        elif by_time is not None and not include_ts_linked:
+            state = (f"kept: its UserData names no corvette, but its owner time ties it to the "
+                     f"corvette in ship slot {by_time}, the rule this tool used first "
+                     "(see --include-ts-linked)")
         else:
             state = "REMOVE: orphan"
             remove.append(i)
@@ -210,6 +213,7 @@ def pack(raw: bytes) -> bytes:
     out = bytearray()
     for off in range(0, len(raw), CHUNK):
         piece = raw[off:off + CHUNK]
+        import lz4.block            # only to write: the report needs no lz4
         block = lz4.block.compress(piece, mode="default", store_size=False)
         out += struct.pack("<4I", formats.SAVE_MAGIC, len(block), len(piece), 0) + block
     return bytes(out)
@@ -236,7 +240,7 @@ def sha(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def fix_file(folder: Path, f: int, include_ud_linked: bool):
+def fix_file(folder: Path, f: int, include_ts_linked: bool):
     """(new data, new meta, sha256 of the old data and meta, report lines); new data None when
     there is nothing to remove."""
     stem, ordinal = stem_of(f), f + 1
@@ -260,7 +264,7 @@ def fix_file(folder: Path, f: int, include_ud_linked: bool):
     lines = [f"{stem} (save '{info.save_name}', BaseVersion {info.base_version})"]
     new_body, removed = body, 0
     for cname, psd in contexts(root):
-        drop, report = orphans_in(psd, include_ud_linked)
+        drop, report = orphans_in(psd, include_ts_linked)
         lines += [f"  [{cname}] {r}" for r in report]
         if drop:
             new_body = without_elements(new_body, cname, drop)
@@ -283,7 +287,7 @@ def fix_file(folder: Path, f: int, include_ud_linked: bool):
     if (check.size_decompressed, check.timestamp, check.save_name) != (len(new_raw), info.timestamp, info.save_name):
         raise Refused(f"{stem}: the rewritten meta does not read back as expected")
     for _cname, psd in contexts(loads(new_body)):
-        if orphans_in(psd, include_ud_linked)[0]:
+        if orphans_in(psd, include_ts_linked)[0]:
             raise Refused(f"{stem}: orphans are still found after the edit")
     lines.append(f"  removes {removed} layout(s); JSON {len(body):,} -> {len(new_body):,} bytes")
     return new_data, new_mf, old, lines
@@ -334,8 +338,9 @@ def main() -> int:
     ap.add_argument("folder", type=Path, help="the Steam st_<id> save folder")
     ap.add_argument("slots", type=int, nargs="+", help="slot numbers 1-15")
     ap.add_argument("--write", action="store_true", help="change the saves (default: report only)")
-    ap.add_argument("--include-ud-linked", action="store_true",
-                    help="also remove layouts no corvette claims by time whose UserData is a corvette slot")
+    ap.add_argument("--include-ts-linked", action="store_true",
+                    help="also remove layouts whose UserData names no corvette but whose owner time "
+                         "ties them to one")
     ap.add_argument("--vault", type=Path, help="the vault folder (default: the app's configured vault)")
     args = ap.parse_args()
 
@@ -352,7 +357,7 @@ def main() -> int:
             return 2
         for f in (2 * k - 1, 2 * k):
             try:
-                new_data, new_mf, old, lines = fix_file(args.folder, f, args.include_ud_linked)
+                new_data, new_mf, old, lines = fix_file(args.folder, f, args.include_ts_linked)
             except (Refused, OSError, ValueError) as exc:
                 print(f"Slot {k}, {stem_of(f)}: refused: {exc}\nNothing was written.")
                 return 1

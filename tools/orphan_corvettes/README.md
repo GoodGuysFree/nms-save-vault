@@ -8,8 +8,9 @@
 >
 > - It is **experimental and unsupported**. It is **not** part of the app and is not in the
 >   release download.
-> - The rule it uses was worked out by looking at one player's saves. **Hello Games has not
->   documented it.** A game update can change it at any time without notice.
+> - The rule it uses was read from the game's program (NMS.exe, 2026-11) and checked against
+>   one player's saves. **Hello Games has not documented it.** A game update can change it at
+>   any time without notice.
 > - It was tested on copies of one player's real saves, in a sandbox. That is all the testing
 >   it has had.
 > - **There is no warranty of any kind** (GPL-3.0, sections 15 and 16). You use it at your own
@@ -32,27 +33,23 @@ notice is information only. The app does not change the save.
 
 ## How it decides what an orphan is
 
-- Every corvette in your ship list has a seed. For corvettes, the seed is the Unix time the
-  corvette was created.
-- Its interior record carries an owner timestamp that is that same second or the next one.
-- An interior record that **no corvette in the save claims that way** is an orphan.
+- An interior record's `UserData` field holds the number of the ship slot of the corvette it
+  belongs to. That is how the game itself finds a corvette's interior (read from the game's
+  program, 2026-11).
+- An interior record whose `UserData` names **no slot that holds a corvette** is an orphan.
 
-On the account it was developed on, all 36 corvettes across every save had exactly one
-interior record claimed this way. That is the whole basis of the rule.
+The tool **refuses to touch a save at all** when two interior records name one corvette's
+slot: the game uses one of them, and guessing which would be dangerous.
 
-The tool **refuses to touch a save at all** when any corvette in it matches zero or more than
-one interior record. That means the rule does not hold there, and guessing would be dangerous.
+### The records it keeps by default: tied to a corvette by time
 
-### The "UserData" records it keeps by default
-
-Some interior records are claimed by no corvette by time, but their `UserData` field holds the
-number of a ship slot that has a corvette in it. Older tools (and older versions of NMS Save
-Vault) treated `UserData` as the link. The tool **keeps these by default** and says so in its
-report. `--include-ud-linked` removes them as well. **Do not use that flag** unless you have
-checked in the game that every corvette in that save still has its full interior without them.
-In one of the author's saves the game itself added a part to such a record while the record
-claimed by time stayed untouched. So when both kinds exist for one corvette, the game may
-use the `UserData` one.
+The first version of this tool tied an interior record to a corvette by time instead: a
+corvette's seed is the Unix time it was created, and its interior record's owner timestamp is
+that second or the next one. That held for 36 of 36 corvettes on the account it was developed
+on, but it is not what the game uses. A record whose `UserData` names no corvette but whose
+time ties it to one is **kept by default**, and the report says so. `--include-ts-linked`
+removes it as well. **Do not use that flag** unless you have checked in the game that the
+corvette it names still has its full interior without it.
 
 ## What it does NOT do
 
