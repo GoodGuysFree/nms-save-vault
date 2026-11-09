@@ -620,3 +620,17 @@ def test_a_write_waits_while_it_cannot_be_told_whether_the_game_runs(world, monk
     assert "GAME_STATE_UNKNOWN" not in plan.confirmations
     result = session.write(plan, {"GAME_STATE_UNKNOWN", *plan.confirmations})
     assert result.status != "done" and _units(world) is None
+
+
+
+def test_settling_a_stopped_write_waits_too_while_the_game_cannot_be_checked(world, monkeypatch):
+    """resolve() is a live write as well: an app may not agree for the user that the game is
+    closed (Savecraft S11)."""
+    session = _crashed_edit(world, monkeypatch)
+    torn = {n: (world.live / n).read_bytes() for n in SLOT1}
+    (item,) = [i for i in session.interrupted() if "back" in i.choices]
+    monkeypatch.setattr(safety, "is_game_running", lambda *a, **k: None)
+    session.refresh()
+    result = session.resolve(item.op_id, "back", {"GAME_STATE_UNKNOWN"})
+    assert result.status == "refused" and result.code == "GAME_STATE_UNKNOWN"
+    assert {n: (world.live / n).read_bytes() for n in SLOT1} == torn

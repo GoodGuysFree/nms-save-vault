@@ -3,6 +3,8 @@ Save Vault looks for it, laid out as NMS Save Vault lays out a vault it creates,
 first edit goes through it and a later NMS Save Vault takes it as its own."""
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from nms_save_vault.core import api, appinfo, locations, platform, safety, state, testing
@@ -80,7 +82,7 @@ def test_an_unreachable_chosen_vault_is_waited_for_never_replaced(machine):
     to another vault, and none is started in its place."""
     import json
     tmp_path, live = machine
-    gone = tmp_path / "unplugged" / "vault"
+    gone = Path(f"{_free_drive()}:/unplugged/vault")       # a drive that is not there
     (tmp_path / "own").mkdir(exist_ok=True)
     (tmp_path / "own" / "state.json").write_text(json.dumps({"vault": str(gone)}), encoding="utf-8")
     assert api.vault_dir() == gone
@@ -116,3 +118,72 @@ def test_a_folder_that_is_not_empty_is_never_made_a_vault(machine):
     with pytest.raises(api.StoreNotUpgraded, match="not empty"):
         api.create_vault(odd)
     assert fingerprint(odd) == before and versionstore.vault_mode(odd) == "legacy"
+
+
+
+def _free_drive() -> str:
+    import os
+    import string
+    free = [d for d in reversed(string.ascii_uppercase) if not os.path.exists(f"{d}:\\")]
+    if not free:
+        pytest.skip("no free drive letter to stand for an unplugged drive")
+    return free[0]
+
+
+def _settings(tmp_path, **files):
+    """NMS Save Vault's files that name its vault: {name: (path, content)}."""
+    import json
+    for path, content in files.values():
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        Path(path).write_text(json.dumps(content), encoding="utf-8")
+
+
+def test_a_kit_on_an_unplugged_drive_keeps_its_vault_chosen(machine):
+    """The settings and the vault are both on the drive that is gone: the pointer still says
+    which vault it is, and no vault is started anywhere while it is gone."""
+    from nms_save_vault.core import state
+    tmp_path, _live = machine
+    drive = _free_drive()
+    vault = Path(f"{drive}:\\Kit\\vault")
+    settings = Path(f"{drive}:\\Kit\\state.json")
+    _settings(tmp_path, pointer=(state.pointer_path(), {"vault": str(vault), "state": str(settings)}))
+    assert api.vault_dir() == vault
+    for where in (None, api.default_vault_dir(), tmp_path / "elsewhere"):
+        with pytest.raises(api.StoreUnavailable, match="cannot be found"):
+            api.create_vault(where)
+    assert not api.default_vault_dir().exists() and not (tmp_path / "elsewhere").exists()
+
+
+def test_a_settings_file_naming_a_deleted_folder_on_a_present_drive_is_skipped(machine):
+    """A deleted folder is not an unplugged drive: the next settings file decides, as before."""
+    tmp_path, _live = machine
+    real = tmp_path / "RealVault"
+    real.mkdir()
+    _settings(tmp_path, own=(tmp_path / "own" / "state.json", {"vault": str(tmp_path / "deleted")}))
+    from nms_save_vault.core import state, platform as hostmod
+    later = [p for p in state.state_candidates() if p != tmp_path / "own" / "state.json"]
+    _settings(tmp_path, other=(later[-1], {"vault": str(real)}))
+    assert api.vault_dir() == real
+
+
+def test_a_vault_another_app_is_starting_is_never_cleared_away(machine, monkeypatch):
+    """start_new_vault declines (another app holds the lock, or got there first): nothing that
+    app made is removed."""
+    tmp_path, _live = machine
+    root = tmp_path / "v"
+
+    def other_app_first(vault_root, **kw):
+        (Path(vault_root) / "backups").mkdir(parents=True, exist_ok=True)
+        (Path(vault_root) / "backups" / "theirs.txt").write_text("x", encoding="utf-8")
+        return False
+    monkeypatch.setattr(versionstore, "start_new_vault", other_app_first)
+    with pytest.raises(api.StoreUnavailable, match="another app"):
+        api.create_vault(root)
+    assert (root / "backups" / "theirs.txt").is_file()
+
+
+def test_dumps_named_refuses_what_cannot_be_a_field_name():
+    for bad in ("", " ", "Amount\x00", "two words", "x" * 300):
+        with pytest.raises(api.PatchRefused):
+            api.dumps_named({bad: 1})
+    assert api.dumps_named({"DiscoveryData-v1": 1})            # a real name with a hyphen

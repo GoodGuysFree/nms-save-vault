@@ -103,7 +103,12 @@ def dumps_named(value: Any) -> bytes:
     return dumps(keyed(value))
 
 
+_FIELD_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_\-]*")
+
+
 def _k(name: str) -> str:
+    if not isinstance(name, str) or not _FIELD_NAME.fullmatch(name):
+        raise PatchRefused(f"{str(name)[:40]!r} is not a field name")
     try:
         return key(name)
     except ValueError:

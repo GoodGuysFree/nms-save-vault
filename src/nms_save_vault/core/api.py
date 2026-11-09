@@ -129,9 +129,9 @@ def create_vault(vault_root: str | Path | None = None) -> Path:
     cannot be made."""
     root = Path(vault_root) if vault_root is not None else vault_dir()
     chosen = state.chosen_vault()
-    if chosen is not None and not chosen.is_dir() and _same_path(chosen, root):
+    if chosen is not None and not chosen.is_dir():
         raise StoreUnavailable("The vault chosen in NMS Save Vault cannot be found: connect "
-                               "the drive it is on. No other vault is started in its place.")
+                               "the drive it is on. No other vault is started meanwhile.")
     if versionstore.vault_mode(root) != "legacy":
         return root                       # in store mode already (or being upgraded by Vault)
     existed = root.exists()
@@ -147,36 +147,39 @@ def create_vault(vault_root: str | Path | None = None) -> Path:
         raise StoreNotUpgraded("That folder is not empty and holds no vault Savecraft can use. "
                                "Open it in NMS Save Vault, or choose an empty folder; nothing "
                                "was changed.")
+    store = versionstore.store_root(root)
+    made = [p for p in (store, orgstore.store_root(root)) if not p.exists()]
     try:
         root.mkdir(parents=True, exist_ok=True)
-        versionstore.start_new_vault(root)
-        if versionstore.vault_mode(root) != "store":
-            raise StoreUnavailable("The vault could not be started here.")
-    except (OSError, StoreError) as exc:
-        _undo_new_vault(root, existed)
-        if isinstance(exc, StoreError):
-            raise
+        started = versionstore.start_new_vault(root)
+    except OSError as exc:
+        _undo_new_vault(root, existed, made)        # only what this call made
         raise StoreUnavailable(f"The vault folder cannot be made here "
                                f"({exc.strerror or type(exc).__name__}).") from exc
-    return root
+    if versionstore.vault_mode(root) == "store":
+        return root                                 # this call's, or another app's just now
+    if not started:
+        # another app is starting this vault (it holds the lock or got there first): what it
+        # made is never removed
+        raise StoreUnavailable("The vault is being started by another app just now; try again "
+                               "in a moment.")
+    raise StoreUnavailable("The vault could not be started here.")
 
 
 def _same_path(a: Path, b: Path) -> bool:
     return os.path.normcase(os.path.abspath(a)) == os.path.normcase(os.path.abspath(b))
 
 
-def _undo_new_vault(root: Path, existed: bool) -> None:
-    """A vault this call was starting failed part-way: the folder was missing or empty, so all
-    in it is this call's own; remove it, so a retry finds what it found (as NMS Save Vault's
-    own new vault does)."""
+def _undo_new_vault(root: Path, existed: bool, made: list[Path]) -> None:
+    """A vault this call was starting failed part-way: remove the folders it made (the store,
+    the lock's folder) and the vault folder when this call made it and it is empty again, so a
+    retry finds what it found. Nothing another app made is touched."""
     import shutil
     try:
-        for child in root.iterdir():
-            if child.is_dir() and not child.is_symlink():
-                shutil.rmtree(child)
-            else:
-                child.unlink()
-        if not existed:
+        for path in made:
+            if path.is_dir() and not path.is_symlink():
+                shutil.rmtree(path)
+        if not existed and root.is_dir() and not any(root.iterdir()):
             root.rmdir()
     except OSError:
         log.warning("a vault that failed to start could not be cleared away")
@@ -547,7 +550,8 @@ class LiveSession:
         offered = next((i.choices for i in pending_recovery(ctx) if i.op_id == op_id), ())
         if choice not in offered:
             raise ValueError(f"{choice!r} is not offered for that write")
-        out = resolve_recovery(ctx, op_id, choice, frozenset(confirmed))
+        # never agreed for the user: an app writes only with the game known to be closed
+        out = resolve_recovery(ctx, op_id, choice, frozenset(confirmed) - _APP_BLOCKS)
         self._after_write()
         return _result(out)
 

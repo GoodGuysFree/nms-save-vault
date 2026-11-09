@@ -216,11 +216,25 @@ def _chosen(host: platform.Host | None, *, must_exist: bool) -> Path | None:
         if path.name == POINTER:
             settings = _read_json(path).get("state")
             # The pointer holds only while the settings that wrote it still choose that vault:
-            # an older NMS Save Vault that switched vaults leaves it stale.
-            if not isinstance(settings, str) or _named_vault(Path(settings), must_exist) != chosen:
+            # an older NMS Save Vault that switched vaults leaves it stale. Settings on a drive
+            # that is not connected cannot say: then the pointer is trusted (a portable kit).
+            if not isinstance(settings, str):
+                continue
+            if not (not must_exist and unplugged(Path(settings))) and \
+                    _named_vault(Path(settings), must_exist) != chosen:
                 continue
         return chosen
     return None
+
+
+def unplugged(path: Path) -> bool:
+    """Whether ``path`` is on a drive (or share) that is not there now - not merely a folder
+    that is gone from a drive that is."""
+    anchor = Path(path).anchor
+    try:
+        return bool(anchor) and not Path(anchor).exists()
+    except OSError:
+        return True
 
 
 def _where(path: Path) -> str:
@@ -282,8 +296,12 @@ def _read_json(path: Path) -> dict:
 
 
 def _named_vault(path: Path, must_exist: bool = True) -> Path | None:
+    """The vault ``path`` names: one that is there, or (``must_exist`` False) one on a drive
+    that is not connected now. A folder gone from a drive that is there is skipped."""
     chosen = _read_json(path).get("vault")
-    if isinstance(chosen, str) and chosen.strip() and (not must_exist or Path(chosen).is_dir()):
+    if not isinstance(chosen, str) or not chosen.strip():
+        return None
+    if Path(chosen).is_dir() or (not must_exist and unplugged(Path(chosen))):
         return Path(chosen)
     return None
 
