@@ -27,7 +27,7 @@ PINNED = {
                              "snapshot", "made", "seq", "undo_of"), ()),
     "Before": ("fields", ("change", "pair", "kept"), ()),
     "KeptCopy": ("fields", ("kind", "entry", "slot", "member"), ()),
-    "LiveTarget": ("fields", ("platform", "account_key", "slot", "instance"), ("ref",)),
+    "LiveTarget": ("fields", ("platform", "account_key", "slot", "instance", "at"), ("ref",)),
     "VaultHistory": ("class", {
         "changes_by": "(self, app: 'str') -> 'list[AppChange]'",
         "made_by": "(self, app: 'str') -> 'set[str]'",
@@ -83,6 +83,8 @@ PINNED = {
     "known_game_version": ("function", "(member: 'MemberView', *, platform: 'str') -> 'bool'"),
     "read_account": ("function", "(folder: 'str | Path') -> 'dict | None'"),
     "owner_time": ("function", "(base: 'object') -> 'int | None'"),
+    "owned": ("function", "(entry: 'object', target: 'dict', context: 'str' = 'base', *, "
+                          "made: 'int', platform: 'str | None' = None) -> 'bytes'"),
     "rehomed": ("function", "(entry: 'object', target: 'dict', context: 'str' = 'base', *, "
                             "platform: 'str | None' = None) -> 'bytes'"),
     "live_save_dirs": ("function", "() -> 'list[Path]'"),

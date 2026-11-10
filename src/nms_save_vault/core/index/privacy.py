@@ -104,6 +104,58 @@ def save_owner(psds: Iterable[object], prefer: str | None = None) -> dict | None
     return None
 
 
+def owner_base(psds: Iterable[object], prefer: str | None = None) -> dict | None:
+    """The first own base whose owner ids are :func:`save_owner`'s, or None."""
+    psds = list(psds)
+    ids = save_owner(psds, prefer)
+    if ids is None:
+        return None
+    for psd in psds:
+        bases = psd.get(key("PersistentPlayerBases")) if isinstance(psd, dict) else None
+        for record in bases if isinstance(bases, list) else ():
+            if is_base(record) and _kind(record) in OWN_BASES and all(
+                    record[key("Owner")].get(k) == v for k, v in ids.items()):
+                return record
+    return None
+
+
+_DENIED_KEYS = frozenset(key(n) for n in DENIED)
+
+
+def has_denied(node: object, depth: int = 0) -> bool:
+    """Whether ``node`` holds a field of the deny list anywhere (a deeper tree counts as
+    holding one: it is not a record a save keeps)."""
+    if depth > 64:
+        return True
+    if isinstance(node, dict):
+        return any(k in _DENIED_KEYS or has_denied(v, depth + 1) for k, v in node.items())
+    if isinstance(node, list):
+        return any(has_denied(v, depth + 1) for v in node)
+    return False
+
+
+def is_typed(record: object) -> bool:
+    """Whether ``record`` has a base type (a base record, with or without its owner block)."""
+    return isinstance(record, dict) and isinstance(record.get(key("BaseType")), dict)
+
+
+def owned(record: dict, template: dict, owner: dict, made: int) -> dict:
+    """A copy of ``record`` (a base record without any field of the deny list) with the
+    owner block of the base ``template`` made at ``made`` (``TS``) and owned by ``owner``
+    (:func:`save_owner`), and the template's other deny-list fields, empty."""
+    out = copy.deepcopy(record)
+    block = copy.deepcopy(template[key("Owner")])
+    block[key("TS")] = made
+    out[key("Owner")] = block
+    for k, value in template.items():           # in the template's order
+        if k not in _DENIED_KEYS or k in out:
+            continue
+        out[k] = ("" if isinstance(value, str) else [] if isinstance(value, list)
+                  else {} if isinstance(value, dict) else False if isinstance(value, bool)
+                  else 0 if isinstance(value, int) else None)
+    return rehome(out, owner)
+
+
 def rehome(record: dict, owner: dict) -> dict:
     """A copy of the base ``record`` whose owner ids are ``owner`` (:func:`save_owner`); when
     it was made stays, and who last edited it, when set, is cleared (the copy is the target

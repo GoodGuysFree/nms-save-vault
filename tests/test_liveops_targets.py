@@ -80,6 +80,24 @@ def test_two_folders_of_one_name_need_the_instance_tag(tmp_path):
     assert rt.label == "Steam slot 3 (Steam 2)"     # several Steam accounts: say which
 
 
+def test_a_name_alone_journaled_with_its_place_names_that_folder_of_two(tmp_path):
+    """Review R8-4: a slot resolved by its folder's name alone says where the folder is
+    (``at``); with two folders of that name the name alone is ambiguous, the name with its
+    place names one. ``at`` never makes two names of a slot differ."""
+    from nms_save_vault.core.organizer.model import target_from_json, target_to_json
+    first = steam_dir(tmp_path / "prefix1")
+    second = steam_dir(tmp_path / "prefix2")
+    alone = make_ctx(tmp_path, [live_source(first)])
+    rt = resolve_target(alone, LiveTarget("steam", STEAM_ACCOUNT, 3))
+    assert rt.target.at == instance_of(first) and rt.target == LiveTarget("steam", STEAM_ACCOUNT, 3)
+    journaled = target_from_json(target_to_json(rt.target))
+    assert journaled.at == rt.target.at and hash(journaled) == hash(rt.target)
+    assert "at" not in target_to_json(LiveTarget("steam", STEAM_ACCOUNT, 3))
+    both = make_ctx(tmp_path, [live_source(first), live_source(second)])
+    assert code_of(both, LiveTarget("steam", STEAM_ACCOUNT, 3)) == "AMBIGUOUS"
+    assert resolve_target(both, journaled).folder == first
+
+
 def test_a_folder_an_app_brings_never_renames_the_vault_s_folder_of_that_name(tmp_path):
     """An app's folder for one session (ORIGIN_APP) is named by its path, alone too (review
     M6-1); the vault's folder of its name keeps the name the vault gives its slots, and a

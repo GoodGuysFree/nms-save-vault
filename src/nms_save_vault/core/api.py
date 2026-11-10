@@ -92,7 +92,7 @@ __all__ = [
     # what is in a save
     "CtxInput", "DecodedSave", "SaveDecodeError", "SaveInput", "contexts_of", "decode_save",
     "PrivacyError", "get", "items", "known_game_version", "playthrough_of", "read_member",
-    "owner_time", "read_account", "rehomed",
+    "owned", "owner_time", "read_account", "rehomed",
     "Inventory", "Slot", "SpecialSlot", "inventories_of",
     "ASSET_KINDS", "Asset", "INDEX_VERSION", "assets_of", "state_of",
     # the vault's stored versions
@@ -302,17 +302,45 @@ def rehomed(entry: object, target: dict, context: str = "base", *,
     record and for a target with no base of its player's to take the owner from."""
     if not privacy.is_base(entry):
         raise EditRefused("that is not a base record")
+    owner = privacy.save_owner(_player_states(target, context),
+                               privacy.PLATFORM_CODES.get(platform or ""))
+    if owner is None:
+        raise EditRefused("that save has no base of its player's to take the owner from")
+    return dumps(privacy.rehome(entry, owner))
+
+
+def owned(entry: object, target: dict, context: str = "base", *, made: int,
+          platform: str | None = None) -> bytes:
+    """A base record that carries no ownership data (a corvette's layout from a file: no
+    ``Owner`` block, no field of the deny list) as :func:`dumps` writes it, made the player's
+    of the decoded save ``target`` as :func:`rehomed` makes one: it gets the owner block of
+    the target's own base whose owner :func:`rehomed` takes, made at ``made`` (unix seconds,
+    ``Owner.TS``), and that base's other ownership fields, empty. The ids never leave the
+    core. Raises :class:`EditRefused` for what is not such a record and for a target with no
+    base of its player's to take the owner from."""
+    if not privacy.is_typed(entry):
+        raise EditRefused("that is not a base record")
+    if privacy.has_denied(entry):
+        raise EditRefused("that record carries ownership data")
+    if isinstance(made, bool) or not isinstance(made, int) or made < 0:
+        raise ValueError("made is a time in unix seconds")
+    psds = _player_states(target, context)
+    prefer = privacy.PLATFORM_CODES.get(platform or "")
+    owner, template = privacy.save_owner(psds, prefer), privacy.owner_base(psds, prefer)
+    if owner is None or template is None:
+        raise EditRefused("that save has no base of its player's to take the owner from")
+    return dumps(privacy.owned(entry, template, owner, made))
+
+
+def _player_states(target: dict, context: str) -> list:
+    """The target's PlayerStateData: of ``context`` first, then of its other game."""
     outer = {"base": "BaseContext", "expedition": "ExpeditionContext"}
     if context not in outer:
         raise ValueError(f"context {context!r} is not 'base' or 'expedition'")
     order = [context] + [c for c in outer if c != context]
     flat = get(target, "PlayerStateData")
-    psds = [flat] if isinstance(flat, dict) else [get(target, outer[c], "PlayerStateData")
+    return [flat] if isinstance(flat, dict) else [get(target, outer[c], "PlayerStateData")
                                                   for c in order]
-    owner = privacy.save_owner(psds, privacy.PLATFORM_CODES.get(platform or ""))
-    if owner is None:
-        raise EditRefused("that save has no base of its player's to take the owner from")
-    return dumps(privacy.rehome(entry, owner))
 
 
 def known_game_version(member: MemberView, *, platform: str) -> bool:

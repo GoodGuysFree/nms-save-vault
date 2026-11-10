@@ -7,7 +7,7 @@ folder never leaves core (front ends get labels only).
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from .. import aliases, formats, msstore, savedir
@@ -42,6 +42,8 @@ def resolve_target(ctx: OpContext, target: LiveTarget) -> ResolvedTarget:
         raise TargetError("BAD_TARGET", f"slot {slot!r} is not 1..{formats.MAX_SAVE_SLOTS}")
     acct = resolve_account(ctx, target.ref)
     label = slot_label(target.platform, slot, acct.label, target.account_key)
+    if not target.instance:     # an op journaled under the name alone says where (R8-4)
+        target = replace(target, at=instance_of(acct.folder))
     return ResolvedTarget(target, acct.source_id, acct.folder, acct.cloud_mode, acct.xgs_twin,
                           label)
 
@@ -103,12 +105,16 @@ def _platform(source: Source) -> str:
 
 def _the_source(sources, account: LiveRef) -> Source:
     """The folder named so; the one named exactly so first (a folder of the vault's and one
-    an app brought, of one name: the name alone is the vault's)."""
+    an app brought, of one name: the name alone is the vault's). A name alone that an op
+    journaled with where its folder was (``at``) is that folder once two share the name
+    (review R8-4)."""
     live = _live(sources, account.platform)
     named = [s for s, ref in zip(sources, live_refs(list(sources))) if ref == account]
     found = [s for s in named if s in live] or [
         s for s in live if Path(s.path).name == account.account_key
         and (not account.instance or instance_of(s.path) == account.instance)]
+    if len(found) > 1 and not account.instance and account.at:
+        found = [s for s in found if instance_of(s.path) == account.at]
     if not found:
         raise TargetError("UNKNOWN_ACCOUNT", "no enabled live source holds that account")
     if len(found) > 1:

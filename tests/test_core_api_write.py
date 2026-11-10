@@ -332,6 +332,80 @@ def test_an_undo_lands_in_the_folder_the_change_was_written_to(world, tmp_path):
     assert _units(world) is None and tree_hash(listed) == listed_before
 
 
+def _listed(w, *paths):
+    """NMS Save Vault lists these live folders (its own settings)."""
+    sources = [{"id": f"steam-{n}", "platform": "steam", "path": str(p)}
+               for n, p in enumerate(paths)]
+    w.own.write_text(json.dumps({"vault": None, "sources": sources}), encoding="utf-8")
+
+
+def _copy_slot1(w, where):
+    copy = where / w.live.name
+    copy.mkdir(parents=True)
+    for name in SLOT1:
+        (copy / name).write_bytes((w.live / name).read_bytes())
+    return copy
+
+
+def test_a_write_stays_its_folder_s_after_a_second_folder_of_its_name_is_listed(world, tmp_path):
+    """Review R8-4: a write to a folder NMS Save Vault lists is journaled under the folder's
+    name alone; once the vault lists a second folder of that name (a copy, a second Proton
+    prefix), both are named by their place. The journal also records which folder it was
+    written to, so the slot's history keeps the write, and its undo puts back that folder,
+    never the copy."""
+    _listed(world, world.live)
+    session = _session(world)
+    mine = session.slot_at(world.live, 1)
+    assert not mine.instance                              # named by its name alone
+    plan = session.plan_edit(mine, UNITS, what="x")
+    done = session.write(plan, plan.confirmations)
+    assert done.status == "done" and _units(world) == 9
+    copy = _copy_slot1(world, tmp_path / "copy")
+    _listed(world, world.live, copy)                      # now two folders of one name
+    copy_before = tree_hash(copy)
+    later = _session(world)
+    target = later.slot_at(world.live, 1)
+    assert target.instance and target != later.slot_at(copy, 1)
+    assert done.op_id in [s.op_id for s in liveops.op_history(later._now(), target)]
+    assert done.op_id not in [s.op_id for s in liveops.op_history(
+        later._now(), later.slot_at(copy, 1))]
+    undo = later.plan_undo(done.op_id)
+    assert not undo.blocked, undo.blocked
+    assert later.write(undo, undo.confirmations).status == "done"
+    assert _units(world) is None and tree_hash(copy) == copy_before
+
+
+def test_a_write_journaled_before_the_folder_was_recorded_reads_as_before(world, tmp_path):
+    """Review R8-4: an older entry names its folder by its name alone; with two folders of
+    that name it stays ambiguous, as before (its undo names neither; nothing is written)."""
+    _listed(world, world.live)
+    session = _session(world)
+    plan = session.plan_edit(session.slot_at(world.live, 1), UNITS, what="x")
+    done = session.write(plan, plan.confirmations)
+    assert done.status == "done"
+    path = world.vault_root / "organizer" / opjournal.OPS
+    lines = path.read_bytes().decode("ascii").splitlines()
+    old = []
+    for line in lines:
+        record = json.loads(line)
+        for t in record.get("targets", []):
+            if isinstance(t, dict):
+                (t.get("target") or t).pop("at", None)
+        old.append(json.dumps(record, separators=(",", ":")))
+    path.write_bytes(("\n".join(old) + "\n").encode("ascii"))
+    opjournal._tails.clear()            # the journal is append-only; this test rewrote it
+    copy = _copy_slot1(world, tmp_path / "copy")
+    _listed(world, world.live, copy)
+    later = _session(world)
+    before = tree_hash(world.live), tree_hash(copy)
+    with pytest.raises(liveops.TargetError) as info:
+        later.plan_undo(done.op_id)
+    assert info.value.code == "AMBIGUOUS"
+    assert done.op_id not in [s.op_id for s in liveops.op_history(
+        later._now(), later.slot_at(world.live, 1))]
+    assert (tree_hash(world.live), tree_hash(copy)) == before
+
+
 def test_a_slot_the_game_saved_after_the_plan_is_not_written(world):
     session = _session(world)
     plan = session.plan_edit(_slot(world), UNITS, what="x")

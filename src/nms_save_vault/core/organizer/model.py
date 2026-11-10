@@ -12,7 +12,7 @@ import re
 import secrets
 import time
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Literal, get_args
 
@@ -166,9 +166,13 @@ class LiveRef:
     account_key: str    # the folder's name (st_<steamid64> or the Xbox account); never shown raw
     instance: str = ""  # "" normally; sha1(resolved parent path)[:8] only when two live folders
                         # of one platform share a name on this machine (two Proton prefixes)
+    #: Where the folder was when an op was journaled under its name alone (the tag
+    #: ``instance`` would have, review R8-4): once a second folder of that name is listed,
+    #: it still says which one the op wrote. Never compared: a name is the same name.
+    at: str = field(default="", compare=False)
 
     def target(self, slot: int) -> LiveTarget:
-        return LiveTarget(self.platform, self.account_key, slot, self.instance)
+        return LiveTarget(self.platform, self.account_key, slot, self.instance, self.at)
 
 
 @dataclass(frozen=True)
@@ -196,10 +200,11 @@ class LiveTarget:
     account_key: str
     slot: int           # 1..15
     instance: str = ""
+    at: str = field(default="", compare=False)      # as LiveRef.at
 
     @property
     def ref(self) -> LiveRef:
-        return LiveRef(self.platform, self.account_key, self.instance)
+        return LiveRef(self.platform, self.account_key, self.instance, self.at)
 
 
 def platform_name(platform: str, account_key: str = "") -> str:
@@ -398,14 +403,20 @@ def pair_from_str(text: str) -> PairKey:
 
 
 def target_to_json(t: LiveTarget) -> dict[str, Any]:
-    return {"platform": t.platform, "account": t.account_key, "instance": t.instance,
-            "slot": t.slot}
+    out = {"platform": t.platform, "account": t.account_key, "instance": t.instance,
+           "slot": t.slot}
+    if t.at:                            # only an op's own record has it (review R8-4)
+        out["at"] = t.at
+    return out
 
 
 def target_from_json(value: object) -> LiveTarget:
     d = _obj(value, "target")
+    at = d.get("at", "")
+    if not isinstance(at, str) or not _INSTANCE.fullmatch(at):
+        raise ModelError("target: 'at' is not '' or 8 hex digits")
     return LiveTarget(_platform(d, "target"), _name(d, "account", "target"), _slot(d, "target"),
-                      _instance(d, "target"))
+                      _instance(d, "target"), at)
 
 
 def source_to_json(ref: SourceRef) -> dict[str, Any]:

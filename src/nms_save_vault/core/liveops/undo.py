@@ -115,9 +115,10 @@ def op_history(ctx: OpContext, target: LiveTarget) -> list[OpSummary]:
     def mine(t: LiveTarget) -> bool:            # the same folder, however it was named
         if t.slot != target.slot:
             return False
-        if t.ref not in same:
-            same[t.ref] = same_folder(ctx, t.ref, target.ref)
-        return same[t.ref]
+        key = (t.ref, t.at)                     # a name alone, and where it was (R8-4)
+        if key not in same:
+            same[key] = same_folder(ctx, t.ref, target.ref)
+        return same[key]
 
     for rec in reversed(list(opjournal.read_ops(ctx).values())):
         if not any(mine(t) for t in rec.targets):
