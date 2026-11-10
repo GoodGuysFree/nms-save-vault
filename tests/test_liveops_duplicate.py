@@ -70,7 +70,8 @@ def test_a_save_goes_into_an_empty_slot_as_a_new_playthrough(tmp_path):
     before = tree_hash(w.live)
     source_before = {n: (w.live / n).read_bytes() for n in ("save.hg", "save2.hg")}
     plan = plan_duplicate(w.ctx, LIVE.target(1), LIVE.target(5), what="duplicate 'Main'")
-    assert "TWIN_LIVE" not in {x.code for x in plan.warnings}
+    # neither "another slot holds it" nor "emptied outside the app": the slot was empty
+    assert not {"TWIN_LIVE", "EMPTY_SLOT"} & {x.code for x in plan.warnings}
     outcome = execute(w.ctx, plan, plan.confirmations)
     assert outcome.status == "done", outcome
     assert tree_hash(w.live) != before

@@ -75,7 +75,11 @@ def plan_duplicate(ctx: OpContext, source: LiveTarget, target: LiveTarget, *, wh
                                  meta_hook=with_id)
     plan = plan_place(ctx, pair, target)
     _still(ctx, source, base)
-    return dataclasses.replace(plan, made=(new_vid,))
+    # the slot was empty when asked, not "emptied outside the app"; its new id is no twin
+    quiet = {"EMPTY_SLOT", "TWIN_LIVE"}
+    return dataclasses.replace(
+        plan, made=(new_vid,), warnings=tuple(w for w in plan.warnings if w.code not in quiet),
+        confirmations=plan.confirmations - quiet)
 
 
 def _root(ctx: OpContext, source: LiveTarget) -> object:
