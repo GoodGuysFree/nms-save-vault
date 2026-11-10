@@ -139,9 +139,13 @@ def _gates(ctx: OpContext, targets: list[LiveTarget]) -> None:
 
 
 def _stage(ctx: OpContext, target: LiveTarget, edits: Iterable[Edit], what: str,
-           expected: str | None) -> tuple[PairSource, str, dict]:
+           expected: str | None, *, alone: bool = False,
+           meta_hook=None) -> tuple[PairSource, str, dict]:
     """The slot's save with ``edits`` made, kept in the vault as a one-slot extract: the pair
-    to place, the edited version's id, and each member's version as it was staged."""
+    to place, the edited version's id, and each member's version as it was staged.
+    ``alone``: the extract holds the edited save only, not the slot's other member (a
+    duplicate: the other carries the original's identity). ``meta_hook(plain) -> plain``
+    changes the rebuilt meta before it is encrypted."""
     rt = resolve_target(ctx, target)
     account = resolve_account(ctx, target.ref)
     now = read_account(ctx, account).slots[target.slot]
@@ -170,6 +174,7 @@ def _stage(ctx: OpContext, target: LiveTarget, edits: Iterable[Edit], what: str,
     new_vid = hashlib.sha256(out.data).hexdigest()
     if new_vid == loaded.vid:
         raise EditRefused("the edits change nothing")
+    plain = out.meta if meta_hook is None else meta_hook(out.meta)
 
     stage = Path(tempfile.mkdtemp(prefix="nmsvault-edit-"))
     try:
@@ -177,7 +182,9 @@ def _stage(ctx: OpContext, target: LiveTarget, edits: Iterable[Edit], what: str,
             names = file_names(target.slot, member.position)
             if member.position == loaded.position:
                 (stage / names[0]).write_bytes(out.data)
-                (stage / names[1]).write_bytes(meta.encrypt(out.meta, ordinal))
+                (stage / names[1]).write_bytes(meta.encrypt(plain, ordinal))
+            elif alone:
+                continue
             else:
                 for name in names:
                     shutil.copyfile(rt.folder / name, stage / name)
@@ -189,7 +196,7 @@ def _stage(ctx: OpContext, target: LiveTarget, edits: Iterable[Edit], what: str,
     finally:
         shutil.rmtree(stage, ignore_errors=True)
 
-    pair = {m.position: m.vid for m in now.present}
+    pair = {} if alone else {m.position: m.vid for m in now.present}
     pair[loaded.position] = new_vid
     source = PairSource(pair.get("A"), pair.get("B"), loaded.position,
                         Location(new_vid, "store", StoreRef(entry.id), target.slot,

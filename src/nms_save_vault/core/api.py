@@ -45,6 +45,7 @@ from .liveops import context_for, execute, pending_recovery, plan_undo, resolve_
 from .liveops.classic import _ad_hoc
 from .liveops.context import OpContext
 from .liveops.account import UNLOCK_LISTS, AccountPlan, plan_unlock, write_unlock
+from .liveops.duplicate import plan_duplicate
 from .liveops.edit import plan_edit, plan_edits
 from .liveops.errors import ConfirmationRequired, LiveOpError, TargetError
 from .liveops.targets import canonical, resolve_target
@@ -643,6 +644,18 @@ class LiveSession:
         return WritePlan(plan_edits(ctx, [(_canonical(ctx, t), savepatch.as_steps(e), x)
                                           for t, e, x in edits],
                                     what=what, slot_whats=slot_whats))
+
+    def plan_duplicate(self, source: LiveTarget, target: LiveTarget, *, what: str,
+                       expected: str | None = None) -> WritePlan:
+        """The plan to put a copy of the save ``source`` loads into the empty slot ``target``
+        as a new playthrough (NMS-Unpack, query 6): a new random playthrough id
+        (``SaveUniversalId``, in the save and both metas), ``MultiplayerLobbyID`` 0, nothing
+        else changed. The copy is kept in the vault before this returns. Raises as
+        :meth:`plan_edit` does, and :class:`EditRefused` for a slot that is not empty or a
+        save with no playthrough id."""
+        ctx = self._now()
+        return WritePlan(plan_duplicate(ctx, _canonical(ctx, source), _canonical(ctx, target),
+                                        what=what, expected=expected))
 
     def slot_at(self, folder: str | Path, slot: int) -> LiveTarget | None:
         """How this session names slot ``slot`` of exactly the save folder ``folder``: the
