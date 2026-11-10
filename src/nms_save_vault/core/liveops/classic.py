@@ -175,8 +175,9 @@ def restore_full(vault: Vault, entry, live_dir: Path, mirror: bool = True,
     elif ref.platform == "steam":
         theirs = panic.account_files(ctx, entry.id)
         if not (live_dir / "accountdata.hg").is_file():
-            for name, data in theirs.items():      # a folder with none of its own gets the backup's
-                safety.atomic_write_bytes(live_dir / name, data)
+            with jr.liveop_lock(ctx, timeout=LIVEOP_TIMEOUT):   # one writer of them at a time
+                for name, data in theirs.items():  # a folder with none of its own gets the backup's
+                    safety.atomic_write_bytes(live_dir / name, data)
         elif any(not (live_dir / n).is_file() or (live_dir / n).read_bytes() != data
                  for n, data in theirs.items()):
             result.warnings.append(ops.ACCOUNT_DATA_KEPT)

@@ -269,3 +269,39 @@ def test_an_extract_explains_a_vanished_file_by_where_it_came_from(tmp_path, mon
     monkeypatch.setattr(ops.safety, "copy_and_hash", gone)
     with pytest.raises(ops.SourceChangedError, match=advice):
         ops.extract_slot(vault, live, 1, live_dirs=[live] if known_live else [])
+
+
+def test_the_account_data_a_restore_brings_back_is_written_under_the_live_op_lock(tmp_path,
+                                                                                monkeypatch):
+    """Review 22 (side issue): NMS Savecraft writes the account files too (unlocks), under the
+    live-op lock; a restore's account data waits for it, never interleaves."""
+    from contextlib import contextmanager
+
+    from nms_save_vault.core import safety as safety_mod
+    from nms_save_vault.core.liveops import opjournal
+    a = _steam_account(tmp_path, "st_1", b"account A", vdf=None)
+    b = _steam_account(tmp_path, "st_2", b"account B", vdf=None)
+    vault = _vault(tmp_path)
+    backup = ops.create_full_backup(vault, a, include_cache=False)
+    held, written = [], []
+    real_lock, real_write = opjournal.liveop_lock, safety_mod.atomic_write_bytes
+
+    @contextmanager
+    def lock(ctx, timeout=None):
+        with (real_lock(ctx) if timeout is None else real_lock(ctx, timeout)):
+            held.append(True)
+            try:
+                yield
+            finally:
+                held.pop()
+
+    def write(path, data, *args, **kwargs):
+        if str(path).endswith("accountdata.hg"):
+            written.append(bool(held))
+        return real_write(path, data, *args, **kwargs)
+
+    monkeypatch.setattr(opjournal, "liveop_lock", lock)
+    monkeypatch.setattr(safety_mod, "atomic_write_bytes", write)
+    ops.restore_full(vault, backup, b, allow_game_running=True, restore_accountdata=True)
+    assert _account_files(b) == _account_files(a)
+    assert written and all(written)

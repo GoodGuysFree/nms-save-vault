@@ -167,10 +167,13 @@ def panic_restore(ctx: OpContext, account: LiveRef, snapshot_id: str | None = No
 
 def _restore_accountdata(ctx: OpContext, plan: PlacePlan, account: LiveRef,
                          snapshot_id: str | None) -> None:
-    """Steam: the snapshot's account data over the live account's (the owner asked)."""
+    """Steam: the snapshot's account data over the live account's (the owner asked), under
+    the live-op lock: an app may write the account files too (unlocks, build item 14 B)."""
     folder = resolve_account(ctx, account).folder
-    for name, data in account_files(ctx, snapshot_id or "").items():
-        safety.atomic_write_bytes(folder / name, data)
+    kept = account_files(ctx, snapshot_id or "")
+    with jr.liveop_lock(ctx):
+        for name, data in kept.items():
+            safety.atomic_write_bytes(folder / name, data)
 
 
 def account_files(ctx: OpContext, entry_id: str) -> dict[str, bytes]:
