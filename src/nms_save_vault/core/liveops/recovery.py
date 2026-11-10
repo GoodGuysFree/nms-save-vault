@@ -33,6 +33,7 @@ from .. import msstore, safety
 from ..organizer.locator import LiveMember
 from ..organizer.model import LiveTarget, MetaSnap, target_from_json
 from ..organizer.recorder import LiveOpBusy
+from ..organizer.store import liveop_lock_path
 from . import account, opjournal, pairmeta, steamwrite, transfer
 from .context import OpContext
 from . import convert
@@ -76,9 +77,10 @@ TEXTS = {
     "other_machine": "A move into {labels} was started on another computer. Finish it there.",
     "vault_missing": "A move into {labels} was interrupted and its records are on the vault "
                      "drive. Connect it before playing.",
-    "vault_elsewhere": "A change to {labels} was interrupted while another vault was in use; "
-                       "its records are in that vault. Choose that vault again to finish it or "
-                       "put it back before playing.",
+    "vault_elsewhere": "A change to {labels} was interrupted while another vault was in use "
+                       "(the one in use then); its records are in that vault. Open that vault "
+                       "(in NMS Save Vault, or use it again) to finish it or put it back before "
+                       "playing.",
     "unusable": "A move into {labels} was interrupted and cannot be finished or put back "
                 "now: {problem}.",
 }
@@ -670,12 +672,14 @@ def _missing_vaults(ctx: OpContext) -> list[RecoveryItem]:
         labels = ", ".join(marker.labels) or "a live slot"
         organizer = Path(marker.vault_root) / "organizer"
         if organizer.is_dir():
+            if _writing_now(Path(marker.vault_root)):
+                continue                # a write running through it now is not interrupted
             try:
                 rec = opjournal.fold(opjournal.read_events(organizer / opjournal.OPS)).get(
                     marker.op_id)
             except (OSError, ValueError, KeyError):
-                rec = None
-            if rec is None or not rec.open:
+                rec = None              # it cannot be read here: told, never taken as settled
+            if rec is not None and not rec.open:
                 continue                # settled there; that vault drops its own marker
             text = TEXTS["vault_elsewhere"].format(labels=labels)
         else:
@@ -683,6 +687,18 @@ def _missing_vaults(ctx: OpContext) -> list[RecoveryItem]:
         out.append(RecoveryItem(marker.op_id, "", marker.labels, "vault_missing", "none", (),
                                 text, _local(marker.utc)))
     return out
+
+
+def _writing_now(vault_root: Path) -> bool:
+    """Whether a write runs through the vault at ``vault_root`` right now (its live-op lock
+    is held; review R26-5)."""
+    try:
+        with safety.exclusive_lock(liveop_lock_path(vault_root), timeout=0.05):
+            return False
+    except (safety.LockTimeout, RuntimeError):     # held elsewhere, or by this thread
+        return True
+    except OSError:
+        return False
 
 
 def _drop_stale_markers(ctx: OpContext) -> None:
