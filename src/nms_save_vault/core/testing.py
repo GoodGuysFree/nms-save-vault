@@ -17,7 +17,8 @@ from . import formats, gameversion, lz4_block, meta, slotmap
 from .hashname import key
 from .liveops.faults import FaultInjector, SimulatedCrash
 
-__all__ = ["SimulatedCrash", "crash_during", "game_closed", "obfuscated", "write_steam_save"]
+__all__ = ["SimulatedCrash", "crash_during", "game_closed", "obfuscated", "write_account",
+           "write_steam_save"]
 
 
 @contextmanager
@@ -86,6 +87,29 @@ def obfuscated(node: object) -> object:
     if isinstance(node, list):
         return [obfuscated(v) for v in node]
     return node
+
+
+def write_account(folder: str | Path, root: dict, *, saved_at: int = 1_790_000_000) -> Path:
+    """Write a Steam account's account data into ``folder`` as the game writes it: ``root``,
+    given with readable field names, stored as plain JSON text ending in one NUL, and its
+    432-byte meta (storage ordinal 1) with that size and ``saved_at``. Returns the data
+    file's path."""
+    folder = Path(folder)
+    folder.mkdir(parents=True, exist_ok=True)
+    raw = json.dumps(obfuscated(root), ensure_ascii=True, separators=(",", ":")).encode(
+        "ascii") + b"\x00"
+    plain = bytearray(formats.META_LEN_WORLDS_II)
+    for offset, value in ((formats.OFF_HEADER, formats.META_HEADER),
+                          (formats.OFF_META_FORMAT, formats.META_FORMAT_3),
+                          (formats.OFF_SIZE_DECOMPRESSED, len(raw)),
+                          (formats.OFF_SIZE_DISK, len(raw)), (0x54, len(raw)),
+                          (formats.OFF_TIMESTAMP, saved_at)):
+        struct.pack_into("<I", plain, offset, value)
+    data_path = folder / formats.ACCOUNT_DATA_NAME
+    data_path.write_bytes(raw)
+    (folder / formats.ACCOUNT_META_NAME).write_bytes(
+        meta.encrypt(bytes(plain), formats.ACCOUNT_STORAGE_ORDINAL))
+    return data_path
 
 
 def write_steam_save(folder: str | Path, slot: int, root: dict, *, member: int = 0,

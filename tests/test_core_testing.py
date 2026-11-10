@@ -13,6 +13,8 @@ PINNED = {
     "crash_during": "(session, point: 'str', nth: 'int' = 1) -> 'Iterator[None]'",
     "game_closed": "() -> 'Iterator[None]'",
     "obfuscated": "(node: 'object') -> 'object'",
+    "write_account": "(folder: 'str | Path', root: 'dict', *, saved_at: 'int' = 1790000000) "
+                     "-> 'Path'",
     "write_steam_save": (
         "(folder: 'str | Path', slot: 'int', root: 'dict', *, member: 'int' = 0, "
         "name: 'str' = '', play_time: 'int' = 0, playthrough: 'int' = 4660, "
@@ -70,3 +72,8 @@ def test_inside_game_closed_the_core_takes_the_game_for_closed(monkeypatch):
     with testing.game_closed():
         assert api.game_running() is False
     assert api.game_running() is True
+
+
+def test_an_account_file_written_for_a_test_reads_back_and_takes_unlocks(tmp_path):
+    testing.write_account(tmp_path, {"UserSettingsData": {"UnlockedSpecials": ["^A"]}})
+    assert api.get(api.read_account(tmp_path), "UserSettingsData", "UnlockedSpecials") == ["^A"]
