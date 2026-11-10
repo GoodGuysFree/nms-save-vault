@@ -106,9 +106,14 @@ def _platform(source: Source) -> str:
 def _the_source(sources, account: LiveRef) -> Source:
     """The folder named so; the one named exactly so first (a folder of the vault's and one
     an app brought, of one name: the name alone is the vault's). A name alone that an op
-    journaled with where its folder was (``at``) is that folder once two share the name
-    (review R8-4)."""
+    journaled with where its folder was (``at``) is that folder while it is listed, however
+    the folders of that name are named now (review R8-4, R21-4)."""
     live = _live(sources, account.platform)
+    if not account.instance and account.at:
+        placed = [s for s in live if Path(s.path).name == account.account_key
+                  and instance_of(s.path) == account.at]
+        if len(placed) == 1:
+            return placed[0]
     named = [s for s, ref in zip(sources, live_refs(list(sources))) if ref == account]
     found = [s for s in named if s in live] or [
         s for s in live if Path(s.path).name == account.account_key
@@ -143,7 +148,12 @@ def same_folder(ctx: OpContext, a: LiveRef, b: LiveRef) -> bool:
     folder is named by its path (tagged); when NMS Save Vault lists that folder later, it
     names it without the tag, and the app's writes are still that folder's (review R7-1)."""
     if a == b:
-        return True
+        if a.instance or a.at == b.at:
+            return True
+        try:        # a name alone, and where one of them was (R8-4): the same folder?
+            return _the_source(ctx.sources, a) == _the_source(ctx.sources, b)
+        except TargetError:
+            return False
     if (a.platform, a.account_key) != (b.platform, b.account_key) or \
             bool(a.instance) == bool(b.instance):
         return False
