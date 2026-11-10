@@ -74,6 +74,12 @@ def is_base(record: object) -> bool:
         and isinstance(record.get(key("BaseType")), dict)
 
 
+def is_settlement(record: object) -> bool:
+    """Whether ``record`` is a settlement state (it has a seed and an owner block): the
+    player's by its owner (NMS-Unpack query 3, 4.1)."""
+    return isinstance(record, dict) and isinstance(record.get(key("Owner")), dict)         and record.get(key("SeedValue")) is not None and key("BaseType") not in record
+
+
 def _kind(record: dict) -> object:
     return record[key("BaseType")].get(key("PersistentBaseTypes"))
 

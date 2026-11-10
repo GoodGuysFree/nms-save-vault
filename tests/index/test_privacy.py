@@ -76,7 +76,8 @@ def test_no_index_code_names_a_denied_field_outside_the_privileged_reader():
             allowed = path.name == "privacy.py" and func in (
                 "owner_platform", "owner_time", "DENIED",
                 "is_base", "save_owner", "rehome",      # owner rewrites of copies (GGF 2026-11-09)
-                "owner_base", "owned")                  # and of a file's corvette (2026-11-10)
+                "owner_base", "owned",                  # and of a file's corvette (2026-11-10)
+                "is_settlement")                        # and of a settlement (query 3, 4.1)
             if not allowed:
                 offenders.append(f"{path.name}:{line} {literal}")
     assert offenders == []

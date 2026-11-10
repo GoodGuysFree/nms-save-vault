@@ -293,7 +293,8 @@ def read_account(folder: str | Path) -> dict | None:
 
 def rehomed(entry: object, target: dict, context: str = "base", *,
             platform: str | None = None) -> bytes:
-    """The base record ``entry`` of another save (a corvette's layout) as :func:`dumps` writes
+    """The base record ``entry`` of another save (a corvette's layout; also a settlement
+    state, owned by its owner block the same way) as :func:`dumps` writes
     it, made the player's of the decoded save ``target``: its owner ids (``Owner``: UID, LID,
     USN, PTK) become the ones the target's own bases carry most, in ``context`` ("base", the
     main game, or "expedition"), else in its other game; of those, the ones of the target's
@@ -302,7 +303,7 @@ def rehomed(entry: object, target: dict, context: str = "base", *,
     stays, and who last edited it, when set, is cleared. The ids never leave the core: the
     bytes go into an edit as they are. Raises :class:`EditRefused` for what is not a base
     record and for a target with no base of its player's to take the owner from."""
-    if not privacy.is_base(entry):
+    if not (privacy.is_base(entry) or privacy.is_settlement(entry)):
         raise EditRefused("that is not a base record")
     owner = privacy.save_owner(_player_states(target, context),
                                privacy.PLATFORM_CODES.get(platform or ""))

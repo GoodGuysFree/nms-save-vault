@@ -116,3 +116,20 @@ def test_a_base_from_a_file_with_ownership_data_or_no_type_is_refused():
             api.owned(record, target, made=1)
     with pytest.raises(api.EditRefused, match="no base of its player"):
         api.owned(from_file(), save(base("ExternalPlanetBase", OTHER)), made=1)
+
+
+def test_a_settlement_from_another_save_takes_the_target_player_s_owner():
+    """NMS-Unpack query 3, 4.1: a settlement state is the player's by its owner block (UID,
+    LID; a same-user copy keeps the UID): rehomed makes it the target's as for a base."""
+    state = obfuscated({"SeedValue": "0x1234", "UniqueId": "1234", "Name": "Haven",
+                        "Owner": {**OTHER, "TS": 0}, "Population": 30})
+    target = save(base("HomePlanetBase", MINE))
+    got = json.loads(api.rehomed(state, target).decode("utf-8", "surrogateescape"))
+    assert owner({"Owner": got[obfuscated({"Owner": 0}).popitem()[0]]}) == {**MINE, "TS": 0}
+    assert got[obfuscated({"Population": 0}).popitem()[0]] == 30
+
+
+def test_a_record_with_an_owner_but_neither_a_base_type_nor_a_settlement_seed_is_refused():
+    with pytest.raises(api.EditRefused, match="not a base record"):
+        api.rehomed(obfuscated({"Owner": {**OTHER, "TS": 0}, "Name": "x"}),
+                    save(base("HomePlanetBase", MINE)))
