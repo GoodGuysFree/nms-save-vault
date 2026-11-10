@@ -171,7 +171,9 @@ def rehome(record: dict, owner: dict) -> dict:
     block = out[key("Owner")]
     for name, value in owner.items():
         block[name] = value
-    for name in ("LastEditedById", "LastEditedByUsername"):
+    # who last edited it, and an uploaded base's server id and token (NMS-Unpack query 3,
+    # 2.4: empty on every own base), are the original's: cleared
+    for name in ("LastEditedById", "LastEditedByUsername", "RID", "PlatformToken"):
         if isinstance(out.get(key(name)), str) and out[key(name)]:
             out[key(name)] = ""
     return out

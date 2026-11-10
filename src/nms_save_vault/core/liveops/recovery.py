@@ -21,6 +21,7 @@ happens under the live-op lock and only while the game is known not to run.
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 from collections.abc import Iterable
@@ -671,7 +672,9 @@ def _missing_vaults(ctx: OpContext) -> list[RecoveryItem]:
             continue
         labels = ", ".join(marker.labels) or "a live slot"
         organizer = Path(marker.vault_root) / "organizer"
-        if organizer.is_dir():
+        if organizer.is_dir() and _vault_id_at(organizer) not in (None, marker.vault_id):
+            organizer = None            # another vault stands there now (R27-7): it is gone
+        if organizer is not None and organizer.is_dir():
             if _writing_now(Path(marker.vault_root)):
                 continue                # a write running through it now is not interrupted
             try:
@@ -687,6 +690,17 @@ def _missing_vaults(ctx: OpContext) -> list[RecoveryItem]:
         out.append(RecoveryItem(marker.op_id, "", marker.labels, "vault_missing", "none", (),
                                 text, _local(marker.utc)))
     return out
+
+
+def _vault_id_at(organizer: Path) -> str | None:
+    """The id of the vault whose organizer folder is ``organizer``; None when it cannot be
+    read (then it is taken for the marker's)."""
+    try:
+        doc = json.loads((organizer / "organizer.json").read_bytes().decode("utf-8"))
+    except (OSError, ValueError):
+        return None
+    found = doc.get("vault_id") if isinstance(doc, dict) else None
+    return found if isinstance(found, str) else None
 
 
 def _writing_now(vault_root: Path) -> bool:
