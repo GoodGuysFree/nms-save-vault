@@ -48,9 +48,7 @@ def plan_duplicate(ctx: OpContext, source: LiveTarget, target: LiveTarget, *, wh
             target.platform, target.account_key, target.slot, target.instance):
         raise EditRefused("a save goes into another, empty slot")
     rt = resolve_target(ctx, target)
-    there = read_account(ctx, resolve_account(ctx, target.ref))
-    if there.slots[target.slot].present:
-        raise EditRefused(f"{rt.label} is not empty: a duplicate goes into an empty slot")
+    there = _empty(ctx, target)
     root = _root(ctx, source)
     common = root.get(K("CommonStateData")) if isinstance(root, dict) else None
     if not isinstance(common, dict) or not isinstance(common.get(K("SaveUniversalId")), str):
@@ -73,13 +71,26 @@ def plan_duplicate(ctx: OpContext, source: LiveTarget, target: LiveTarget, *, wh
 
     pair, new_vid, base = _stage(ctx, source, edits, what, expected, alone=True,
                                  meta_hook=with_id)
+    _empty(ctx, target)        # still: a save written there meanwhile is never replaced (R29-1)
     plan = plan_place(ctx, pair, target)
     _still(ctx, source, base)
+    _empty(ctx, target)
     # the slot was empty when asked, not "emptied outside the app"; its new id is no twin
     quiet = {"EMPTY_SLOT", "TWIN_LIVE"}
     return dataclasses.replace(
         plan, made=(new_vid,), warnings=tuple(w for w in plan.warnings if w.code not in quiet),
         confirmations=plan.confirmations - quiet)
+
+
+def _empty(ctx: OpContext, target: LiveTarget):
+    """The account of ``target``, read now; EditRefused unless the slot holds no file of a
+    save at all (a slot with part of one is not empty: review R29-3)."""
+    there = read_account(ctx, resolve_account(ctx, target.ref))
+    slot = there.slots[target.slot]
+    if slot.present or slot.state != "empty":
+        raise EditRefused(f"{resolve_target(ctx, target).label} is not empty: a duplicate goes "
+                          f"into an empty slot")
+    return there
 
 
 def _root(ctx: OpContext, source: LiveTarget) -> object:

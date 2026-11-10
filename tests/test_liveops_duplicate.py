@@ -157,3 +157,26 @@ def test_the_api_plans_it_for_an_app(tmp_path):
     plan = session.plan_duplicate(api.slot_of(w.live, 1), api.slot_of(w.live, 5),
                                   what="duplicate")
     assert plan.made and session.write(plan, plan.confirmations).status == "done"
+
+
+def test_r29_1_a_save_put_into_the_target_while_the_copy_was_made_is_never_replaced(
+        tmp_path, monkeypatch):
+    w = world(tmp_path)
+    real = dup._stage
+
+    def stage_then_a_sync_fills_slot_5(*a, **k):
+        out = real(*a, **k)
+        steam_save(w.live, 5, 0, "Synced", 10, 0x77, T0 + 500)
+        return out
+    monkeypatch.setattr(dup, "_stage", stage_then_a_sync_fills_slot_5)
+    with pytest.raises(EditRefused, match="empty"):
+        plan_duplicate(w.ctx, LIVE.target(1), LIVE.target(5), what="duplicate")
+
+
+def test_r29_3_a_slot_holding_part_of_a_save_is_not_empty(tmp_path):
+    w = world(tmp_path)
+    (w.live / "save9.hg").write_bytes(b"left over")
+    w.refresh()
+    with pytest.raises(EditRefused, match="empty"):
+        plan_duplicate(w.ctx, LIVE.target(1), LIVE.target(5), what="duplicate")
+    assert (w.live / "save9.hg").read_bytes() == b"left over"
