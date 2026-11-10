@@ -29,7 +29,7 @@ All data below is invented (a demo world, not anyone's saves).
 
 **Just want to run it? No Python needed.** Download the ready-to-use Windows kit from the
 [**latest release**](https://github.com/GoodGuysFree/nms-save-vault/releases/latest) — grab
-`NMSSaveVault-Setup-v0.3.9.zip` under **Assets**.
+`NMSSaveVault-Setup-v0.3.10.zip` under **Assets**.
 
 Extract the zip, open the `NMSSaveVault` folder and run **`NMSSaveVault.exe`**. That is the
 whole thing — Python and Tkinter are bundled, nothing is installed, and because the app
@@ -202,8 +202,8 @@ Both platforms have a portable kit on the
 
 | Platform | Asset |
 |---|---|
-| Linux / Steam Deck (x86_64) | `NMSSaveVault-v0.3.9-linux-x86_64.tar.gz` |
-| macOS (Apple Silicon) | `NMSSaveVault-v0.3.9-macos-arm64.tar.gz` |
+| Linux / Steam Deck (x86_64) | `NMSSaveVault-v0.3.10-linux-x86_64.tar.gz` |
+| macOS (Apple Silicon) | `NMSSaveVault-v0.3.10-macos-arm64.tar.gz` |
 
 ### Read this first: back up your saves by hand
 
@@ -235,7 +235,7 @@ saw last. It is not a substitute for the copy above.
 ### Then run it
 
 ```sh
-tar -xzf NMSSaveVault-v0.3.9-linux-x86_64.tar.gz
+tar -xzf NMSSaveVault-v0.3.10-linux-x86_64.tar.gz
 cd NMSSaveVault
 ./NMSSaveVault          # the app;  ./nmsvault-cli status  for the command line
 ```
@@ -264,7 +264,7 @@ and can only draw ISO8859-1. Every string the app displays is therefore plain AS
 
 ## Run it (Windows, no Python needed)
 
-Download **`NMSSaveVault-Setup-v0.3.9.zip`** from the
+Download **`NMSSaveVault-Setup-v0.3.10.zip`** from the
 [**Releases**](https://github.com/GoodGuysFree/nms-save-vault/releases) page (under the
 release's **Assets**) and extract it. Open the `NMSSaveVault` folder and run
 **`NMSSaveVault.exe`** — that is all. Everything (Python + Tkinter) is bundled, nothing is
@@ -655,7 +655,7 @@ The vault lives outside `st_<id>`, so it is never scanned by the game or synced 
 ## Status
 
 Working. Core format/crypto and all operations are verified against the real save files and
-in a temp sandbox (3210 tests). Xbox / Game Pass saves are supported for reading **and**
+in a temp sandbox (3211 tests). Xbox / Game Pass saves are supported for reading **and**
 writing, including Steam ↔ Xbox moves (validated in the real game) — verified against a real install (reads) and synthetic `wgs` fixtures
 (writes). A full file-copy safety backup of the live folder was made before development
 (`C:\Devel\NMS-SaveBackup-SAFETY-2026-06-24`). The Organizer is in (see above); a
@@ -670,6 +670,7 @@ does the same.
 
 | Version | Date | Highlights |
 |---|---|---|
+| **0.3.10** | 2026-11-10 | **A write stays its folder's.** A save folder is journaled with where it is, so when a second folder of the same name is listed later (a copy, a second Proton prefix), earlier writes stay in the right slot's history and their undo puts back the folder they were written to. A restore that brings back the account data writes it under the same one-writer-at-a-time lock as every other write. The core library (`.whl`) gains what NMS Savecraft uses to unlock account rewards, give a copied base or settlement its new owner, and duplicate a save into an empty slot as a new playthrough. |
 | **0.3.9** | 2026-11-10 | **The cross-save warning works.** The game writes the account file as plain text, not as a save; NMS Save Vault read it as a save, so it never knew whether cross-save was on and the warning about it could not show. The orphaned-corvette tool now finds a corvette's interior the way the game does (by its ship slot). Saves NMS Savecraft edits in a copied save folder stay in that folder's history, and its undo puts back the folder the change was written to. The core library (`.whl`) gains what NMS Savecraft uses to copy a corvette's interior and read the account's rewards. |
 | **0.3.8** | 2026-11-09 | **Xbox saves from game 7.14.** Xbox / Game Pass saves written by game 7.14 can be moved again, and saves cross between Steam and Xbox again: the Xbox app was checked to be the same game release as the Steam one that 0.3.7 already handles. The core library (`.whl`) can also write several changes NMS Savecraft held as one. |
 | **0.3.7** | 2026-11-09 | **Game update 7.14.** Steam saves written by game 7.14 can be moved, restored, swapped and undone again; 0.3.6 refused them as "written by a newer game version". Xbox saves stay at 7.13 until the Xbox app updates, and a save crosses between Steam and Xbox only when both platforms' games can load it. The Organizer marks versions another app (NMS Savecraft) made, and the window notices when another app changed the vault. The core library (`.whl`) now carries the write side NMS Savecraft uses. |
