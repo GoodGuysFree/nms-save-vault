@@ -142,7 +142,15 @@ PINNED = {
         "write": "(self, plan: 'WritePlan', confirmed: 'Iterable[str]' = ()) -> 'WriteResult'",
         "interrupted": "(self) -> 'list[Interrupted]'",
         "resolve": "(self, op_id: 'str', choice: 'str', confirmed: 'Iterable[str]' = ()) "
-                   "-> 'WriteResult'"}, ()),
+                   "-> 'WriteResult'",
+        "plan_unlock": "(self, folder: 'str | Path', unlocks: 'Mapping[str, Sequence[str]]', *, "
+                       "what: 'str') -> 'UnlockPlan'",
+        "write_account": "(self, plan: 'UnlockPlan', confirmed: 'Iterable[str]' = ()) "
+                         "-> 'WriteResult'"}, ()),
+    "UNLOCK_LISTS": ("value", "tuple"),
+    "UnlockPlan": ("class", {}, (("adds", "tuple[tuple[str, str], ...]"),
+                                 ("blocked", "tuple[Notice, ...]"),
+                                 ("confirmations", "frozenset[str]"))),
     "Interrupted": ("fields", ("op_id", "app", "text", "recommended", "choices"), ()),
     "Notice": ("fields", ("code", "severity", "text"), ()),
     "SEVERITIES": ("value", "tuple"),

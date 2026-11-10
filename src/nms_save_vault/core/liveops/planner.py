@@ -148,6 +148,14 @@ TEXTS = {
                         "Nothing was changed."),
     "SLOTS_LEFT": ("info", "Slots {slots} are empty in the snapshot and were left as they are."),
     "ACCOUNTDATA_XBOX": ("block", "Restoring an Xbox account's data is not available."),
+    "NO_ACCOUNT_DATA": ("block", "This save folder holds no account data to change. Nothing "
+                        "was changed."),
+    "ACCOUNT_DATA_UNREADABLE": ("block", "The account data cannot be read as the game writes "
+                                "it. Nothing was changed."),
+    "ACCOUNT_LIST_MISSING": ("block", "The account data keeps no list of {name}. Nothing was "
+                             "changed."),
+    "NOTHING_TO_UNLOCK": ("block", "The account has all of those unlocked already. Nothing "
+                          "was changed."),
     "ACCOUNTDATA_ROLLBACK": ("confirm", "This also restores the account data, which rolls back "
                              "unlocks and settings."),
 }

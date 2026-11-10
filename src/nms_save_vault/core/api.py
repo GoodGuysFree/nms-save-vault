@@ -27,7 +27,7 @@ from __future__ import annotations
 import logging
 import os
 import typing
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -44,6 +44,7 @@ from .index.nodes import PrivacyError, get, items
 from .liveops import context_for, execute, pending_recovery, plan_undo, resolve_recovery
 from .liveops.classic import _ad_hoc
 from .liveops.context import OpContext
+from .liveops.account import UNLOCK_LISTS, AccountPlan, plan_unlock, write_unlock
 from .liveops.edit import plan_edit, plan_edits
 from .liveops.errors import ConfirmationRequired, LiveOpError, TargetError
 from .liveops.targets import canonical, resolve_target
@@ -93,6 +94,7 @@ __all__ = [
     "CtxInput", "DecodedSave", "SaveDecodeError", "SaveInput", "contexts_of", "decode_save",
     "PrivacyError", "get", "items", "known_game_version", "playthrough_of", "read_member",
     "owned", "owner_time", "read_account", "rehomed",
+    "UNLOCK_LISTS", "UnlockPlan",
     "Inventory", "Slot", "SpecialSlot", "inventories_of",
     "ASSET_KINDS", "Asset", "INDEX_VERSION", "assets_of", "state_of",
     # the vault's stored versions
@@ -560,6 +562,26 @@ def _result(out: OpOutcome) -> WriteResult:
                        out.undo.label if out.undo is not None else None)
 
 
+class UnlockPlan:
+    """What :meth:`LiveSession.plan_unlock` plans: the (list, id) pairs it adds to the
+    account's data, and why it cannot be written (``blocked``)."""
+
+    def __init__(self, plan: AccountPlan) -> None:
+        self._plan = plan
+
+    @property
+    def adds(self) -> tuple[tuple[str, str], ...]:
+        return self._plan.adds
+
+    @property
+    def blocked(self) -> tuple[Notice, ...]:
+        return _notices(self._plan.blocked)
+
+    @property
+    def confirmations(self) -> frozenset[str]:
+        return frozenset()              # nothing to agree to: the game is known closed
+
+
 class LiveSession:
     """Writes to the live saves, made as NMS Save Vault makes them: what the slot held is kept
     in the vault first, the write is journaled and checked, rolled back when it fails, and
@@ -665,6 +687,28 @@ class LiveSession:
         if held:            # an app writes only with the game known to be closed
             return WriteResult("", "refused", held[0].text, held[0].code, (), None)
         out = execute(self._ctx, plan._plan, frozenset(confirmed) - _APP_BLOCKS)
+        self._after_write()
+        return _result(out)
+
+    def plan_unlock(self, folder: str | Path, unlocks: Mapping[str, Sequence[str]], *,
+                    what: str) -> UnlockPlan:
+        """The plan to add reward ids to the account data of the save folder ``folder``
+        (``unlocks``: a list of :data:`UNLOCK_LISTS` -> the ids, as the game keeps them), so
+        the game offers them to every save of that account. Ids it holds already are left
+        out. Raises ``ValueError`` for a list or an id no app may add and
+        :class:`TargetError` for a folder this session holds none of or no write may use."""
+        slot = self.slot_at(folder, 1)
+        if slot is None:
+            raise TargetError("UNKNOWN_ACCOUNT", "this session holds no such save folder")
+        return UnlockPlan(plan_unlock(self._now(), slot.ref, unlocks, what=what))
+
+    def write_account(self, plan: UnlockPlan, confirmed: Iterable[str] = ()) -> WriteResult:
+        """Write ``plan``, as a save's write is made: the game known closed, the folder kept in
+        the vault first (the account data with it), journaled, checked; a write that stops
+        part-way is offered by :meth:`interrupted` (put back from the vault). Every result is
+        a :class:`WriteResult` (``"stale"``: the account data changed since the plan)."""
+        self.refresh()
+        out = write_unlock(self._ctx, plan._plan, frozenset(confirmed) - _APP_BLOCKS)
         self._after_write()
         return _result(out)
 

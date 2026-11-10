@@ -33,7 +33,7 @@ from .. import msstore, safety
 from ..organizer.locator import LiveMember
 from ..organizer.model import LiveTarget, MetaSnap, target_from_json
 from ..organizer.recorder import LiveOpBusy
-from . import opjournal, pairmeta, steamwrite, transfer
+from . import account, opjournal, pairmeta, steamwrite, transfer
 from .context import OpContext
 from . import convert
 from .execute import (
@@ -58,7 +58,7 @@ from .model import OpOutcome, PairSource, RecoveryItem, TargetPlan
 from .pairmeta import PlannedMember, SourcePair
 from .slots import MemberNow, SlotNow, read_account
 from .source import LoadedSource, load_source
-from .targets import resolve_account, resolve_target, slot_label
+from .targets import account_label, resolve_account, resolve_target, slot_label
 
 log = logging.getLogger(__name__)
 
@@ -149,6 +149,11 @@ def _pending(ctx: OpContext) -> list[RecoveryItem]:
             append_quietly(ctx, rec.op_id, "abandoned", {"reason": "not_started"})
             opjournal.remove_marker(ctx, rec.op_id)
             continue
+        if rec.kind == account.KIND:            # an account's data, not a slot (14 B)
+            item = _account_pending(ctx, rec, game_free)
+            if item is not None:
+                items.append(item)
+            continue
         op = _open(ctx, rec)
         if rec.status == "validated" and not op.problem:
             # Only a slot that still holds exactly what was written is finished by itself;
@@ -204,6 +209,8 @@ def _resolve(ctx: OpContext, op_id: str, choice: Choice,
     if probe is None and "GAME_STATE_UNKNOWN" not in confirmed:
         w = game_warning(ctx)
         return refused(op_id, "GAME_STATE_UNKNOWN", w.text if w else GAME_TEXT)
+    if rec.kind == account.KIND:
+        return _account_resolve(ctx, rec, choice)
     op = _open(ctx, rec)
     if op.problem and not op.damaged:
         return refused(op_id, "TARGET_UNAVAILABLE",
@@ -226,6 +233,97 @@ def _resolve(ctx: OpContext, op_id: str, choice: Choice,
     if choice == "forward":
         return _forward(ctx, op)
     return _back(ctx, op, recovered=True)
+
+
+# --- an account's data (14 B) --------------------------------------------------------------
+
+ACCOUNT_TEXTS = {
+    "not_started": "A change to {label} was stopped before anything was written. Nothing "
+                   "changed.",
+    "complete": "A change to {label} was interrupted after it was written. Finish it "
+                "(recommended) or put it back.",
+    "torn": "A change to {label} was interrupted half-way. Put it back (recommended) or leave "
+            "it as it is.",
+    "superseded": "A change to {label} was interrupted, and the account data changed since. "
+                  "What it held before is in the vault.",
+    "failed": "A change to {label} failed and could not be put back by itself. Put it back "
+              "(recommended).",
+    "unusable": "A change to an account's data was interrupted and cannot be put back now: its "
+                "record or its folder cannot be used.",
+}
+
+
+def _account_name(ctx: OpContext, rec: opjournal.OpRecord) -> str:
+    ref = account._account_of(rec)
+    try:
+        name = account_label(ctx, ref) if ref is not None else ""
+    except TargetError:
+        name = ""
+    return f"{name}'s account data" if name else "an account's data"
+
+
+def _account_pending(ctx: OpContext, rec: opjournal.OpRecord,
+                     game_free: bool) -> RecoveryItem | None:
+    """The item an open account write waits as; None when it was settled here (both files
+    as written: finished; both as they were: ended)."""
+    found = account.stopped(ctx, rec)
+    label = _account_name(ctx, rec)
+
+    def item(state: str, recommended: str, choices: tuple[str, ...]) -> RecoveryItem:
+        text = ACCOUNT_TEXTS[state].format(label=label)
+        if not game_free and state != "unusable":
+            text = f"{text} {GAME_TEXT}"
+        return RecoveryItem(rec.op_id, rec.kind, (label,), state, recommended,  # type: ignore[arg-type]
+                            choices, text, _local(rec.started))
+
+    if found.state == "unusable":
+        return item("unusable", "leave", ("leave",))
+    if rec.status == "failed":
+        return item("failed", "back", ("back", "leave"))
+    if found.state == "post":
+        if game_free:
+            account.finish(ctx, rec.op_id, validated=rec.status == "validated")
+            return None
+        return item("complete", "forward", ("forward", "back"))
+    if found.state == "pre":
+        if game_free:
+            append_quietly(ctx, rec.op_id, "abandoned", {"reason": "not_started"})
+            opjournal.remove_marker(ctx, rec.op_id)
+            return None
+        return item("not_started", "back", ("back",))
+    if found.state == "torn":
+        return item("torn", "back", ("back", "leave"))
+    return item("superseded", "leave", ("leave",))
+
+
+def _account_resolve(ctx: OpContext, rec: opjournal.OpRecord, choice: Choice) -> OpOutcome:
+    op_id = rec.op_id
+    label = _account_name(ctx, rec)
+    if rec.status == "preparing":
+        append_quietly(ctx, op_id, "abandoned", {"reason": "not_started"})
+        opjournal.remove_marker(ctx, op_id)
+        return OpOutcome(op_id, "rolled_back", "Nothing had been written.", (), None, "n/a", None)
+    if choice == "leave":
+        append_quietly(ctx, op_id, "abandoned", {"reason": "user_left"})
+        opjournal.remove_marker(ctx, op_id)
+        return OpOutcome(op_id, "rolled_back", f"{label[:1].upper()}{label[1:]} is left as it is "
+                         f"now; what it held before is in the vault.", (), None, "n/a", None)
+    found = account.stopped(ctx, rec)
+    if found.state == "unusable":
+        return refused(op_id, "DAMAGED", "The record of that change cannot be used.")
+    if found.state == "other":
+        return refused(op_id, "SLOT_CHANGED", ACCOUNT_TEXTS["superseded"].format(label=label))
+    if choice == "forward":
+        if found.state != "post":
+            return refused(op_id, "NOT_OFFERED", "That change can only be put back or left.")
+        account.finish(ctx, op_id, validated=rec.status == "validated")
+        return OpOutcome(op_id, "done", f"The change to {label} is finished.", (), None, "n/a",
+                         None)
+    if account.put_back(ctx, op_id, found.snapshot_id, found.folder, found.pre):
+        return OpOutcome(op_id, "rolled_back", f"{label[:1].upper()}{label[1:]} is as it was "
+                         f"before the change.", (), None, "n/a", None)
+    return OpOutcome(op_id, "failed", f"{label[:1].upper()}{label[1:]} could not be put back; "
+                     f"the vault holds it as it was.", (), None, "n/a", None, "ROLLBACK_FAILED")
 
 
 # --- the three ways out ----------------------------------------------------------------------
