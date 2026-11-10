@@ -20,18 +20,14 @@ import json
 import re
 import struct
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 
 from .. import accountdata, formats, meta, safety, savejson, savepatch
-from ..organizer.model import (
-    LiveRef,
-    ModelError,
-    new_op_id,
-    source_from_json,
-    source_to_json,
-)
+from ..organizer.model import LiveRef, new_op_id, source_to_json
 from ..organizer.scanner import instance_of
+from ..organizer.store import StoreBusy as OrganizerBusy
+from ..organizer.store import StoreReadOnly
 from ..store import CaptureScope, StoreError
 from . import opjournal
 from .context import OpContext
@@ -39,7 +35,7 @@ from .errors import TargetError
 from .execute import _game_problem, append_quietly, refused
 from .faults import at
 from .model import OpOutcome, Warning
-from .planner import vault_problem, warning
+from .planner import recovery_pending, vault_problem, warning
 from .targets import account_label, resolve_account
 
 KIND = "account_edit"
@@ -106,14 +102,14 @@ def plan_unlock(ctx: OpContext, account: LiveRef, unlocks: Mapping[str, Sequence
     pre = ("", "")
     files = _read(acct.folder) if account.platform != "xbox" else None
     if account.platform == "xbox":
-        blocked.append(warning("ACCOUNTDATA_XBOX"))
+        blocked.append(warning("UNLOCK_XBOX"))
     elif files is None:
         blocked.append(warning("NO_ACCOUNT_DATA"))
     else:
         data, _meta = files
         pre = (_sha(data), _sha(_meta))
         try:
-            settings = _settings(data)
+            settings = _settings(data) if _meta_ok(_meta) else None
         except (savejson.SaveDecodeError, ValueError):
             settings = None
         if settings is None:
@@ -129,6 +125,21 @@ def plan_unlock(ctx: OpContext, account: LiveRef, unlocks: Mapping[str, Sequence
             if not blocked and not adds:
                 blocked.append(warning("NOTHING_TO_UNLOCK"))
     return AccountPlan(acct.account, label, what, tuple(adds), pre, tuple(blocked[:1]))
+
+
+#: The account metas this core writes: the ones with the time at 0x164 (review R22-5).
+_META_LENGTHS = (formats.META_LEN_WAYPOINT, formats.META_LEN_WORLDS_I, formats.META_LEN_WORLDS_II)
+
+
+def _meta_ok(data: bytes) -> bool:
+    """Whether ``data`` is an account meta this core can write back."""
+    if len(data) not in _META_LENGTHS:
+        return False
+    try:
+        plain = meta.decrypt(data, formats.ACCOUNT_STORAGE_ORDINAL)
+    except (ValueError, IndexError, struct.error):
+        return False
+    return meta.parse(plain, formats.ACCOUNT_STORAGE_ORDINAL).header == formats.META_HEADER
 
 
 def _settings(data: bytes) -> dict | None:
@@ -174,25 +185,7 @@ def _built(plan: AccountPlan, data: bytes, old_meta: bytes, now: int) -> tuple[b
     return new_data, new_meta
 
 
-def _open_on(ctx: OpContext, account: LiveRef) -> bool:
-    return any(r.kind == KIND and _account_of(r) == account for r in opjournal.open_ops(ctx))
-
-
-def _account_of(rec: opjournal.OpRecord) -> LiveRef | None:
-    first = rec.events[0] if rec.events else {}
-    raw = first.get("account")
-    if not isinstance(raw, dict):
-        return None
-    try:
-        ref = source_from_json(raw)
-    except ModelError:
-        return None
-    if not isinstance(ref, LiveRef):
-        return None
-    where = raw.get("at")              # where the folder was (review R8-4)
-    if isinstance(where, str) and re.fullmatch(r"[0-9a-f]{8}", where):
-        ref = replace(ref, at=where)
-    return ref
+_account_of = opjournal.account_ref
 
 
 def write_unlock(ctx: OpContext, plan: AccountPlan,
@@ -215,9 +208,9 @@ def _write(ctx: OpContext, plan: AccountPlan, confirmed: frozenset[str]) -> OpOu
     game = _game_problem(ctx, confirmed)
     if game is not None:
         return refused(None, game.code, game.text)
-    if _open_on(ctx, plan.account):
-        return refused(None, "RECOVERY_PENDING", "A change to this account's data stopped part-"
-                       "way; settle it first.")
+    pending = recovery_pending(ctx, [plan.account])     # any open op there (R22-3)
+    if pending is not None:
+        return refused(None, pending.code, pending.text)
     acct = resolve_account(ctx, plan.account)
     files = _read(acct.folder)
     if files is None or (_sha(files[0]), _sha(files[1])) != plan.pre:
@@ -226,7 +219,8 @@ def _write(ctx: OpContext, plan: AccountPlan, confirmed: frozenset[str]) -> OpOu
     data, old_meta = files
     try:
         new_data, new_meta = _built(plan, data, old_meta, int(ctx.clock()))
-    except (ValueError, KeyError, savepatch.PatchRefused, savejson.SaveDecodeError) as exc:
+    except (ValueError, KeyError, IndexError, struct.error, savepatch.PatchRefused,
+            savejson.SaveDecodeError) as exc:
         return refused(None, "ACCOUNT_DATA_UNREADABLE", f"The account data cannot be changed "
                        f"({exc}). Nothing was changed.")
     op_id = new_op_id(ctx.clock)
@@ -240,6 +234,8 @@ def _write(ctx: OpContext, plan: AccountPlan, confirmed: frozenset[str]) -> OpOu
             "kind": KIND, "app": ctx.app(), "targets": [], "account": ref, "note": plan.what,
             "adds": [list(a) for a in plan.adds], "undo_of": None,
             "confirmed": sorted(confirmed), "plan_digest": ""})
+    except (OrganizerBusy, StoreReadOnly) as exc:      # review R22-4
+        return refused(None, "BUSY", f"The vault is busy. Try again. ({exc})")
     except OSError as exc:
         return refused(None, "VAULT_WRITE_FAILED", f"The vault could not record the change "
                        f"({exc}). Nothing was changed.")
@@ -259,6 +255,9 @@ def _write(ctx: OpContext, plan: AccountPlan, confirmed: frozenset[str]) -> OpOu
     try:
         opjournal.append(ctx, op_id, "writing", {"targets": [
             {"account": ref, "snapshot_id": snapshot.id, "files": shas}]})
+    except (OrganizerBusy, StoreReadOnly) as exc:
+        append_quietly(ctx, op_id, "abandoned", {"reason": "not_started"})
+        return refused(op_id, "BUSY", f"The vault is busy. Try again. ({exc})")
     except OSError as exc:
         append_quietly(ctx, op_id, "abandoned", {"reason": "not_started"})
         return refused(op_id, "VAULT_WRITE_FAILED", f"The vault could not record the change "
@@ -331,7 +330,8 @@ class Stopped:
     folder: Path | None
     snapshot_id: str
     pre: tuple[str, str]
-    state: str                          # pre / post / torn / other / unusable
+    state: str                          # pre / post / torn / other / unusable / unavailable
+    problem: str = ""                   # unavailable: why its folder cannot be written now
 
 
 def stopped(ctx: OpContext, rec: opjournal.OpRecord) -> Stopped:
@@ -348,8 +348,8 @@ def stopped(ctx: OpContext, rec: opjournal.OpRecord) -> Stopped:
         folder = resolve_account(ctx, account).folder
     except (KeyError, TypeError, ValueError):
         return Stopped(None, "", ("", ""), "unusable")
-    except TargetError:
-        return Stopped(None, "", ("", ""), "unusable")
+    except TargetError as exc:          # the folder, for now: it waits (review R22-1)
+        return Stopped(None, "", ("", ""), "unavailable", exc.detail)
     now = _read(folder)
     shas = (_sha(now[0]), _sha(now[1])) if now is not None else ("", "")
     if shas == pre:

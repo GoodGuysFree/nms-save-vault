@@ -22,7 +22,7 @@ import secrets
 import threading
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from contextlib import ExitStack, contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -324,6 +324,25 @@ def last_activity(ctx: OpContext, ref: LiveRef) -> float | None:
             if at is not None:
                 latest = at if latest is None else max(latest, at)
     return latest
+
+
+def account_ref(rec: OpRecord) -> LiveRef | None:
+    """The account folder an account-data op names (build item 14 B), with where it was
+    (``at``, review R8-4); None for any other op."""
+    first = rec.events[0] if rec.events else {}
+    raw = first.get("account")
+    if not isinstance(raw, dict):
+        return None
+    try:
+        ref = source_from_json(raw)
+    except ModelError:
+        return None
+    if not isinstance(ref, LiveRef):
+        return None
+    where = raw.get("at")
+    if isinstance(where, str) and re.fullmatch(r"[0-9a-f]{8}", where):
+        ref = replace(ref, at=where)
+    return ref
 
 
 def busy_targets(ctx: OpContext) -> frozenset[LiveTarget]:

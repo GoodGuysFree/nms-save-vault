@@ -276,8 +276,14 @@ def _account_pending(ctx: OpContext, rec: opjournal.OpRecord,
         return RecoveryItem(rec.op_id, rec.kind, (label,), state, recommended,  # type: ignore[arg-type]
                             choices, text, _local(rec.started))
 
+    if found.state == "unavailable":     # its folder cannot be written now: it waits (R22-1)
+        return RecoveryItem(rec.op_id, rec.kind, (label,), "unusable", "none", (),
+                            f"A change to {label} was interrupted and cannot be finished or put "
+                            f"back now: {found.problem}. {WAIT_TEXT}", _local(rec.started))
     if found.state == "unusable":
         return item("unusable", "leave", ("leave",))
+    if found.state == "other":          # the game wrote it since: only leaving (R22-6)
+        return item("superseded", "leave", ("leave",))
     if rec.status == "failed":
         return item("failed", "back", ("back", "leave"))
     if found.state == "post":
@@ -309,6 +315,9 @@ def _account_resolve(ctx: OpContext, rec: opjournal.OpRecord, choice: Choice) ->
         return OpOutcome(op_id, "rolled_back", f"{label[:1].upper()}{label[1:]} is left as it is "
                          f"now; what it held before is in the vault.", (), None, "n/a", None)
     found = account.stopped(ctx, rec)
+    if found.state == "unavailable":
+        return refused(op_id, "TARGET_UNAVAILABLE", f"{label[:1].upper()}{label[1:]} cannot be "
+                       f"written now: {found.problem}. {WAIT_TEXT}")
     if found.state == "unusable":
         return refused(op_id, "DAMAGED", "The record of that change cannot be used.")
     if found.state == "other":

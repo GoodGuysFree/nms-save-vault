@@ -148,6 +148,8 @@ TEXTS = {
                         "Nothing was changed."),
     "SLOTS_LEFT": ("info", "Slots {slots} are empty in the snapshot and were left as they are."),
     "ACCOUNTDATA_XBOX": ("block", "Restoring an Xbox account's data is not available."),
+    "UNLOCK_XBOX": ("block", "Unlocking rewards for an Xbox account is not available yet. "
+                    "Nothing was changed."),
     "NO_ACCOUNT_DATA": ("block", "This save folder holds no account data to change. Nothing "
                         "was changed."),
     "ACCOUNT_DATA_UNREADABLE": ("block", "The account data cannot be read as the game writes "
@@ -482,8 +484,10 @@ def recovery_pending(ctx: OpContext, accounts: Iterable[LiveRef]) -> Warning | N
     there, or a journal that cannot be read (unknown is not "nothing pending")."""
     wanted = set(accounts)
     try:
-        if any(t.ref in wanted for op in opjournal.open_ops(ctx) for t in op.targets):
-            return warning("RECOVERY_PENDING")
+        for op in opjournal.open_ops(ctx):
+            # a slot's op names its slots; an account-data op its folder (review R22-2)
+            if any(t.ref in wanted for t in op.targets) or opjournal.account_ref(op) in wanted:
+                return warning("RECOVERY_PENDING")
     except OSError:
         return warning("RECOVERY_UNKNOWN")
     return None
