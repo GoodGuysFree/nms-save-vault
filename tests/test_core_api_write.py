@@ -1272,3 +1272,33 @@ def test_the_other_member_replaced_while_the_edit_is_made_is_never_written_over(
     session = _session(world)
     with pytest.raises(api.EditRefused, match="changed while the edit was made"):
         session.plan_edit(_slot(world), UNITS, what="units")
+
+
+def test_a_write_stopped_in_another_vault_is_named_where_its_records_are(world, tmp_path,
+                                                                        monkeypatch):
+    """Review R7-3: an app wrote through another vault (Savecraft's S16: the chosen one could
+    not be reached, so the user started one in the default place) and stopped part-way. Back
+    on the first vault, that write is told of: its records are in the other one, which is
+    there; only it can finish or put it back (no choice here)."""
+    from nms_save_vault.core import store as vstore
+    other = tmp_path / "other-vault"
+    other.mkdir()
+    vstore.create_store(other)
+    session = api.open_live(other, live_dirs=[world.live])
+    plan = session.plan_edit(_slot(world), UNITS, what="x")
+    make = session._make
+
+    def crashing():
+        ctx = make()
+        ctx.faults = FaultInjector({"swapped:2"})
+        return ctx
+
+    monkeypatch.setattr(session, "_make", crashing)
+    with pytest.raises(SimulatedCrash):
+        session.write(plan, plan.confirmations)
+    first = _session(world)
+    (item,) = first.interrupted()
+    assert (item.recommended, item.choices) == ("none", ())
+    assert "another vault" in item.text
+    again = api.open_live(other, live_dirs=[world.live])
+    assert [i.op_id for i in again.interrupted()] == [item.op_id] and again.interrupted()[0].choices

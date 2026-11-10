@@ -76,6 +76,9 @@ TEXTS = {
     "other_machine": "A move into {labels} was started on another computer. Finish it there.",
     "vault_missing": "A move into {labels} was interrupted and its records are on the vault "
                      "drive. Connect it before playing.",
+    "vault_elsewhere": "A change to {labels} was interrupted while another vault was in use; "
+                       "its records are in that vault. Choose that vault again to finish it or "
+                       "put it back before playing.",
     "unusable": "A move into {labels} was interrupted and cannot be finished or put back "
                 "now: {problem}.",
 }
@@ -657,17 +660,28 @@ def _item(rec: opjournal.OpRecord, state: str, recommended: str,
 
 
 def _missing_vaults(ctx: OpContext) -> list[RecoveryItem]:
-    """Markers of ops whose vault is not this one and cannot be reached (a removed drive)."""
+    """Markers of ops whose vault is not this one: one that cannot be reached (a removed
+    drive), or one that is there and still holds the op open (an app wrote through it while
+    the chosen vault could not be reached, review R7-3). Only that vault can settle them."""
     out = []
     for marker in opjournal.list_markers(ctx.host):
         if marker.vault_id == ctx.store.vault_id:
             continue
-        if (Path(marker.vault_root) / "organizer").is_dir():
-            continue
         labels = ", ".join(marker.labels) or "a live slot"
+        organizer = Path(marker.vault_root) / "organizer"
+        if organizer.is_dir():
+            try:
+                rec = opjournal.fold(opjournal.read_events(organizer / opjournal.OPS)).get(
+                    marker.op_id)
+            except (OSError, ValueError, KeyError):
+                rec = None
+            if rec is None or not rec.open:
+                continue                # settled there; that vault drops its own marker
+            text = TEXTS["vault_elsewhere"].format(labels=labels)
+        else:
+            text = TEXTS["vault_missing"].format(labels=labels)
         out.append(RecoveryItem(marker.op_id, "", marker.labels, "vault_missing", "none", (),
-                                TEXTS["vault_missing"].format(labels=labels),
-                                _local(marker.utc)))
+                                text, _local(marker.utc)))
     return out
 
 
