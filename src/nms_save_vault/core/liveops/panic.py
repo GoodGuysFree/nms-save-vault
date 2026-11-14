@@ -2,8 +2,9 @@
 
 A snapshot or full backup of one live account goes back slot by slot, byte for byte (metas
 included: it restores a recorded state, so nothing is stamped), as one op of kind
-``panic_restore``. Every slot is preserved first and a fresh store snapshot is taken, so the
-restore is itself undoable (the newest snapshot of the folder is that fresh one). Slots the
+``panic_restore``. A fresh store snapshot of the folder is taken first and keeps every slot
+the restore replaces (no per-slot preserve entries), so the restore is itself undoable (the
+newest snapshot of the folder is that fresh one). Slots the
 source does not hold are left alone and named in the outcome; nothing is ever deleted. The
 account data stays the live account's own, and ``steam_autocloud.vdf`` is never touched.
 """

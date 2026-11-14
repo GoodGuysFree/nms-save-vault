@@ -323,16 +323,21 @@ def _prepare(ctx: OpContext, plan: PlacePlan, rts: list[ResolvedTarget], op_id: 
         if src.platform != rt.target.platform:   # D5 3.5.1: re-checked, the plan may be old
             src = _cross_source(src, rt)
         wts.append(OpTarget(tp, rt, src, before, stamped=plan.kind != "panic_restore"))
-    progress(Progress("preserving", 0, len(wts)))
-    for wt in wts:
-        wt.preserved = _preserve(ctx, wt, op_id, plan.kind)
-    at(ctx.faults, "in_preserve")
+    whole = plan.kind == "panic_restore"     # its one snapshot keeps every slot it replaces
+    if not whole:
+        progress(Progress("preserving", 0, len(wts)))
+        for wt in wts:
+            wt.preserved = _preserve(ctx, wt, op_id, plan.kind)
+        at(ctx.faults, "in_preserve")
     progress(Progress("snapshot", 0, 1))
     snapshots: dict[Path, str] = {}
     for wt in wts:
         if wt.folder not in snapshots:
             snapshots[wt.folder] = _snapshot(ctx, wt, op_id, plan.kind)
         wt.snapshot_id = snapshots[wt.folder]
+    if whole:
+        for wt in wts:
+            wt.preserved = _preserve(ctx, wt, op_id, plan.kind, wt.snapshot_id)
     at(ctx.faults, "after_snapshot")
     now = int(ctx.clock())
     for wt in wts:
@@ -355,11 +360,16 @@ def _cross_source(src: LoadedSource, rt: ResolvedTarget) -> LoadedSource:
         raise _Abandon("not_started", code, warning_text(code)) from exc
 
 
-def _preserve(ctx: OpContext, wt: OpTarget, op_id: str, kind: str) -> list[Location]:
+def _preserve(ctx: OpContext, wt: OpTarget, op_id: str, kind: str,
+              in_snapshot: str | None = None) -> list[Location]:
+    """Keep what the slot holds in the vault: a ``preserve`` entry of its own, or, given
+    ``in_snapshot``, that snapshot (just taken) as the keeper, checked the same way."""
     members = [LiveMember(wt.rt.target, m.position, m.vid) for m in wt.before.present]
     if not members:
         return []
     try:
+        if in_snapshot is not None:
+            return ctx.locator.kept_in(in_snapshot, members)
         return ctx.locator.preserve(members, op_id=op_id, reason=kind)
     except PreserveMismatch as exc:
         raise _Abandon("stale", "STALE", str(exc)) from exc
@@ -380,11 +390,15 @@ def _preserve(ctx: OpContext, wt: OpTarget, op_id: str, kind: str) -> list[Locat
                        "Nothing was changed.") from exc
 
 
+SNAPSHOT_LABELS = {"panic_restore": "before restoring the whole folder"}
+
+
 def _snapshot(ctx: OpContext, wt: OpTarget, op_id: str, kind: str) -> str:
     try:
         entry = ctx.versions.add_from_live(
             wt.folder, platform=wt.rt.target.platform, account_key=wt.rt.target.account_key,
-            kind="snapshot", label=f"auto: {kind}", scope=CaptureScope(), op_id=op_id,
+            kind="snapshot", label=SNAPSHOT_LABELS.get(kind, f"auto: {kind}"),
+            scope=CaptureScope(), op_id=op_id,
             reason=kind, app_version=ctx.app())
     except (StoreError, OSError) as exc:
         code = "BUSY" if isinstance(exc, store_errors.StoreBusy) else "SNAPSHOT_FAILED"

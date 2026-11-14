@@ -101,5 +101,12 @@ class VaultLocator(VersionLocator):
             raise PreserveFailed("store-unavailable")
         return self.preserver.preserve(members, op_id=op_id, reason=reason)
 
+    def kept_in(self, entry_id: str, members: Sequence[LiveMember]) -> list[Location]:
+        """``members`` as the store entry ``entry_id`` (just captured from live) keeps them.
+        Raises PreserveFailed."""
+        if self.preserver is None:
+            raise PreserveFailed("store-unavailable")
+        return self.preserver.kept_in(entry_id, members)  # type: ignore[attr-defined]
+
     def is_durable(self, vid: Vid) -> bool:
         return any(reader.is_durable(vid) for reader in self.readers)

@@ -90,6 +90,37 @@ def test_a_panic_restore_is_itself_undoable(world):
     assert tree_hash(world.live)["save.hg"][0] == placed
 
 
+def test_a_panic_restore_keeps_what_it_replaces_in_its_one_snapshot(world):
+    """One entry per restore, not one per slot: the snapshot it takes holds every slot it
+    replaces, and that is where the replaced saves are kept (and opened from)."""
+    _place(world)
+    store = world.ctx.versions
+    before = {e.id for e in store.entries()}
+    plan = plan_panic_restore(world.ctx, LIVE)
+    world.ctx.faults = FaultInjector({"after_writing"})
+    with pytest.raises(SimulatedCrash):
+        execute(world.ctx, plan, plan.confirmations)
+    world.ctx.faults = None
+    made = [e for e in store.entries() if e.id not in before]
+    assert [(e.kind, e.label) for e in made] == [("snapshot", "before restoring the whole folder")]
+    (op,) = [r for r in jr.read_ops(world.ctx).values() if r.kind == "panic_restore"]
+    targets = op.last("writing")["targets"]
+    kept = [jr.location_from_json(k["location"]) for t in targets for k in t["preserved"]]
+    assert len(targets) == 2 and kept
+    for loc in kept:
+        assert loc.ref.key == made[0].id
+        assert world.ctx.locator.open(loc.vid, loc).location == loc
+
+
+def test_a_slot_changed_after_the_plan_stops_the_restore_before_anything_is_written(world):
+    _place(world)
+    plan = plan_panic_restore(world.ctx, LIVE)
+    steam_save(world.live, 2, 0, "Changed", 10, 0x2222, 1_800_000_000, extra="changed")
+    before = tree_hash(world.live)
+    outcome = execute(world.ctx, plan, plan.confirmations)
+    assert outcome.status == "stale" and tree_hash(world.live) == before
+
+
 def test_a_crash_after_the_check_is_finished_by_recovery_with_the_same_metas(world):
     _place(world)
     plan = plan_panic_restore(world.ctx, LIVE)

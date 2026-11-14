@@ -146,6 +146,35 @@ class StoreLocator(VersionLocator):
         except Exception as exc:    # an OSError from a put, an unreachable vault, a bug: refuse
             raise PreserveFailed(f"The save could not be kept in the vault ({exc}).") from exc
 
+    def kept_in(self, entry_id: str, members: Sequence[LiveMember]) -> list[Location]:
+        """``members`` as an entry just captured from live holds them: the whole-folder
+        restore's one snapshot keeps every slot it replaces, so no ``preserve`` entry is made.
+        Each member must be there as expected and open, and every file of the entry is re-read
+        and checked, as for a preserve. One location per member, in order. Raises
+        PreserveFailed (PreserveMismatch when a slot no longer holds the expected version)."""
+        try:
+            entry = self.store.entry(entry_id)
+            for lm in members:
+                m = entry.member(lm.target.slot, lm.member)
+                if m is None or m.vid != lm.expected_vid:
+                    raise PreserveMismatch(
+                        f"Slot {lm.target.slot} changed since the operation was planned. "
+                        "Nothing was written; try again.")
+                if not openable(lm.target.platform, m):
+                    raise PreserveFailed(
+                        f"The save in slot {lm.target.slot}{lm.member} has a meta that cannot be "
+                        "read, so a kept copy could never be placed back. Nothing was written.")
+            self._verify_kept(entry)
+            out = [Location(lm.expected_vid, "store", StoreRef(entry.id), lm.target.slot,
+                            lm.member, lm.target.platform, durable=True) for lm in members]
+            for loc in out:          # what a keep promises: open() returns each of them
+                self._read(loc.vid, loc)
+            return out
+        except PreserveFailed:
+            raise
+        except Exception as exc:    # an OSError, an unreachable vault, a bug: refuse
+            raise PreserveFailed(f"The save could not be kept in the vault ({exc}).") from exc
+
     def _preserve_slot(self, target: LiveTarget, group: Sequence[LiveMember], *, op_id: str,
                        reason: str) -> StoreEntry:
         expected = {lm.member: lm.expected_vid for lm in group}
