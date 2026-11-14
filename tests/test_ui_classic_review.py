@@ -209,6 +209,15 @@ def test_a_slot_holding_one_save_twice_names_it_once(gui_app, world, dialogs):
     d.destroy()
 
 
+def test_two_saves_of_one_name_in_a_slot_are_both_named(gui_app, world, dialogs):
+    """Another playthrough named the same is another save: it is not folded into the first."""
+    steam_save(world.live, 1, 0, "Main", 100, IDENT + 9, 1_790_100_000, extra="another-main")
+    d = _dialog(gui_app, world.backup)
+    _wait(gui_app, lambda: d.plan is not None)
+    assert d.slot_rows()[0] == ("Steam slot 1", "'Main' (0h01), 'Main' (1h58)")
+    d.destroy()
+
+
 def test_an_unticked_restore_keeps_the_folders_account_data_and_says_so(gui_app, world,
                                                                       dialogs):
     dialogs.expect()

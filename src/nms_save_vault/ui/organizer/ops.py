@@ -181,18 +181,20 @@ class PlanDialog(_Dialog):
 
     def slot_rows(self) -> list[tuple[str, str]]:
         """(slot, what it holds now) for each slot the plan takes a save out of; a save held
-        twice in a slot (both members) is named once, at its longer play time."""
+        twice in a slot (both members: one playthrough, one name) is named once, at its longer
+        play time. Another playthrough of the same name is another save, named too."""
         if self.plan is None:
             return []
         rows = []
         for t in self.plan.targets:
-            longest: dict[str, int] = {}
+            longest: dict[tuple, tuple[str, int]] = {}
             for e in t.evictions:
                 name = e.name or "a save"
-                longest[name] = max(longest.get(name, 0), e.play_time)
+                key = (e.pid or e.vid or e.position, name)
+                longest[key] = (name, max(longest.get(key, (name, 0))[1], e.play_time))
             if longest:
                 rows.append((t.label, ", ".join(
-                    f"'{n}' ({play_time(p) or 'no play time'})" for n, p in longest.items())))
+                    f"'{n}' ({play_time(p) or 'no play time'})" for n, p in longest.values())))
         return rows
 
     def _fate(self) -> str:
