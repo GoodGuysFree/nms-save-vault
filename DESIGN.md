@@ -65,8 +65,9 @@ The first key word depends on the slot ordinal ⇒ **the meta is slot-bound**.
 * **The app only replaces.** It never deletes a save file and never empties a slot; the
   steps to do it by hand are shown instead.
 * **A live op is one unit**: preserve what is replaced (a verified store entry), snapshot
-  (a whole-folder restore makes no per-slot entries: its one snapshot, verified the same way,
-  keeps every slot it replaces), write-ahead record in `ops.jsonl`, write, validate (bytes, metas, order, mirror,
+  (a whole-folder restore makes no per-slot entries: its one snapshot keeps every slot it
+  replaces, is kept only when it holds each as planned, and is verified the same way),
+  write-ahead record in `ops.jsonl`, write, validate (bytes, metas, order, mirror,
   containment), then record; a failed check rolls the slot back exactly. An interrupted op is
   recovered at the next start; a slot the game has written since is only ever *left* (its
   content is kept in the vault), never rolled back over. An Xbox op on one account (a swap)

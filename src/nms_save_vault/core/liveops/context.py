@@ -32,6 +32,7 @@ class VersionStore(Protocol):
 
     def add_from_live(self, folder: Path, *, platform: str, account_key: str, kind: str,
                       label: str, scope: object, op_id: str, reason: str,
+                      finish: Callable[[list], str | None] | None = None,
                       app_version: str | None = None) -> object: ...
 
     def read_file(self, entry_id: str, path: str) -> bytes: ...

@@ -29,6 +29,7 @@ from ..organizer.store import StoreBusy as OrganizerBusy
 from ..organizer.store import StoreReadOnly
 from ..store import CaptureScope, PreserveMismatch, StoreError
 from ..store import errors as store_errors
+from ..store.locator import check_kept
 from . import convert, opjournal, pairmeta, steamwrite, transfer
 from .context import OpContext
 from .errors import ConfirmationRequired, LiveChanged, LiveOpError, SourceUnreadable
@@ -333,7 +334,9 @@ def _prepare(ctx: OpContext, plan: PlacePlan, rts: list[ResolvedTarget], op_id: 
     snapshots: dict[Path, str] = {}
     for wt in wts:
         if wt.folder not in snapshots:
-            snapshots[wt.folder] = _snapshot(ctx, wt, op_id, plan.kind)
+            keeps = [lm for other in wts if other.folder == wt.folder
+                     for lm in _live_members(other)] if whole else None
+            snapshots[wt.folder] = _snapshot(ctx, wt, op_id, plan.kind, keeps)
         wt.snapshot_id = snapshots[wt.folder]
     if whole:
         for wt in wts:
@@ -364,42 +367,60 @@ def _preserve(ctx: OpContext, wt: OpTarget, op_id: str, kind: str,
               in_snapshot: str | None = None) -> list[Location]:
     """Keep what the slot holds in the vault: a ``preserve`` entry of its own, or, given
     ``in_snapshot``, that snapshot (just taken) as the keeper, checked the same way."""
-    members = [LiveMember(wt.rt.target, m.position, m.vid) for m in wt.before.present]
+    members = _live_members(wt)
     if not members:
         return []
     try:
         if in_snapshot is not None:
             return ctx.locator.kept_in(in_snapshot, members)
         return ctx.locator.preserve(members, op_id=op_id, reason=kind)
-    except PreserveMismatch as exc:
-        raise _Abandon("stale", "STALE", str(exc)) from exc
     except PreserveFailed as exc:
-        cause = exc.__cause__
-        if str(exc) == "store-unavailable":
-            raise _Abandon("preserve_failed", "VAULT_UPGRADE_NEEDED") from exc
-        if isinstance(cause, store_errors.StoreUnavailable):
-            raise _Abandon("preserve_failed", "VAULT_UNAVAILABLE") from exc
-        if isinstance(cause, store_errors.InsufficientSpace):
-            raise _Abandon("preserve_failed", "VAULT_SPACE") from exc
-        if isinstance(cause, (store_errors.StoreBusy, OrganizerBusy)):
-            raise _Abandon("preserve_failed", "BUSY",
-                           "Another operation is still running. Try again in a moment.") from exc
-        name = type(cause or exc).__name__
-        raise _Abandon("preserve_failed", f"PRESERVE_FAILED:{name}",
-                       f"The current save could not be copied to the vault ({exc}). "
-                       "Nothing was changed.") from exc
+        raise _not_kept(exc) from exc
+
+
+def _live_members(wt: OpTarget) -> list[LiveMember]:
+    """What the slot holds now, as the op replaces it."""
+    return [LiveMember(wt.rt.target, m.position, m.vid) for m in wt.before.present]
+
+
+def _not_kept(exc: PreserveFailed) -> _Abandon:
+    """Why what the op replaces could not be kept: a slot changed since (stale), else the
+    vault's trouble."""
+    if isinstance(exc, PreserveMismatch):
+        return _Abandon("stale", "STALE", str(exc))
+    cause = exc.__cause__
+    if str(exc) == "store-unavailable":
+        return _Abandon("preserve_failed", "VAULT_UPGRADE_NEEDED")
+    if isinstance(cause, store_errors.StoreUnavailable):
+        return _Abandon("preserve_failed", "VAULT_UNAVAILABLE")
+    if isinstance(cause, store_errors.InsufficientSpace):
+        return _Abandon("preserve_failed", "VAULT_SPACE")
+    if isinstance(cause, (store_errors.StoreBusy, OrganizerBusy)):
+        return _Abandon("preserve_failed", "BUSY",
+                        "Another operation is still running. Try again in a moment.")
+    name = type(cause or exc).__name__
+    return _Abandon("preserve_failed", f"PRESERVE_FAILED:{name}",
+                    f"The current save could not be copied to the vault ({exc}). "
+                    "Nothing was changed.")
 
 
 SNAPSHOT_LABELS = {"panic_restore": "before restoring the whole folder"}
 
 
-def _snapshot(ctx: OpContext, wt: OpTarget, op_id: str, kind: str) -> str:
+def _snapshot(ctx: OpContext, wt: OpTarget, op_id: str, kind: str,
+              keeps: list[LiveMember] | None = None) -> str:
+    """The op's safety snapshot of ``wt``'s folder. Given ``keeps`` (a whole-folder restore,
+    whose snapshot is the keeper), it is committed only when it holds each of them as
+    expected: a slot the game saved since stops the op with nothing kept."""
+    finish = None if keeps is None else (lambda records: check_kept(records, keeps))
     try:
         entry = ctx.versions.add_from_live(
             wt.folder, platform=wt.rt.target.platform, account_key=wt.rt.target.account_key,
             kind="snapshot", label=SNAPSHOT_LABELS.get(kind, f"auto: {kind}"),
             scope=CaptureScope(), op_id=op_id,
-            reason=kind, app_version=ctx.app())
+            reason=kind, finish=finish, app_version=ctx.app())
+    except PreserveFailed as exc:       # before StoreError: a PreserveMismatch is both
+        raise _not_kept(exc) from exc
     except (StoreError, OSError) as exc:
         code = "BUSY" if isinstance(exc, store_errors.StoreBusy) else "SNAPSHOT_FAILED"
         raise _Abandon("snapshot_failed", code,

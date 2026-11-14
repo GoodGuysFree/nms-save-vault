@@ -154,16 +154,7 @@ class StoreLocator(VersionLocator):
         PreserveFailed (PreserveMismatch when a slot no longer holds the expected version)."""
         try:
             entry = self.store.entry(entry_id)
-            for lm in members:
-                m = entry.member(lm.target.slot, lm.member)
-                if m is None or m.vid != lm.expected_vid:
-                    raise PreserveMismatch(
-                        f"Slot {lm.target.slot} changed since the operation was planned. "
-                        "Nothing was written; try again.")
-                if not openable(lm.target.platform, m):
-                    raise PreserveFailed(
-                        f"The save in slot {lm.target.slot}{lm.member} has a meta that cannot be "
-                        "read, so a kept copy could never be placed back. Nothing was written.")
+            check_kept(entry.members, members)
             self._verify_kept(entry)
             out = [Location(lm.expected_vid, "store", StoreRef(entry.id), lm.target.slot,
                             lm.member, lm.target.platform, durable=True) for lm in members]
@@ -177,19 +168,9 @@ class StoreLocator(VersionLocator):
 
     def _preserve_slot(self, target: LiveTarget, group: Sequence[LiveMember], *, op_id: str,
                        reason: str) -> StoreEntry:
-        expected = {lm.member: lm.expected_vid for lm in group}
-
         def check(records: list[MemberRecord]) -> str:
+            check_kept(records, group)
             found = {m.member: m for m in records if m.slot == target.slot}
-            for member, vid in expected.items():
-                if member not in found or found[member].vid != vid:
-                    raise PreserveMismatch(
-                        f"Slot {target.slot} changed since the operation was planned. "
-                        "Nothing was written; try again.")
-                if not openable(target.platform, found[member]):
-                    raise PreserveFailed(
-                        f"The save in slot {target.slot}{member} has a meta that cannot be read, "
-                        "so a kept copy could never be placed back. Nothing was written.")
             name = found[group[0].member].name or "<unnamed>"
             return f"kept: slot {target.slot} ({name})"
 
@@ -267,6 +248,24 @@ def openable(platform: str, m: MemberRecord) -> bool:
     """Whether :meth:`StoreLocator.open` can ever return this member: a Steam meta that no
     ordinal decrypted cannot be read back (nor placed)."""
     return platform != "steam" or m.ordinal is not None
+
+
+def check_kept(records: Sequence[MemberRecord], members: Sequence[LiveMember]) -> None:
+    """That a copy of live holding ``records`` keeps each of ``members`` as expected, in a
+    form that can be placed back. Run before the copy is committed (``finish``), so a refused
+    copy is never kept. Raises PreserveMismatch when a slot no longer holds the expected
+    version, PreserveFailed when a member's meta cannot be read."""
+    found = {(m.slot, m.member): m for m in records}
+    for lm in members:
+        slot = lm.target.slot
+        m = found.get((slot, lm.member))
+        if m is None or m.vid != lm.expected_vid:
+            raise PreserveMismatch(f"Slot {slot} changed since the operation was planned. "
+                                   "Nothing was written; try again.")
+        if not openable(lm.target.platform, m):
+            raise PreserveFailed(
+                f"The save in slot {slot}{lm.member} has a meta that cannot be read, so a kept "
+                "copy could never be placed back. Nothing was written.")
 
 
 def _by_target(members: Sequence[LiveMember]) -> dict[LiveTarget, list[LiveMember]]:

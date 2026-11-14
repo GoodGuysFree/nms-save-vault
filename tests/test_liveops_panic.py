@@ -117,8 +117,33 @@ def test_a_slot_changed_after_the_plan_stops_the_restore_before_anything_is_writ
     plan = plan_panic_restore(world.ctx, LIVE)
     steam_save(world.live, 2, 0, "Changed", 10, 0x2222, 1_800_000_000, extra="changed")
     before = tree_hash(world.live)
+    entries = {e.id for e in world.ctx.versions.entries()}
     outcome = execute(world.ctx, plan, plan.confirmations)
     assert outcome.status == "stale" and tree_hash(world.live) == before
+    # ...nor kept: no "before restoring the whole folder" snapshot of a restore that never ran
+    assert {e.id for e in world.ctx.versions.entries()} == entries
+
+
+def test_a_save_made_while_the_restore_prepares_stops_it_before_its_snapshot_is_kept(world):
+    """The game saves after the restore looked at the slots, before its snapshot: the
+    snapshot no longer holds what the restore would replace, so the restore stops - and keeps
+    no snapshot named for a restore that never ran (as a per-slot keep would keep nothing)."""
+    _place(world)
+    plan = plan_panic_restore(world.ctx, LIVE)
+    entries = {e.id for e in world.ctx.versions.entries()}
+    world.ctx.faults = FaultInjector(actions={"after_preparing": lambda: steam_save(
+        world.live, 2, 0, "Changed", 10, 0x2222, 1_800_000_000, extra="changed")})
+    before = None
+
+    def changed():
+        nonlocal before
+        before = tree_hash(world.live)
+    world.ctx.faults.actions["after_snapshot"] = changed
+    outcome = execute(world.ctx, plan, plan.confirmations)
+    world.ctx.faults = None
+    assert outcome.status == "stale", outcome
+    assert before is None                       # it stopped before its snapshot was taken
+    assert {e.id for e in world.ctx.versions.entries()} == entries
 
 
 def test_a_crash_after_the_check_is_finished_by_recovery_with_the_same_metas(world):
