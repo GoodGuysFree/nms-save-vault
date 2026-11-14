@@ -163,7 +163,8 @@ def restore_full(vault: Vault, entry, live_dir: Path, mirror: bool = True,
     op = "undo" if undo_of else "restore_full"
     if undo_of:                       # the whole-folder Undo: later Undos step past it
         plan = dataclasses.replace(plan, via_undo=True)
-    result = _run(ctx, plan, op, allow_game_running, f"restored {entry.id}")
+    result = _run(ctx, plan, op, allow_game_running, f"restored {entry.id}",
+                  asked={"ACCOUNTDATA_ROLLBACK"} if restore_accountdata else set())
     result.warnings += notes
     if ref.platform == "xbox" and not restore_accountdata:
         with jr.liveop_lock(ctx, timeout=LIVEOP_TIMEOUT):
@@ -527,9 +528,11 @@ def folder_pair(folder: Path, slot: int) -> PairSource:
 
 
 def _run(ctx: OpContext, plan: PlacePlan, op: str, allow_game_running: bool,
-         detail: str) -> ops.OpResult:
+         detail: str, asked: set[str] | frozenset[str] = frozenset()) -> ops.OpResult:
     """Execute ``plan`` for a caller that cannot answer confirmations: it confirms what the
-    plan asks, except that an unknown game state needs ``allow_game_running``."""
+    plan asks, except that an unknown game state needs ``allow_game_running``. The plan's
+    warnings are passed on afterwards, except those in ``asked``: the caller asked for that
+    by argument, so it is not news."""
     for why in plan.blocked:
         if why.code == "ALREADY_LIVE":                 # what was asked for is already there
             return ops.OpResult(True, op, f"{detail}: {why.text} Nothing was changed.")
@@ -545,7 +548,7 @@ def _run(ctx: OpContext, plan: PlacePlan, op: str, allow_game_running: bool,
     if outcome.status != "done":
         raise _error(outcome.code or "", outcome.outcome)
     warnings = [w.text for w in outcome.warnings] + [w.text for w in plan.warnings
-                                                      if w.severity != "info"]
+                                                      if w.severity != "info" and w.code not in asked]
     changed = []
     for tp in plan.targets:
         changed.append(tp.label)

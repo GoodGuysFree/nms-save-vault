@@ -108,7 +108,8 @@ class PanicDialog(PlanDialog):
         self.account_var = tk.BooleanVar(value=False)
         self.account_check = ttk.Checkbutton(
             self.summary.master, variable=self.account_var, command=self._replan,
-            text="Also put back the account data (unlocks, settings) - off keeps this folder's own")
+            text="Also put back the account data - rolls unlocks and settings back to the "
+                 "backup's (off keeps this folder's own)")
         ttk.Label(self.summary.master, text="Slots the backup does not hold are left as they "
                   "are; nothing is deleted.", style="Muted.TLabel").pack(side=tk.TOP, anchor="w",
                                                                          before=self.summary)
@@ -174,6 +175,12 @@ class PanicDialog(PlanDialog):
             self._update()
             return
         self.error.configure(text=shown(self, f"This could not be planned: {error}"))
+
+    def _row(self, w: Warning) -> None:
+        if w.code == "ACCOUNTDATA_ROLLBACK":       # the account-data box above already asked
+            self.vars[w.code] = tk.BooleanVar(value=self.account_var.get())
+            return
+        super()._row(w)
 
     def _update(self) -> None:
         if self.repair and self.plan is None:

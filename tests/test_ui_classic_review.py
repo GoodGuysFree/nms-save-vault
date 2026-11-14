@@ -177,10 +177,36 @@ def test_a_ticked_account_data_box_restores_it(gui_app, world, dialogs):
     d._replan()
     _wait(gui_app, lambda: d.plan is not None)
     assert "ACCOUNTDATA_ROLLBACK" in d.plan.confirmations
-    _go(gui_app, d)
+    # The ticked box is the answer: no second box saying the same, and Apply is ready.
+    assert len(d.warnings.winfo_children()) == len(d.plan.warnings) - 1
+    assert d.apply_button.instate(["!disabled"])
+    d.apply()
+    _wait(gui_app, lambda: not d.winfo_exists() or (not d.busy and d.error.cget("text")))
+    assert not d.winfo_exists()
     assert acct.read_bytes() == original
     assert savedir.scan_any(world.live).slots[1].display_name == "Main"
-    assert any("restores the account data" in m for _k, _t, m in dialogs.take())
+    # ...and no popup afterwards repeating what the box said.
+    assert not any("account data" in m for _k, _t, m in dialogs.take())
+
+
+def test_the_restore_lists_the_slots_it_replaces_one_per_row(gui_app, world, dialogs):
+    steam_save(world.live, 1, 0, "Changed", 100, IDENT, 1_790_100_000, extra="changed-a")
+    d = _dialog(gui_app, world.backup)
+    _wait(gui_app, lambda: d.plan is not None)
+    assert d.slot_rows() == [("Steam slot 1", "'Changed' (0h01), 'Main' (1h58)"),
+                             ("Steam slot 2", "'Second' (0h10)")]
+    assert d.describe().endswith("What these slots hold now leaves live and stays in the vault:")
+    cells = [w.cget("text") for w in d.slots.winfo_children()]
+    assert cells == ["Steam slot 1", "'Changed' (0h01), 'Main' (1h58)",
+                     "Steam slot 2", "'Second' (0h10)"]
+    d.destroy()
+
+
+def test_a_slot_holding_one_save_twice_names_it_once(gui_app, world, dialogs):
+    d = _dialog(gui_app, world.backup)
+    _wait(gui_app, lambda: d.plan is not None)
+    assert d.slot_rows()[0] == ("Steam slot 1", "'Main' (2h00)")      # A 2h00 and B 1h58
+    d.destroy()
 
 
 def test_an_unticked_restore_keeps_the_folders_account_data_and_says_so(gui_app, world,

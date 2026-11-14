@@ -168,6 +168,8 @@ class PlanDialog(_Dialog):
         ttk.Label(body, text=shown(self, title), style="Title.TLabel").pack(side=tk.TOP, anchor="w")
         self.summary = ttk.Label(body, text="", wraplength=px(620), justify="left")
         self.summary.pack(side=tk.TOP, anchor="w", pady=pxs(6, 4))
+        self.slots = ttk.Frame(body)
+        self.slots.pack(side=tk.TOP, anchor="w", padx=pxs(12, 0), pady=pxs(0, 6))
         self.warnings = ttk.Frame(body)
         self.warnings.pack(side=tk.TOP, fill=tk.X)
         cap_minsize(self, 520, 220)
@@ -177,27 +179,48 @@ class PlanDialog(_Dialog):
 
     # --- showing -----------------------------------------------------------------------------
 
+    def slot_rows(self) -> list[tuple[str, str]]:
+        """(slot, what it holds now) for each slot the plan takes a save out of; a save held
+        twice in a slot (both members) is named once, at its longer play time."""
+        if self.plan is None:
+            return []
+        rows = []
+        for t in self.plan.targets:
+            longest: dict[str, int] = {}
+            for e in t.evictions:
+                name = e.name or "a save"
+                longest[name] = max(longest.get(name, 0), e.play_time)
+            if longest:
+                rows.append((t.label, ", ".join(
+                    f"'{n}' ({play_time(p) or 'no play time'})" for n, p in longest.items())))
+        return rows
+
+    def _fate(self) -> str:
+        return ("is copied to the vault; nothing live is changed" if self.plan.kind == "keep"
+                else "leaves live and stays in the vault")
+
     def describe(self) -> str:
-        """What goes where, from the plan's targets alone."""
+        """The sentence above the slot table: what happens, and to what is there now. One slot
+        is said in the sentence itself; more are listed one per row below it."""
         if self.plan is None:
             return "Looking at what would change..."
-        plan, lines = self.plan, [self.plan.outcome + "."]
-        for t in plan.targets:
-            gone = [f"'{e.name or 'a save'}' ({play_time(e.play_time) or 'no play time'})"
-                    for e in t.evictions]
-            if plan.kind == "keep" and gone:
-                lines.append(f"{t.label}: " + ", ".join(gone) + " is copied to the vault; "
-                             "nothing live is changed.")
-            elif gone:
-                lines.append(f"{t.label}: " + ", ".join(gone) + " leaves live and stays in the "
-                             "vault.")
-        return " ".join(lines)
+        rows = self.slot_rows()
+        if len(rows) == 1:
+            return f"{self.plan.outcome}.\n{rows[0][0]}: {rows[0][1]} {self._fate()}."
+        if rows:
+            return f"{self.plan.outcome}.\nWhat these slots hold now {self._fate()}:"
+        return self.plan.outcome + "."
 
     def _render(self) -> None:
-        for w in self.warnings.winfo_children():
+        for w in self.warnings.winfo_children() + self.slots.winfo_children():
             w.destroy()
         self.vars.clear()
         set_label(self.summary, self.describe())
+        rows = self.slot_rows()
+        for i, (slot, held) in enumerate(rows if len(rows) > 1 else ()):
+            ttk.Label(self.slots, text=shown(self, slot)).grid(row=i, column=0, sticky="w")
+            ttk.Label(self.slots, text=shown(self, held)).grid(row=i, column=1, sticky="w",
+                                                               padx=pxs(12, 0))
         if self.plan is None:
             return
         for w in sorted(self.plan.warnings + self.plan.blocked,
