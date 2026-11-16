@@ -250,3 +250,56 @@ def test_a_save_into_an_empty_half_after_the_plan_stops_a_place_too(world):
     outcome = execute(world.ctx, plan, plan.confirmations)
     world.ctx.faults = None
     assert outcome.status == "stale", (outcome.status, outcome.code)
+
+
+def _stray_half(world, slot: int = 2) -> None:
+    """A restore point's data file without its meta (the planner's PARTIAL_SLOT): no save."""
+    data_b, meta_b = _slot_files(slot, 1)
+    (world.live / data_b).write_bytes(b"half a pair")
+    assert not (world.live / meta_b).exists()
+
+
+def test_a_place_into_a_slot_with_a_stray_half_runs(world):
+    """Review R31, second pass: a half with a data file and no meta is no save, as the
+    planner sees it; it is not taken for a save the game made since (every try was stale)."""
+    _stray_half(world)
+    ctx = world.refresh()
+    plan = plan_place(ctx, world.polestar(), LIVE.target(2))
+    assert not plan.blocked and "PARTIAL_SLOT" in {w.code for w in plan.warnings}
+    outcome = execute(ctx, plan, plan.confirmations)
+    assert outcome.status == "done", (outcome.status, outcome.code)
+
+
+def test_a_whole_folder_restore_over_a_stray_half_runs(world):
+    _place(world)
+    _stray_half(world)
+    ctx = world.refresh()
+    plan = plan_panic_restore(ctx, LIVE)
+    assert not plan.blocked and any(t.target.slot == 2 for t in plan.targets)
+    outcome = execute(ctx, plan, plan.confirmations)
+    assert outcome.status == "done", (outcome.status, outcome.code)
+
+
+def test_an_edit_of_a_save_beside_a_stray_half_runs(tmp_path):
+    """Review R31, second pass: what NMS Savecraft does, an edit of slot 2's auto-save while
+    its restore point is a data file without its meta."""
+    from nms_save_vault.core import appinfo
+    from nms_save_vault.core.hashname import key as K
+    from nms_save_vault.core.liveops.edit import plan_edit
+    from nms_save_vault.core.savepatch import AddMember
+
+    from .liveops_support import T0
+    previous = appinfo.set_app("nms-savecraft", "0.1.0")
+    try:
+        world = steam_world(tmp_path)
+        body = b'{"' + K("SaveName").encode() + b'":"Second","m":0}'
+        steam_save(world.live, 2, 0, "Second", 600, 0x0123456789ABCDEF, T0 + 10,
+                   payload=body + b"\x00")
+        _stray_half(world)
+        world.refresh()
+        plan = plan_edit(world.ctx, LIVE.target(2), [AddMember((), "Units", b"4242")],
+                         what="add units")
+        outcome = execute(world.ctx, plan, plan.confirmations)
+        assert outcome.status == "done", (outcome.status, outcome.code)
+    finally:
+        appinfo.set_app(previous.name, previous.version)

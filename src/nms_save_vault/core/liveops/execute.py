@@ -452,8 +452,9 @@ def _prepare_writer(ctx: OpContext, wt: OpTarget, now: int, tag: str) -> None:
             pre = wt.steam.pre.get(name)
             if pre is None or pre.sha256 != m.vid:
                 raise _Abandon("stale", "STALE")
-        for _target, pos in _empty_members(wt):     # still empty (review R31)
-            if (wt.folder / steamwrite.file_names(slot, pos)[0]).exists():
+        for _target, pos in _empty_members(wt):     # still no save there (review R31): a
+            if all((wt.folder / n).exists()          # stray data file without its meta is
+                   for n in steamwrite.file_names(slot, pos)):    # none, as the scan sees it
                 raise _Abandon("stale", "STALE")
         _check_against_snapshot(ctx, wt)
     else:
