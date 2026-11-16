@@ -250,12 +250,19 @@ def openable(platform: str, m: MemberRecord) -> bool:
     return platform != "steam" or m.ordinal is not None
 
 
-def check_kept(records: Sequence[MemberRecord], members: Sequence[LiveMember]) -> None:
+def check_kept(records: Sequence[MemberRecord], members: Sequence[LiveMember],
+               empty: Sequence[tuple[LiveTarget, str]] = ()) -> None:
     """That a copy of live holding ``records`` keeps each of ``members`` as expected, in a
-    form that can be placed back. Run before the copy is committed (``finish``), so a refused
-    copy is never kept. Raises PreserveMismatch when a slot no longer holds the expected
-    version, PreserveFailed when a member's meta cannot be read."""
+    form that can be placed back, and holds nothing at the (slot, member) places planned
+    ``empty``. Run before the copy is committed (``finish``), so a refused copy is never
+    kept. Raises PreserveMismatch when a slot no longer holds the expected version (or the
+    game saved into a half planned empty), PreserveFailed when a member's meta cannot be
+    read."""
     found = {(m.slot, m.member): m for m in records}
+    for target, member in empty:
+        if (target.slot, member) in found:
+            raise PreserveMismatch(f"Slot {target.slot} changed since the operation was "
+                                   "planned. Nothing was written; try again.")
     for lm in members:
         slot = lm.target.slot
         m = found.get((slot, lm.member))

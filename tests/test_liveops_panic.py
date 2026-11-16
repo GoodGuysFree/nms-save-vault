@@ -183,3 +183,70 @@ def test_another_accounts_backup_can_be_chosen_but_not_a_missing_one(world):
     assert not plan.blocked                                  # a backup of the other account: allowed
     plan = plan_panic_restore(world.ctx, LIVE, "no-such-entry")
     assert [w.code for w in plan.blocked] == ["SNAPSHOT_NOT_THIS_FOLDER"]
+
+
+def _slot_files(slot: int, member: int) -> list[str]:
+    from nms_save_vault.core import slotmap
+    fno = slotmap.slot_file_numbers(slot)[member]
+    return [slotmap.data_filename(fno), slotmap.meta_filename(fno)]
+
+
+def test_a_save_into_an_empty_half_while_the_restore_prepares_stops_it_and_keeps_nothing(world):
+    """Review r28c F1: slot 2 held only its auto-save when planned; the game writes its
+    restore point before the snapshot. An empty half is planned as empty: the restore stops
+    (stale), keeps no snapshot and leaves the game's new save alone."""
+    _place(world)
+    plan = plan_panic_restore(world.ctx, LIVE)
+    new_b = world.live / _slot_files(2, 1)[0]
+    assert not new_b.exists()
+    entries = {e.id for e in world.ctx.versions.entries()}
+    made = {}
+
+    def game_saves():
+        steam_save(world.live, 2, 1, "Second", 700, 0x0123456789ABCDEF, 1_800_000_000,
+                   extra="new-b")
+        made["b"] = new_b.read_bytes()
+    world.ctx.faults = FaultInjector(actions={"after_preparing": game_saves})
+    outcome = execute(world.ctx, plan, plan.confirmations)
+    world.ctx.faults = None
+    assert outcome.status == "stale", (outcome.status, outcome.code)
+    assert new_b.read_bytes() == made["b"]
+    assert {e.id for e in world.ctx.versions.entries()} == entries
+
+
+def test_a_save_into_an_empty_slot_while_the_restore_prepares_stops_it(world):
+    """Review r28c F1: slot 2 was empty when planned; the game starts a save there before
+    the snapshot: the restore stops and the brand-new save stays."""
+    _place(world)
+    for member in (0, 1):
+        for name in _slot_files(2, member):
+            (world.live / name).unlink(missing_ok=True)
+    world.refresh()
+    plan = plan_panic_restore(world.ctx, LIVE)
+    assert next(t for t in plan.targets if t.target.slot == 2).evictions == ()
+    entries = {e.id for e in world.ctx.versions.entries()}
+    new_a = world.live / _slot_files(2, 0)[0]
+    made = {}
+
+    def new_game():
+        steam_save(world.live, 2, 0, "Brand new", 30, 0x0BADF00D0BADF00D, 1_800_000_000,
+                   extra="new")
+        made["a"] = new_a.read_bytes()
+    world.ctx.faults = FaultInjector(actions={"after_preparing": new_game})
+    outcome = execute(world.ctx, plan, plan.confirmations)
+    world.ctx.faults = None
+    assert outcome.status == "stale", (outcome.status, outcome.code)
+    assert new_a.read_bytes() == made["a"]
+    assert {e.id for e in world.ctx.versions.entries()} == entries
+
+
+def test_a_save_into_an_empty_half_after_the_plan_stops_a_place_too(world):
+    """Review r28c F1, the same for an ordinary place into slot 2 (its auto-save only)."""
+    plan = plan_place(world.ctx, world.polestar(), LIVE.target(2))
+    new_b = world.live / _slot_files(2, 1)[0]
+    assert not new_b.exists()
+    world.ctx.faults = FaultInjector(actions={"after_preparing": lambda: steam_save(
+        world.live, 2, 1, "Second", 700, 0x0123456789ABCDEF, 1_800_000_000, extra="new-b")})
+    outcome = execute(world.ctx, plan, plan.confirmations)
+    world.ctx.faults = None
+    assert outcome.status == "stale", (outcome.status, outcome.code)

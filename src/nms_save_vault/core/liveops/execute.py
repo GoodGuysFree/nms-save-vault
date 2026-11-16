@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -336,7 +336,9 @@ def _prepare(ctx: OpContext, plan: PlacePlan, rts: list[ResolvedTarget], op_id: 
         if wt.folder not in snapshots:
             keeps = [lm for other in wts if other.folder == wt.folder
                      for lm in _live_members(other)] if whole else None
-            snapshots[wt.folder] = _snapshot(ctx, wt, op_id, plan.kind, keeps)
+            empty = [e for other in wts if other.folder == wt.folder
+                     for e in _empty_members(other)] if whole else ()
+            snapshots[wt.folder] = _snapshot(ctx, wt, op_id, plan.kind, keeps, empty)
         wt.snapshot_id = snapshots[wt.folder]
     if whole:
         for wt in wts:
@@ -383,6 +385,12 @@ def _live_members(wt: OpTarget) -> list[LiveMember]:
     return [LiveMember(wt.rt.target, m.position, m.vid) for m in wt.before.present]
 
 
+def _empty_members(wt: OpTarget) -> list[tuple]:
+    """The halves of the slot that held nothing when planned (a save the game makes there
+    since is a change too, review r28c F1)."""
+    return [(wt.rt.target, pos) for pos in ("A", "B") if wt.before.member(pos) is None]
+
+
 def _not_kept(exc: PreserveFailed) -> _Abandon:
     """Why what the op replaces could not be kept: a slot changed since (stale), else the
     vault's trouble."""
@@ -408,11 +416,12 @@ SNAPSHOT_LABELS = {"panic_restore": "before restoring the whole folder"}
 
 
 def _snapshot(ctx: OpContext, wt: OpTarget, op_id: str, kind: str,
-              keeps: list[LiveMember] | None = None) -> str:
+              keeps: list[LiveMember] | None = None, empty: Sequence[tuple] = ()) -> str:
     """The op's safety snapshot of ``wt``'s folder. Given ``keeps`` (a whole-folder restore,
     whose snapshot is the keeper), it is committed only when it holds each of them as
-    expected: a slot the game saved since stops the op with nothing kept."""
-    finish = None if keeps is None else (lambda records: check_kept(records, keeps))
+    expected and nothing where ``empty`` says the plan saw nothing: a slot the game saved
+    since stops the op with nothing kept."""
+    finish = None if keeps is None else (lambda records: check_kept(records, keeps, empty))
     try:
         entry = ctx.versions.add_from_live(
             wt.folder, platform=wt.rt.target.platform, account_key=wt.rt.target.account_key,
@@ -442,6 +451,9 @@ def _prepare_writer(ctx: OpContext, wt: OpTarget, now: int, tag: str) -> None:
             name = steamwrite.file_names(slot, m.position)[0]
             pre = wt.steam.pre.get(name)
             if pre is None or pre.sha256 != m.vid:
+                raise _Abandon("stale", "STALE")
+        for _target, pos in _empty_members(wt):     # still empty (review r28c F1)
+            if (wt.folder / steamwrite.file_names(slot, pos)[0]).exists():
                 raise _Abandon("stale", "STALE")
         _check_against_snapshot(ctx, wt)
     else:
