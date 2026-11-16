@@ -192,7 +192,7 @@ def _slot_files(slot: int, member: int) -> list[str]:
 
 
 def test_a_save_into_an_empty_half_while_the_restore_prepares_stops_it_and_keeps_nothing(world):
-    """Review r28c F1: slot 2 held only its auto-save when planned; the game writes its
+    """Review R31: slot 2 held only its auto-save when planned; the game writes its
     restore point before the snapshot. An empty half is planned as empty: the restore stops
     (stale), keeps no snapshot and leaves the game's new save alone."""
     _place(world)
@@ -215,7 +215,7 @@ def test_a_save_into_an_empty_half_while_the_restore_prepares_stops_it_and_keeps
 
 
 def test_a_save_into_an_empty_slot_while_the_restore_prepares_stops_it(world):
-    """Review r28c F1: slot 2 was empty when planned; the game starts a save there before
+    """Review R31: slot 2 was empty when planned; the game starts a save there before
     the snapshot: the restore stops and the brand-new save stays."""
     _place(world)
     for member in (0, 1):
@@ -241,7 +241,7 @@ def test_a_save_into_an_empty_slot_while_the_restore_prepares_stops_it(world):
 
 
 def test_a_save_into_an_empty_half_after_the_plan_stops_a_place_too(world):
-    """Review r28c F1, the same for an ordinary place into slot 2 (its auto-save only)."""
+    """Review R31, the same for an ordinary place into slot 2 (its auto-save only)."""
     plan = plan_place(world.ctx, world.polestar(), LIVE.target(2))
     new_b = world.live / _slot_files(2, 1)[0]
     assert not new_b.exists()

@@ -387,7 +387,7 @@ def _live_members(wt: OpTarget) -> list[LiveMember]:
 
 def _empty_members(wt: OpTarget) -> list[tuple]:
     """The halves of the slot that held nothing when planned (a save the game makes there
-    since is a change too, review r28c F1)."""
+    since is a change too, review R31)."""
     return [(wt.rt.target, pos) for pos in ("A", "B") if wt.before.member(pos) is None]
 
 
@@ -452,7 +452,7 @@ def _prepare_writer(ctx: OpContext, wt: OpTarget, now: int, tag: str) -> None:
             pre = wt.steam.pre.get(name)
             if pre is None or pre.sha256 != m.vid:
                 raise _Abandon("stale", "STALE")
-        for _target, pos in _empty_members(wt):     # still empty (review r28c F1)
+        for _target, pos in _empty_members(wt):     # still empty (review R31)
             if (wt.folder / steamwrite.file_names(slot, pos)[0]).exists():
                 raise _Abandon("stale", "STALE")
         _check_against_snapshot(ctx, wt)
