@@ -210,3 +210,43 @@ def test_a_real_save_takes_an_edit_and_changes_only_those_bytes(live_save_dir):
 def test_a_body_cut_short_is_refused_not_a_crash(cut):
     with pytest.raises(sp.PatchRefused):
         sp.apply(cut, [sp.Replace(("PlayerStateData", "Units"), b"2")])
+
+
+# --- a value's end found at C speed (review R32, GGF 2026-11-17: a drag took seconds) ---------
+
+def _slow_end(body: bytes, p: int) -> int:
+    """The byte-by-byte scan, as the patcher had it: the reference the fast one must match."""
+    return sp._scan_end(body, p)
+
+
+ODD_VALUES = [
+    b'{"a":1,"b":[1,2,{"c":"]}"}],"d":"x\\"}"}',               # brackets and quotes in strings
+    b'[["\\\\"],"\\\\\\"",{}]',                                # escaped backslashes and quotes
+    '{"n":"\u00dcn\u00efc\u00f8d\u00e9 \u2713 \u65e5\u672c","m":[1.5e3,-2,true,false,null]}'.encode(),
+    b'{"r":"raw\x01\x1f control","t":"tab\there"}',          # raw control characters
+    b'{"bad":"an \\x escape the JSON reader refuses","k":[1]}',  # a bad escape the game wrote
+    b'{"lone":"\xff\xfe not UTF-8 at all","z":{}}',          # undecodable bytes in a string
+    b'{"nan":NaN,"inf":[Infinity,-Infinity]}',               # what the game may write
+    b'[' * 3000 + b']' * 3000,                               # deeper than the reader recurses
+    b'{"x":[1,2,3]} trailing',                               # a value followed by more text
+]
+
+
+@pytest.mark.parametrize("body", ODD_VALUES)
+def test_a_value_s_end_is_the_same_found_fast_or_byte_by_byte(body):
+    assert sp._value_end(body, 0) == _slow_end(body, 0)
+
+
+def test_a_value_s_end_inside_a_big_save_is_the_same_fast_or_byte_by_byte():
+    inner = [b'{"k%d":[%d,"s\\"%d",{"z":"]"}]}' % (n, n, n) for n in range(2000)]
+    body = b'{"big":[' + b",".join(inner) + b'],"tail":{"a":"b"}}'
+    box = sp._read_container(body, 0)
+    for _start, value, end in box.items:
+        assert end == _slow_end(body, value)
+
+
+def test_a_field_twice_is_still_refused_with_its_name():
+    with pytest.raises(sp._Duplicate) as caught:
+        sp._loads(b'{"a":1,"b":2,"a":3}', repair=False)
+    assert caught.value.args == ("a",)
+    assert sp._loads(b'{"a":1,"b":{"a":2}}', repair=False) == {"a": 1, "b": {"a": 2}}

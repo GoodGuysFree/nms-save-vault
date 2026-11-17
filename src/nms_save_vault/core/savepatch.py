@@ -172,8 +172,37 @@ def _string_end(body: bytes, p: int) -> int:
         return m.start() + 1
 
 
+#: The JSON reader's own scanner, in C: a container's end found at C speed.
+_SKIP = json.JSONDecoder(strict=False)
+#: The body last scanned and the same bytes as text, one character per byte (latin-1), so
+#: an offset in one is the same offset in the other. One pair at a time, replaced whole.
+_VIEW: tuple[bytes, str] | None = None
+
+
+def _latin1(body: bytes) -> str:
+    global _VIEW
+    view = _VIEW
+    if view is None or view[0] is not body:
+        view = (body, body.decode("latin-1"))
+        _VIEW = view
+    return view[1]
+
+
 def _value_end(body: bytes, p: int) -> int:
-    """``p`` at a value's first byte: the index after its last."""
+    """``p`` at a value's first byte: the index after its last. An object or an array is
+    skipped by the JSON reader's C scanner over the bytes read one character each, which
+    lands where the byte-by-byte scan does (:func:`_scan_end`) on any text it reads; what it
+    will not read (a bad escape the game wrote, nesting too deep) is scanned byte by byte."""
+    if body[p] in b"{[":
+        try:
+            return _SKIP.raw_decode(_latin1(body), p)[1]
+        except (ValueError, RecursionError):
+            pass
+    return _scan_end(body, p)
+
+
+def _scan_end(body: bytes, p: int) -> int:
+    """``p`` at a value's first byte: the index after its last, found byte by byte."""
     c = body[p]
     if c == 0x22:
         return _string_end(body, p)
@@ -385,11 +414,13 @@ class _Duplicate(ValueError):
 
 
 def _no_duplicates(pairs: list) -> dict:
-    out = {}
-    for k, v in pairs:
-        if k in out:
-            raise _Duplicate(k)
-        out[k] = v
+    out = dict(pairs)                   # in C; a field twice leaves fewer keys than pairs
+    if len(out) != len(pairs):
+        seen = set()
+        for k, _v in pairs:
+            if k in seen:
+                raise _Duplicate(k)
+            seen.add(k)
     return out
 
 
@@ -455,9 +486,17 @@ def apply(body: bytes, edits: Iterable[Edit]) -> bytes:
     insertions may not share one point. Emptying a container and inserting into it, or
     removing an array's last element and inserting at its index, also share bytes: make them
     in two calls. Raises :class:`PatchRefused` otherwise, and returns nothing."""
+    global _VIEW
     edits = list(edits)
     if not edits:
         return body
+    try:
+        return _apply(body, edits)
+    finally:
+        _VIEW = None                    # the text view of a big save: not kept past the edit
+
+
+def _apply(body: bytes, edits: list[Edit]) -> bytes:
     cache: dict = {}
     removes = [e for e in edits if isinstance(e, Remove)]
     try:
