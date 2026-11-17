@@ -250,3 +250,83 @@ def test_a_field_twice_is_still_refused_with_its_name():
         sp._loads(b'{"a":1,"b":2,"a":3}', repair=False)
     assert caught.value.args == ("a",)
     assert sp._loads(b'{"a":1,"b":{"a":2}}', repair=False) == {"a": 1, "b": {"a": 2}}
+
+
+# --- the path only, the changed part only (review R32, GGF 2026-11-17) -------------------------
+
+def _big_save() -> bytes:
+    slots = [{K("Id"): f"^ITEM{n}", K("Amount"): n} for n in range(5)]
+    big = [{K("Id"): f"^JUNK{n}", K("Amount"): n, K("Note"): "x" * 50} for n in range(3000)]
+    return save(Units=1, Inventory={K("Slots"): slots}, Big=big, After={K("A"): [1, 2, 3]})
+
+
+def test_finding_a_place_reads_nothing_after_it(monkeypatch):
+    """Only the values before each step on the way are skipped: the big list after the
+    inventory is never scanned for a change inside the inventory."""
+    body = _big_save()
+    big_at = body.index(b'"' + K("Big").encode() + b'":') + len(K("Big")) + 3
+    seen = []
+    real = sp._value_end
+
+    def spy(b, p):
+        seen.append(p)
+        return real(b, p)
+    monkeypatch.setattr(sp, "_value_end", spy)
+    new = sp.apply(body, [R(PSD + ("Inventory", "Slots", 2, "Amount"), b"9")])
+    assert big_at not in seen
+    assert psd(new)[K("Inventory")][K("Slots")][2][K("Amount")] == 9
+
+
+def test_the_proof_parses_only_the_part_that_changed(monkeypatch):
+    body = _big_save()
+    parsed = []
+    real = sp._loads
+
+    def spy(text, **kw):
+        parsed.append(len(text))
+        return real(text, **kw)
+    monkeypatch.setattr(sp, "_loads", spy)
+    sp.apply(body, [R(PSD + ("Inventory", "Slots", 1, "Amount"), b"7"),
+                    R(PSD + ("Inventory", "Slots", 3, "Amount"), b"8")])
+    assert parsed and max(parsed) < len(body) // 50
+
+
+def test_a_change_spilling_out_of_its_part_is_refused(monkeypatch):
+    """A splice that reached past the container it belongs to is caught by the part's proof
+    (the bytes outside it are checked unchanged)."""
+    real = sp._splice
+
+    def spill(body, edit, cache):
+        start, end, raw = real(body, edit, cache)
+        return start, end + 2, raw                  # eats the slot's '}' and the ',' after it
+
+    monkeypatch.setattr(sp, "_splice", spill)
+    with pytest.raises(sp.PatchRefused):
+        sp.apply(_big_save(), [R(PSD + ("Inventory", "Slots", 1, "Amount"), b"7")])
+
+
+def test_the_part_is_the_container_the_changes_share():
+    assert sp._part([R(PSD + ("Inventory", "Slots", 1, "Amount"), b"7"),
+                     R(PSD + ("Inventory", "Slots", 3, "Amount"), b"8")]) == \
+        PSD + ("Inventory", "Slots")
+    assert sp._part([X(PSD + ("Inventory", "Slots", 1))]) == PSD + ("Inventory", "Slots")
+    assert sp._part([I(PSD + ("Inventory", "Slots"), 0, b"{}")]) == PSD + ("Inventory", "Slots")
+    assert sp._part([A(PSD, "Nanites", b"1"), R(PSD + ("Units",), b"2")]) == PSD
+    assert sp._part([R(PSD + ("Units",), b"2"), R(("Other",), b"1")]) == ()
+
+
+@pytest.mark.parametrize("edits", [
+    [R(PSD + ("Inventory", "Slots", 0, "Amount"), b"5")],
+    [X(PSD + ("Inventory", "Slots", 4)), X(PSD + ("Inventory", "Slots", 0))],
+    [I(PSD + ("Inventory", "Slots"), 2, b'{"a":1}')],
+    [A(PSD + ("After",), "B", b"[]"), R(PSD + ("Units",), b"3")],
+])
+def test_a_change_proven_in_its_part_reads_as_proven_whole(edits):
+    """The part's proof gives what the whole proof gave: the original with exactly these
+    edits, the rest byte for byte."""
+    body = _big_save()
+    new = sp.apply(body, edits)
+    whole = sp._loads(body, repair=True)
+    for edit in sp._tree_order(edits):
+        sp._expected(whole, edit, sp._parse_value)
+    assert sp._canonical(sp._loads(new, repair=True)) == sp._canonical(whole)

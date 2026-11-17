@@ -20,7 +20,7 @@ import copy
 import json
 import re
 from collections.abc import Iterable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Union
 
 from .hashname import key
@@ -276,13 +276,78 @@ def _read_container(body: bytes, p: int) -> _Container:
     return _Container(p + 1, q, tuple(items), tuple(keys))
 
 
+def _step_kind(body: bytes, start: int, step: Any) -> bool:
+    """Whether ``step`` names a field (else an index), refused when it does not fit here."""
+    if body[start] not in b"{[":
+        raise PatchRefused("expected an object or an array in the save JSON")
+    if isinstance(step, bool) or not isinstance(step, (str, int)):
+        raise PatchRefused(f"a place is named by field names and indices, not {step!r}")
+    if isinstance(step, str):
+        if body[start] != 0x7B:
+            raise PatchRefused(f"{step!r}: not an object here")
+        return True
+    if body[start] != 0x5B:
+        raise PatchRefused(f"[{step}]: not an array here")
+    return False
+
+
+def _child(body: bytes, start: int, step: Any, cache: dict | None = None) -> int:
+    """Where the value of field or index ``step`` of the object or array at ``start`` begins:
+    only the items before it are skipped, none after it is read (review R32)."""
+    if cache is not None and (start, step) in cache:
+        return cache[(start, step)]
+    is_obj = _step_kind(body, start, step)
+    want = _k(step) if is_obj else None
+    end_char = 0x7D if is_obj else 0x5D
+    q, n = _ws(body, start + 1), 0
+    while body[q] != end_char:
+        name = None
+        if is_obj:
+            k_end = _string_end(body, q)
+            try:
+                name = json.loads(body[q:k_end].decode("utf-8", errors="surrogateescape"),
+                                  strict=False)
+            except ValueError:
+                raise PatchRefused("a field name in the save JSON cannot be read") from None
+            q = _ws(body, k_end)
+            if body[q] != 0x3A:
+                raise PatchRefused("expected ':' in the save JSON")
+            q = _ws(body, q + 1)
+        if (is_obj and name == want) or (not is_obj and n == step):
+            if cache is not None:
+                cache[(start, step)] = q
+            return q
+        q = _ws(body, _value_end(body, q))
+        if body[q] == 0x2C:
+            q = _ws(body, q + 1)
+        elif body[q] != end_char:
+            raise PatchRefused("expected ',' in the save JSON")
+        n += 1
+    if is_obj:
+        raise PatchRefused(f"no field {step!r} here")
+    raise PatchRefused(f"[{step}]: the array has {n} elements")
+
+
+def _walk(body: bytes, where: Where, cache: dict | None = None) -> int:
+    """Where the value at ``where`` begins, read along the way there only."""
+    start = _ws(body, 0)
+    for step in where:
+        start = _child(body, start, step, cache)
+    return start
+
+
 def _locate(body: bytes, where: Where, cache: dict | None = None
             ) -> tuple[int, int, _Container | None, int | None]:
     """(value start, value end, the container holding it, its item number there) of the
-    value at ``where``; the root has no container."""
-    start, end = _ws(body, 0), None
+    value at ``where``; the root has no container. Only the container holding it is read
+    whole; the way there is read up to each step (:func:`_child`)."""
+    if not where:
+        start = _ws(body, 0)
+        return start, _value_end(body, start), None, None
+    start = _walk(body, where[:-1], cache)
+    end = None
     parent, item = None, None
-    for step in where:
+    for step in where[-1:]:
         box = _container(body, start, cache)
         if isinstance(step, bool) or not isinstance(step, (str, int)):
             raise PatchRefused(f"a place is named by field names and indices, not {step!r}")
@@ -357,9 +422,9 @@ def _splice(body: bytes, edit: Edit, cache: dict) -> tuple[int, int, bytes]:
     if isinstance(edit, Replace):
         if not edit.where:
             raise PatchRefused("replace the save's fields, not the whole save")
-        start, end, _, _ = _locate(body, edit.where, cache)
-        return start, end, edit.raw
-    target, _, _, _ = _locate(body, edit.where, cache)
+        start = _walk(body, edit.where, cache)
+        return start, _value_end(body, start), edit.raw
+    target = _walk(body, edit.where, cache)
     box = _container(body, target, cache)
     if isinstance(edit, Insert):
         if body[target] != 0x5B:
@@ -464,6 +529,21 @@ def _canonical(tree: Any) -> str:
     return json.dumps(tree, ensure_ascii=False, separators=(",", ":"), check_circular=False)
 
 
+def _part(edits: list[Edit]) -> Where:
+    """The container the edits share: where each changes something (an inserted element's
+    array, a removed or replaced value's holder), down to the deepest place common to all.
+    The proof parses that part, before and after; the rest is the same bytes (review R32)."""
+    homes = [tuple(e.where) if isinstance(e, (Insert, AddMember)) else tuple(e.where)[:-1]
+             for e in edits]
+    common = homes[0]
+    for home in homes[1:]:
+        n = 0
+        while n < min(len(common), len(home)) and common[n] == home[n]:
+            n += 1
+        common = common[:n]
+    return common
+
+
 def _tree_order(edits: list[Edit]) -> list[Edit]:
     """The order to make the edits in memory, where each names its place in the original:
     edits that shift nothing first, then removals and insertions deepest first and, in one
@@ -517,19 +597,33 @@ def _apply(body: bytes, edits: list[Edit]) -> bytes:
     new = bytes(out)
     if b"\x00" in new:
         raise PatchRefused("the edited save would hold a NUL byte")
+    # The proof, on the part the edits share (GGF 2026-11-17: "verifying only the changed
+    # area"): every splice inside it, the bytes before and after it the same, and the part
+    # reading as the original part with exactly these edits made.
+    part = _part(edits)
     try:
-        expected = _loads(body, repair=True)
+        lo = _walk(body, part, cache)
+        hi = _value_end(body, lo)
+    except IndexError:
+        raise PatchRefused("the save's text ends too early") from None
+    if any(start < lo or end > hi for start, end, _ in splices):
+        raise PatchRefused("an edit reaches outside the part of the save it changes")
+    new_hi = hi + sum(len(raw) - (end - start) for start, end, raw in splices)
+    if new[:lo] != body[:lo] or new[new_hi:] != body[hi:]:
+        raise PatchRefused("the edited save is not the original with exactly these edits")
+    try:
+        expected = _loads(body[lo:hi], repair=True)
     except _Duplicate:
         raise PatchRefused("the save has a field twice in one object; not touching it") from None
     except (ValueError, RecursionError):
         raise PatchRefused("the save does not parse") from None
     try:
-        for edit in _tree_order(edits):
+        for edit in _tree_order([replace(e, where=tuple(e.where)[len(part):]) for e in edits]):
             _expected(expected, edit, _parse_value)
     except (KeyError, IndexError, TypeError) as exc:
         raise PatchRefused(f"an edit does not fit the save's tree ({type(exc).__name__})") from None
     try:
-        got = _loads(new, repair=True)
+        got = _loads(new[lo:new_hi], repair=True)
     except _Duplicate:
         raise PatchRefused("the edited save would have a field twice in one object") from None
     except (ValueError, RecursionError):
