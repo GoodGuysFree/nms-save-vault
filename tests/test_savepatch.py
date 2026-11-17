@@ -261,8 +261,10 @@ def _big_save() -> bytes:
 
 
 def test_finding_a_place_reads_nothing_after_it(monkeypatch):
-    """Only the values before each step on the way are skipped: the big list after the
-    inventory is never scanned for a change inside the inventory."""
+    """Only the values before each step on the way are skipped to find it: the big list after
+    the inventory is not scanned to find a place inside the inventory. What follows the way
+    is read once, at C speed, to see that no field on the way is there twice (review R32a-1:
+    the reader would show the other copy)."""
     body = _big_save()
     big_at = body.index(b'"' + K("Big").encode() + b'":') + len(K("Big")) + 3
     seen = []
@@ -272,8 +274,10 @@ def test_finding_a_place_reads_nothing_after_it(monkeypatch):
         seen.append(p)
         return real(b, p)
     monkeypatch.setattr(sp, "_value_end", spy)
-    new = sp.apply(body, [R(PSD + ("Inventory", "Slots", 2, "Amount"), b"9")])
+    sp._walk(body, PSD + ("Inventory", "Slots", 2, "Amount"))
     assert big_at not in seen
+    new = sp.apply(body, [R(PSD + ("Inventory", "Slots", 2, "Amount"), b"9")])
+    assert seen.count(big_at) == 1
     assert psd(new)[K("Inventory")][K("Slots")][2][K("Amount")] == 9
 
 

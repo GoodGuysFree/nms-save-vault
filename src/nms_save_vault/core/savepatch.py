@@ -291,28 +291,59 @@ def _step_kind(body: bytes, start: int, step: Any) -> bool:
     return False
 
 
+def _member(body: bytes, q: int) -> tuple[str, int]:
+    """``q`` at an object member's name: (the name, where its value begins)."""
+    k_end = _string_end(body, q)
+    try:
+        name = json.loads(body[q:k_end].decode("utf-8", errors="surrogateescape"), strict=False)
+    except ValueError:
+        raise PatchRefused("a field name in the save JSON cannot be read") from None
+    q = _ws(body, k_end)
+    if body[q] != 0x3A:
+        raise PatchRefused("expected ':' in the save JSON")
+    return name, _ws(body, q + 1)
+
+
+def _once_on_the_way(body: bytes, where: Where, end: int, cache: dict | None = None) -> None:
+    """Refuse when a field on the way to the value at ``where`` (which ends at ``end``) is in
+    its object twice: :func:`_child` finds the first, the JSON reader shows the last (review
+    R32a-1; c868987 refused such a save as it read it whole). The way there was read up to
+    each step; what follows it, to the end of the save, is read once here at C speed."""
+    starts = [_ws(body, 0)]
+    for step in where:
+        starts.append(_child(body, starts[-1], step, cache))
+    for depth in range(len(where), 0, -1):
+        holder, step = starts[depth - 1], where[depth - 1]
+        is_obj = body[holder] == 0x7B
+        want = _k(step) if is_obj else None
+        end_char = 0x7D if is_obj else 0x5D
+        q = _ws(body, end)
+        while body[q] != end_char:
+            if body[q] != 0x2C:
+                raise PatchRefused("expected ',' in the save JSON")
+            q = _ws(body, q + 1)
+            if is_obj:
+                name, q = _member(body, q)
+                if name == want:
+                    raise PatchRefused(f"the save has the field {step!r} twice on the way to "
+                                       "the change; not touching it")
+            q = _ws(body, _value_end(body, q))
+        end = q + 1
+
+
 def _child(body: bytes, start: int, step: Any, cache: dict | None = None) -> int:
     """Where the value of field or index ``step`` of the object or array at ``start`` begins:
     only the items before it are skipped, none after it is read (review R32)."""
+    is_obj = _step_kind(body, start, step)      # first: a bool or a list is never a hit
     if cache is not None and (start, step) in cache:
         return cache[(start, step)]
-    is_obj = _step_kind(body, start, step)
     want = _k(step) if is_obj else None
     end_char = 0x7D if is_obj else 0x5D
     q, n = _ws(body, start + 1), 0
     while body[q] != end_char:
         name = None
         if is_obj:
-            k_end = _string_end(body, q)
-            try:
-                name = json.loads(body[q:k_end].decode("utf-8", errors="surrogateescape"),
-                                  strict=False)
-            except ValueError:
-                raise PatchRefused("a field name in the save JSON cannot be read") from None
-            q = _ws(body, k_end)
-            if body[q] != 0x3A:
-                raise PatchRefused("expected ':' in the save JSON")
-            q = _ws(body, q + 1)
+            name, q = _member(body, q)
         if (is_obj and name == want) or (not is_obj and n == step):
             if cache is not None:
                 cache[(start, step)] = q
@@ -372,13 +403,30 @@ def _locate(body: bytes, where: Where, cache: dict | None = None
 
 
 def span(body: bytes, where: Where) -> tuple[int, int]:
-    """The bytes ``[start, end)`` of the value at ``where``."""
-    start, end, _, _ = _locate(body, where)
-    return start, end
+    """The bytes ``[start, end)`` of the value at ``where``; refused when a field on the way
+    there is in its object twice (the JSON reader shows another copy)."""
+    global _VIEW
+    body = _fixed(body)
+    try:
+        cache: dict = {}
+        try:
+            start, end, _, _ = _locate(body, where, cache)
+            _once_on_the_way(body, where, end, cache)
+        except IndexError:
+            raise PatchRefused("the save's text ends too early") from None
+        return start, end
+    finally:
+        _VIEW = None                    # the text view of a big save: not kept past the read
+
+
+def _fixed(body: bytes) -> bytes:
+    """``body`` as bytes that cannot change under the text view (a bytearray is copied)."""
+    return body if isinstance(body, bytes) else bytes(body)
 
 
 def value_bytes(body: bytes, where: Where) -> bytes:
     """The value at ``where`` exactly as the save holds it: to copy it into another save."""
+    body = _fixed(body)
     start, end = span(body, where)
     return body[start:end]
 
@@ -571,7 +619,7 @@ def apply(body: bytes, edits: Iterable[Edit]) -> bytes:
     if not edits:
         return body
     try:
-        return _apply(body, edits)
+        return _apply(_fixed(body), edits)
     finally:
         _VIEW = None                    # the text view of a big save: not kept past the edit
 
@@ -604,6 +652,7 @@ def _apply(body: bytes, edits: list[Edit]) -> bytes:
     try:
         lo = _walk(body, part, cache)
         hi = _value_end(body, lo)
+        _once_on_the_way(body, part, hi, cache)     # the reader shows the part found (R32a-1)
     except IndexError:
         raise PatchRefused("the save's text ends too early") from None
     if any(start < lo or end > hi for start, end, _ in splices):
