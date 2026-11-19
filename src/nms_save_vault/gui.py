@@ -102,6 +102,7 @@ BACKUP_COLUMNS = (
 )
 
 ALL_SAVES = "All saves"
+_SLOTS_LATER = ":slots"                 # iid suffix of the marker row of an unopened backup
 
 @dataclass(frozen=True)
 class SlotSource:
@@ -1199,6 +1200,8 @@ class App(tk.Tk):
                     pass                     # a keysym this platform does not have
             tree.bind("<<TreeviewSelect>>", self._on_tree_select)
             Tooltip(tree, self._tip_for_row)
+        self.backup_tree.bind("<<TreeviewOpen>>",
+                              lambda _e: self._open_backup_row(self.backup_tree.focus()))
 
     # --- theme ---------------------------------------------------------------
 
@@ -1809,9 +1812,22 @@ class App(tk.Tk):
                 tags=("backup",),
             )
             self._remember(tree, node, {"type": "entry", "entry": e, "tip": self._entry_tip(e)})
-            self._add_entry(node, e, only)
+            if shown is not None:
+                self._add_entry(node, e, only)
+            elif e.occupied_slots:
+                # A big vault has thousands of slot and save rows: each backup's come when it
+                # is first opened (_open_backup_row), this marker shows it can be.
+                tree.insert(node, "end", iid=f"{node}{_SLOTS_LATER}")
         self._apply_backup_sort()
         self._fill_history_combo(compute=False)
+
+    def _open_backup_row(self, row: str) -> None:
+        """A backup opened for the first time: its slots and saves are added now."""
+        tree = self.backup_tree
+        if not row or not tree.exists(f"{row}{_SLOTS_LATER}"):
+            return
+        tree.delete(f"{row}{_SLOTS_LATER}")
+        self._add_entry(row, self._meta_for(tree, row)["entry"])
 
     def _add_view(self, parent: str, view: savedir.SaveDirView, writable: bool) -> None:
         for slot in sorted(view.slots):

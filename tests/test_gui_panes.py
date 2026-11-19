@@ -37,6 +37,17 @@ def _top_rows(app):
     ]
 
 
+def _open(app, row):
+    """Open a backup row as a click on its arrow does (ttk's own binding)."""
+    app.backup_tree.tk.call("ttk::treeview::Toggle", app.backup_tree, row)
+
+
+def _open_all(app):
+    for row in app.backup_tree.get_children(""):
+        if not app.backup_tree.item(row, "open"):
+            _open(app, row)
+
+
 # --- panes -------------------------------------------------------------------
 
 
@@ -49,6 +60,7 @@ def test_live_and_backups_are_separate_trees(app):
 
 def test_backup_children_carry_slots_and_saves(app):
     first = app.backup_tree.get_children("")[0]
+    _open(app, first)
     slots = app.backup_tree.get_children(first)
     assert slots
     saves = app.backup_tree.get_children(slots[0])
@@ -56,6 +68,46 @@ def test_backup_children_carry_slots_and_saves(app):
         "Auto-Save",
         "Restore-Point",
     ]
+
+
+def test_backups_are_listed_without_their_slots_until_opened(app):
+    """Thousands of slot and save rows made up front froze the window for a big vault: a
+    backup's slots are added when it is first opened."""
+    tree = app.backup_tree
+    rows = tree.get_children("")
+    for row in rows:
+        assert not tree.item(row, "open")
+        assert len(tree.get_children(row)) == 1          # the arrow shows: it can be opened
+        assert all(app._meta_for(tree, child) is None for child in tree.get_children(row))
+    _open(app, rows[0])
+    slots = tree.get_children(rows[0])
+    assert tree.item(rows[0], "open") and slots
+    assert {app._meta_for(tree, s)["type"] for s in slots} == {"slot"}
+    assert all(len(tree.get_children(r)) == 1 for r in rows[1:])     # the others still wait
+    _open(app, rows[0])                                   # closed
+    _open(app, rows[0])                                   # and opened again: no second copy
+    assert tree.get_children(rows[0]) == slots
+
+
+def test_the_keyboard_opens_a_backup_and_steps_into_its_slots(app):
+    tree = app.backup_tree
+    row = tree.get_children("")[0]
+    tree.focus(row)
+    tree.tk.call("ttk::treeview::Keynav", tree, "right")          # Right: open it
+    tree.tk.call("ttk::treeview::Keynav", tree, "down")           # Down: its first slot
+    assert tree.parent(tree.focus()) == row
+    assert app._meta_for(tree, tree.focus())["type"] == "slot"
+    assert app._selected()["type"] == "slot"
+
+
+def test_sorting_keeps_the_slots_of_an_opened_backup(app):
+    tree = app.backup_tree
+    row = tree.get_children("")[0]
+    _open(app, row)
+    slots = tree.get_children(row)
+    for key in ("type", "name", "slots"):
+        app._sort_backups(key)
+    assert tree.get_children(row) == slots and tree.item(row, "open")
 
 
 # --- sorting -----------------------------------------------------------------
@@ -175,6 +227,8 @@ def test_show_history_from_a_slot_narrows_to_that_run(app):
 
 
 def test_every_backup_row_has_a_tooltip(app):
+    _open_all(app)
+
     def walk(node=""):
         for child in app.backup_tree.get_children(node):
             yield child
@@ -193,6 +247,7 @@ def test_backup_tooltip_explains_the_entry(app):
 
 def test_save_tooltip_explains_what_the_save_type_means(app):
     entry = app.backup_tree.get_children("")[0]
+    _open(app, entry)
     slot = app.backup_tree.get_children(entry)[0]
     auto, restore = app.backup_tree.get_children(slot)
     assert "every few minutes" in app._tip_for_row(app.backup_tree, auto)

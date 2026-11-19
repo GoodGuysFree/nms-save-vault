@@ -71,6 +71,7 @@ def _store_slot_row(app, world):
     app._populate_backups()
     tree = app.backup_tree
     node = next(r for r in tree.get_children("") if tree.item(r, "text") == world.backup.id)
+    tree.tk.call("ttk::treeview::Toggle", tree, node)            # its slots come when opened
     return app._meta_for(tree, tree.get_children(node)[0]), app._meta_for(tree, node)["entry"]
 
 

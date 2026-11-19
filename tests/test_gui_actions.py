@@ -57,6 +57,10 @@ def _invoke_menu_entry(app, builder, meta, label_starts_with):
 
 
 def _find(app, tree, kind, predicate=None):
+    for row in tree.get_children(""):          # a backup's slots are there once it is opened
+        if tree is app.backup_tree and not tree.item(row, "open"):
+            tree.tk.call("ttk::treeview::Toggle", tree, row)
+
     def walk(node=""):
         for child in tree.get_children(node):
             meta = app._meta_for(tree, child)
