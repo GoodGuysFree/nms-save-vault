@@ -185,6 +185,77 @@ def test_an_xbox_or_missing_account_file_is_not_written(world):
     assert [b.code for b in plan.blocked] == ["NO_ACCOUNT_DATA"]
 
 
+# --- an unlock undone (Savecraft: the unlock a held change with Undo, GGF 2026-11-19) -----------
+
+def _unlocked_op(world, **lists):
+    session = _session(world)
+    plan = session.plan_unlock(world.live, lists, what="unlock 2 rewards")
+    done = session.write_account(plan, plan.confirmations)
+    assert done.status == "done", done.text
+    return session, done.op_id
+
+
+def test_an_unlock_is_undone_by_taking_out_what_it_added(world):
+    give_account(world.live, UnlockedSeasonRewards=["S1"], UnlockedTwitchRewards=["T1"])
+    session, op = _unlocked_op(world, UnlockedSeasonRewards=["^S2"], UnlockedTwitchRewards=["^T9"])
+    plan = session.plan_unlock_undo(op)
+    assert not plan.blocked and plan.adds == ()
+    assert plan.removes == (("UnlockedSeasonRewards", "^S2"), ("UnlockedTwitchRewards", "^T9"))
+    done = session.write_account(plan, plan.confirmations)
+    assert done.status == "done", done.text
+    assert unlocked(world.live, "UnlockedSeasonRewards") == ["^S1"]
+    assert unlocked(world.live, "UnlockedTwitchRewards") == ["^T1"]
+    data = (world.live / DATA).read_bytes()
+    info = meta_of(world.live)
+    assert data.endswith(b"}\x00") and info.valid and info.size_decompressed == len(data)
+    rec = opjournal.read_ops(session._now())[done.op_id]
+    assert (rec.kind, rec.status) == ("account_edit", "done")
+    assert rec.last("preparing")["undo_of"] == op
+
+
+def test_an_undo_takes_out_only_what_is_still_there_and_keeps_what_came_since(world):
+    give_account(world.live, UnlockedSeasonRewards=["S1"])
+    session, op = _unlocked_op(world, UnlockedSeasonRewards=["^S2", "^S3"])
+    give_account(world.live, UnlockedSeasonRewards=["S1", "S2", "S8"])      # the game wrote it
+    plan = session.plan_unlock_undo(op)
+    assert plan.removes == (("UnlockedSeasonRewards", "^S2"),)
+    assert session.write_account(plan, plan.confirmations).status == "done"
+    assert unlocked(world.live, "UnlockedSeasonRewards") == ["^S1", "^S8"]
+
+
+def test_an_unlock_undone_already_or_gone_since_has_nothing_to_undo(world):
+    give_account(world.live, UnlockedSeasonRewards=["S1"])
+    session, op = _unlocked_op(world, UnlockedSeasonRewards=["^S2"])
+    plan = session.plan_unlock_undo(op)
+    undo = session.write_account(plan, plan.confirmations)
+    assert undo.status == "done"
+    assert [b.code for b in session.plan_unlock_undo(op).blocked] == ["NOTHING_TO_UNDO_UNLOCK"]
+    # an undo is not undone in turn, and no other op is an unlock
+    assert [b.code for b in session.plan_unlock_undo(undo.op_id).blocked] == ["UNLOCK_UNDO_UNKNOWN"]
+    assert [b.code for b in session.plan_unlock_undo("op-nope").blocked] == ["UNLOCK_UNDO_UNKNOWN"]
+
+
+def test_an_unlock_another_app_made_is_undone_in_that_app(world):
+    from nms_save_vault.core import appinfo
+    give_account(world.live, UnlockedSeasonRewards=["S1"])
+    session, op = _unlocked_op(world, UnlockedSeasonRewards=["^S2"])
+    previous = appinfo.set_app("another-app", "1.0")
+    try:
+        with pytest.raises(api.EditRefused):
+            _session(world).plan_unlock_undo(op)
+    finally:
+        appinfo.set_app(previous.name, previous.version)
+
+
+def test_an_undo_planned_before_the_account_changed_is_not_written(world):
+    give_account(world.live, UnlockedSeasonRewards=["S1"])
+    session, op = _unlocked_op(world, UnlockedSeasonRewards=["^S2"])
+    plan = session.plan_unlock_undo(op)
+    now = give_account(world.live, UnlockedSeasonRewards=["S1", "S2", "S7"])
+    result = session.write_account(plan, plan.confirmations)
+    assert result.status == "stale" and (world.live / DATA).read_bytes() == now
+
+
 def test_the_journal_records_each_file_before_and_after_by_its_hash_only(world):
     before = give_account(world.live, UnlockedSeasonRewards=["S1"])
     session = _session(world)

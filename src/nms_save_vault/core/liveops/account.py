@@ -50,8 +50,9 @@ _SIZE_AGAIN = 0x54                      # the size the game repeats (saveedit)
 
 @dataclass(frozen=True)
 class AccountPlan:
-    """The plan to add ``adds`` ((list, id) pairs) to an account's data. ``blocked`` says
-    why it cannot be written; ``pre`` is the SHA-256 of each file it was planned from."""
+    """The plan to add ``adds`` ((list, id) pairs) to an account's data, or, undoing the
+    unlock ``undo_of``, to take ``removes`` out. ``blocked`` says why it cannot be written;
+    ``pre`` is the SHA-256 of each file it was planned from."""
 
     account: LiveRef
     label: str
@@ -59,6 +60,8 @@ class AccountPlan:
     adds: tuple[tuple[str, str], ...]
     pre: tuple[str, str]
     blocked: tuple[Warning, ...]
+    removes: tuple[tuple[str, str], ...] = ()
+    undo_of: str | None = None
 
 
 def _sha(data: bytes) -> str:
@@ -127,6 +130,68 @@ def plan_unlock(ctx: OpContext, account: LiveRef, unlocks: Mapping[str, Sequence
     return AccountPlan(acct.account, label, what, tuple(adds), pre, tuple(blocked[:1]))
 
 
+def unlock_of(ctx: OpContext, op_id: str) -> opjournal.OpRecord | None:
+    """The finished unlock ``op_id`` (an account write that added ids, not an undo); None
+    for any other op or one the journal does not hold."""
+    rec = opjournal.read_ops(ctx).get(op_id)
+    preparing = rec.last("preparing") if rec is not None else None
+    if rec is None or rec.kind != KIND or rec.status != "done" or not isinstance(preparing, dict) \
+            or preparing.get("undo_of") or not preparing.get("adds"):
+        return None
+    return rec
+
+
+def plan_unlock_undo(ctx: OpContext, op_id: str) -> AccountPlan:
+    """The plan to undo the unlock ``op_id`` (Savecraft, GGF 2026-11-19): the ids it added
+    that the account still holds are taken out; whatever else the account holds, what it had
+    before and what came since, stays. Raises ``TargetError`` for an account no write may
+    use."""
+    rec = unlock_of(ctx, op_id)
+    account = opjournal.account_ref(rec) if rec is not None else None
+    preparing = rec.last("preparing") if rec is not None else {}
+    try:
+        added = check_unlocks(_grouped(preparing.get("adds"))) if account is not None else None
+    except ValueError:
+        added = None
+    if account is None or not added:
+        blocked = (warning("UNLOCK_UNDO_UNKNOWN"),)
+        return AccountPlan(account, "", "", (), ("", ""), blocked, undo_of=op_id)
+    acct = resolve_account(ctx, account)
+    label = account_label(ctx, account)
+    what = f"undo: {preparing.get('note') or 'an unlock'}"
+    files = _read(acct.folder)
+    if files is None:
+        return AccountPlan(acct.account, label, what, (), ("", ""),
+                           (warning("NO_ACCOUNT_DATA"),), undo_of=op_id)
+    data, _meta = files
+    pre = (_sha(data), _sha(_meta))
+    try:
+        settings = _settings(data) if _meta_ok(_meta) else None
+    except (savejson.SaveDecodeError, ValueError):
+        settings = None
+    if settings is None:
+        return AccountPlan(acct.account, label, what, (), pre,
+                           (warning("ACCOUNT_DATA_UNREADABLE"),), undo_of=op_id)
+    removes = tuple((name, rid) for name, rid in added
+                    if isinstance(settings.get(savepatch._k(name)), list)
+                    and rid in settings[savepatch._k(name)])
+    blocked = () if removes else (warning("NOTHING_TO_UNDO_UNLOCK"),)
+    return AccountPlan(acct.account, label, what, (), pre, blocked, removes=removes,
+                       undo_of=op_id)
+
+
+def _grouped(pairs: object) -> dict[str, list[str]]:
+    """The journal's (list, id) pairs as list -> ids; ValueError for any other shape."""
+    if not isinstance(pairs, list):
+        raise ValueError("no adds")
+    out: dict[str, list[str]] = {}
+    for pair in pairs:
+        if not (isinstance(pair, list) and len(pair) == 2 and all(isinstance(p, str) for p in pair)):
+            raise ValueError("not a (list, id) pair")
+        out.setdefault(pair[0], []).append(pair[1])
+    return out
+
+
 #: The account metas this core writes: the ones with the time at 0x164 (review R22-5).
 _META_LENGTHS = (formats.META_LEN_WAYPOINT, formats.META_LEN_WORLDS_I, formats.META_LEN_WORLDS_II)
 
@@ -159,17 +224,25 @@ def _built(plan: AccountPlan, data: bytes, old_meta: bytes, now: int) -> tuple[b
     root = accountdata.decode(data)
     settings = root[savepatch._k("UserSettingsData")]
     sizes = {name: len(settings[savepatch._k(name)]) for name, _rid in plan.adds}
+    held = {name: list(settings[savepatch._k(name)]) for name, _rid in plan.removes}
     steps = []
     for name, rid in plan.adds:
         steps.append([savepatch.Insert(("UserSettingsData", name), sizes[name],
                                        json.dumps(rid).encode("ascii"))])
         sizes[name] += 1
+    for name, rid in plan.removes:      # an undo: each id out where it is now
+        index = held[name].index(rid)
+        steps.append([savepatch.Remove(("UserSettingsData", name, index))])
+        del held[name][index]
     new_text = savepatch.apply_steps(text, savepatch.Steps(steps))
     new_data = new_text + nul + tail
     after = _settings(new_data)
     for name, rid in plan.adds:
         if after is None or rid not in after.get(savepatch._k(name), ()):
             raise ValueError("the account data does not read back with the unlocks")
+    for name, rid in plan.removes:
+        if after is None or after.get(savepatch._k(name)) != held[name]:
+            raise ValueError("the account data does not read back with the unlocks taken out")
     plain = meta.decrypt(old_meta, formats.ACCOUNT_STORAGE_ORDINAL)
     if meta.parse(plain, formats.ACCOUNT_STORAGE_ORDINAL).header != formats.META_HEADER \
             or len(plain) < _SIZE_AGAIN + 4:
@@ -232,7 +305,8 @@ def _write(ctx: OpContext, plan: AccountPlan, confirmed: frozenset[str]) -> OpOu
     try:
         opjournal.append(ctx, op_id, "preparing", {
             "kind": KIND, "app": ctx.app(), "targets": [], "account": ref, "note": plan.what,
-            "adds": [list(a) for a in plan.adds], "undo_of": None,
+            "adds": [list(a) for a in plan.adds], "removes": [list(r) for r in plan.removes],
+            "undo_of": plan.undo_of,
             "confirmed": sorted(confirmed), "plan_digest": ""})
     except (OrganizerBusy, StoreReadOnly) as exc:      # review R22-4
         return refused(None, "BUSY", f"The vault is busy. Try again. ({exc})")
@@ -286,6 +360,10 @@ def _write(ctx: OpContext, plan: AccountPlan, confirmed: frozenset[str]) -> OpOu
                          + ("It is as it was." if back else "Put it back from the vault."),
                          (), None, "n/a", str(exc), "WRITE_FAILED")
     finish(ctx, op_id)
+    if plan.removes:
+        n = len(plan.removes)
+        return OpOutcome(op_id, "done", f"{n} unlock{'s' if n != 1 else ''} taken out of "
+                         f"{plan.label}'s account data.", (), None, "n/a", None)
     n = len(plan.adds)
     return OpOutcome(op_id, "done", f"{n} unlock{'s' if n != 1 else ''} added to {plan.label}'s "
                      f"account data.", (), None, "n/a", None)

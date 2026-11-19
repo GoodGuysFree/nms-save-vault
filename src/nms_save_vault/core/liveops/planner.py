@@ -158,6 +158,10 @@ TEXTS = {
                              "changed."),
     "NOTHING_TO_UNLOCK": ("block", "The account has all of those unlocked already. Nothing "
                           "was changed."),
+    "UNLOCK_UNDO_UNKNOWN": ("block", "The vault's record holds no such unlock to undo. Nothing "
+                            "was changed."),
+    "NOTHING_TO_UNDO_UNLOCK": ("block", "The account no longer holds any of those unlocks: there "
+                               "is nothing to undo. Nothing was changed."),
     "ACCOUNTDATA_ROLLBACK": ("confirm", "This also restores the account data, which rolls back "
                              "unlocks and settings."),
 }

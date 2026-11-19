@@ -44,7 +44,8 @@ from .index.nodes import PrivacyError, get, items
 from .liveops import context_for, execute, pending_recovery, plan_undo, resolve_recovery
 from .liveops.classic import _ad_hoc
 from .liveops.context import OpContext
-from .liveops.account import UNLOCK_LISTS, AccountPlan, plan_unlock, write_unlock
+from .liveops.account import (UNLOCK_LISTS, AccountPlan, plan_unlock, plan_unlock_undo,
+                              write_unlock)
 from .liveops.duplicate import plan_duplicate
 from .liveops.edit import plan_edit, plan_edits
 from .liveops.errors import ConfirmationRequired, LiveOpError, TargetError
@@ -576,6 +577,16 @@ class UnlockPlan:
         return self._plan.adds
 
     @property
+    def removes(self) -> tuple[tuple[str, str], ...]:
+        """What an undo (:meth:`LiveSession.plan_unlock_undo`) takes out: (list, id) pairs."""
+        return self._plan.removes
+
+    @property
+    def undoes(self) -> str | None:
+        """The unlock this plan undoes, or None."""
+        return self._plan.undo_of
+
+    @property
     def blocked(self) -> tuple[Notice, ...]:
         return _notices(self._plan.blocked)
 
@@ -715,6 +726,20 @@ class LiveSession:
         if slot is None:
             raise TargetError("UNKNOWN_ACCOUNT", "this session holds no such save folder")
         return UnlockPlan(plan_unlock(self._now(), slot.ref, unlocks, what=what))
+
+    def plan_unlock_undo(self, op_id: str) -> UnlockPlan:
+        """The plan that undoes this app's unlock ``op_id`` (:meth:`plan_unlock`): the ids it
+        added that the account still holds are taken out, and nothing else; written with
+        :meth:`write_account`. A plan that says why (``blocked``) when there is nothing to undo
+        (an unknown op, one that is not an unlock, or ids gone since). Raises
+        :class:`EditRefused` for an unlock another app made, and :class:`TargetError` for an
+        account no write may use."""
+        ctx = self._now()
+        rec = read_ops(ctx).get(op_id)
+        if rec is not None and _app_of_op(rec) != current().name:
+            raise EditRefused("that operation was not made by this app; undo it in the app "
+                              "that made it")
+        return UnlockPlan(plan_unlock_undo(ctx, op_id))
 
     def write_account(self, plan: UnlockPlan, confirmed: Iterable[str] = ()) -> WriteResult:
         """Write ``plan``, as a save's write is made: the game known closed, the folder kept in
