@@ -540,6 +540,18 @@ class VersionStore:
     def damage(self) -> list[DamageRecord]:
         return read_damage(self.root)
 
+    def stored_bytes(self) -> int:
+        """What the entries take in the store: each object they name once, and the manifests,
+        by the sizes the manifests and the listing record (no object file is looked at)."""
+        self._refresh()
+        with self._index_guard:
+            entries = list(self._index.values())
+            stamps = dict(self._stamps)
+        objects = {fe.sha256: fe.size for e in entries for fe in e.files if fe.inline is None}
+        manifests = sum(stamps[f"{e.id}.json"][0] if f"{e.id}.json" in stamps
+                        else len(e.to_bytes()) for e in entries)
+        return sum(objects.values()) + manifests
+
     def fsck(self, *, deep: bool = False, repair: bool = False,
              fallbacks: Sequence[Path] = ()) -> "FsckReport":
         """Check the store (D3 2.11): quick, ``deep`` (re-hash everything), ``repair``

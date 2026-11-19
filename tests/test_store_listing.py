@@ -3,7 +3,9 @@ store status (D3 T11)."""
 from __future__ import annotations
 
 import json
+import os
 import shutil
+import time
 
 import pytest
 
@@ -172,6 +174,48 @@ def test_store_status(mixed):
     assert [d.entry_id for d in status.damage] == [mixed["snap"].id]
     shutil.rmtree(copy)
     assert not vstore.store_status(vault.root, store, live_roots=[live]).copy_aside.found
+
+
+def _settled(store):
+    """The entries folder's time as it is once the commits are a while back."""
+    old = time.time() - 3600
+    os.utime(store.root / "entries", (old, old))
+
+
+def test_store_status_is_worked_out_again_only_when_the_vault_changes(mixed, monkeypatch):
+    """The organizer asks after every scan (every few seconds while another app works): it
+    stat'ed every object and walked the pre-upgrade copy each time."""
+    vault, store, live = mixed["vault"], mixed["store"], mixed["live"]
+    _settled(store)
+    first = vstore.store_status(vault.root, store, live_roots=[live])
+    on_disk = sum(p.stat().st_size for p in (store.root / "objects").rglob("*") if p.is_file())
+    on_disk += sum(p.stat().st_size for p in (store.root / "entries").glob("*.json"))
+    assert first.store_bytes == on_disk                  # read from the manifests, the same
+    looks = []
+    real_walk, real_size = os.walk, store.objects.size_of
+    monkeypatch.setattr(os, "walk", lambda *a, **k: looks.append(a) or real_walk(*a, **k))
+    monkeypatch.setattr(store.objects, "size_of", lambda d: looks.append(d) or real_size(d))
+    for _ in range(3):
+        assert vstore.store_status(vault.root, store, live_roots=[live]) == first
+    assert looks == []
+
+    store.record_damage(mixed["snap"].id, mixed["snap"].files[0], "corrupt", "test")
+    assert [d.entry_id for d in vstore.store_status(vault.root, store, live_roots=[live]).damage
+            ] == [mixed["snap"].id]                    # read each time
+
+    extract = store.add_from_live(live, platform="steam", account_key=STEAM_ACCOUNT,
+                                  kind="extract", label="slot 1", scope=vstore.CaptureScope(slots=(1,)))
+    _settled(store)
+    status = vstore.store_status(vault.root, store, live_roots=[live])
+    assert status.entries == first.entries + 1 and status.store_bytes > first.store_bytes
+    assert extract.id in {e.id for e in store.entries()}
+
+    handmade = mixed["tmp_path"] / "another copy"
+    shutil.copytree(live, handmade)
+    vault.upsert(vault.make_entry_from_dir("inplace-20260103-000000", catalog.KIND_INPLACE,
+                                           "by hand too", handmade, managed=False))
+    assert vstore.store_status(vault.root, store, live_roots=[live]).inplace_not_copied == (
+        "inplace-20260101-000000", "inplace-20260103-000000")
 
 
 def test_a_legacy_vault_lists_its_catalog(tmp_path):

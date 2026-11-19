@@ -8,9 +8,13 @@ built from its member records exactly as ``catalog.summarize`` builds them from 
 """
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
 import os
+import threading
+import time
+from collections import OrderedDict
 from collections.abc import Iterable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -26,7 +30,7 @@ from ..state import AppState
 from .damage import DamageRecord, read_damage
 from .errors import StoreUnavailable
 from .manifest import MemberRecord, StoreEntry
-from .versionstore import STATE, VaultMode, store_root, vault_mode
+from .versionstore import ENTRIES, FRESH_SECONDS, STATE, VaultMode, store_root, vault_mode
 
 if TYPE_CHECKING:
     from .versionstore import VersionStore
@@ -270,13 +274,69 @@ class StoreStatus:
     store_bytes: int
 
 
+_STATUS: OrderedDict[str, tuple[tuple, StoreStatus]] = OrderedDict()   # vault -> (made of, status)
+_STATUS_GUARD = threading.Lock()
+_STATUS_VAULTS = 4
+
+
 def store_status(vault_root: Path, store: "VersionStore | None", *,
                  live_roots: Sequence[Path] | None = None,
                  app_state: AppState | None = None) -> StoreStatus:
     """What the vault status shows: mode, the copy-aside, fold progress (from
     ``store/state/migration.json``, written by the upgrade and the fold), hand-made folders not
-    copied in, the space freeing would give, damage, and the store's size."""
+    copied in, the space freeing would give, damage, and the store's size.
+
+    The organizer asks after every scan, so the status is worked out again only when what it
+    is made of changed (the store's entries, the migration record, the catalog, the copy-aside
+    folder, the live folders asked about): a few stats. The mode and the damage are read each
+    time."""
     vault_root = Path(vault_root)
+    where = os.path.normcase(os.path.abspath(vault_root))
+    made_of = _status_made_of(vault_root, store, live_roots)
+    with _STATUS_GUARD:
+        held = _STATUS.get(where)
+    if made_of is not None and held is not None and held[0] == made_of:
+        status = held[1]
+    else:
+        status = _store_status(vault_root, store, live_roots=live_roots, app_state=app_state)
+        if made_of is not None:
+            with _STATUS_GUARD:
+                _STATUS.pop(where, None)
+                _STATUS[where] = (made_of, status)
+                while len(_STATUS) > _STATUS_VAULTS:
+                    _STATUS.popitem(last=False)
+    return dataclasses.replace(status, mode=vault_mode(vault_root),
+                               damage=tuple(read_damage(store_root(vault_root))))
+
+
+def _status_made_of(vault_root: Path, store: "VersionStore | None",
+                    live_roots: Sequence[Path] | None) -> tuple | None:
+    """What the status is made of, as a few stats; None when that cannot be told this cheaply:
+    the live folders are to be discovered, or the entries folder changed too recently for its
+    time to be trusted (FRESH_SECONDS)."""
+    if live_roots is None:
+        return None
+    root = store_root(vault_root)
+    aside = read_migration(vault_root).get("copy_aside")
+    name = aside.get("name") if isinstance(aside, dict) else None
+    paths = [root / ENTRIES, root / STATE / MIGRATION_JSON, catalog.Vault(vault_root).catalog_path,
+             vault_root.parent / name if isinstance(name, str) else None]
+    out: list = [store.store_id if store is not None else None,
+                 tuple(str(Path(p)) for p in live_roots)]
+    for path in paths:
+        try:
+            st = os.stat(safety.long_path(path)) if path is not None else None
+        except OSError:
+            st = None
+        if st is not None and path == root / ENTRIES and time.time() - st.st_mtime < FRESH_SECONDS:
+            return None
+        out.append(None if st is None else (st.st_size, st.st_mtime_ns, st.st_ino))
+    return tuple(out)
+
+
+def _store_status(vault_root: Path, store: "VersionStore | None", *,
+                  live_roots: Sequence[Path] | None,
+                  app_state: AppState | None) -> StoreStatus:
     migration = read_migration(vault_root)
     fold = migration.get("fold") if isinstance(migration.get("fold"), dict) else {}
     states = fold.get("entries") if isinstance(fold.get("entries"), dict) else {}
@@ -287,9 +347,11 @@ def store_status(vault_root: Path, store: "VersionStore | None", *,
     inplace = tuple(sorted(
         e.id for e in vault.entries
         if e.kind == catalog.KIND_INPLACE and e.id not in stored and not _in_live(vault, e, live)))
-    freeable = sum(_tree_bytes(entry_folder(vault, e)) for e in vault.entries
+    # A verified fold holds exactly the folder's files: their sizes are in its manifest.
+    freeable = sum(sum(fe.size for fe in stored[e.id].files) for e in vault.entries
                    if e.id in stored and "legacy_entry" in (stored[e.id].origin or {})
-                   and statuses.get(e.id, {}).get("status") == "verified")
+                   and statuses.get(e.id, {}).get("status") == "verified"
+                   and entry_folder(vault, e).is_dir())
     return StoreStatus(
         mode=vault_mode(vault_root), copy_aside=_copy_aside(vault_root, migration),
         fold_total=sum(1 for v in statuses.values() if v.get("status") != "skipped"),
@@ -299,7 +361,7 @@ def store_status(vault_root: Path, store: "VersionStore | None", *,
         fold_waiting_for_space=_uint(fold.get("waiting_for_space_bytes")),
         inplace_not_copied=inplace, freeable_bytes=freeable,
         damage=tuple(read_damage(store_root(vault_root))), entries=len(stored),
-        store_bytes=_store_bytes(store) if store is not None else 0)
+        store_bytes=store.stored_bytes() if store is not None else 0)
 
 
 def read_migration(vault_root: Path) -> dict:
@@ -329,22 +391,6 @@ def _copy_aside(vault_root: Path, migration: dict) -> CopyAsideInfo | None:
 
 def _count_files(folder: Path) -> int:
     return sum(len(names) for _d, _s, names in os.walk(folder))
-
-
-def _tree_bytes(folder: Path) -> int:
-    total = 0
-    for dirpath, _dirs, names in os.walk(folder):
-        for name in names:
-            try:
-                total += os.stat(os.path.join(dirpath, name)).st_size
-            except OSError:
-                pass
-    return total
-
-
-def _store_bytes(store: "VersionStore") -> int:
-    return sum(store.objects.size_of(d) or 0 for d in store.objects.digests()) + _tree_bytes(
-        store.root / "entries")
 
 
 def _uint(value: object) -> int:
