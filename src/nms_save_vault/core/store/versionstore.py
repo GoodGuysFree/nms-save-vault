@@ -18,6 +18,7 @@ import shutil
 import threading
 import time
 import uuid
+from collections import OrderedDict
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
@@ -75,6 +76,16 @@ OBJECTS, ENTRIES, QUARANTINE, TMP, STATE = "objects", "entries", "quarantine", "
 UPGRADE_JSON = "upgrade.json"
 
 _STORE_ID = re.compile(r"[0-9a-f]{32}")
+
+# Manifests never change once written, so every store this process opens on one vault (the
+# Backups tab, the Organizer, an app's reader) shares the ones already parsed: a file is read
+# and checked again only when its size or time changed. Keyed by the store folder and the store
+# id (a copy of a vault has the same id); the vaults used last are kept.
+_Stamp = tuple[int, int]                         # a manifest file's (size, mtime_ns)
+_Parsed = dict[str, tuple[_Stamp, StoreEntry | str]]   # file name -> entry, or why it is bad
+_PARSED: OrderedDict[tuple[str, str], _Parsed] = OrderedDict()
+_PARSED_GUARD = threading.Lock()
+_PARSED_VAULTS = 4
 
 
 DAMAGED_STORE_TEXT = ("The vault's store is damaged: its store/FORMAT file is missing or cannot be read, so "
@@ -297,6 +308,8 @@ class VersionStore:
         self._corrupt: dict[str, str] = {}          # manifest file name -> why it is unreadable
         self._index_guard = threading.Lock()
         self._entries_seen: int | None = None       # entries/ mtime_ns at the last listing
+        self._stamps: dict[str, _Stamp] = {}        # manifest file name -> as it was read
+        self._parsed_key = (os.path.normcase(os.path.abspath(self.root)), self.store_id)
 
     @property
     def app_version(self) -> str:
@@ -328,7 +341,9 @@ class VersionStore:
         """Every readable entry, oldest first. Unreadable manifests are skipped (and logged);
         :attr:`corrupt_manifests` names them."""
         self._refresh()
-        return sorted(self._index.values(), key=lambda e: (e.created_utc, e.id))
+        with self._index_guard:
+            entries = list(self._index.values())
+        return sorted(entries, key=lambda e: (e.created_utc, e.id))
 
     def entry(self, entry_id: str) -> StoreEntry:
         """The entry; KeyError when there is none, EntryCorrupt when its manifest is bad."""
@@ -416,9 +431,10 @@ class VersionStore:
         return dict(self._corrupt)
 
     def _refresh(self, *, force: bool = False) -> None:
-        """Parse manifests not seen yet, when ``entries/`` changed since the last look (its
-        modification time, D3 2.7) or ``force``. Manifests never change once written, so a
-        name already indexed (or found corrupt) is not read again."""
+        """Index the manifests of ``entries/`` when it changed since the last look (its
+        modification time, D3 2.7) or ``force``: a new one is parsed, or taken from another
+        store of this process that parsed it; one that is gone, or no longer the file that was
+        read (its size or time), is forgotten. Manifests never change once written."""
         try:
             st = os.stat(self._io / ENTRIES)
         except OSError as exc:
@@ -426,31 +442,68 @@ class VersionStore:
         if not force and st.st_mtime_ns == self._entries_seen:
             return
         try:
-            names = os.listdir(self._io / ENTRIES)
+            listed = _listed_manifests(self._io / ENTRIES)
         except OSError as exc:
             raise StoreUnavailable(f"The vault is not reachable ({exc.strerror or exc}).") from exc
+        shared = _shared_parses(self._parsed_key, listed)
         with self._index_guard:
             # A folder time this fresh may not have moved for a manifest added within the same
             # clock tick (FAT keeps 2 s): look again next time.
             fresh = time.time() - st.st_mtime < FRESH_SECONDS
             self._entries_seen = None if fresh else st.st_mtime_ns
-            for name in names:
-                if not name.endswith(".json") or name[:-5] in self._index or name in self._corrupt:
+            for name in [f"{entry_id}.json" for entry_id in self._index] + list(self._corrupt):
+                if name not in listed or self._stamps.get(name, listed[name]) != listed[name]:
+                    self._forget(name)
+            for name, stamp in listed.items():
+                if name in self._stamps:
                     continue
-                try:
-                    raw = (self._io / ENTRIES / name).read_bytes()
-                except OSError as exc:
-                    log.warning("could not read the store manifest %s: %s", name, exc)
+                if name[:-5] in self._index:                 # this store wrote it
+                    self._stamps[name] = stamp
                     continue
-                try:
-                    entry = StoreEntry.from_bytes(raw)
-                    if entry.id != name[:-5]:
-                        raise EntryCorrupt(f"names entry {entry.id}")
-                except EntryCorrupt as exc:
-                    log.warning("the store manifest %s is damaged: %s", name, exc)
-                    self._corrupt[name] = str(exc)
-                    continue
-                self._index_entry(entry)
+                known = shared.get(name)
+                if known is None or known[0] != stamp:
+                    parsed = self._parse(name)
+                    if parsed is None:
+                        continue
+                    known = (stamp, parsed)
+                    with _PARSED_GUARD:
+                        shared[name] = known
+                self._stamps[name] = stamp
+                if isinstance(known[1], str):
+                    self._corrupt[name] = known[1]
+                else:
+                    self._index_entry(known[1])
+
+    def _parse(self, name: str) -> StoreEntry | str | None:
+        """The manifest file ``name``, parsed and checked; why it is damaged; None when it
+        cannot be read now."""
+        try:
+            raw = (self._io / ENTRIES / name).read_bytes()
+        except OSError as exc:
+            log.warning("could not read the store manifest %s: %s", name, exc)
+            return None
+        try:
+            entry = StoreEntry.from_bytes(raw)
+            if entry.id != name[:-5]:
+                raise EntryCorrupt(f"names entry {entry.id}")
+        except EntryCorrupt as exc:
+            log.warning("the store manifest %s is damaged: %s", name, exc)
+            return str(exc)
+        return entry
+
+    def _forget(self, name: str) -> None:
+        """Take a manifest file out of the index (call under ``_index_guard``)."""
+        self._stamps.pop(name, None)
+        self._corrupt.pop(name, None)
+        entry = self._index.pop(name[:-5], None)
+        if entry is None:
+            return
+        for m in entry.members:
+            refs = [r for r in self._vids.get(m.vid, ()) if r[0] != entry.id]
+            if refs:
+                self._vids[m.vid] = refs
+            else:
+                self._vids.pop(m.vid, None)
 
     def _index_entry(self, entry: StoreEntry) -> None:
         """Add an entry to the in-memory index (call under ``_index_guard``)."""
@@ -465,8 +518,8 @@ class VersionStore:
         self._refresh()
         with self._index_guard:
             refs = list(self._vids.get(vid, ()))
-        return tuple(sorted(refs, key=lambda r: (self._index[r[0]].created_utc, r[0], r[1], r[2]),
-                            reverse=True))
+            return tuple(sorted(refs, key=lambda r: (self._index[r[0]].created_utc, r[0], r[1],
+                                                     r[2]), reverse=True))
 
     def record_damage(self, entry_id: str, fe: FileEntry | None, problem: str,
                       detail: str) -> None:
@@ -865,6 +918,33 @@ class VersionStore:
     def _fault(self, point: str) -> None:
         if self._faults is not None:
             self._faults(point)
+
+
+def _listed_manifests(folder: Path) -> dict[str, _Stamp]:
+    """Each manifest file of ``entries/`` with its size and time, from the listing (on Windows
+    the listing carries them: no stat per file)."""
+    out: dict[str, _Stamp] = {}
+    with os.scandir(folder) as it:
+        for item in it:
+            if item.name.endswith(".json"):
+                try:
+                    st = item.stat()
+                except OSError:
+                    continue                            # gone since the listing
+                out[item.name] = (st.st_size, st.st_mtime_ns)
+    return out
+
+
+def _shared_parses(key: tuple[str, str], listed: Mapping[str, _Stamp]) -> _Parsed:
+    """The manifests of this vault parsed in this process, less the ones no longer listed."""
+    with _PARSED_GUARD:
+        parsed = _PARSED.pop(key, None) or {}
+        for name in [n for n in parsed if n not in listed]:
+            del parsed[name]
+        _PARSED[key] = parsed                           # the one used last goes last
+        while len(_PARSED) > _PARSED_VAULTS:
+            _PARSED.popitem(last=False)
+        return parsed
 
 
 def _mat_lock(folder: Path) -> Path:

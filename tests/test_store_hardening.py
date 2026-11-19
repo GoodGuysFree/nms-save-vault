@@ -204,8 +204,9 @@ def test_the_index_is_refreshed_only_when_entries_changes(tmp_path, monkeypatch)
     os.utime(vault / "store" / "entries", (old, old))
     store.entries()                                   # one look at the settled folder
     listings = []
-    real = os.listdir
+    real, real_scan = os.listdir, os.scandir
     monkeypatch.setattr(os, "listdir", lambda p=".": listings.append(p) or real(p))
+    monkeypatch.setattr(os, "scandir", lambda p=".": listings.append(p) or real_scan(p))
     for _ in range(20):
         assert store.has_entry(first.id) and store.entry(first.id) == first
         store.vid_refs(first.members[0].vid)
