@@ -39,6 +39,7 @@ log = logging.getLogger(__name__)
 
 VaultEntryKind = Literal["full", "snapshot", "extract", "imported", "preserve", "inplace"]
 MIGRATION_JSON = "migration.json"
+THINNING_JSON = "thinning.json"     # the entries the owner thinned (store/thinning.py)
 
 
 @dataclass(frozen=True)

@@ -118,6 +118,26 @@ def test_migration_must_agree_with_the_entries(kept):
         ("migration", "full-steam-20250101-000000")]
 
 
+def test_a_fold_record_of_an_entry_the_owner_thinned_is_accepted(kept):
+    """docs/thinning.md, Recording: an entry the fold kept and thinning deleted later is in
+    state/thinning.json; fsck accepts its fold record then (and only then)."""
+    store = kept["store"]
+    migration = {"fold": {"entries": {"full-steam-20250101-000000": {"status": "verified"},
+                                      "full-steam-20250202-000000": {"status": "verified"},
+                                      "full-steam-20250303-000000": {"status": "folded"}}}}
+    (store.root / "state" / "migration.json").write_text(json.dumps(migration), "utf-8")
+    thinning = {"format": "nmsvault-thinning", "schema": 1, "state": "done", "entries": {
+        "full-steam-20250101-000000": {"status": "thinned", "when": "2026-11-20T10:00:00Z"},
+        "full-steam-20250303-000000": {"status": "thinning", "when": "2026-11-20T10:00:00Z"}}}
+    (store.root / "state" / "thinning.json").write_text(json.dumps(thinning), "utf-8")
+    assert [(p.kind, p.entry_id) for p in store.fsck().problems] == [
+        ("migration", "full-steam-20250202-000000")]
+    (store.root / "state" / "thinning.json").write_text("{damaged", "utf-8")
+    assert [(p.kind, p.entry_id) for p in store.fsck().problems] == [
+        ("migration", ""), ("migration", "full-steam-20250101-000000"),
+        ("migration", "full-steam-20250202-000000"), ("migration", "full-steam-20250303-000000")]
+
+
 def test_fsck_reports_and_repairs(kept):
     store, digest = kept["store"], kept["digest"]
     before = sorted(store.objects.digests())
