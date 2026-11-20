@@ -7,6 +7,7 @@ temp sandbox; no real save folder is touched.
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -160,7 +161,8 @@ def test_the_unrecorded_warning_points_at_the_caller(make_wgs_account, tmp_path,
         with pytest.warns(ops.OplogNotWrittenWarning) as caught:
             call()
         ours = [w for w in caught if issubclass(w.category, ops.OplogNotWrittenWarning)]
-        assert ours and ours[0].filename == __file__      # a stray ResourceWarning may come first
+        # a stray ResourceWarning may come first; the drive letter's case follows the shell
+        assert ours and os.path.normcase(ours[0].filename) == os.path.normcase(__file__)
 
 
 @pytest.mark.parametrize("make", [
