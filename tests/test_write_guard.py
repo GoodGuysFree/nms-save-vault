@@ -46,6 +46,21 @@ def test_a_write_under_the_real_folders_is_caught(event, args):
 
 
 @needs_windows_folders
+@pytest.mark.parametrize("prefix", ["\\\\?\\", "\\\\.\\", "//?/"])
+@pytest.mark.parametrize("event, tail, extra", [
+    ("os.mkdir", ("HelloGames", "NMS", "_SaveVault", "store", "tmp"), (0o777, -1)),
+    ("open", ("HelloGames", "NMS", "_SaveVault", "store", "tmp", "probe.1.part"), ("wb", 0)),
+    ("os.remove", ("HelloGames", "NMS", "_SaveVault", "store", "tmp", "probe.1.part"), (-1,)),
+])
+def test_a_long_path_under_the_real_folders_is_caught_too(prefix, event, tail, extra):
+    """The store opens its files by their long-path names (``safety.long_path``): a write by
+    such a name is under the real folders all the same. Savecraft's guard, the same as this
+    one, let a store probe through so (2026-11-20)."""
+    target = prefix + os.path.join(REAL_ROAMING, *tail)
+    assert conftest.real_write_target(event, (target, *extra))
+
+
+@needs_windows_folders
 @pytest.mark.parametrize("event, args", [
     ("open", ("{local}/NMSSaveVault/state.json", "r", 0)),          # reading is fine
     ("open", ("{local}/NMSSaveVault/state.json", "rb", 0)),

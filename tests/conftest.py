@@ -41,6 +41,13 @@ def _norm(path) -> str:
         text = os.fsdecode(path)
     except TypeError:
         return ""
+    # a long-path or device name (\\?\C:\..., \\.\C:\..., \\?\UNC\server\share\...) names the
+    # same file as the plain one: the store opens its files so (safety.long_path)
+    forward = text.replace("/", "\\")
+    if os.name == "nt" and forward[:8].upper() == "\\\\?\\UNC\\":
+        text = "\\\\" + forward[8:]
+    elif os.name == "nt" and forward[:4] in ("\\\\?\\", "\\\\.\\"):
+        text = forward[4:]
     return os.path.normcase(os.path.abspath(text))
 
 
