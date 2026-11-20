@@ -141,6 +141,36 @@ def test_version_notes_and_locks(tmp_path):
         notes.set_version_note(V(3), pair=pair, pid=PID, label="not the head")
 
 
+def test_an_entry_pin_is_kept_in_the_notes_and_cleared_by_unpinning(tmp_path):
+    notes = _notes(tmp_path)
+    notes.set_entry_pinned("full-steam-20261001-101500", True)
+    notes.set_entry_pinned("snapshot-steam-20261002-090000", True)
+    assert notes.state().pinned_entries() == {"full-steam-20261001-101500",
+                                              "snapshot-steam-20261002-090000"}
+    pin = notes.state().entries["full-steam-20261001-101500"]
+    assert pin.pinned and pin.at > 1000
+    other = Notes(OrganizerStore(tmp_path, create=False))              # another window
+    other.set_entry_pinned("full-steam-20261001-101500", False)
+    assert notes.state().pinned_entries() == {"snapshot-steam-20261002-090000"}
+    assert "full-steam-20261001-101500" not in notes.state().entries   # no empty record left
+    notes.set_entry_pinned("never-pinned", False)                      # nothing to unpin
+    raw = json.loads((tmp_path / "organizer" / NOTES).read_text(encoding="ascii"))
+    assert raw["entries"] == {"snapshot-steam-20261002-090000": {
+        "pinned": True, "at": raw["entries"]["snapshot-steam-20261002-090000"]["at"]}}
+    with pytest.raises(ValueError):
+        notes.set_entry_pinned("../outside", True)
+
+
+def test_a_damaged_entry_pin_does_not_hide_the_others(tmp_path):
+    store = OrganizerStore(tmp_path, create=True)
+    with store.transaction() as tx:
+        tx.doc(NOTES)["entries"] = {"good-1": {"pinned": True, "at": 5},
+                                    "bad-1": {"pinned": "yes", "at": 5},
+                                    "bad-2": "pinned",
+                                    "../x": {"pinned": True, "at": 5}}
+    assert read_notes(store).pinned_entries() == {"good-1"}
+
+
 def test_a_damaged_note_entry_does_not_hide_the_others(tmp_path):
     store = OrganizerStore(tmp_path, create=True)
     with store.transaction() as tx:
