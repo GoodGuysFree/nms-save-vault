@@ -70,6 +70,9 @@ class NotesState:
     save_files: Mapping[Pid, SaveNote]
     versions: Mapping[Vid, VersionNote]
     entries: Mapping[str, EntryNote] = field(default_factory=dict)
+    #: What was skipped because it is not in the expected form (a hand edit, another tool):
+    #: what the owner meant there is not known (thinning refuses then).
+    damaged: tuple[str, ...] = ()
 
     def locked_vids(self) -> frozenset[Vid]:
         """Every member of a locked version: its head and its partner."""
@@ -95,28 +98,32 @@ def read_notes(store: OrganizerStore) -> NotesState:
 
 
 def parse_notes(doc: Mapping[str, Any]) -> NotesState:
-    """The notes in ``doc``; an entry that is not in the expected form is skipped (and
-    logged) rather than taking every other note down with it."""
-    files: dict[Pid, SaveNote] = {}
-    for pid, raw in (doc.get("save_files") or {}).items():
+    """The notes in ``doc``; an entry that is not in the expected form is skipped (logged, and
+    named in ``damaged``) rather than taking every other note down with it."""
+    damaged: list[str] = []
+    files = _section(doc, "save_files", _save_note, "the note of the save file", damaged)
+    versions = _section(doc, "versions", _version_note, "the note of the version", damaged)
+    entries = _section(doc, "entries", _entry_note, "the pin of the entry", damaged)
+    return NotesState(files, versions, entries, tuple(damaged))
+
+
+def _section(doc: Mapping[str, Any], name: str, parse: Callable[[str, Any], Any], what: str,
+             damaged: list[str]) -> dict:
+    raw_section = doc.get(name)
+    if raw_section is None:
+        return {}
+    if not isinstance(raw_section, dict):
+        damaged.append(f"notes.json: '{name}' is not a list of notes")
+        log.warning("%s", damaged[-1])
+        return {}
+    out = {}
+    for key, raw in raw_section.items():
         try:
-            files[pid] = _save_note(pid, raw)
-        except (ModelError, KeyError, TypeError, ValueError) as exc:
-            log.warning("notes.json: the note of %s was skipped: %s", pid, exc)
-    versions: dict[Vid, VersionNote] = {}
-    for head, raw in (doc.get("versions") or {}).items():
-        try:
-            versions[head] = _version_note(head, raw)
-        except (ModelError, KeyError, TypeError, ValueError) as exc:
-            log.warning("notes.json: the note of version %s was skipped: %s", head[:8], exc)
-    entries: dict[str, EntryNote] = {}
-    raw_entries = doc.get("entries")
-    for entry_id, raw in (raw_entries.items() if isinstance(raw_entries, dict) else ()):
-        try:
-            entries[entry_id] = _entry_note(entry_id, raw)
-        except (AttributeError, KeyError, TypeError, ValueError) as exc:
-            log.warning("notes.json: the pin of an entry was skipped: %s", exc)
-    return NotesState(files, versions, entries)
+            out[key] = parse(key, raw)
+        except (ModelError, AttributeError, KeyError, TypeError, ValueError) as exc:
+            damaged.append(f"notes.json: {what} {str(key)[:16]} was skipped ({exc})")
+            log.warning("%s", damaged[-1])
+    return out
 
 
 class Notes:

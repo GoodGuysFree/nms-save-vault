@@ -696,6 +696,27 @@ def test_a_save_file_kept_without_its_partner_keeps_its_entry(tmp_path):
     assert reasons(plan) == {odd.id: (thinning.OTHER_FILE,), stray.id: (thinning.OTHER_FILE,)}
 
 
+def test_a_note_or_pin_that_does_not_read_stops_thinning(tmp_path):
+    """Finding 5: a damaged pin or note would read as no protection: thinning refuses."""
+    w = World(tmp_path)
+    old, _newest = _twins(w, 2)
+    with OrganizerStore(w.root, create=True).transaction() as tx:
+        tx.doc("notes.json")["entries"] = {old.id: {"pinned": "yes", "at": 5}}
+    plan = w.plan()
+    assert plan.blocked and "notes" in plan.blocked[0]
+    with pytest.raises(vstore.ThinError) as refused:
+        thinning.run_thin(w.root, plan, [old.id])
+    assert refused.value.code == "blocked" and open_vault_store(w.root).has_entry(old.id)
+    for broken in ({"versions": {old.members[0].vid: {"label": 7}}},
+                   {"save_files": {pid(P1): {"text": "x"}}}, {"entries": ["not a map"]}):
+        with OrganizerStore(w.root, create=True).transaction() as tx:
+            doc = tx.doc("notes.json")
+            for key in ("entries", "versions", "save_files"):
+                doc.pop(key, None)
+            doc.update(broken)
+        assert w.plan().blocked, broken
+
+
 # --- pins and the reminder --------------------------------------------------------------------
 
 

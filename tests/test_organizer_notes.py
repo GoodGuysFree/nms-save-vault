@@ -168,7 +168,9 @@ def test_a_damaged_entry_pin_does_not_hide_the_others(tmp_path):
                                     "bad-1": {"pinned": "yes", "at": 5},
                                     "bad-2": "pinned",
                                     "../x": {"pinned": True, "at": 5}}
-    assert read_notes(store).pinned_entries() == {"good-1"}
+    state = read_notes(store)
+    assert state.pinned_entries() == {"good-1"}
+    assert len(state.damaged) == 3 and all("was skipped" in d for d in state.damaged)  # named
 
 
 def test_a_damaged_note_entry_does_not_hide_the_others(tmp_path):

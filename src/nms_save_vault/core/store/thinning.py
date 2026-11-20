@@ -307,6 +307,10 @@ def _read_facts(root: Path, store: VersionStore, *, check: bool) -> _Facts:
     elif any(orgstore.NOTES in p for p in org.problems):
         blocked.append("The vault's notes (organizer/notes.json) cannot be read, so what you "
                        "pinned is not known; nothing is thinned until they can.")
+    elif notes.damaged:
+        blocked.append(f"{len(notes.damaged)} of the vault's notes or pins (organizer/notes.json) "
+                       "do not read, so what you meant to keep is not known; nothing is thinned "
+                       f"until they are fixed or removed ({notes.damaged[0]}).")
     path = orgstore.store_root(root) / opjournal.OPS
     ops = dict(opjournal.read_ops_at(path))
     if opjournal.newer_records_at(path):
