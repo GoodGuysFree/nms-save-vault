@@ -169,6 +169,17 @@ free space), and never touches your live saves.
   that changed after the fold, your hand-made backup folders, the live folders and the
   pre-upgrade copy are never touched. Every backup stays listed, and Undo the vault upgrade
   still works while the copy exists. If it is interrupted, run it again.
+* **Thin the vault...** (the button by the Backups list, or Tools; `nmsvault-cli store thin`)
+  deletes old backups by a schedule, only when you ask. Of each save file it keeps every save
+  of the last 7 days, then one a day until 30 days, one a week until 6 months, one a month after
+  that, and always the newest; what you pinned, named or wrote a note on stays, and so does what
+  an undo still needs ([docs/thinning.md](docs/thinning.md)). It first lists every backup that
+  would go (date, kind, its saves, the space it frees, why), each ticked, and what stays that
+  the schedule alone would drop; nothing is deleted until you press **Delete N entries**
+  (`--dry-run` only lists, the command asks y/N unless `--yes`). **Pin** (right-click a backup
+  in the Backups list, or a version in History) keeps one for good. **Tools > Settings...** sets
+  a size at which the status bar reminds you to thin; the reminder never deletes anything. A run
+  that stopped part-way is finished at the next start.
 * **Importing a vault that has a version store** merges it: its stored files and backups are
   copied in and checked, and what you already have is skipped, so importing the same vault again
   (for example a copy on a USB drive) adds only what is new. A backup whose name you already use
@@ -447,7 +458,7 @@ offered that cannot work, and nothing sensible is missing.
 | **A live save folder** | Back it up · make it the active write target · copy a save into one of its slots · restore the newest snapshot of the whole folder (panic restore) |
 | **A live slot** | **Replace it with a save from anywhere** · copy it into another live slot · extract it to the vault · **the steps to empty it yourself** (after offering to keep a copy in the vault) · show its history |
 | **One of the two saves in a live slot** | All of the above, plus **Promote** — make *that* save the one the game loads |
-| **A backup** (full / snapshot / imported / in-place) | Restore all of it slot by slot (the panic restore: slots it lacks are left alone, nothing is deleted) |
+| **A backup** (full / snapshot / imported / in-place) | Restore all of it slot by slot (the panic restore: slots it lacks are left alone, nothing is deleted) · **Pin** / Unpin it (thinning never deletes a pinned backup) |
 | **A single-slot extract** | Put it back in its own slot · **or** copy it into any live slot you choose |
 | **A slot inside a backup, or either save in it** | Copy it into the same-numbered live slot · copy it into a slot you choose · extract it to the vault · show its history |
 
@@ -574,6 +585,7 @@ nmsvault-cli lineage list                    # corrections: also set-parent, com
                                          #   combine, uncombine, split, unsplit, undo
 nmsvault-cli store upgrade                   # one-time vault upgrade; also fold, copy-in,
                                          #   free-old-folders, rollback, fsck
+nmsvault-cli store thin [--dry-run] [--yes]  # delete old backups by the schedule (lists them, then asks)
 nmsvault-cli index status                    # the content index; also build, show, changes
 nmsvault-cli selftest                        # read-only: does the app understand every save?
 ```
@@ -655,7 +667,7 @@ The vault lives outside `st_<id>`, so it is never scanned by the game or synced 
 ## Status
 
 Working. Core format/crypto and all operations are verified against the real save files and
-in a temp sandbox (3317 tests). Xbox / Game Pass saves are supported for reading **and**
+in a temp sandbox (3375 tests). Xbox / Game Pass saves are supported for reading **and**
 writing, including Steam ↔ Xbox moves (validated in the real game) — verified against a real install (reads) and synthetic `wgs` fixtures
 (writes). A full file-copy safety backup of the live folder was made before development
 (`C:\Devel\NMS-SaveBackup-SAFETY-2026-06-24`). The Organizer is in (see above); a

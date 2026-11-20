@@ -484,7 +484,7 @@ class App(tk.Tk):
         self._closing = False                # a close waits for the running operation
         self._finishing: tk.Toplevel | None = None
         self.thin_window: ThinWindow | None = None
-        self._refresh_gen = 0               # the newest listing asked for in the worker
+        self._refresh_gen = 0                # the newest listing asked for in the worker
         self._entries: list | None = None    # the BACKUPS pane's rows as last listed
         self._pinned: frozenset[str] = frozenset()   # the backups pinned, as last listed
         self._vault_bytes: int | None = None  # the store's size, read while the reminder is on
@@ -3477,6 +3477,18 @@ FREE_LABEL = "Free old backup folders..."
 FINISH_FREE_LABEL = "Finish freeing old backup folders..."
 THIN_LABEL = "Thin the vault..."
 THIN_TITLE = "Thin the vault"
+CHOOSE_VAULT_LABEL = "Choose vault folder..."
+BACKUP_ALL_LABEL = "Back up all live folders now"
+AUTO_UPDATE_LABEL = "Check for updates automatically"
+UNDO_CLASSIC_LABEL = "Undo the last change to the active live folder"
+UNDO_ORGANIZER_LABEL = "Undo the last move (as the Done bar's Undo)"
+#: The Live menu entries that need a slot, and what they say about it on the Organizer tab
+#: while none is selected there.
+SLOT_MENU_LABELS = ("Extract a slot", "Empty a slot (steps)...", "Promote")
+SLOT_MENU_TIP = ("Needs a live slot: pick one on the Organizer's live board, or use the "
+                 "Live saves and backups tab.")
+_MENU_KEYS = ("<Alt-Key>", "<Alt-KeyRelease>", "<Key-Alt_L>", "<Key-Alt_R>",
+              "<KeyRelease-Alt_L>", "<KeyRelease-Alt_R>", "<Key-F10>", "<KeyRelease-F10>")
 
 
 @dataclass(frozen=True)
@@ -3493,9 +3505,11 @@ class _Listing:
 def _vault_size(vault_root: Path) -> int | None:
     """The store's size for the reminder; None for a vault of the old layout or one that cannot
     be read now (the listing says why)."""
-    from .core.store import thinning
+    from .core.store import thinning, vault_mode
 
     try:
+        if vault_mode(vault_root) != "store":
+            return None
         return thinning.vault_size(vault_root)
     except Exception:  # noqa: BLE001 - no reminder is a smaller status line, not a failure
         log.info("the vault's size could not be read for the reminder", exc_info=True)
@@ -3512,18 +3526,7 @@ def _pinned_entries(vault_root: Path) -> frozenset[str]:
     except Exception:  # noqa: BLE001 - the listing must still show
         log.warning("the pinned backups could not be read", exc_info=True)
         return frozenset()
-CHOOSE_VAULT_LABEL = "Choose vault folder..."
-BACKUP_ALL_LABEL = "Back up all live folders now"
-AUTO_UPDATE_LABEL = "Check for updates automatically"
-UNDO_CLASSIC_LABEL = "Undo the last change to the active live folder"
-UNDO_ORGANIZER_LABEL = "Undo the last move (as the Done bar's Undo)"
-#: The Live menu entries that need a slot, and what they say about it on the Organizer tab
-#: while none is selected there.
-SLOT_MENU_LABELS = ("Extract a slot", "Empty a slot (steps)...", "Promote")
-SLOT_MENU_TIP = ("Needs a live slot: pick one on the Organizer's live board, or use the "
-                 "Live saves and backups tab.")
-_MENU_KEYS = ("<Alt-Key>", "<Alt-KeyRelease>", "<Key-Alt_L>", "<Key-Alt_R>",
-              "<KeyRelease-Alt_L>", "<KeyRelease-Alt_R>", "<Key-F10>", "<KeyRelease-F10>")
+
 
 HELP_TEXT = """NMS Save Vault - Help
 
@@ -3544,7 +3547,8 @@ more) are read from the saves. Chips, Find, sorting and a column chooser narrow 
   info file is converted, the game takes ownership at your first save there, and you
   confirm once because it is another account.
 - History lists a save file's versions and what changed between them. Compare puts two
-  versions side by side.
+  versions side by side. Pin (the button, or right-click a version) keeps a version:
+  thinning never deletes it.
 - Notes keeps a note per save file and a label, comment and lock per version. They live in
   the vault, never in the save. A Pin stops the app suggesting that save's slot for
   another save.
@@ -3556,6 +3560,8 @@ more) are read from the saves. Chips, Find, sorting and a column chooser narrow 
   an upgraded vault.
 - Tools > Free old backup folders: gives back the disk space of the old backup folders
   once they are in the version store.
+- Thin the vault... (by the backups, and in Tools): deletes old backups by a schedule, only
+  when you ask. See BUTTONS.
 - Selftest (command line: nmsvault-cli selftest): reads every live save and vault version in
   memory, writes nothing and reports what it could not understand. A save written by a
   newer game than the app knows is flagged and never moved.
@@ -3648,6 +3654,18 @@ BUTTONS
 - Tools > Free old backup folders: after the vault upgrade, deletes the old backup folders
   that are now in the version store (after a full check; it shows what it will free and
   asks first). Every backup stays listed.
+- Thin the vault... (right of "Save file", above the backups; also in Tools): deletes old
+  backups by a schedule, and only when you ask. Of each save file it keeps every save of
+  the last 7 days, then one a day until 30 days, one a week until 6 months and one a month
+  after that, and always the newest. What you pinned, named or wrote a note on stays, and
+  so does what an undo still needs. The window lists every backup that would go (date,
+  kind, its saves, the space it frees, why it goes), each one ticked: untick one to keep
+  it. Below it are the backups kept although the schedule would let them go, and why.
+  Nothing is deleted until you press "Delete N entries"; then it says what went and what
+  stayed, and why. A run that stopped part way is finished at the next start.
+- Tools > Settings...: the size at which the status bar reminds you to thin the vault
+  (0 or empty: no reminder). The reminder only points at Thin the vault...; it never
+  deletes anything.
 - Rescan: Re-detect live save folders (new Steam account, new Xbox account) and add them
   to the LIVE SAVES list. Your manual entries are left untouched.
 - Discover: Scan the NMS folder for existing backups and add any new ones found. A live
@@ -3696,6 +3714,8 @@ MARKERS AND WORDS
 - Only outside the vault: kept only in a folder you made yourself that the app
   catalogues in place - not copied into the vault.
 - Pin: a pinned save is never suggested as the one to replace when a move needs a slot.
+- (pinned) after a backup in the Backups list or a version in History: thinning never
+  deletes it. Right-click it to Unpin.
 - * and moved (Live saves and backups tab): * = the save the game loads; moved = the file
   was moved here from another slot.
 
@@ -3708,7 +3728,8 @@ Every row offers exactly what makes sense for it:
 - one of the two saves in a live slot: the same, plus Promote to make that one the save
   the game loads;
 - a backup: restore all of it (which replaces the live folder), and for a single-slot
-  extract, also copy that slot into any live slot you choose;
+  extract, also copy that slot into any live slot you choose; Pin or Unpin it (thinning
+  never deletes a pinned backup);
 - a slot inside a backup, or either save in it: copy it straight into the same-numbered
   live slot, copy it into a live slot you choose, or extract it to the vault.
 Any slot, or either save in it, in either pane also offers "Show this save's history",

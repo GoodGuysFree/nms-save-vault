@@ -164,6 +164,34 @@ Where this design was silent, the choice that keeps more:
   the reminder size in Settings and the status-bar line; `nmsvault-cli store thin [--dry-run]`.
 - **Savecraft:** the same action on the History page through the API; Pin / Unpin there.
 
+### As built (NMS Save Vault)
+
+- **The list window** (`ui/thinning.py`), from the button right of "Save file:" above the
+  Backups list and from Tools: plans in the UI worker; one ticked row per entry that goes (date,
+  kind, its saves, the space it frees alone, why); a click or Space unticks; below, the entries
+  kept that the schedule alone would drop, with why. "Delete N entries (frees X)" counts the
+  ticked rows with `ThinPlan.freed_bytes`. A blocked plan, or one that cannot be made (an
+  old-layout vault), says why and offers no Delete. The run goes in the worker with a progress
+  bar and Stop (between entries); then each row reads deleted or kept (and why) and the window
+  says what went and what was left. Esc and Cancel close it, never while it deletes. The
+  Backups list and the status bar read the vault again after a run.
+- **Pins:** right-click a backup: "Pin (thinning never deletes it)" / "Unpin"; a pinned row reads
+  "<id>  (pinned)". In History the version note's lock is the pin: its button reads Pin /
+  Unpin, a right-click on a version offers the same, and a pinned row's note starts
+  "(pinned)". Both go through the core's pin functions in the worker, so a read-only vault
+  refuses them; the refusal is said (a message box; the Organizer's alert bar for History).
+- **The reminder:** Tools > Settings... holds the size in GB (0 or empty: off). While it is on,
+  the listing worker reads `vault_size`; past the size, the status bar starts with "The vault
+  holds X, past the Y you set: Thin the vault... by the Backups list shows what could go."
+- **At start**, and when another vault is chosen, `finish_thinning` runs in the worker when a
+  run is pending; it says what it finished, and a failure is said, never fatal.
+- **"Thinned on <date>"** is in the operations log (History of this slot..., Show in history):
+  the record names an entry's operation, not its versions, so a move whose backup went reads
+  "(its backup was thinned on <date>)".
+- **CLI** `store thin`: prints what goes and what stays against the schedule, then y/N (`--yes`
+  skips it, `--dry-run` stops before it). A blocked plan exits 1, and so does a declined prompt,
+  as the other store commands do. A pending run is finished first (not on `--dry-run`).
+
 ## Tests the core needs (made-up vaults only)
 
 - the schedule: buckets at 7 days, 30 days, 6 months; the newest of each playthrough kept; a
