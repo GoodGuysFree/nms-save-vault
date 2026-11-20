@@ -43,6 +43,7 @@ from .ui.organizer.ops import OpsLogWindow, PlanDialog, StepsWindow
 from .ui.organizer.panic import PanicDialog
 from .ui.organizer.vaultwin import VaultEnv, VaultWindow, needs_attention
 from .ui.organizer.view import OrganizerView
+from .ui.thinning import ThinWindow
 from .ui.themeaware import ThemeRegistry
 from .ui.worker import UiWorker
 from .ui.dpi import px, pxs
@@ -479,7 +480,8 @@ class App(tk.Tk):
         self._classic_ops = 0                # operations running behind the wait dialog
         self._closing = False                # a close waits for the running operation
         self._finishing: tk.Toplevel | None = None
-        self._refresh_gen = 0                # the newest listing asked for in the worker
+        self.thin_window: ThinWindow | None = None
+        self._refresh_gen = 0               # the newest listing asked for in the worker
         self._entries: list | None = None    # the BACKUPS pane's rows as last listed
         self._store_problem: str | None = None   # why the store could not be listed
         self._game_running: object = _CHECKING
@@ -660,6 +662,7 @@ class App(tk.Tk):
         tools.add_command(label="Vault upgrade...", command=self.open_vault_window, underline=0)
         free_label = self._free_menu_label()
         tools.add_command(label=free_label, command=self.on_free_old_folders, underline=0)
+        tools.add_command(label=THIN_LABEL, command=self.on_thin, underline=0)
         tools.add_command(label="Play time...", command=self.on_playtime, underline=0)
         tools.add_command(label="Check for updates...", command=self.on_check_updates,
                           underline=0)
@@ -936,6 +939,15 @@ class App(tk.Tk):
         self.vault_changed(mode_changed=True)
         _showinfo(title, holder["result"].message)
 
+    def on_thin(self) -> ThinWindow:
+        """Thin the vault... (docs/thinning.md): the list of what the schedule lets go, planned
+        in the worker; nothing is deleted until the owner presses Delete there. A run ends in
+        the one refresh hook: the Backups list and the status bar read the vault again."""
+        self.thin_window = ThinWindow(self, worker=self.worker, themed=self.themed,
+                                      vault_root=self.vault.root,
+                                      on_changed=lambda: self.vault_changed())
+        return self.thin_window
+
     def _offer_interrupted_undo(self) -> None:
         if self._free_menu_label().startswith("Finish"):
             self.status.set("Freeing old backup folders stopped before its end: "
@@ -1185,6 +1197,8 @@ class App(tk.Tk):
         )
         self.history_combo.pack(side=tk.LEFT, padx=pxs(4, 0))
         self.history_combo.bind("<<ComboboxSelected>>", self._on_history_changed)
+        self.thin_button = ttk.Button(filter_row, text=THIN_LABEL, command=self.on_thin)
+        self.thin_button.pack(side=tk.RIGHT)
         # Which tree the toolbar acts on: whichever the user last selected in.
         self._active_tree = self.live_tree
         # Backups start newest-first; clicking a heading re-sorts.
@@ -3362,6 +3376,7 @@ _OS_ALT_KEYS = ("<Alt-Key-F4>", "<Alt-Key-space>")
 _CHECKING = "checking"                  # the game probe has not answered yet
 FREE_LABEL = "Free old backup folders..."
 FINISH_FREE_LABEL = "Finish freeing old backup folders..."
+THIN_LABEL = "Thin the vault..."
 CHOOSE_VAULT_LABEL = "Choose vault folder..."
 BACKUP_ALL_LABEL = "Back up all live folders now"
 AUTO_UPDATE_LABEL = "Check for updates automatically"
