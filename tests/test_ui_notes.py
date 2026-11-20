@@ -106,7 +106,21 @@ def test_a_versions_label_comment_and_lock(window, world, gui_app):
     note = world.organizer.notes.version_note(oldest)
     assert (note.label, note.comment, note.locked) == ("before the Atlas", "Good state.", True)
     window.set_model(world.refresh())
-    assert "before the Atlas  [locked]" in window.versions.set(oldest, "label")
+    assert "before the Atlas  (pinned)" in window.versions.set(oldest, "label")
+
+
+def test_the_box_says_pin(window):
+    """GGF 2026-11-20: lock is called pin everywhere (thinning never deletes a pinned one)."""
+    texts = []
+
+    def walk(widget):
+        for child in widget.winfo_children():
+            if child.winfo_class() == "TCheckbutton":
+                texts.append(str(child.cget("text")))
+            walk(child)
+    walk(window)
+    assert "Pin this version (thinning never deletes it)" in texts
+    assert not any("lock" in t.lower() for t in texts)
 
 
 def test_the_label_stops_at_80_characters_and_the_counter_warns(window):

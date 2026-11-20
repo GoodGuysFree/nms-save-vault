@@ -574,7 +574,7 @@ nmsvault-cli saves [--sort play_time] [--live-only] [--find TEXT] [--json]   # e
 nmsvault-cli versions "Main Save" [--all]   # its versions (key ones; --all every one), or a slot: S9
 nmsvault-cli board                           # the 15 slots of every live folder
 nmsvault-cli note S9 --set "Next: Atlas"     # a save file's note (--append, --history);
-                                         #   a version's: --label/--comment/--lock
+                                         #   a version's: --label/--comment/--pin
 nmsvault-cli pin S9 [--off]                  # never suggest that save's slot for another save
 nmsvault-cli scan                            # record what the live slots hold now
 nmsvault-cli organizer bootstrap [--dry-run] # read in the history of an existing vault
@@ -667,7 +667,7 @@ The vault lives outside `st_<id>`, so it is never scanned by the game or synced 
 ## Status
 
 Working. Core format/crypto and all operations are verified against the real save files and
-in a temp sandbox (3388 tests). Xbox / Game Pass saves are supported for reading **and**
+in a temp sandbox (3396 tests). Xbox / Game Pass saves are supported for reading **and**
 writing, including Steam ↔ Xbox moves (validated in the real game) — verified against a real install (reads) and synthetic `wgs` fixtures
 (writes). A full file-copy safety backup of the live folder was made before development
 (`C:\Devel\NMS-SaveBackup-SAFETY-2026-06-24`). The Organizer is in (see above); a

@@ -214,7 +214,7 @@ class NotesWindow(tk.Toplevel):
         bottom = ttk.Frame(this)
         bottom.pack(fill=tk.X, pady=pxs(8, 0))
         self.lock_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(bottom, text="Lock this version (kept: never deleted)",
+        ttk.Checkbutton(bottom, text="Pin this version (thinning never deletes it)",
                         variable=self.lock_var).pack(side=tk.LEFT)
         self.version_save = ttk.Button(bottom, text="Save", command=self.save_version)
         self.version_save.pack(side=tk.RIGHT)
@@ -351,7 +351,7 @@ class NotesWindow(tk.Toplevel):
         for row in self.model.versions(self.pid):
             text = row.label or next(iter(row.comment.splitlines()), "")
             if row.locked:
-                text = f"{text}  [locked]".strip()
+                text = f"{text}  (pinned)".strip()
             self.versions.insert("", "end", row.head, text=f"#{numbers[row.head]}",
                                  values=(f"#{numbers[row.head]}  {local_time(row.saved_at)}",
                                          play_time(row.play_time), text),

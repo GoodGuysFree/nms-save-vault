@@ -123,7 +123,7 @@ src/nms_save_vault/
       journal.py  live journal: observe (obs records), replay -> edges, events, op outcomes
       recorder.py op records (LineageRecorder) and the one look a backup takes
       bootstrap.py history from before recording: backups (seen in backups) + old oplog
-      notes.py    save-file notes with every revision, pins, version labels/comments/locks
+      notes.py    save-file notes with every revision, pins, version labels/comments/pins
       lineage.py  lineage.json: owner corrections, Combine aliases, the bootstrap record
       readmodel.py lines, version rows, live board, events, sort/filter; JSON with tokens
       locator.py  where a version's bytes are (VersionLocator, VaultLocator, Location)
@@ -148,7 +148,7 @@ src/nms_save_vault/
       live.py     LiveArea: one or two live folders as canvas lists, markers, refill warning
       detail.py   DetailPane: save file summary, version card, empty-slot card, Where, Notes
       words.py    shared words: names, #n numbers, how a version is linked
-      notes.py    NotesWindow: save-file note + revisions, version label/comment/lock; pins
+      notes.py    NotesWindow: save-file note + revisions, version label/comment/pin; pins
       view.py     OrganizerView: the tab assembled; scans in the worker, selection hub, alerts
       move.py, ops.py, pick.py, lanes.py, panic.py  Move to live, Swap, Keep, Undo and their pickers
       history.py, histhooks.py, compare.py  History and Compare windows

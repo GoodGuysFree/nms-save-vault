@@ -200,8 +200,8 @@ def test_note_and_pin(world, capsys):
     assert out == "Main run.\nNext: Atlas path.\n"
     _, out = _run(capsys, "note", "S9", "--history")
     assert "revision 1" in out and "revision 2 (now)" in out
-    _, out = _run(capsys, "note", "S9", "--label", "before the Atlas", "--lock")
-    assert "label 'before the Atlas', locked" in out
+    _, out = _run(capsys, "note", "S9", "--label", "before the Atlas", "--pin")
+    assert "label 'before the Atlas', pinned" in out
     _, out = _run(capsys, "pin", "S9")
     assert "pinned" in out
     _, out = _run(capsys, "saves")
@@ -520,10 +520,14 @@ def test_lineage_list_undo_and_notes_about_what_was_left_out(world, capsys):
 
 
 def test_note_set_with_lock_applies_both(world, capsys):
+    """--lock is --pin's older name: it still works (GGF 2026-11-20: lock is called pin)."""
     _, out = _run(capsys, "note", "S9", "--set", "Next: Atlas path", "--lock")
-    assert "locked" in out and "Note saved" in out
+    assert "pinned" in out and "locked" not in out and "Note saved" in out
     assert "Next: Atlas path" in _run(capsys, "note", "Main Save")[1]
-    assert "locked" in _run(capsys, "versions", "Main Save", "--all")[1]
+    versions = _run(capsys, "versions", "Main Save", "--all")[1]
+    assert "pinned" in versions and "locked" not in versions
+    _, out = _run(capsys, "note", "S9", "--unpin")
+    assert "not pinned" in out
 
 
 def test_a_slot_is_accepted_as_s9_or_steam_9_by_every_organizer_command(world, capsys):

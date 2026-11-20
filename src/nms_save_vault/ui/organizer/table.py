@@ -173,7 +173,7 @@ def version_values(row: VersionRow, live_labels: dict, view=None, active: bool =
     if "gone" in row.flags:
         words.append("no copy left")
     if row.locked:
-        words.append("locked")
+        words.append("pinned")
     live = " ".join(live_labels.get(t, "") for t in row.live_in).strip()
     return {
         **factsui.facts_values(view, active=active),

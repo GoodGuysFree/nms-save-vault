@@ -92,7 +92,7 @@ def compare_facts(model: ReadModel, pid: str, a: VersionRow, b: VersionRow) -> l
         FactRow("Mode", a.mode or a.difficulty, b.mode or b.difficulty),
         FactRow("Where", where_text(a, line), where_text(b, line)),
         FactRow("Label", a.label, b.label),
-        FactRow("Locked", "yes" if a.locked else "no", "yes" if b.locked else "no"),
+        FactRow("Pinned", "yes" if a.locked else "no", "yes" if b.locked else "no"),
     ]
     rows += [FactRow(name, read(a.facts), read(b.facts)) for name, read in CONTENT]
     return rows

@@ -95,7 +95,7 @@ def line_summary(model: ReadModel, pid: str) -> list[Segment]:
     if tips:
         versions += "; tips: " + ", ".join(f"#{numbers[r.head]}" for r in tips[:6])
     if line.locked_count:
-        versions += f"; {line.locked_count} locked"
+        versions += f"; {line.locked_count} pinned"
     if line.gone_count:
         versions += f"; {line.gone_count} with no copy left"
     out += _row("Versions", (versions, ()))
@@ -172,7 +172,7 @@ def version_card(model: ReadModel, pid: str, head: str) -> list[Segment]:
     if row.comment:
         out += _row("Comment", (row.comment, ("note",)))
     if row.locked:
-        out += _row("Locked", ("kept: never deleted", ()))
+        out += _row("Pinned", ("thinning never deletes it", ()))
     events = [e for e in model.events(pid) if head in e.vids]
     for n, event in enumerate(events[:12]):
         out += _row("Events" if n == 0 else "",

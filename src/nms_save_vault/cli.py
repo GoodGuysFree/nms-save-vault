@@ -30,7 +30,7 @@ Examples:
     nmsvault-cli versions "Main Save" [--all]     # or a live slot: S9, X4
     nmsvault-cli board
     nmsvault-cli note "Main Save" --set "Next: Atlas path"
-    nmsvault-cli note S9 --label "before the Atlas" --lock
+    nmsvault-cli note S9 --label "before the Atlas" --pin
     nmsvault-cli pin S9 [--off]
     nmsvault-cli history "Main Save" [--key | --all] [--json]   # the recorded tree, in lanes
     nmsvault-cli lineage comes-from <version> <parent> | --none  # your word over the record
@@ -675,7 +675,9 @@ def cmd_versions(args) -> int:
     for r in rows:
         parent = _METHOD_WORDS.get(r.parent_method or "", "") if r.parent else "by date"
         where = r.locations[0].label if r.locations else ("gone" if "gone" in r.flags else "-")
-        flags = sorted(r.flags & {"live", "tip", "fork", "edited", "locked", "placed", "evicted"})
+        flags = sorted("pinned" if f == "locked" else f      # a version's pin (GGF 2026-11-20)
+                       for f in r.flags & {"live", "tip", "fork", "edited", "locked", "placed",
+                                           "evicted"})
         flags += [f"edited-by:{a}" for a in r.edited_by]
         notes = " ".join(filter(None, [r.label, ",".join(flags)]))
         print(f"{_fmt_ts(r.saved_at):<18}{_fmt_playtime(r.play_time):<9}{r.head[:8]:<10}"
@@ -719,7 +721,7 @@ def cmd_note(args) -> int:
             note = org.notes.set_version_note(
                 row.head, pair=row.pair, pid=row.pid, label=args.label, comment=args.comment,
                 locked=True if args.lock else (False if args.unlock else None))
-            state = "locked" if note.locked else "not locked"
+            state = "pinned" if note.locked else "not pinned"
             label = f"label {note.label!r}" if note.label else "no label"
             print(f"Version {row.head[:8]}: {label}, {state}")
             if args.set is None and args.append is None:
@@ -1056,7 +1058,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.set_defaults(func=cmd_board)
 
     s = sub.add_parser("note", help="show or write the note of a save file or a version")
-    s.add_argument("ref", help="a save file, or with --label/--comment/--lock a version")
+    s.add_argument("ref", help="a save file, or with --label/--comment/--pin a version")
     group = s.add_mutually_exclusive_group()
     group.add_argument("--set", help="replace the save file's note")
     group.add_argument("--append", help="add a line to the save file's note")
@@ -1064,8 +1066,11 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--label", help="a version's label")
     s.add_argument("--comment", help="a version's comment")
     lock = s.add_mutually_exclusive_group()
-    lock.add_argument("--lock", action="store_true", help="mark the version to keep")
-    lock.add_argument("--unlock", action="store_true", help="take the keep mark off the version")
+    # --lock / --unlock: the older names, still taken (GGF 2026-11-20: lock is called pin)
+    lock.add_argument("--pin", "--lock", dest="lock", action="store_true",
+                      help="pin the version: thinning never deletes it")
+    lock.add_argument("--unpin", "--unlock", dest="unlock", action="store_true",
+                      help="take the version's pin off")
     s.set_defaults(func=cmd_note)
 
     s = sub.add_parser("pin", help="never suggest a save file's slot for another save")
