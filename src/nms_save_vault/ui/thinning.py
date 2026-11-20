@@ -9,13 +9,16 @@ a widget; progress is polled, not pushed.
 """
 from __future__ import annotations
 
+import logging
 import threading
 import tkinter as tk
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from tkinter import ttk
 from types import SimpleNamespace
 
+from ..core.operations import OperationError
 from ..core.store import thinning
 from .dialogs import cap_minsize, focus_first, place_over, tab_last
 from .dpi import fit_to_content, px, pxs
@@ -23,6 +26,8 @@ from .organizer.ops import _Dialog
 from .redact import RedactingTreeview, set_label
 from .themeaware import ThemeRegistry
 from .worker import UiWorker, weak
+
+log = logging.getLogger(__name__)
 
 TITLE = "Thin the vault"
 SCHEDULE_TEXT = ("Old backups go by your schedule: every save of the last 7 days, then one a day "
@@ -32,6 +37,9 @@ SCHEDULE_TEXT = ("Old backups go by your schedule: every save of the last 7 days
                  "you press Delete.")
 NOTHING_TEXT = "Nothing to thin: the schedule keeps every backup."
 TICKED, UNTICKED, DELETED, LEFT = "[x]", "[ ]", "deleted", "kept"
+UNFINISHED = "stopped"
+UNFINISHED_WHY = "its deletion stopped part-way; it is finished at the next start"
+NOT_REACHED = "not deleted: the run stopped before it"
 #: How an entry's kind reads (the owner's words: full backup, snapshot, preserve).
 KINDS = {"full": "full backup"}
 GO_COLUMNS = (("when", "Date", 130, "w"), ("kind", "Kind", 90, "w"),
@@ -97,10 +105,42 @@ def plan_job(vault_root: Path) -> thinning.ThinPlan:
     return thinning.plan_thin(vault_root)
 
 
+@dataclass(frozen=True)
+class Stopped:
+    """A run that stopped on an error part-way, and what the thinning record says it did to the
+    chosen entries before that."""
+
+    error: BaseException
+    chosen: tuple[str, ...]
+    thinned: tuple[str, ...]          # deleted before the stop
+    unfinished: tuple[str, ...]       # being deleted when it stopped: finished at the next start
+    freed_bytes: int
+
+
 def run_job(vault_root: Path, plan: thinning.ThinPlan, chosen: list[str], box: SimpleNamespace,
-            cancel: threading.Event) -> thinning.ThinResult:
-    return thinning.run_thin(vault_root, plan, chosen,
-                             progress=lambda p: setattr(box, "progress", p), cancel=cancel)
+            cancel: threading.Event) -> thinning.ThinResult | Stopped:
+    try:
+        return thinning.run_thin(vault_root, plan, chosen,
+                                 progress=lambda p: setattr(box, "progress", p), cancel=cancel)
+    except Exception as exc:  # noqa: BLE001 - shown with what went before it (_stopped)
+        record = thinning.thinned_entries(vault_root)
+        done = tuple(i for i in chosen if i in record and record[i].done)
+        return Stopped(exc, tuple(chosen), done,
+                       tuple(i for i in chosen if i in record and not record[i].done),
+                       sum(record[i].bytes for i in done))
+
+
+def stopped_text(s: Stopped) -> str:
+    """What a run that stopped part-way did before it stopped."""
+    n = len(s.thinned)
+    lines = [f"Stopped before the end: {n} {'backup' if n == 1 else 'backups'} deleted, "
+             f"{size_text(s.freed_bytes)} freed." if n
+             else "Stopped before the end: nothing was deleted."]
+    if s.unfinished:
+        m = len(s.unfinished)
+        lines.append(f"{m} {'backup was' if m == 1 else 'backups were'} being deleted when it "
+                     "stopped; that is finished at the next start.")
+    return "\n".join(lines)
 
 
 # --- the window ----------------------------------------------------------------------------------
@@ -334,7 +374,10 @@ class ThinWindow(_Dialog):
         set_label(self.status, "")
         self.cancel_button.state(["!disabled"])
 
-    def _ran(self, result: thinning.ThinResult) -> None:
+    def _ran(self, result: thinning.ThinResult | Stopped) -> None:
+        if isinstance(result, Stopped):
+            self._stopped(result)
+            return
         if not self.winfo_exists():
             self._changed()
             return
@@ -349,6 +392,28 @@ class ThinWindow(_Dialog):
                 self.tree.set(iid, "why", why)
         set_label(self.result, result_text(result, self.plan))
         self._end("")
+        self._changed()
+
+    def _stopped(self, s: Stopped) -> None:
+        """Every chosen row says what became of it: deleted, being deleted (finished at the
+        next start), or not reached; the result says how many went; the error is said."""
+        if not isinstance(s.error, OperationError):
+            log.error("thinning stopped part-way", exc_info=s.error)
+        if self.winfo_exists():
+            self._idle()
+            for iid in s.chosen:
+                if not self.tree.exists(iid):
+                    continue
+                if iid in s.thinned:
+                    self.tree.item(iid, text=DELETED, tags=("off",))
+                elif iid in s.unfinished:
+                    self.tree.item(iid, text=UNFINISHED, tags=())
+                    self.tree.set(iid, "why", UNFINISHED_WHY)
+                else:
+                    self.tree.item(iid, text=LEFT, tags=())
+                    self.tree.set(iid, "why", NOT_REACHED)
+            set_label(self.result, stopped_text(s))
+            self._end(str(s.error) or type(s.error).__name__)
         self._changed()
 
     def _run_failed(self, error: BaseException) -> None:

@@ -178,7 +178,10 @@ Where this design was silent, the choice that keeps more:
   ticked rows with `ThinPlan.freed_bytes`. A blocked plan, or one that cannot be made (an
   old-layout vault), says why and offers no Delete. The run goes in the worker with a progress
   bar and Stop (between entries); then each row reads deleted or kept (and why) and the window
-  says what went and what was left. Esc and Cancel close it, never while it deletes. The
+  says what went and what was left. A run that stops on an error part-way (a file held open,
+  a manifest that cannot be read, a busy vault) still says, from the thinning record, which
+  rows went, which one stopped part-way (finished at the next start) and which it did not
+  reach; the error then says "the rest is not thinned", never "nothing". Esc and Cancel close it, never while it deletes. The
   Backups list and the status bar read the vault again after a run.
 - **Pins:** right-click a backup: "Pin (thinning never deletes it)" / "Unpin"; a pinned row reads
   "<id>  (pinned)". In History the version note's lock is the pin: its button reads Pin /

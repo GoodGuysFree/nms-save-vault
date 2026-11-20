@@ -610,6 +610,29 @@ def test_no_object_goes_while_a_manifest_cannot_be_read(tmp_path, monkeypatch):
     assert store.fsck().ok and shared <= set(store.objects.digests())
 
 
+def test_a_manifest_unreadable_part_way_stops_the_run_without_saying_nothing_went(tmp_path,
+                                                                                monkeypatch):
+    """Review finding 4: once one entry went, the stop must not say nothing is thinned."""
+    w = World(tmp_path)
+    first, second, _newest = _twins(w, 3)
+    plan = w.plan()
+    assert ids(plan.candidates) == {first.id, second.id}
+    gone = []
+
+    def progress(p):
+        if p.done == 1:
+            gone.append(1)                  # the first went; a manifest cannot be read now
+    monkeypatch.setattr(versionstore.VersionStore, "unreadable_manifests",
+                        lambda self: {f"{_newest.id}.json": "held"} if gone else {})
+    with pytest.raises(vstore.ThinError) as stopped:
+        thinning.run_thin(w.root, plan, [first.id, second.id], progress=progress)
+    assert stopped.value.code == "damaged" and not open_vault_store(w.root).has_entry(first.id)
+    assert "nothing is thinned" not in str(stopped.value)
+    assert "the rest is not thinned until they can be" in str(stopped.value)
+    assert "nothing is thinned until they can be" in thinning._unseen_manifests(
+        open_vault_store(w.root))                       # the plan's own words stay
+
+
 def test_an_interrupted_run_is_not_finished_while_a_manifest_is_damaged(tmp_path):
     """Finding 1: the store is checked before an interrupted run is finished."""
     w, named, old, shared = _shared_world(tmp_path)

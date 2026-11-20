@@ -323,20 +323,22 @@ def _read_facts(root: Path, store: VersionStore, *, check: bool) -> _Facts:
     return _Facts(entries, known, vault, notes, ops, blocked)
 
 
-def _unseen_manifests(store: VersionStore) -> str:
+def _unseen_manifests(store: VersionStore, *, part_way: bool = False) -> str:
     """Why nothing may be deleted when a manifest the store lists is not one it could read
     (damaged, or not readable just now: a cloud file not on this machine, a file held open):
-    what it names is not known. "" when every one was read."""
+    what it names is not known. "" when every one was read. ``part_way``: said during a run,
+    which may have deleted entries before this one."""
     unseen = sorted({*store.corrupt_manifests, *store.unreadable_manifests()})
     if not unseen:
         return ""
     names = ", ".join(n[:-5] for n in unseen[:3]) + (" ..." if len(unseen) > 3 else "")
+    stop = "the rest is not thinned" if part_way else "nothing is thinned"
     return (f"{len(unseen)} backup(s) in the store cannot be read ({names}), so what they hold "
-            "is not known; nothing is thinned until they can be (nmsvault-cli store fsck).")
+            f"is not known; {stop} until they can be (nmsvault-cli store fsck).")
 
 
 def _require_every_manifest_read(store: VersionStore) -> None:
-    unseen = _unseen_manifests(store)
+    unseen = _unseen_manifests(store, part_way=True)
     if unseen:
         raise ThinError("damaged", unseen)
 

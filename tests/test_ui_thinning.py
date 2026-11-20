@@ -267,6 +267,52 @@ def test_a_refused_run_is_said_and_the_lists_still_refresh(gui_app, world, opene
     assert win.changed == [1]
 
 
+HELD = ("A file of the vault is in use by another program (held). Close it and start the app "
+        "again: the deletion is finished then.")
+
+
+def _held_at(monkeypatch, n: int) -> None:
+    """The ``n``-th entry's files are held open by another program when the run gets there."""
+    real, calls = thinning._finish_one, []
+
+    def held(root, store, entry_id, statuses, faults):
+        calls.append(entry_id)
+        if len(calls) == n:
+            raise ThinError("busy", HELD)
+        return real(root, store, entry_id, statuses, faults)
+    monkeypatch.setattr(thinning, "_finish_one", held)
+
+
+def test_a_run_that_stops_part_way_says_what_went_before(gui_app, world, opened, monkeypatch):
+    win = opened(world)
+    first, second = win._chosen()
+    _held_at(monkeypatch, 2)
+    win.delete()
+    _wait(gui_app, lambda: not win.busy)
+    assert first not in entries(world)
+    assert win.tree.item(first, "text") == TW.DELETED
+    assert win.tree.item(second, "text") == TW.UNFINISHED
+    assert win.tree.set(second, "why") == TW.UNFINISHED_WHY
+    text = win.result.cget("text")
+    assert text.startswith("Stopped before the end: 1 backup deleted, ")
+    assert "finished at the next start" in text
+    assert win.message.cget("text") == HELD and win.changed == [1]
+    assert not win.delete_button.winfo_manager() and win.cancel_button.cget("text") == "Close"
+
+
+def test_a_run_that_stops_at_once_says_nothing_went_and_what_was_not_reached(
+        gui_app, world, opened, monkeypatch):
+    win = opened(world)
+    first, second = win._chosen()
+    _held_at(monkeypatch, 1)
+    win.delete()
+    _wait(gui_app, lambda: not win.busy)
+    assert win.tree.item(first, "text") == TW.UNFINISHED
+    assert win.tree.item(second, "text") == TW.LEFT
+    assert win.tree.set(second, "why") == TW.NOT_REACHED
+    assert win.result.cget("text").startswith("Stopped before the end: nothing was deleted.")
+
+
 def test_the_run_shows_its_progress_and_stop_stops_it(gui_app, world, opened, monkeypatch):
     started, release = threading.Event(), threading.Event()
 
