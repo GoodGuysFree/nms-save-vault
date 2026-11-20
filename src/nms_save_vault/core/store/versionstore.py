@@ -36,6 +36,7 @@ from .damage import merge as merge_damage
 from .errors import (
     Cancelled,
     EntryCorrupt,
+    EntryNotFound,
     InsufficientSpace,
     ObjectMissing,
     StoreBusy,
@@ -347,13 +348,14 @@ class VersionStore:
         return sorted(entries, key=lambda e: (e.created_utc, e.id))
 
     def entry(self, entry_id: str) -> StoreEntry:
-        """The entry; KeyError when there is none, EntryCorrupt when its manifest is bad."""
+        """The entry; EntryNotFound (a StoreError and a KeyError) when there is none, not any
+        more (thinned), EntryCorrupt when its manifest is bad."""
         self._refresh()
         if entry_id in self._index:
             return self._index[entry_id]
         if f"{entry_id}.json" in self._corrupt:
             raise EntryCorrupt(f"entry {entry_id}: {self._corrupt[f'{entry_id}.json']}")
-        raise KeyError(f"the store has no entry {entry_id!r}")
+        raise EntryNotFound(entry_id)
 
     def has_entry(self, entry_id: str) -> bool:
         self._refresh()

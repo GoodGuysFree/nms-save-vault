@@ -3,6 +3,7 @@ from .capture import CaptureScope
 from .errors import (
     Cancelled,
     EntryCorrupt,
+    EntryNotFound,
     FoldVerifyError,
     FreeError,
     InsufficientSpace,

@@ -102,6 +102,19 @@ class ThinError(StoreError):
         self.code = code
 
 
+class EntryNotFound(StoreError, KeyError):
+    """The store holds no entry of that id: never, or not any more (thinned since). A KeyError
+    too, as the store's lookups always were."""
+
+    def __init__(self, entry_id: str) -> None:
+        super().__init__(f"The vault holds no backup {entry_id!r} (it may have been thinned "
+                         "since it was listed).")
+        self.entry_id = entry_id
+
+    def __str__(self) -> str:                    # the message, not KeyError's repr of it
+        return str(self.args[0])
+
+
 class PreserveMismatch(StoreError, PreserveFailed):
     """A live slot no longer holds the version the caller planned to keep: re-plan."""
 

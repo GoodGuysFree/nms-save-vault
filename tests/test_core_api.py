@@ -388,6 +388,20 @@ def test_the_vault_is_thinned_through_the_api(tmp_path):
     assert api.vault_size(vault) == open_vault_store(vault).stored_bytes()
 
 
+def test_an_entry_thinned_meanwhile_is_a_store_error_to_a_reader(tmp_path):
+    """Review finding 6: VaultReader says StoreError for an entry that is gone, as documented
+    (an app catches that; a KeyError would crash its history read during a run elsewhere)."""
+    vault, (older, _newer) = _two_backups_of_one_folder(tmp_path)
+    reader = api.open_vault(vault, live_roots=())
+    assert older.id in {e.id for e in reader.entries()}
+    api.run_thin(vault, api.plan_thin(vault), [older.id])
+    path = next(fe.path for fe in older.files if fe.inline is None)
+    for read in (lambda: reader.entry(older.id), lambda: reader.read_file(older.id, path),
+                 lambda: reader.entry("never-was")):
+        with pytest.raises(api.StoreError):
+            read()
+
+
 def test_pins_round_trip_through_the_api_and_are_refused_while_the_vault_is_read_only(
         tmp_path):
     vault, (older, newer) = _two_backups_of_one_folder(tmp_path)

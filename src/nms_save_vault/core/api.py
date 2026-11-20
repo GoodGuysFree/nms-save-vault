@@ -425,12 +425,13 @@ class VaultReader:
         return self._store.entries()
 
     def entry(self, entry_id: str) -> StoreEntry:
-        """One entry by id; ``StoreError`` when there is none."""
+        """One entry by id; ``StoreError`` when there is none (or not any more: the user may
+        thin the vault in another window)."""
         return self._store.entry(entry_id)
 
     def read_file(self, entry_id: str, path: str) -> bytes:
         """One file of an entry (``path`` as in ``StoreEntry.files``), checked against its
-        hash."""
+        hash; ``StoreError`` when the entry or its stored copy is gone (thinned meanwhile)."""
         return self._store.read_file(entry_id, path)
 
 
