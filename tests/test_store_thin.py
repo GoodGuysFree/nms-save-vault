@@ -676,6 +676,26 @@ def _data_vid(tmp_path, ident: int, tag: str) -> str:
     return hashlib.sha256((folder / "save.hg").read_bytes()).hexdigest()
 
 
+def test_a_save_file_kept_without_its_partner_keeps_its_entry(tmp_path):
+    """Finding 4: every file an entry holds counts, not only whole saves: a save file kept
+    without its meta (or any other file of the folder) stays while it is in no newer backup.
+    A save's own meta and the game's cache do not keep an entry on their own."""
+    from nms_save_vault.core import slotmap
+
+    w = World(tmp_path)
+    twin = (1, P1, at(2026, 11, 18, 12), "twin")
+    lonely_meta = slotmap.meta_filename(slotmap.slot_file_numbers(5)[0])
+    odd = w.add(twin, (5, P2, at(2026, 11, 1, 12), "only-here"), made=at(2026, 11, 18, 13),
+                files={lonely_meta: None})
+    assert {m.slot for m in odd.members} == {1} and odd.notes
+    stray = w.add(twin, made=at(2026, 11, 18, 14), files={"notes.txt": b"my own notes"})
+    restamped = w.add((1, P1, at(2026, 11, 18, 12, 30), "twin"), made=at(2026, 11, 18, 15))
+    w.add(twin, made=at(2026, 11, 19, 12))
+    plan = w.plan()
+    assert ids(plan.candidates) == {restamped.id}       # its meta differs; the save does not
+    assert reasons(plan) == {odd.id: (thinning.OTHER_FILE,), stray.id: (thinning.OTHER_FILE,)}
+
+
 # --- pins and the reminder --------------------------------------------------------------------
 
 

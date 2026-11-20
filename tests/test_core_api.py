@@ -397,8 +397,8 @@ def test_pins_round_trip_through_the_api_and_are_refused_while_the_vault_is_read
     assert api.pinned_entries(vault) == {older.id} and vid in api.pinned_versions(vault)
     plan = api.plan_thin(vault)              # the pinned one stays; its twin need not
     assert [c.id for c in plan.candidates] == [newer.id]
-    assert [(k.id, k.reasons) for k in plan.kept] == [
-        (older.id, ("you pinned it", "it holds a save you pinned"))]
+    assert [k.id for k in plan.kept] == [older.id]
+    assert plan.kept[0].reasons[:2] == ("you pinned it", "it holds a save you pinned")
     api.unpin_entry(vault, older.id)
     api.unpin_version(vault, vid)
     assert api.pinned_entries(vault) == frozenset() == api.pinned_versions(vault)

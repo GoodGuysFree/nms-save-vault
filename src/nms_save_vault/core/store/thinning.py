@@ -34,7 +34,7 @@ from typing import Any, get_args
 
 from .. import catalog, safety
 from ..catalog import CatalogEntry, Vault
-from ..formats import ACCOUNT_DATA_NAME
+from ..formats import ACCOUNT_DATA_NAME, CACHE_DIR
 from ..organizer import store as orgstore
 from ..organizer.model import is_pid, unknown_pid
 from ..organizer.notes import Notes, NotesState, read_notes
@@ -90,9 +90,12 @@ UNDO_NEXT = "Undo of the whole folder would put it back next"
 OLD_FOLDER = "its old backup folder is still in the vault (free the old folders first)"
 OWN_FOLDER = "it is the vault's copy of a folder you keep yourself"
 NEWER_APP = "a newer NMS Save Vault made it"
+OTHER_FILE = ("it holds the copy kept of a file that is not a whole save (a save kept without "
+              "its partner, or another file of the folder)")
 _ORDER = (PINNED, NAMED, NOTED, VERSION_PINNED, VERSION_NOTED, OP_UNFINISHED, OP_UNREADABLE,
           OP_RESTORE, OP_PRESERVE, OP_KEEP, OP_UNDO, OP_ACCOUNT, UNDO_NEXT, OLD_FOLDER,
-          OWN_FOLDER, NEWER_APP, UNKNOWN_TIME, NEWEST, RECENT_SAVE, *PERIOD.values())
+          OWN_FOLDER, NEWER_APP, OTHER_FILE, UNKNOWN_TIME, NEWEST, RECENT_SAVE,
+          *PERIOD.values())
 #: Entries whose versions count as the owner's own pick for their period.
 _MARKS = frozenset({PINNED, NAMED, NOTED})
 
@@ -359,6 +362,10 @@ def _decide(f: _Facts, now: datetime) -> _Decision:
             fe = e.file(data)
             _version(versions[("account", e.platform, _account(e))], holders, keys_of[e.id],
                      ("a", fe.sha256), e.id, max(fe.mtime_ns, 0) // 1_000_000_000)
+        for key in _other_files(e):        # each stays while it is in an entry that stays
+            holders[key].add(e.id)
+            keys_of[e.id].add(key)
+            kept[key].add(OTHER_FILE)
 
     pins = f.notes.pinned_entries()
     for e in f.entries.values():
@@ -415,6 +422,30 @@ def _version(times: dict[Key, int], holders: dict[Key, set[str]], keys: set[Key]
     times[key] = max(times.get(key, 0), when)
     holders[key].add(entry_id)
     keys.add(key)
+
+
+def _other_files(e: StoreEntry) -> set[Key]:
+    """The files of an entry that are neither a save nor the account's data: a save file kept
+    without its partner, a file of the folder the game does not know. Each counts on its own: it
+    may be the vault's only copy. A save's own files (data, meta, an Xbox save's folder), the
+    account's, the Xbox index made of the saves and the game's thumbnail cache do not."""
+    own: set[str] = set()
+    folders: set[str] = set()
+    paths = [p for m in e.members for p in (m.data, m.meta)]
+    paths += [p for role, p in e.account.items() if role in ("data", "meta")]
+    for path in paths:
+        own.add(path)
+        if "/" in path:
+            folders.add(path.rsplit("/", 1)[0])
+    if e.xbox is not None:
+        own.add(str(e.xbox.get("index")))
+    out: set[Key] = set()
+    for fe in e.files:
+        if (fe.path in own or fe.path.startswith(CACHE_DIR + "/")
+                or ("/" in fe.path and fe.path.rsplit("/", 1)[0] in folders)):
+            continue
+        out.add(("f", fe.sha256))
+    return out
 
 
 def _account(e: StoreEntry) -> str:
