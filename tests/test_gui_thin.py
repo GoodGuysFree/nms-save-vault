@@ -16,6 +16,7 @@ from nms_save_vault.core.store import thinning, versionstore
 from nms_save_vault.ui import thinning as TW
 
 from .test_cli_thin import thin_world
+from .test_theme_dark_audit import mode  # noqa: F401  (a fixture)
 
 
 def _wait(app, condition, timeout: float = 30.0) -> None:
@@ -169,3 +170,103 @@ def test_a_vault_that_could_not_be_opened_refuses_pins_at_once(app, world, dialo
     kind, title, message = dialogs.take()[-1]
     assert kind == "showinfo" and "read-only" in message and not app.worker.busy
     assert world.old.id not in thinning.pinned_entries(world.root)
+
+
+# --- the reminder: Settings and the status bar ---------------------------------------------------
+
+GB = 1 << 30
+
+
+@pytest.fixture
+def settings(app, monkeypatch):
+    from nms_save_vault.core import state as appstate
+
+    saved = []
+    monkeypatch.setattr(appstate, "save", lambda st, path=None: saved.append(st.thin_reminder_bytes))
+    before = app.state.thin_reminder_bytes
+    app.saved = saved
+    yield app
+    app.state.thin_reminder_bytes = before
+    win = app.__dict__.get("settings_window")
+    if win is not None and win.winfo_exists():
+        win.destroy()
+
+
+def test_settings_keeps_the_reminder_size(settings):
+    app = settings
+    app.state.thin_reminder_bytes = 0
+    menu, index = _menu_entry(app, "Tools", "Settings...")
+    menu.invoke(index)
+    win = app.settings_window
+    assert win.size_var.get() == ""                               # empty: off
+    win.size_var.set("1.5")
+    win.save()
+    assert app.state.thin_reminder_bytes == 3 * GB // 2 and app.saved == [3 * GB // 2]
+    assert not win.winfo_exists()
+    win = app.on_settings()
+    assert win.size_var.get() == "1.5"
+    win.size_var.set("lots")
+    win.save()
+    assert win.winfo_exists() and "number of GB" in win.error.cget("text")
+    assert app.state.thin_reminder_bytes == 3 * GB // 2
+    for text in ("0", " "):
+        win.size_var.set(text)
+        win.save()
+        assert app.state.thin_reminder_bytes == 0
+        win = app.on_settings()
+    win.size_var.set("7")
+    win._escape_handler()
+    assert not win.winfo_exists() and app.state.thin_reminder_bytes == 0
+
+
+def test_the_settings_window_is_placed_and_focused(settings):
+    import tkinter as tk
+
+    main = tk.Toplevel(settings)
+    main.geometry("900x600")
+    try:
+        settings.update()
+        win = settings.on_settings(master=main)
+        settings.update()
+        assert str(win.tk.call("focus", "-lastfor", win)) == str(win.entry)
+        assert str(win.transient()) == str(main)
+        win.destroy()
+    finally:
+        main.destroy()
+
+
+def _status_after_listing(app) -> str:
+    _listed(app)
+    return app.status.get()
+
+
+def test_the_status_bar_says_when_the_vault_passes_the_size(settings, world, monkeypatch):
+    app = settings
+    asked = []
+    real = thinning.vault_size
+    monkeypatch.setattr(thinning, "vault_size", lambda root: asked.append(root) or real(root))
+    app.state.thin_reminder_bytes = 0
+    assert "Thin the vault..." not in _status_after_listing(app) and asked == []   # off: not read
+    app.state.thin_reminder_bytes = 1
+    before = entries(world)
+    text = _status_after_listing(app)
+    assert "past the" in text and "Thin the vault..." in text and asked == [world.root]
+    assert entries(world) == before                                # a reminder deletes nothing
+    app.state.thin_reminder_bytes = 100 * GB
+    assert "Thin the vault..." not in _status_after_listing(app)
+
+def test_the_size_words():
+    from nms_save_vault.ui import settings as S
+
+    assert S.parse_gb("2") == 2 * GB and S.parse_gb("0,5") == GB // 2
+    assert S.parse_gb("1.5 GB") == 3 * GB // 2 and S.parse_gb("") == 0 == S.parse_gb("0")
+    assert S.parse_gb("-1") is None and S.parse_gb("nan") is None and S.parse_gb("x") is None
+    assert S.gb_text(0) == "" and S.gb_text(2 * GB) == "2" and S.gb_text(GB // 4) == "0.25"
+
+
+def test_the_settings_window_follows_the_theme(settings, mode):
+    from .test_theme_dark_audit import audit
+
+    win = settings.on_settings()
+    settings.update()
+    assert audit(win, mode) == []

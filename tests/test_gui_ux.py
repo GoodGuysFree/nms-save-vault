@@ -360,7 +360,7 @@ def test_a_slow_older_listing_never_overwrites_a_newer_one(app, store_world):
     app.refresh()
     stale = app._refresh_gen
     app.refresh()
-    app._listing_ready(stale, ([], None, False, frozenset()))
+    app._listing_ready(stale, gui._Listing([], None, False))
     settle(app)
     assert len(app.backup_tree.get_children("")) == 2
 

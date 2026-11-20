@@ -44,6 +44,8 @@ from .ui.organizer.ops import OpsLogWindow, PlanDialog, StepsWindow
 from .ui.organizer.panic import PanicDialog
 from .ui.organizer.vaultwin import VaultEnv, VaultWindow, needs_attention
 from .ui.organizer.view import OrganizerView
+from .ui import thinning as thin_words
+from .ui.settings import SettingsWindow
 from .ui.thinning import ThinWindow
 from .ui.themeaware import ThemeRegistry
 from .ui.worker import UiWorker
@@ -485,6 +487,8 @@ class App(tk.Tk):
         self._refresh_gen = 0               # the newest listing asked for in the worker
         self._entries: list | None = None    # the BACKUPS pane's rows as last listed
         self._pinned: frozenset[str] = frozenset()   # the backups pinned, as last listed
+        self._vault_bytes: int | None = None  # the store's size, read while the reminder is on
+        self.settings_window: SettingsWindow | None = None
         self._store_problem: str | None = None   # why the store could not be listed
         self._game_running: object = _CHECKING
         self._sources_shown = 0
@@ -671,6 +675,8 @@ class App(tk.Tk):
         self.update_check_var = tk.BooleanVar(value=self.state.update_check == updates.ON)
         tools.add_checkbutton(label=AUTO_UPDATE_LABEL, variable=self.update_check_var,
                               command=self._on_toggle_update_check, underline=18)
+        tools.add_separator()
+        tools.add_command(label="Settings...", command=self.on_settings, underline=0)
         bind_menu_hints(tools, {"Vault upgrade...": VAULT_UPGRADE_TIP,
                                 FREE_LABEL: FREE_OLD_TIP,
                                 FINISH_FREE_LABEL: FREE_OLD_TIP}, self._menu_hint)
@@ -1737,25 +1743,27 @@ class App(tk.Tk):
         gen, vault = self._refresh_gen, self.vault
         try:
             self.worker.submit(
-                self._read_vault, vault, background=True,
+                self._read_vault, vault, self.state.thin_reminder_bytes, background=True,
                 on_done=lambda result: self._listing_ready(gen, result),
                 on_error=lambda exc: self._listing_failed(gen, exc))
         except RuntimeError:
             pass                                   # the window is closing
 
-    def _read_vault(self, vault) -> tuple:
-        """(entries, what is wrong with the store or None, is the game running, the entries
-        pinned) - worker."""
+    def _read_vault(self, vault, reminder_bytes: int = 0) -> _Listing:
+        """The Backups list's rows, what is wrong with the store, whether the game runs, the
+        backups pinned and, while the thinning reminder is on, the vault's size - worker."""
         entries, problem = self._list_entries(vault)
-        return entries, problem, ops.safety.is_game_running(), _pinned_entries(vault.root)
+        size = _vault_size(vault.root) if reminder_bytes > 0 else None
+        return _Listing(entries, problem, ops.safety.is_game_running(),
+                        _pinned_entries(vault.root), size)
 
-    def _listing_ready(self, gen: int, result: tuple) -> None:
+    def _listing_ready(self, gen: int, result: _Listing) -> None:
         if gen != self._refresh_gen:
             return                                 # a newer refresh is on its way
-        entries, problem, running, pinned = result
-        self._game_running = running
-        self._pinned = pinned
-        self._populate_backups(entries, problem)
+        self._game_running = result.running
+        self._pinned = result.pinned
+        self._vault_bytes = result.size
+        self._populate_backups(result.entries, result.problem)
         self._show_status()
 
     def _listing_failed(self, gen: int, exc: BaseException) -> None:
@@ -1764,6 +1772,7 @@ class App(tk.Tk):
         log.error("the vault could not be listed", exc_info=exc)
         self._game_running = None
         self._pinned = frozenset()
+        self._vault_bytes = None
         self._populate_backups([], _plain_error(exc))
         self._show_status()
 
@@ -1775,10 +1784,36 @@ class App(tk.Tk):
         problem = f"{self._store_problem}   |   " if self._store_problem else ""
         self.status.set(
             aliases.scrub(      # the home folder and account ids, not only the aliased accounts
-                f"{problem}Active live: {active_txt}   |   Sources: {self._sources_shown}   |   "
-                f"Vault: {self.vault.root}   |   Game: {game}"
+                f"{self._reminder_text()}{problem}Active live: {active_txt}   |   "
+                f"Sources: {self._sources_shown}   |   Vault: {self.vault.root}   |   Game: {game}"
             )
         )
+
+    def _reminder_text(self) -> str:
+        """The thinning reminder (docs/thinning.md Q4) when the vault holds more than the size
+        set in Settings; it only points at the list, it never deletes anything."""
+        limit, size = self.state.thin_reminder_bytes, self._vault_bytes
+        if limit <= 0 or size is None or size <= limit:
+            return ""
+        return (f"The vault holds {thin_words.size_text(size)}, past the "
+                f"{thin_words.size_text(limit)} you set: {THIN_LABEL} by the Backups list shows "
+                "what could go.   |   ")
+
+    def on_settings(self, master=None) -> SettingsWindow:
+        """Tools > Settings...: the thinning reminder's size."""
+        self.settings_window = SettingsWindow(master or self, themed=self.themed,
+                                              reminder_bytes=self.state.thin_reminder_bytes,
+                                              on_save=self._save_reminder)
+        return self.settings_window
+
+    def _save_reminder(self, reminder_bytes: int) -> None:
+        self.state.thin_reminder_bytes = reminder_bytes
+        try:
+            appstate.save(self.state, self.state_path)
+        except OSError as exc:
+            _showwarning("Settings", f"The size is used now, but could not be saved for the "
+                                     f"next start:\n{_plain_error(exc)}")
+        self.refresh()
 
     def _list_entries(self, vault) -> tuple[list, str | None]:
         """Every entry of the vault through D3's one listing (catalog and store, a folded entry
@@ -3412,6 +3447,29 @@ _CHECKING = "checking"                  # the game probe has not answered yet
 FREE_LABEL = "Free old backup folders..."
 FINISH_FREE_LABEL = "Finish freeing old backup folders..."
 THIN_LABEL = "Thin the vault..."
+
+
+@dataclass(frozen=True)
+class _Listing:
+    """What the listing worker hands the Backups list and the status bar."""
+
+    entries: list
+    problem: str | None                 # why the store could not be listed
+    running: bool | None                # the game
+    pinned: frozenset[str] = frozenset()
+    size: int | None = None             # the store's size (only while the reminder is on)
+
+
+def _vault_size(vault_root: Path) -> int | None:
+    """The store's size for the reminder; None for a vault of the old layout or one that cannot
+    be read now (the listing says why)."""
+    from .core.store import thinning
+
+    try:
+        return thinning.vault_size(vault_root)
+    except Exception:  # noqa: BLE001 - no reminder is a smaller status line, not a failure
+        log.info("the vault's size could not be read for the reminder", exc_info=True)
+        return None
 
 
 def _pinned_entries(vault_root: Path) -> frozenset[str]:
