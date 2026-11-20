@@ -107,6 +107,7 @@ PINNED = {
     "SpecialSlot": ("fields", ("x", "y", "kind"), ()),
     "inventories_of": ("function", "(root: 'dict') -> 'list[Inventory]'"),
     "ASSET_KINDS": ("value", "tuple"),
+    "ASSET_VOLATILE": ("value", "tuple"),
     "INDEX_VERSION": ("value", "int"),
     "Asset": ("fields", ("context", "kind", "index", "where", "key", "name", "model", "cls",
                          "current", "galaxy", "address", "facts"), ()),

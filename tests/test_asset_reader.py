@@ -9,7 +9,8 @@ from pathlib import Path
 import pytest
 
 from nms_save_vault.core import api, savedir, saveedit, savejson, savepatch
-from nms_save_vault.core.index.assets import KINDS, Asset, assets_of, portal_address, state_of
+from nms_save_vault.core.index.assets import (KINDS, VOLATILE, Asset, assets_of, portal_address,
+                                              state_of)
 from nms_save_vault.core.testing import obfuscated as obf
 
 SHIP = "MODELS/COMMON/SPACECRAFT/FIGHTERS/FIGHTER_PROC.SCENE.MBIN"
@@ -303,6 +304,8 @@ def test_a_save_from_before_multitool_collections_has_its_one_tool():
 
 def test_the_reader_is_in_the_public_api():
     assert api.assets_of is assets_of and api.Asset is Asset and api.ASSET_KINDS == KINDS
+    # the fields state_of leaves out, for an app that says what changed (Savecraft's History)
+    assert api.ASSET_VOLATILE == VOLATILE and "Trust" in api.ASSET_VOLATILE
     assert api.state_of is state_of and isinstance(api.INDEX_VERSION, int)
 
 

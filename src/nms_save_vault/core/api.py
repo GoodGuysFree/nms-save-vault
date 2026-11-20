@@ -42,6 +42,7 @@ from .appinfo import CORE_VERSION, VAULT, AppIdentity, app_of, current, is_stamp
 from .index.extract import CtxInput, SaveInput, contexts_of
 from .index.assets import INDEX_VERSION
 from .index.assets import KINDS as ASSET_KINDS
+from .index.assets import VOLATILE as ASSET_VOLATILE
 from .index.assets import Asset, assets_of, state_of
 from .index.inventory import Inventory, Slot, SpecialSlot, inventories_of
 from .index import privacy
@@ -125,7 +126,7 @@ __all__ = [
     "owned", "owner_time", "read_account", "rehomed",
     "UNLOCK_LISTS", "UnlockPlan",
     "Inventory", "Slot", "SpecialSlot", "inventories_of",
-    "ASSET_KINDS", "Asset", "INDEX_VERSION", "assets_of", "state_of",
+    "ASSET_KINDS", "ASSET_VOLATILE", "Asset", "INDEX_VERSION", "assets_of", "state_of",
     # the vault's stored versions
     "FileEntry", "StoreEntry", "StoreError", "StoreNotUpgraded", "StoreTooNew",
     "StoreUnavailable", "VaultReader", "open_vault",
