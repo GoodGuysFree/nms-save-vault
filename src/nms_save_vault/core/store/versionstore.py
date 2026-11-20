@@ -306,6 +306,7 @@ class VersionStore:
         self._index: dict[str, StoreEntry] = {}
         self._vids: dict[str, list[tuple[str, int, str]]] = {}   # vid -> (entry, slot, member)
         self._corrupt: dict[str, str] = {}          # manifest file name -> why it is unreadable
+        self._unreadable: dict[str, str] = {}       # manifest file name -> its I/O error just now
         self._index_guard = threading.Lock()
         self._entries_seen: int | None = None       # entries/ mtime_ns at the last listing
         self._stamps: dict[str, _Stamp] = {}        # manifest file name -> as it was read
@@ -430,6 +431,22 @@ class VersionStore:
         self._refresh()
         return dict(self._corrupt)
 
+    def unreadable_manifests(self) -> dict[str, str]:
+        """The manifest files ``entries/`` lists that cannot be read just now (an I/O error,
+        not damage: a cloud file not on this machine, a file another program holds open), by
+        name and why. What they hold is not known, so nothing they may name may be deleted.
+        Looked at again on every call."""
+        try:
+            listed = _listed_manifests(self._io / ENTRIES)
+        except OSError as exc:
+            raise StoreUnavailable(f"The vault is not reachable ({exc.strerror or exc}).") from exc
+        self._refresh(force=True)
+        with self._index_guard:
+            missed = [n for n in listed if n not in self._stamps]
+            why = dict(self._unreadable)
+        return {n: why.get(n, "it could not be read") for n in missed
+                if (self._io / ENTRIES / n).exists()}         # not one deleted meanwhile
+
     def _refresh(self, *, force: bool = False) -> None:
         """Index the manifests of ``entries/`` when it changed since the last look (its
         modification time, D3 2.7) or ``force``: a new one is parsed, or taken from another
@@ -467,6 +484,7 @@ class VersionStore:
                     with _PARSED_GUARD:
                         shared[name] = known
                 self._stamps[name] = stamp
+                self._unreadable.pop(name, None)
                 if isinstance(known[1], str):
                     self._corrupt[name] = known[1]
                 else:
@@ -474,11 +492,13 @@ class VersionStore:
 
     def _parse(self, name: str) -> StoreEntry | str | None:
         """The manifest file ``name``, parsed and checked; why it is damaged; None when it
-        cannot be read now."""
+        cannot be read now (call under ``_index_guard``: the error is kept for
+        :meth:`unreadable_manifests`)."""
         try:
             raw = (self._io / ENTRIES / name).read_bytes()
         except OSError as exc:
             log.warning("could not read the store manifest %s: %s", name, exc)
+            self._unreadable[name] = exc.strerror or type(exc).__name__
             return None
         try:
             entry = StoreEntry.from_bytes(raw)

@@ -242,6 +242,9 @@ def _read_facts(root: Path, store: VersionStore, *, check: bool) -> _Facts:
                            "--repair).")
     if store.format.write_compat > STORE_VERSION:
         blocked.append("A newer NMS Save Vault upgraded this vault: update the app to thin it.")
+    unseen = _unseen_manifests(store)
+    if unseen:
+        blocked.append(unseen)
     entries = {e.id: e for e in store.entries()}
     vault = Vault(root, read_only=True)
     known = {e.id: e for e in vault.entries}
@@ -259,6 +262,24 @@ def _read_facts(root: Path, store: VersionStore, *, check: bool) -> _Facts:
         blocked.append("A newer NMS Save Vault recorded changes to live saves here: update the "
                        "app to thin the vault.")
     return _Facts(entries, known, vault, notes, ops, blocked)
+
+
+def _unseen_manifests(store: VersionStore) -> str:
+    """Why nothing may be deleted when a manifest the store lists is not one it could read
+    (damaged, or not readable just now: a cloud file not on this machine, a file held open):
+    what it names is not known. "" when every one was read."""
+    unseen = sorted({*store.corrupt_manifests, *store.unreadable_manifests()})
+    if not unseen:
+        return ""
+    names = ", ".join(n[:-5] for n in unseen[:3]) + (" ..." if len(unseen) > 3 else "")
+    return (f"{len(unseen)} backup(s) in the store cannot be read ({names}), so what they hold "
+            "is not known; nothing is thinned until they can be (nmsvault-cli store fsck).")
+
+
+def _require_every_manifest_read(store: VersionStore) -> None:
+    unseen = _unseen_manifests(store)
+    if unseen:
+        raise ThinError("damaged", unseen)
 
 
 # --- deciding what stays ----------------------------------------------------------------------
@@ -626,12 +647,8 @@ def run_thin(vault_root: str | Path, plan: ThinPlan, chosen_ids: Iterable[str], 
     store = _open(root, read_only=False)
     store._require_writable()
     with _held(root):
+        _require_sound(store)
         before = _finish(root, store, faults)
-        report = store.fsck()
-        if not report.ok:
-            raise ThinError("damaged", f"The check of the vault found {len(report.problems)} "
-                                       "problem(s); nothing was deleted. Repair it first "
-                                       "(nmsvault-cli store fsck --repair).")
         result = _run(root, store, plan, chosen, progress, cancel, faults)
     if before is None:
         return result
@@ -640,6 +657,16 @@ def run_thin(vault_root: str | Path, plan: ThinPlan, chosen_ids: Iterable[str], 
     left = before.left + result.left
     return ThinResult(thinned, freed, left, result.cancelled,
                       _message(thinned, freed, left, result.cancelled))
+
+
+def _require_sound(store: VersionStore) -> None:
+    """The quick check of the store, before anything is deleted or an interrupted run is
+    finished."""
+    report = store.fsck()
+    if not report.ok:
+        raise ThinError("damaged", f"The check of the vault found {len(report.problems)} "
+                                   "problem(s); nothing was deleted. Repair it first "
+                                   "(nmsvault-cli store fsck --repair).")
 
 
 @contextmanager
@@ -745,6 +772,7 @@ def _thin_one(root: Path, store: VersionStore, facts: _Facts, entry: StoreEntry,
               in_catalog: bool, statuses: dict, faults: ThinFault | None) -> int:
     """Delete one entry (the caller holds the vault lock): recorded first, then its manifest,
     its objects no other manifest names, its catalog entry. Returns the bytes freed."""
+    _require_every_manifest_read(store)
     digests = sorted(entry.object_digests())
     elsewhere = set().union(*(e.object_digests() for e in facts.entries.values()
                               if e.id != entry.id))
@@ -766,7 +794,7 @@ def _finish_one(root: Path, store: VersionStore, entry_id: str, statuses: dict,
     record = statuses[entry_id]
     store._drop_manifest(entry_id)
     _fault(faults, "thin.after_manifest")
-    store._refresh(force=True)
+    _require_every_manifest_read(store)        # an unread manifest may name any of them
     named = set().union(*(e.object_digests() for e in store.entries()))
     for digest in record.get("objects") or ():
         if is_digest(digest) and digest not in named:
@@ -838,6 +866,7 @@ def finish_thinning(vault_root: str | Path, *,
     store = _open(root, read_only=False)
     store._require_writable()
     with _held(root):
+        _require_sound(store)
         return _finish(root, store, faults)
 
 

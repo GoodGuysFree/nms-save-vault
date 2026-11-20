@@ -8,6 +8,7 @@ import os
 import shutil
 import threading
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 
@@ -47,11 +48,12 @@ class World:
         self.n = 0
         self.ops = 0
 
-    def add(self, *saves, made=None, kind="snapshot", label="auto: test", op_id=None,
-            account=None, live=False, name="imported-folder"):
+    def add(self, *saves, made=None, kind="snapshot", label="auto: place", op_id=None,
+            account=None, live=False, name="imported-folder", origin=None, files=None):
         """An entry holding ``saves``, each (slot, ident, ts, tag) as member A. Saves alike in
         ident and tag hold the same data (one version), whatever their time. ``account``:
-        (bytes, mtime) of an accountdata.hg to keep with them."""
+        (bytes, mtime) of an accountdata.hg to keep with them; ``files``: other files of the
+        folder by name (bytes, or None to delete one the saves made)."""
         self.n += 1
         folder = self.live if live else self.tmp / f"src{self.n}" / STEAM_ACCOUNT
         if folder.exists():
@@ -59,6 +61,11 @@ class World:
         folder.mkdir(parents=True)
         for slot, ident, ts, tag in saves:
             steam_save(folder, slot, 0, "Main", 100, ident, ts, extra=BIG + tag)
+        for file_name, data in (files or {}).items():
+            if data is None:
+                (folder / file_name).unlink()
+            else:
+                (folder / file_name).write_bytes(data)
         if account is not None:
             (folder / "accountdata.hg").write_bytes(account[0])
             (folder / "mf_accountdata.hg").write_bytes(b"\x01" * 432)
@@ -71,7 +78,7 @@ class World:
             return store.add_from_live(folder, platform="steam", account_key=STEAM_ACCOUNT,
                                        kind=kind, label=label, scope=SNAP, op_id=op_id)
         return store.add_from_folder(folder, kind=kind, label=label, op_id=op_id,
-                                     source={"type": "folder", "name": name})
+                                     source={"type": "folder", "name": name}, origin=origin)
 
     def plan(self, now=NOW):
         return thinning.plan_thin(self.root, now=now)
@@ -543,6 +550,78 @@ def test_a_run_is_refused_while_another_window_writes_live_saves(tmp_path):
         release.set()
         other.join()
     assert open_vault_store(w.root).has_entry(old.id)
+
+
+# --- the review's findings (2026-11-20) -------------------------------------------------------
+
+
+def _shared_world(tmp_path):
+    """A named entry and an old one share an old save of P2; the old one may go."""
+    w = World(tmp_path)
+    shared = (2, P2, at(2026, 3, 1, 12), "shared")
+    w.add((1, P1, at(2026, 11, 19, 12), "now"), (2, P2, at(2026, 11, 19, 12), "p2now"))
+    w.add((1, P1, at(2026, 3, 20, 12), "later"), (2, P2, at(2026, 3, 25, 12), "p2later"))
+    named = w.add((1, P1, at(2026, 2, 20, 12), "feb"), shared, label="my best run",
+                  made=at(2026, 3, 1, 13))
+    old = w.add((1, P1, at(2026, 3, 3, 12), "old"), shared, made=at(2026, 3, 3, 13))
+    assert ids(w.plan().candidates) == {old.id}
+    return w, named, old, named.object_digests() & old.object_digests()
+
+
+def test_no_object_goes_while_a_manifest_cannot_be_read(tmp_path, monkeypatch):
+    """Finding 1: a manifest the listing has but that cannot be read now (a cloud file not on
+    this machine, a file held open) names objects nobody sees: nothing may be deleted then."""
+    w, named, old, shared = _shared_world(tmp_path)
+    real = Path.read_bytes
+
+    def offline(self):
+        if self.name == f"{named.id}.json":
+            raise PermissionError(13, "The cloud file provider is not running")
+        return real(self)
+
+    monkeypatch.setattr(Path, "read_bytes", offline)
+    versionstore._PARSED.clear()                      # another process: nothing parsed yet
+    plan = w.plan()
+    assert any("cannot be read" in why for why in plan.blocked)
+    report = open_vault_store(w.root).fsck()
+    assert [(p.kind, p.entry_id) for p in report.problems] == [("manifest", named.id)]
+    with pytest.raises(vstore.ThinError):
+        thinning.run_thin(w.root, plan, [old.id])
+    assert shared <= set(open_vault_store(w.root).objects.digests())
+    monkeypatch.setattr(Path, "read_bytes", real)
+    versionstore._PARSED.clear()
+    plan = w.plan()
+    assert plan.blocked == () and thinning.run_thin(w.root, plan, [old.id]).thinned == (old.id,)
+    store = open_vault_store(w.root)
+    assert store.fsck().ok and shared <= set(store.objects.digests())
+
+
+def test_an_interrupted_run_is_not_finished_while_a_manifest_is_damaged(tmp_path):
+    """Finding 1: the store is checked before an interrupted run is finished."""
+    w, named, old, shared = _shared_world(tmp_path)
+
+    def crash(point):
+        if point == "thin.after_manifest":
+            raise OSError("down")
+
+    with pytest.raises(OSError):
+        thinning.run_thin(w.root, w.plan(), [old.id], faults=crash)
+    path = w.root / "store" / "entries" / f"{named.id}.json"
+    good = path.read_bytes()
+    path.write_bytes(good.replace(b'"label"', b'"lAbel"', 1))          # damaged meanwhile
+    versionstore._PARSED.clear()
+    for finish in (lambda: thinning.finish_thinning(w.root),
+                   lambda: thinning.run_thin(w.root, w.plan(), [])):
+        with pytest.raises(vstore.ThinError) as refused:
+            finish()
+        assert refused.value.code == "damaged"
+    assert shared <= set(open_vault_store(w.root).objects.digests())
+    assert thinning.thinning_pending(w.root)
+    path.write_bytes(good)                                # put back from a copy
+    versionstore._PARSED.clear()
+    assert thinning.finish_thinning(w.root).thinned == (old.id,)
+    store = open_vault_store(w.root)
+    assert store.fsck().ok and shared <= set(store.objects.digests())
 
 
 # --- pins and the reminder --------------------------------------------------------------------

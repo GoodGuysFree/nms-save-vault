@@ -82,6 +82,8 @@ def fsck(store: "VersionStore", *, deep: bool = False, repair: bool = False,
     for name, why in sorted(store.corrupt_manifests.items()):
         problems.append(FsckProblem("manifest", name[:-5], "", "", why))
         store.record_damage(name[:-5], None, "manifest", why)
+    for name, why in sorted(store.unreadable_manifests().items()):     # not damage: not recorded
+        problems.append(FsckProblem("manifest", name[:-5], "", "", f"cannot be read now ({why})"))
     entries = store.entries()
     refs: dict[str, list[tuple[StoreEntry, str, int]]] = defaultdict(list)
     for entry in entries:
