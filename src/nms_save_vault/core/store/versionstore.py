@@ -717,6 +717,7 @@ class VersionStore:
                 fields["source"] = {k: v for k, v in source.source.items() if k != "folder"}
                 fields["op_id"] = None
                 entry = StoreEntry.new(**dict(fields, id=new_id, origin=origin))
+                self._check_present(entry)
                 self._write_manifest(entry)
         except safety.LockTimeout as exc:
             raise StoreBusy() from exc
@@ -756,6 +757,7 @@ class VersionStore:
                     stamp = f"{fields['kind']}-{fields['platform']}-{local:%Y%m%d-%H%M%S}"
                     entry_id = self._free_id(stamp, catalog_ids=self._catalog_ids())
                 entry = StoreEntry.new(id=entry_id, **fields)
+                self._check_present(entry)
                 self._write_manifest(entry)
         except safety.LockTimeout as exc:
             raise StoreBusy() from exc
@@ -821,8 +823,11 @@ class VersionStore:
         self._fault("entry.after_replace")
 
     def _check_present(self, entry: StoreEntry) -> None:
-        """Every object the new entry references is on disk with its size (a medium that lost a
-        rename shows here, not at the next read)."""
+        """Every object the new entry references is on disk with its size. Checked under the
+        vault lock before the manifest is written (the objects were put before the lock, and
+        thinning deletes, under the lock, an object no manifest names: then nothing is
+        committed), and again after it (a medium that lost a rename shows here, not at the
+        next read)."""
         for fe in entry.files:
             if fe.inline is None and self.objects.size_of(fe.sha256) != fe.size:
                 raise ObjectMissing(fe.sha256, f"{fe.path} of the new entry {entry.id}")
