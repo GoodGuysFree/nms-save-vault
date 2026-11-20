@@ -171,7 +171,9 @@ Where this design was silent, the choice that keeps more:
 
 - **The list window** (`ui/thinning.py`), from the button right of "Save file:" above the
   Backups list and from Tools: plans in the UI worker; one ticked row per entry that goes (date,
-  kind, its saves, the space it frees alone, why); a click or Space unticks; below, the entries
+  kind, its saves, the space it frees alone, why); a plain click on a row's tick unticks it
+  (Shift and Ctrl clicks only select), Space sets every selected row alike (unticked when any
+  was ticked, else ticked), and nothing is selected at open; below, the entries
   kept that the schedule alone would drop, with why. "Delete N entries (frees X)" counts the
   ticked rows with `ThinPlan.freed_bytes`. A blocked plan, or one that cannot be made (an
   old-layout vault), says why and offers no Delete. The run goes in the worker with a progress

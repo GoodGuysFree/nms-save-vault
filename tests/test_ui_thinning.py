@@ -126,6 +126,63 @@ def test_space_ticks_the_selected_row(gui_app, world, opened):
     assert win.tree.item(world.old.id, "text") == TW.UNTICKED
 
 
+def _ticks(win) -> list[str]:
+    return [win.tree.item(i, "text") for i in win.tree.get_children("")]
+
+
+def test_nothing_is_selected_at_open_and_space_sets_the_selected_rows_alike(gui_app, world,
+                                                                            opened):
+    win = opened(world)
+    rows = list(win.tree.get_children(""))
+    assert len(rows) >= 2 and win.tree.selection() == () and win.tree.focus() == rows[0]
+    win._space()                                      # nothing selected: nothing changes
+    assert _ticks(win) == [TW.TICKED] * len(rows)
+    win.toggle(rows[0])
+    win.tree.selection_set(rows)                      # one unticked, the rest ticked
+    win._space()                                      # any ticked: all are unticked
+    assert _ticks(win) == [TW.UNTICKED] * len(rows)
+    win._space()                                      # none ticked: all are ticked
+    assert _ticks(win) == [TW.TICKED] * len(rows)
+
+
+def test_only_a_plain_click_on_the_tick_column_ticks(gui_app, world, opened):
+    win = opened(world)
+    row = world.old.id
+    for column, state in (("#0", 0x0001), ("#0", 0x0004), ("#1", 0), ("#5", 0)):
+        win.click(row, column, state)                 # Shift, Ctrl, the other columns
+        assert win.tree.item(row, "text") == TW.TICKED
+    win.click("", "#0", 0)                            # the heading, below the last row
+    win.click(row, "#0", 0)
+    assert win.tree.item(row, "text") == TW.UNTICKED
+
+
+def test_real_clicks_tick_only_in_the_tick_column(gui_app, world, opened):
+    main = tk.Toplevel(gui_app)                       # mapped, so clicks have places to land
+    main.geometry("1000x700")
+    try:
+        gui_app.update()
+        win = opened(world, master=main)
+        gui_app.update()
+        row = win.tree.get_children("")[0]
+        x, y, w, h = win.tree.bbox(row, "#0")
+        cx, cy, cw, _ch = win.tree.bbox(row, "when")
+        x, cx = x + w // 2 - 4, cx + cw // 2 - 4         # the middle of each cell (see press)
+
+        def press(px_, py_, state=0):
+            win.tree.event_generate("<ButtonPress-1>", x=px_, y=py_, state=state)
+            win.tree.event_generate("<ButtonRelease-1>", x=px_, y=py_, state=state)
+            gui_app.update()
+        press(x + 4, y + h // 2, state=0x0004)           # Ctrl-click: selects only
+        assert win.tree.item(row, "text") == TW.TICKED
+        press(cx + 4, cy + h // 2)                        # a date cell: selects only
+        assert win.tree.item(row, "text") == TW.TICKED
+        press(x + 4, y + h // 2)                          # a plain click on the tick
+        assert win.tree.item(row, "text") == TW.UNTICKED
+        win.destroy()
+    finally:
+        main.destroy()
+
+
 def test_delete_removes_only_the_ticked_rows_then_says_what_went_and_refreshes(
         gui_app, world, opened):
     win = opened(world)

@@ -40,6 +40,7 @@ GO_COLUMNS = (("when", "Date", 130, "w"), ("kind", "Kind", 90, "w"),
 KEPT_COLUMNS = (("when", "Date", 130, "w"), ("kind", "Kind", 90, "w"),
                 ("saves", "Saves", 260, "w"), ("why", "Why it stays", 400, "w"))
 _SHOWN_LEFT = 8          # the result names this many entries that stayed, then counts the rest
+_SHIFT, _CONTROL = 0x0001, 0x0004                 # the modifier bits of a Tk event's state
 
 
 # --- the words (pure) ----------------------------------------------------------------------------
@@ -215,9 +216,7 @@ class ThinWindow(_Dialog):
             return
         self.delete_button.pack(side=tk.RIGHT, padx=px(6))
         self._update_button()
-        first = self.tree.get_children("")[0]
-        self.tree.focus(first)
-        self.tree.selection_set(first)
+        self.tree.focus(self.tree.get_children("")[0])    # for the arrows; nothing selected
 
     def _fill_kept(self, kept) -> None:
         set_label(self.kept_title, f"Kept although the schedule would let them go "
@@ -245,24 +244,42 @@ class ThinWindow(_Dialog):
     # --- the ticks -----------------------------------------------------------------------------
 
     def toggle(self, iid: str) -> None:
-        if self.busy or self.finished or not self.tree.exists(iid):
-            return
-        if iid in self.ticked:
-            self.ticked.discard(iid)
-            self.tree.item(iid, text=UNTICKED, tags=("off",))
-        else:
+        if self._changeable(iid):
+            self._tick(iid, iid not in self.ticked)
+            self._update_button()
+
+    def _changeable(self, iid: str) -> bool:
+        return not self.busy and not self.finished and bool(iid) and self.tree.exists(iid)
+
+    def _tick(self, iid: str, on: bool) -> None:
+        if on:
             self.ticked.add(iid)
             self.tree.item(iid, text=TICKED, tags=())
-        self._update_button()
+        else:
+            self.ticked.discard(iid)
+            self.tree.item(iid, text=UNTICKED, tags=("off",))
 
     def _clicked(self, event) -> None:
-        iid = self.tree.identify_row(event.y)
-        if iid and self.tree.identify_region(event.x, event.y) in ("tree", "cell"):
+        self.click(self.tree.identify_row(event.y), self.tree.identify_column(event.x),
+                   event.state)
+
+    def click(self, iid: str, column: str, state) -> None:
+        """A plain click on the tick column (``#0``) ticks or unticks its row. Shift and Ctrl
+        clicks only select (to pick rows for Space), and so does a click on another column."""
+        modified = isinstance(state, int) and state & (_SHIFT | _CONTROL)
+        if column == "#0" and not modified:
             self.toggle(iid)
 
     def _space(self) -> None:
-        for iid in self.tree.selection():
-            self.toggle(iid)
+        """Space sets every selected row alike: unticked when any of them is ticked, else
+        ticked."""
+        rows = [i for i in self.tree.selection() if self._changeable(i)]
+        if not rows:
+            return
+        on = not any(i in self.ticked for i in rows)
+        for iid in rows:
+            self._tick(iid, on)
+        self._update_button()
 
     def _chosen(self) -> list[str]:
         """The ticked rows, in the list's order (oldest first)."""

@@ -3659,8 +3659,9 @@ BUTTONS
   the last 7 days, then one a day until 30 days, one a week until 6 months and one a month
   after that, and always the newest. What you pinned, named or wrote a note on stays, and
   so does what an undo still needs. The window lists every backup that would go (date,
-  kind, its saves, the space it frees, why it goes), each one ticked: untick one to keep
-  it. Below it are the backups kept although the schedule would let them go, and why.
+  kind, its saves, the space it frees, why it goes), each one ticked: click a row's [x]
+  to keep it, or select rows (Shift, Ctrl) and press Space. Below it are the backups kept
+  although the schedule would let them go, and why.
   Nothing is deleted until you press "Delete N entries"; then it says what went and what
   stayed, and why. A run that stopped part way is finished at the next start.
 - Tools > Settings...: the size at which the status bar reminds you to thin the vault
