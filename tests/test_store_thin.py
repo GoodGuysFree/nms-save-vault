@@ -624,6 +624,44 @@ def test_an_interrupted_run_is_not_finished_while_a_manifest_is_damaged(tmp_path
     assert store.fsck().ok and shared <= set(store.objects.digests())
 
 
+def test_an_edit_that_kept_its_saves_time_is_the_newer_save(tmp_path):
+    """Finding 2: an edit keeps the meta's time (saveedit), so the edited save and the one it
+    was made from tie on it; the later capture is the newer save, never the larger sha256."""
+    w = World(tmp_path)
+    when = at(2026, 9, 10, 12)                           # the slot was last played then
+    tags = [f"t{n}" for n in range(40)]
+    vids = {t: _data_vid(tmp_path, P1, t) for t in tags}
+    original_tag = max(tags, key=vids.get)               # the original sorts last by sha256
+    edit_tag = min(tags, key=vids.get)
+    original = w.add((1, P1, when, original_tag), made=at(2026, 11, 19, 10), kind="full",
+                     label="")
+    edited = w.add((1, P1, when, edit_tag), made=at(2026, 11, 19, 11), kind="extract",
+                   label="edited by nms-savecraft: rename ship 'Ark'",
+                   origin={"made_by": "nms-savecraft 0.0.1", "edit_of": vids[original_tag],
+                           "what": "rename ship 'Ark'"})
+    plan = w.plan()
+    assert edited.id not in ids(plan.candidates)       # the vault's copy of the live save
+    assert ids(plan.candidates) == {original.id}
+
+
+def test_saves_whose_order_cannot_be_told_are_both_kept(tmp_path):
+    """Finding 2: the same time, first kept at the same moment: neither is dropped for the
+    other."""
+    w = World(tmp_path)
+    when = at(2026, 9, 10, 12)
+    one = w.add((1, P1, when, "one"), made=at(2026, 9, 10, 13), kind="full", label="")
+    two = w.add((1, P1, when, "two"), made=at(2026, 9, 10, 13), kind="full", label="")
+    assert one.id != two.id and w.plan().candidates == ()
+
+
+def _data_vid(tmp_path, ident: int, tag: str) -> str:
+    import hashlib
+
+    folder = tmp_path / "probe" / tag
+    steam_save(folder, 1, 0, "Main", 100, ident, 0, extra=BIG + tag)
+    return hashlib.sha256((folder / "save.hg").read_bytes()).hexdigest()
+
+
 # --- pins and the reminder --------------------------------------------------------------------
 
 

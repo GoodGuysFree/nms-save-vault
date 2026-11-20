@@ -336,9 +336,13 @@ def _decide(f: _Facts, now: datetime) -> _Decision:
         if why & _MARKS and entry_id in keys_of:
             marked |= keys_of[entry_id]
 
+    # When the vault first had a version: of two saved at the same time (an edit keeps the
+    # meta's time), the one kept later is the newer one.
+    first_kept = {key: min(epoch_utc(f.entries[i].created_utc) for i in found)
+                  for key, found in holders.items()}
     dropped: dict[Key, str] = {}        # key -> the period a newer (or chosen) one is kept for
     for times in versions.values():
-        _schedule(times, now_ts, now, marked, kept, dropped)
+        _schedule(times, first_kept, now_ts, now, marked, kept, dropped)
 
     def newest(ids: Iterable[str]) -> str:
         return max(ids, key=lambda i: (f.entries[i].created_utc, i))
@@ -371,15 +375,24 @@ def _account(e: StoreEntry) -> str:
                or e.source.get("folder") or "")
 
 
-def _schedule(times: Mapping[Key, int], now_ts: float, now: datetime, marked: set[Key],
-              kept: dict[Key, set[str]], dropped: dict[Key, str]) -> None:
-    """One playthrough's versions by the schedule."""
+def _schedule(times: Mapping[Key, int], first_kept: Mapping[Key, int], now_ts: float,
+              now: datetime, marked: set[Key], kept: dict[Key, set[str]],
+              dropped: dict[Key, str]) -> None:
+    """One playthrough's versions by the schedule. The newest is the latest saved, of those
+    the one the vault kept last; versions that cannot be told apart so all count as newest."""
     known = {k: t for k, t in times.items() if t > 0}
     for key in times.keys() - known.keys():
         kept[key].add(UNKNOWN_TIME)            # no date: no period to thin it in
     if not known:
         return
-    kept[max(known, key=lambda k: (known[k], k))].add(NEWEST)
+
+    def newest(keys: Iterable[Key]) -> set[Key]:
+        keys = list(keys)
+        top = max((known[k], first_kept.get(k, 0)) for k in keys)
+        return {k for k in keys if (known[k], first_kept.get(k, 0)) == top}
+
+    for key in newest(known):
+        kept[key].add(NEWEST)
     buckets: dict[tuple, list[Key]] = defaultdict(list)
     for key, when in known.items():
         age = now_ts - when
@@ -395,12 +408,13 @@ def _schedule(times: Mapping[Key, int], now_ts: float, now: datetime, marked: se
             buckets[("month", day.year, day.month)].append(key)
     for bucket, keys in buckets.items():
         tier = bucket[0]
-        chosen = None
+        chosen: set[Key] = set()
         if not any(k in marked for k in keys):          # the owner's pick is that period's one
-            chosen = max(keys, key=lambda k: (known[k], k))
-            kept[chosen].add(PERIOD[tier])
+            chosen = newest(keys)
+            for key in chosen:
+                kept[key].add(PERIOD[tier])
         for key in keys:
-            if key != chosen:
+            if key not in chosen:
                 dropped.setdefault(key, tier)
 
 
