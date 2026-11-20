@@ -16,6 +16,7 @@ from .errors import (
     StoreNotUpgraded,
     StoreTooNew,
     StoreUnavailable,
+    ThinError,
     UpgradeError,
 )
 from .damage import DamageRecord

@@ -304,8 +304,13 @@ def read_ops_at(path: Path) -> dict[str, OpRecord]:
 
 def newer_records(ctx: OpContext) -> bool:
     """A newer app wrote operations here that this core cannot read (CL10)."""
+    return newer_records_at(ops_path(ctx))
+
+
+def newer_records_at(path: Path) -> bool:
+    """:func:`newer_records` of the journal file ``path``. Nothing is written."""
     with _tails_guard:
-        return _refresh(ops_path(ctx)).newer
+        return _refresh(Path(path)).newer
 
 
 def open_ops(ctx: OpContext) -> list[OpRecord]:

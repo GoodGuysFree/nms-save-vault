@@ -538,6 +538,31 @@ class VersionStore:
     def damage(self) -> list[DamageRecord]:
         return read_damage(self.root)
 
+    def manifest_size(self, entry_id: str) -> int:
+        """The bytes the entry's manifest takes, as the listing recorded it."""
+        self._refresh()
+        with self._index_guard:
+            stamp = self._stamps.get(f"{entry_id}.json")
+            entry = self._index.get(entry_id)
+        if stamp is not None:
+            return stamp[0]
+        if entry is None:
+            raise KeyError(f"the store has no entry {entry_id!r}")
+        return len(entry.to_bytes())
+
+    def _drop_manifest(self, entry_id: str) -> None:
+        """Delete an entry's manifest (thinning only, under the vault lock) and forget it."""
+        name = f"{entry_id}.json"
+        try:
+            self._manifest_path(entry_id).unlink()
+        except FileNotFoundError:
+            pass
+        safety.fsync_dir(self._io / ENTRIES)
+        with self._index_guard:
+            self._forget(name)
+        with _PARSED_GUARD:
+            _PARSED.get(self._parsed_key, {}).pop(name, None)
+
     def stored_bytes(self) -> int:
         """What the entries take in the store: each object they name once, and the manifests,
         by the sizes the manifests and the listing record (no object file is looked at)."""

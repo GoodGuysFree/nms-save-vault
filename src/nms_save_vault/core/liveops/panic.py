@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import dataclasses
 import hashlib
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -87,11 +87,17 @@ def _not_undo_targets(ctx: OpContext) -> set[str]:
     """Snapshots the whole-folder Undo must not pick: those of a move that never wrote
     (abandoned, rolled back, never started), those of an Undo (picking them would undo
     the Undo), and every one an Undo already put back (so Undo steps further back)."""
-    skip: set[str] = set()
     try:
         ops = jr.read_ops(ctx)
     except Exception:  # noqa: BLE001 - no verdict: nothing is excluded
-        return skip
+        return set()
+    return undo_skip_set(ops)
+
+
+def undo_skip_set(ops: Mapping[str, jr.OpRecord]) -> set[str]:
+    """:func:`_not_undo_targets` of the ops ``ops`` (op ids and snapshot ids): thinning asks
+    it too, to keep the snapshot the next Undo lands on."""
+    skip: set[str] = set()
     for rec in ops.values():
         note = str(rec.events[0].get("note", "")) if rec.events else ""
         undo = rec.kind == "panic_restore" and note.startswith("undoes:")

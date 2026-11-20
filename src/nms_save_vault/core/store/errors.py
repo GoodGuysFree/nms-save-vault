@@ -92,6 +92,16 @@ class FreeError(StoreError):
         self.code = code
 
 
+class ThinError(StoreError):
+    """Thinning the vault did not run (docs/thinning.md); ``code`` says why: busy (another
+    window writes, upgrades or thins), blocked (the plan says why it cannot run), damaged (the
+    check of the store found damage, or the thinning record cannot be read), other-vault."""
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
 class PreserveMismatch(StoreError, PreserveFailed):
     """A live slot no longer holds the version the caller planned to keep: re-plan."""
 
