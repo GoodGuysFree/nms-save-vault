@@ -12,9 +12,12 @@ It reads where the saves and the vault are, the saves on disk and what is in the
 inventory slot by slot: :func:`inventories_of`; every asset with the key that tells it apart
 across versions and saves: :func:`assets_of`), the
 vault's stored versions, and which versions an app made (the last version before it changed
-a slot). It writes one way only: an edit of a live Steam save, and its undo, through a
-:class:`LiveSession` - the same preserve, journal, check, rollback and undo as every write NMS
-Save Vault makes, under the same lock, so the two apps never write at once.
+a slot). It writes live saves one way only: an edit of a live Steam save, and its undo, through
+a :class:`LiveSession` - the same preserve, journal, check, rollback and undo as every write NMS
+Save Vault makes, under the same lock, so the two apps never write at once. In the vault it
+also pins entries and versions, and thins the vault when the user asks (:func:`plan_thin`
+shows what would go, :func:`run_thin` deletes the rows the user left ticked:
+docs/thinning.md).
 
 Saves are read by readable field names (``get(root, "PlayerStateData", "Units")``); the
 obfuscated keys stay inside the core. :func:`get` refuses a path through an ownership field
@@ -26,9 +29,11 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 import typing
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
+from datetime import datetime
 from pathlib import Path
 
 from . import accountdata, discover, gameversion, locations, safety, savedir, state
@@ -76,8 +81,29 @@ from .store import (
     StoreNotUpgraded,
     StoreTooNew,
     StoreUnavailable,
+    ThinError,
     VersionStore,
     vault_lock,
+)
+from .store import thinning as _thinning
+from .store.thinning import (
+    ThinCandidate,
+    ThinKept,
+    ThinnedEntry,
+    ThinPlan,
+    ThinProgress,
+    ThinResult,
+    ThinSave,
+    pin_entry,
+    pin_version,
+    pinned_entries,
+    pinned_versions,
+    plan_thin,
+    thinned_entries,
+    thinning_pending,
+    unpin_entry,
+    unpin_version,
+    vault_size,
 )
 
 API_VERSION = 1
@@ -113,6 +139,11 @@ __all__ = [
     "ConfirmationRequired", "EditRefused", "LiveOpError", "PatchRefused", "TargetError",
     "Interrupted", "LiveSession", "Notice", "SEVERITIES", "WRITE_STATUSES", "WritePlan",
     "WriteResult", "open_live",
+    # thinning the vault when the user asks, pins, the vault's size (docs/thinning.md)
+    "ThinCandidate", "ThinError", "ThinKept", "ThinPlan", "ThinProgress", "ThinResult",
+    "ThinSave", "ThinnedEntry", "finish_thinning", "plan_thin", "run_thin", "thinned_entries",
+    "thinning_pending", "pin_entry", "pin_version", "pinned_entries", "pinned_versions",
+    "unpin_entry", "unpin_version", "vault_size",
 ]
 
 log = logging.getLogger(__name__)
@@ -457,6 +488,26 @@ def open_history(vault_root: str | Path | None = None) -> VaultHistory:
         raise StoreUnavailable("The vault is not reachable.")
     return VaultHistory(Journal(OrganizerStore(root, create=False, read_only=True), {}).replay(),
                         read_ops_at(orgstore.store_root(root) / OPS))
+
+
+# --- thinning the vault ------------------------------------------------------------------------
+
+
+def run_thin(vault_root: str | Path, plan: ThinPlan, chosen_ids: Iterable[str], *,
+             progress: Callable[[ThinProgress], None] | None = None,
+             cancel: threading.Event | None = None) -> ThinResult:
+    """Delete the entries of ``plan`` (:func:`plan_thin`) the user left ticked, ``chosen_ids``,
+    after showing every one: re-planned under the vault lock first, so one pinned, noted or
+    needed since stays (:attr:`ThinResult.left` says why). ``cancel`` stops between entries.
+    Raises :class:`ThinError` (``busy``: another app writes the vault or the live saves;
+    ``blocked``, ``damaged``) or a :class:`StoreError` (the vault read-only, unreachable)."""
+    return _thinning.run_thin(vault_root, plan, chosen_ids, progress=progress, cancel=cancel)
+
+
+def finish_thinning(vault_root: str | Path) -> ThinResult | None:
+    """At an app's start: finish a run of thinning that was interrupted (None when none was).
+    Raises as :func:`run_thin` does."""
+    return _thinning.finish_thinning(vault_root)
 
 
 # --- an edit of a live save, and its undo ---------------------------------------------------
