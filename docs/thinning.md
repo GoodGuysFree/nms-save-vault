@@ -107,7 +107,10 @@ accepts a fold record whose entry was thinned (`_check_migration`).
 ### Pins
 
 - Version pin: the version-note lock (`Notes.set_version_note(..., locked=True)`); exposed in the
-  API as pin/unpin a version.
+  API as pin/unpin a version. A lock keeps its note's whole pair (the head and its partner).
+  Pin locks the version's own note (made when it has none), never another row's note that
+  names it. Unpin takes off only the version's own lock (the note it heads); a save kept only by its
+  partner's lock is refused (ValueError: unpin that one), never unlocked behind its back.
 - Entry pin: new, kept in the organizer's `notes.json` (`entries: {id: {"pinned": true, ...}}`),
   journaled and conflict-safe like notes.
 - API: `pin_version`, `unpin_version`, `pin_entry`, `unpin_entry`, `pinned_entries()`,
@@ -165,6 +168,39 @@ Where this design was silent, the choice that keeps more:
   window, run with progress); Pin / Unpin on right-click in Backups and History, the pin mark;
   the reminder size in Settings and the status-bar line; `nmsvault-cli store thin [--dry-run]`.
 - **Savecraft:** the same action on the History page through the API; Pin / Unpin there.
+
+### As built (NMS Save Vault)
+
+- **The list window** (`ui/thinning.py`), from the button right of "Save file:" above the
+  Backups list and from Tools: plans in the UI worker; one ticked row per entry that goes (date,
+  kind, its saves, the space it frees alone, why); a plain click on a row's tick unticks it
+  (Shift and Ctrl clicks only select), Space sets every selected row alike (unticked when any
+  was ticked, else ticked), and nothing is selected at open; below, the entries
+  kept that the schedule alone would drop, with why. "Delete N entries (frees X)" counts the
+  ticked rows with `ThinPlan.freed_bytes`. A blocked plan, or one that cannot be made (an
+  old-layout vault), says why and offers no Delete. The run goes in the worker with a progress
+  bar and Stop (between entries); then each row reads deleted or kept (and why) and the window
+  says what went and what was left. A run that stops on an error part-way (a file held open,
+  a manifest that cannot be read, a busy vault) still says, from the thinning record, which
+  rows went, which one stopped part-way (finished at the next start) and which it did not
+  reach; the error then says "the rest is not thinned", never "nothing". Esc and Cancel close it, never while it deletes. The
+  Backups list and the status bar read the vault again after a run.
+- **Pins:** right-click a backup: "Pin (thinning never deletes it)" / "Unpin"; a pinned row reads
+  "<id>  (pinned)". In History the version note's lock is the pin: its button reads Pin /
+  Unpin, a right-click on a version offers the same, and a pinned row's note starts
+  "(pinned)". Both go through the core's pin functions in the worker, so a read-only vault
+  refuses them; the refusal is said (a message box; the Organizer's alert bar for History).
+- **The reminder:** Tools > Settings... holds the size in GB (0 or empty: off). While it is on,
+  the listing worker reads `vault_size`; past the size, the status bar starts with "The vault
+  holds X, past the Y you set: Thin the vault... by the Backups list shows what could go."
+- **At start**, and when another vault is chosen, `finish_thinning` runs in the worker when a
+  run is pending; it says what it finished, and a failure is said, never fatal.
+- **"Thinned on <date>"** is in the operations log (History of this slot..., Show in history):
+  the record names an entry's operation, not its versions, so a move whose backup went reads
+  "(its backup was thinned on <date>)".
+- **CLI** `store thin`: prints what goes and what stays against the schedule, then y/N (`--yes`
+  skips it, `--dry-run` stops before it). A blocked plan exits 1, and so does a declined prompt,
+  as the other store commands do. A pending run is finished first (not on `--dry-run`).
 
 ## Tests the core needs (made-up vaults only)
 

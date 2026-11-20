@@ -38,11 +38,15 @@ from .ui.redact import RedactingTreeview
 from .ui.menubar import MenuStrip
 from .ui.menuhint import bind_menu_hints
 from .ui.tooltip import TOOLTIP_STYLE, Tooltip
-from .ui.organizer.words import FREE_OLD_TIP, PROMOTE_TIP, SLOT_MARKERS_TIP, VAULT_UPGRADE_TIP
+from .ui.organizer.words import (FREE_OLD_TIP, PIN_LABEL, PIN_MARK, PROMOTE_TIP,
+                                 SLOT_MARKERS_TIP, UNPIN_LABEL, VAULT_UPGRADE_TIP)
 from .ui.organizer.ops import OpsLogWindow, PlanDialog, StepsWindow
 from .ui.organizer.panic import PanicDialog
 from .ui.organizer.vaultwin import VaultEnv, VaultWindow, needs_attention
 from .ui.organizer.view import OrganizerView
+from .ui import thinning as thin_words
+from .ui.settings import SettingsWindow
+from .ui.thinning import ThinWindow
 from .ui.themeaware import ThemeRegistry
 from .ui.worker import UiWorker
 from .ui.dpi import px, pxs
@@ -479,8 +483,12 @@ class App(tk.Tk):
         self._classic_ops = 0                # operations running behind the wait dialog
         self._closing = False                # a close waits for the running operation
         self._finishing: tk.Toplevel | None = None
+        self.thin_window: ThinWindow | None = None
         self._refresh_gen = 0                # the newest listing asked for in the worker
         self._entries: list | None = None    # the BACKUPS pane's rows as last listed
+        self._pinned: frozenset[str] = frozenset()   # the backups pinned, as last listed
+        self._vault_bytes: int | None = None  # the store's size, read while the reminder is on
+        self.settings_window: SettingsWindow | None = None
         self._store_problem: str | None = None   # why the store could not be listed
         self._game_running: object = _CHECKING
         self._sources_shown = 0
@@ -660,12 +668,15 @@ class App(tk.Tk):
         tools.add_command(label="Vault upgrade...", command=self.open_vault_window, underline=0)
         free_label = self._free_menu_label()
         tools.add_command(label=free_label, command=self.on_free_old_folders, underline=0)
+        tools.add_command(label=THIN_LABEL, command=self.on_thin, underline=0)
         tools.add_command(label="Play time...", command=self.on_playtime, underline=0)
         tools.add_command(label="Check for updates...", command=self.on_check_updates,
                           underline=0)
         self.update_check_var = tk.BooleanVar(value=self.state.update_check == updates.ON)
         tools.add_checkbutton(label=AUTO_UPDATE_LABEL, variable=self.update_check_var,
                               command=self._on_toggle_update_check, underline=18)
+        tools.add_separator()
+        tools.add_command(label="Settings...", command=self.on_settings, underline=0)
         bind_menu_hints(tools, {"Vault upgrade...": VAULT_UPGRADE_TIP,
                                 FREE_LABEL: FREE_OLD_TIP,
                                 FINISH_FREE_LABEL: FREE_OLD_TIP}, self._menu_hint)
@@ -812,6 +823,35 @@ class App(tk.Tk):
         if notice:
             self.after(notice_ms, lambda: _showinfo("Vault upgrade", notice, parent=self))
         self.after(offer_ms, self._offer_interrupted_undo)
+        self.after(offer_ms, lambda: self._finish_thinning(vault_root))
+
+    def _finish_thinning(self, vault_root: Path) -> None:
+        """A run of thinning that stopped part-way (the app or the machine went down) is
+        finished when its vault opens: the owner asked for those deletions. In the worker; it
+        is said when it did anything, and a failure is said too, never fatal (the next start,
+        or Thin the vault..., finishes it)."""
+        from .core.store import thinning
+
+        if not thinning.thinning_pending(vault_root):
+            return
+        self.worker.submit(thinning.finish_thinning, vault_root,
+                           on_done=self._thinning_finished,
+                           on_error=self._thinning_not_finished)
+
+    def _thinning_finished(self, result) -> None:
+        if result is None:
+            return
+        self.vault_changed()
+        _showinfo(THIN_TITLE, "A thinning of the vault that stopped before its end was finished: "
+                              f"{result.message}", parent=self)
+
+    def _thinning_not_finished(self, exc: BaseException) -> None:
+        if not isinstance(exc, ops.OperationError):
+            log.error("an interrupted thinning could not be finished", exc_info=exc)
+        why = _gui_text(exc) if isinstance(exc, ops.OperationError) else _plain_error(exc)
+        _showwarning(THIN_TITLE, "A thinning of the vault that stopped before its end could not "
+                                 f"be finished yet: {why}\n\nThe app tries again at the next "
+                                 "start, and so does Thin the vault...", parent=self)
 
     def switch_vault(self, root: Path) -> bool:
         """Make ``root`` the vault of this window and of the next start. False (and a message)
@@ -935,6 +975,15 @@ class App(tk.Tk):
             return
         self.vault_changed(mode_changed=True)
         _showinfo(title, holder["result"].message)
+
+    def on_thin(self) -> ThinWindow:
+        """Thin the vault... (docs/thinning.md): the list of what the schedule lets go, planned
+        in the worker; nothing is deleted until the owner presses Delete there. A run ends in
+        the one refresh hook: the Backups list and the status bar read the vault again."""
+        self.thin_window = ThinWindow(self, worker=self.worker, themed=self.themed,
+                                      vault_root=self.vault.root,
+                                      on_changed=lambda: self.vault_changed())
+        return self.thin_window
 
     def _offer_interrupted_undo(self) -> None:
         if self._free_menu_label().startswith("Finish"):
@@ -1185,6 +1234,8 @@ class App(tk.Tk):
         )
         self.history_combo.pack(side=tk.LEFT, padx=pxs(4, 0))
         self.history_combo.bind("<<ComboboxSelected>>", self._on_history_changed)
+        self.thin_button = ttk.Button(filter_row, text=THIN_LABEL, command=self.on_thin)
+        self.thin_button.pack(side=tk.RIGHT)
         # Which tree the toolbar acts on: whichever the user last selected in.
         self._active_tree = self.live_tree
         # Backups start newest-first; clicking a heading re-sorts.
@@ -1721,23 +1772,27 @@ class App(tk.Tk):
         gen, vault = self._refresh_gen, self.vault
         try:
             self.worker.submit(
-                self._read_vault, vault, background=True,
+                self._read_vault, vault, self.state.thin_reminder_bytes, background=True,
                 on_done=lambda result: self._listing_ready(gen, result),
                 on_error=lambda exc: self._listing_failed(gen, exc))
         except RuntimeError:
             pass                                   # the window is closing
 
-    def _read_vault(self, vault) -> tuple:
-        """(entries, what is wrong with the store or None, is the game running) - worker."""
+    def _read_vault(self, vault, reminder_bytes: int = 0) -> _Listing:
+        """The Backups list's rows, what is wrong with the store, whether the game runs, the
+        backups pinned and, while the thinning reminder is on, the vault's size - worker."""
         entries, problem = self._list_entries(vault)
-        return entries, problem, ops.safety.is_game_running()
+        size = _vault_size(vault.root) if reminder_bytes > 0 else None
+        return _Listing(entries, problem, ops.safety.is_game_running(),
+                        _pinned_entries(vault.root), size)
 
-    def _listing_ready(self, gen: int, result: tuple) -> None:
+    def _listing_ready(self, gen: int, result: _Listing) -> None:
         if gen != self._refresh_gen:
             return                                 # a newer refresh is on its way
-        entries, problem, running = result
-        self._game_running = running
-        self._populate_backups(entries, problem)
+        self._game_running = result.running
+        self._pinned = result.pinned
+        self._vault_bytes = result.size
+        self._populate_backups(result.entries, result.problem)
         self._show_status()
 
     def _listing_failed(self, gen: int, exc: BaseException) -> None:
@@ -1745,6 +1800,8 @@ class App(tk.Tk):
             return
         log.error("the vault could not be listed", exc_info=exc)
         self._game_running = None
+        self._pinned = frozenset()
+        self._vault_bytes = None
         self._populate_backups([], _plain_error(exc))
         self._show_status()
 
@@ -1756,10 +1813,36 @@ class App(tk.Tk):
         problem = f"{self._store_problem}   |   " if self._store_problem else ""
         self.status.set(
             aliases.scrub(      # the home folder and account ids, not only the aliased accounts
-                f"{problem}Active live: {active_txt}   |   Sources: {self._sources_shown}   |   "
-                f"Vault: {self.vault.root}   |   Game: {game}"
+                f"{self._reminder_text()}{problem}Active live: {active_txt}   |   "
+                f"Sources: {self._sources_shown}   |   Vault: {self.vault.root}   |   Game: {game}"
             )
         )
+
+    def _reminder_text(self) -> str:
+        """The thinning reminder (docs/thinning.md Q4) when the vault holds more than the size
+        set in Settings; it only points at the list, it never deletes anything."""
+        limit, size = self.state.thin_reminder_bytes, self._vault_bytes
+        if limit <= 0 or size is None or size <= limit:
+            return ""
+        return (f"The vault holds {thin_words.size_text(size)}, past the "
+                f"{thin_words.size_text(limit)} you set: {THIN_LABEL} by the Backups list shows "
+                "what could go.   |   ")
+
+    def on_settings(self, master=None) -> SettingsWindow:
+        """Tools > Settings...: the thinning reminder's size."""
+        self.settings_window = SettingsWindow(master or self, themed=self.themed,
+                                              reminder_bytes=self.state.thin_reminder_bytes,
+                                              on_save=self._save_reminder)
+        return self.settings_window
+
+    def _save_reminder(self, reminder_bytes: int) -> None:
+        self.state.thin_reminder_bytes = reminder_bytes
+        try:
+            appstate.save(self.state, self.state_path)
+        except OSError as exc:
+            _showwarning("Settings", f"The size is used now, but could not be saved for the "
+                                     f"next start:\n{_plain_error(exc)}")
+        self.refresh()
 
     def _list_entries(self, vault) -> tuple[list, str | None]:
         """Every entry of the vault through D3's one listing (catalog and store, a folded entry
@@ -1800,7 +1883,8 @@ class App(tk.Tk):
                 if not only:
                     continue
             node = tree.insert(
-                "", "end", text=e.id, open=shown is not None,
+                "", "end", text=e.id + (PIN_MARK if e.id in self._pinned else ""),
+                open=shown is not None,
                 values=(
                     e.kind,
                     len(e.occupied_slots),
@@ -2262,6 +2346,35 @@ class App(tk.Tk):
                 label=f"Copy slot {slot} into a different live slot...",
                 command=lambda: self.on_copy_slot(source=self._source_from(meta)),
             )
+        menu.add_separator()
+        pinned = entry.id in self._pinned
+        menu.add_command(label=UNPIN_LABEL if pinned else PIN_LABEL,
+                         command=lambda: self.pin_entry(entry.id, not pinned))
+
+    def pin_entry(self, entry_id: str, pinned: bool) -> None:
+        """Pin or unpin a backup (docs/thinning.md Q2): thinning never deletes a pinned one.
+        Written in the worker, then the Backups list reads the pins again. Refused, and said,
+        while the vault is read-only."""
+        from .core.store import thinning
+
+        title = "Pin" if pinned else "Unpin"
+        if self.vault.read_only:
+            _showinfo(title, "The vault is read-only just now, so pins cannot be changed.")
+            return
+        job = thinning.pin_entry if pinned else thinning.unpin_entry
+        self.worker.submit(job, self.vault.root, entry_id, on_done=lambda _r: self.refresh(),
+                           on_error=lambda exc: self._pin_failed(title, exc))
+
+    def _pin_failed(self, title: str, exc: BaseException) -> None:
+        if isinstance(exc, KeyError) and not isinstance(exc, ops.OperationError):
+            why = "that backup is no longer in the vault."
+        elif isinstance(exc, (ops.OperationError, ValueError)):
+            why = _gui_text(exc)
+        else:
+            log.error("a pin could not be changed", exc_info=exc)
+            why = _plain_error(exc)
+        _showerror(title, f"The pin was not changed: {why}")
+        self.refresh()
 
     # A slot, or one of the two saves in it, in either pane.
     def _menu_for_slot(self, menu, meta: dict) -> None:
@@ -3362,6 +3475,8 @@ _OS_ALT_KEYS = ("<Alt-Key-F4>", "<Alt-Key-space>")
 _CHECKING = "checking"                  # the game probe has not answered yet
 FREE_LABEL = "Free old backup folders..."
 FINISH_FREE_LABEL = "Finish freeing old backup folders..."
+THIN_LABEL = "Thin the vault..."
+THIN_TITLE = "Thin the vault"
 CHOOSE_VAULT_LABEL = "Choose vault folder..."
 BACKUP_ALL_LABEL = "Back up all live folders now"
 AUTO_UPDATE_LABEL = "Check for updates automatically"
@@ -3374,6 +3489,44 @@ SLOT_MENU_TIP = ("Needs a live slot: pick one on the Organizer's live board, or 
                  "Live saves and backups tab.")
 _MENU_KEYS = ("<Alt-Key>", "<Alt-KeyRelease>", "<Key-Alt_L>", "<Key-Alt_R>",
               "<KeyRelease-Alt_L>", "<KeyRelease-Alt_R>", "<Key-F10>", "<KeyRelease-F10>")
+
+
+@dataclass(frozen=True)
+class _Listing:
+    """What the listing worker hands the Backups list and the status bar."""
+
+    entries: list
+    problem: str | None                 # why the store could not be listed
+    running: bool | None                # the game
+    pinned: frozenset[str] = frozenset()
+    size: int | None = None             # the store's size (only while the reminder is on)
+
+
+def _vault_size(vault_root: Path) -> int | None:
+    """The store's size for the reminder; None for a vault of the old layout or one that cannot
+    be read now (the listing says why)."""
+    from .core.store import thinning, vault_mode
+
+    try:
+        if vault_mode(vault_root) != "store":
+            return None
+        return thinning.vault_size(vault_root)
+    except Exception:  # noqa: BLE001 - no reminder is a smaller status line, not a failure
+        log.info("the vault's size could not be read for the reminder", exc_info=True)
+        return None
+
+
+def _pinned_entries(vault_root: Path) -> frozenset[str]:
+    """The backups pinned in the vault's notes; none when they cannot be read (logged): the
+    mark is a hint, and thinning reads the pins again itself."""
+    from .core.store import thinning
+
+    try:
+        return thinning.pinned_entries(vault_root)
+    except Exception:  # noqa: BLE001 - the listing must still show
+        log.warning("the pinned backups could not be read", exc_info=True)
+        return frozenset()
+
 
 HELP_TEXT = """NMS Save Vault - Help
 
@@ -3394,7 +3547,8 @@ more) are read from the saves. Chips, Find, sorting and a column chooser narrow 
   info file is converted, the game takes ownership at your first save there, and you
   confirm once because it is another account.
 - History lists a save file's versions and what changed between them. Compare puts two
-  versions side by side.
+  versions side by side. Pin (the button, or right-click a version) keeps a version:
+  thinning never deletes it.
 - Notes keeps a note per save file and a label, comment and lock per version. They live in
   the vault, never in the save. A Pin stops the app suggesting that save's slot for
   another save.
@@ -3406,6 +3560,8 @@ more) are read from the saves. Chips, Find, sorting and a column chooser narrow 
   an upgraded vault.
 - Tools > Free old backup folders: gives back the disk space of the old backup folders
   once they are in the version store.
+- Thin the vault... (by the backups, and in Tools): deletes old backups by a schedule, only
+  when you ask. See BUTTONS.
 - Selftest (command line: nmsvault-cli selftest): reads every live save and vault version in
   memory, writes nothing and reports what it could not understand. A save written by a
   newer game than the app knows is flagged and never moved.
@@ -3498,6 +3654,19 @@ BUTTONS
 - Tools > Free old backup folders: after the vault upgrade, deletes the old backup folders
   that are now in the version store (after a full check; it shows what it will free and
   asks first). Every backup stays listed.
+- Thin the vault... (right of "Save file", above the backups; also in Tools): deletes old
+  backups by a schedule, and only when you ask. Of each save file it keeps every save of
+  the last 7 days, then one a day until 30 days, one a week until 6 months and one a month
+  after that, and always the newest. What you pinned, named or wrote a note on stays, and
+  so does what an undo still needs. The window lists every backup that would go (date,
+  kind, its saves, the space it frees, why it goes), each one ticked: click a row's [x]
+  to keep it, or select rows (Shift, Ctrl) and press Space. Below it are the backups kept
+  although the schedule would let them go, and why.
+  Nothing is deleted until you press "Delete N entries"; then it says what went and what
+  stayed, and why. A run that stopped part way is finished at the next start.
+- Tools > Settings...: the size at which the status bar reminds you to thin the vault
+  (0 or empty: no reminder). The reminder only points at Thin the vault...; it never
+  deletes anything.
 - Rescan: Re-detect live save folders (new Steam account, new Xbox account) and add them
   to the LIVE SAVES list. Your manual entries are left untouched.
 - Discover: Scan the NMS folder for existing backups and add any new ones found. A live
@@ -3546,6 +3715,8 @@ MARKERS AND WORDS
 - Only outside the vault: kept only in a folder you made yourself that the app
   catalogues in place - not copied into the vault.
 - Pin: a pinned save is never suggested as the one to replace when a move needs a slot.
+- (pinned) after a backup in the Backups list or a version in History: thinning never
+  deletes it. Right-click it to Unpin.
 - * and moved (Live saves and backups tab): * = the save the game loads; moved = the file
   was moved here from another slot.
 
@@ -3558,7 +3729,8 @@ Every row offers exactly what makes sense for it:
 - one of the two saves in a live slot: the same, plus Promote to make that one the save
   the game loads;
 - a backup: restore all of it (which replaces the live folder), and for a single-slot
-  extract, also copy that slot into any live slot you choose;
+  extract, also copy that slot into any live slot you choose; Pin or Unpin it (thinning
+  never deletes a pinned backup);
 - a slot inside a backup, or either save in it: copy it straight into the same-numbered
   live slot, copy it into a live slot you choose, or extract it to the vault.
 Any slot, or either save in it, in either pane also offers "Show this save's history",

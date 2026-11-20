@@ -50,6 +50,14 @@ def add_commands(sub: argparse._SubParsersAction) -> None:
                     help="really delete them, after a full check of the store")
     fr.set_defaults(func=cmd_store_free)
 
+    t = store_sub.add_parser("thin", help="delete old backups by the schedule (lists what goes "
+                                          "and why, then asks)")
+    t.add_argument("--dry-run", action="store_true",
+                   help="only list what would go and what stays; delete nothing")
+    t.add_argument("--yes", action="store_true",
+                   help="do not ask for confirmation (needed when not run in a terminal)")
+    t.set_defaults(func=cmd_store_thin)
+
     r = store_sub.add_parser("rollback", help="undo the vault upgrade: back to the old layout "
                                               "with everything made since")
     r.add_argument("--copy", metavar="FOLDER", help="where the pre-upgrade copy is, when it is "
@@ -204,6 +212,90 @@ def cmd_store_free(args) -> int:
         return 1
     print(result.message)
     return 1 if result.leftovers else 0
+
+
+#: How an entry's kind reads in the list (the owner's words: full backup, snapshot, preserve).
+_THIN_KINDS = {"full": "full backup"}
+
+
+def _thin_size(n: int) -> str:
+    if n >= 1 << 30:
+        return f"{n / (1 << 30):.1f} GB"
+    if n >= 1 << 20:
+        return f"{n / (1 << 20):.1f} MB"
+    return f"{max(n, 0) / 1024:.0f} KB"
+
+
+def _thin_saves(saves) -> str:
+    return ", ".join(f"slot {s.slot} {s.name}" for s in saves) or "no saves"
+
+
+def _thin_when(created: str) -> str:
+    """``2026-03-03 14:01``, as the GUI's Backups list shows a backup's date."""
+    return created.replace("T", " ")[:16]
+
+
+def _thin_lines(plan) -> list[str]:
+    """What goes (when, what, the space, its saves, why) and what stays although the schedule
+    alone would let it go."""
+    lines = []
+    n = len(plan.candidates)
+    if n:
+        lines.append(f"{n} {'backup' if n == 1 else 'backups'} can go, freeing "
+                     f"{_thin_size(plan.bytes)}:")
+        for c in plan.candidates:
+            lines.append(f"  {_thin_when(c.created)}  {_THIN_KINDS.get(c.kind, c.kind):<11}  "
+                         f"{_thin_size(c.bytes):>8}  {_thin_saves(c.saves)}  - {c.reason}")
+    if plan.kept:
+        lines.append(f"Kept although the schedule would let them go ({len(plan.kept)}):")
+        for k in plan.kept:
+            lines.append(f"  {_thin_when(k.created)}  {_THIN_KINDS.get(k.kind, k.kind):<11}  "
+                         f"{_thin_saves(k.saves)}  - {'; '.join(k.reasons)}")
+    return lines
+
+
+def cmd_store_thin(args) -> int:
+    """Thin the vault by the schedule (docs/thinning.md): the list first, then y/N."""
+    from .core.store import thinning
+
+    state = appstate.load()
+    root = _vault_root(args, state)
+    vstore.open_store(root, app_state=state)          # the old layout is refused in its words
+    if thinning.thinning_pending(root):
+        print("An earlier run of thinning stopped before its end; "
+              + ("run it without --dry-run to finish it." if args.dry_run
+                 else "it is finished first."))
+        if not args.dry_run:
+            done = thinning.finish_thinning(root)
+            if done is not None:
+                print(done.message)
+    plan = thinning.plan_thin(root)
+    if plan.blocked:
+        for why in plan.blocked:
+            print(f"error: {why}", file=sys.stderr)
+        return 1
+    for line in _thin_lines(plan):
+        print(line)
+    if not plan.candidates:
+        print("Nothing to thin: the schedule keeps every backup.")
+        return 0
+    if args.dry_run:
+        print("Nothing was deleted (--dry-run).")
+        return 0
+    n = len(plan.candidates)
+    question = f"Delete {n} {'entry' if n == 1 else 'entries'} (frees {_thin_size(plan.bytes)})?"
+    if not args.yes and not _ask(question):
+        print("Nothing was deleted.")
+        return 1
+    result = thinning.run_thin(root, plan, [c.id for c in plan.candidates],
+                               progress=_thin_progress)
+    print(result.message)
+    return 0
+
+
+def _thin_progress(p) -> None:
+    if p.current:
+        print(f"  deleting {p.current} ({p.done + 1} of {p.total})")
 
 
 def cmd_store_rollback(args) -> int:

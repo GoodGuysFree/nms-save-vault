@@ -659,6 +659,48 @@ def test_no_object_goes_while_a_manifest_cannot_be_read(tmp_path, monkeypatch):
     assert store.fsck().ok and shared <= set(store.objects.digests())
 
 
+def test_a_manifest_unreadable_part_way_stops_the_run_without_saying_nothing_went(tmp_path,
+                                                                                monkeypatch):
+    """Review finding 4: once one entry went, the stop must not say nothing is thinned."""
+    w = World(tmp_path)
+    first, second, _newest = _twins(w, 3)
+    plan = w.plan()
+    assert ids(plan.candidates) == {first.id, second.id}
+    gone = []
+
+    def progress(p):
+        if p.done == 1:
+            gone.append(1)                  # the first went; a manifest cannot be read now
+    monkeypatch.setattr(versionstore.VersionStore, "unreadable_manifests",
+                        lambda self: {f"{_newest.id}.json": "held"} if gone else {})
+    with pytest.raises(vstore.ThinError) as stopped:
+        thinning.run_thin(w.root, plan, [first.id, second.id], progress=progress)
+    assert stopped.value.code == "damaged" and not open_vault_store(w.root).has_entry(first.id)
+    assert "nothing is thinned" not in str(stopped.value)
+    assert "the rest is not thinned until they can be" in str(stopped.value)
+    assert "nothing is thinned until they can be" in thinning._unseen_manifests(
+        open_vault_store(w.root))                       # the plan's own words stay
+
+
+def test_an_entry_finished_from_an_earlier_run_reads_as_deleted_only(tmp_path):
+    """Review finding 5: the list was made while an interrupted run was pending (the start-up
+    finish failed); the run finishes it first and must not also call it kept ("it is no longer
+    in the vault")."""
+    w = World(tmp_path)
+    first, second, _newest = _twins(w, 3)
+
+    def crash(point):
+        if point == "thin.after_record":
+            raise KeyboardInterrupt("stopped")
+    with pytest.raises(KeyboardInterrupt):
+        thinning.run_thin(w.root, w.plan(), [first.id], faults=crash)
+    plan = w.plan()
+    assert thinning.thinning_pending(w.root) and first.id in ids(plan.candidates)
+    result = thinning.run_thin(w.root, plan, [c.id for c in plan.candidates])
+    assert set(result.thinned) == {first.id, second.id} and result.left == ()
+    assert result.message.startswith("2 backups deleted") and "kept" not in result.message
+
+
 def test_an_interrupted_run_is_not_finished_while_a_manifest_is_damaged(tmp_path):
     """Finding 1: the store is checked before an interrupted run is finished."""
     w, named, old, shared = _shared_world(tmp_path)
@@ -840,6 +882,58 @@ def test_pins_round_trip_and_are_refused_while_the_vault_is_read_only(tmp_path):
     with pytest.raises(vstore.StoreTooNew):
         thinning.pin_version(w.root, vid)
     assert fingerprint(w.root / "organizer") == before
+
+
+A1, B0, B1, B2 = ("a1" * 32, "b0" * 32, "b1" * 32, "b2" * 32)
+
+
+def test_unpinning_a_version_leaves_the_pin_of_another_that_shares_its_save(tmp_path):
+    w = World(tmp_path)
+    notes = w.notes()
+    notes.set_version_note(A1, pair=(A1, B0), pid=pid(P1), locked=True)     # two rows of one slot
+    notes.set_version_note(B2, pair=(A1, B2), pid=pid(P1), locked=True)     # that share A1
+    thinning.unpin_version(w.root, A1)
+    after = w.notes().state().versions
+    assert after[A1].locked is False and after[B2].locked is True
+    assert thinning.pinned_versions(w.root) == {A1, B2}       # B2's pin keeps its whole pair
+
+
+def test_unpinning_a_save_kept_only_by_its_partners_pin_is_refused_and_says_why(tmp_path):
+    w = World(tmp_path)
+    w.notes().set_version_note(A1, pair=(A1, B0), pid=pid(P1), locked=True)
+    before = fingerprint(w.root / "organizer")
+    with pytest.raises(ValueError, match="other save of its slot"):
+        thinning.unpin_version(w.root, B0)
+    assert fingerprint(w.root / "organizer") == before and B0 in thinning.pinned_versions(w.root)
+    thinning.unpin_version(w.root, B1)                          # never pinned: nothing to do
+    assert fingerprint(w.root / "organizer") == before
+
+
+def test_pinning_a_version_locks_its_own_note_never_another_rows(tmp_path):
+    w = World(tmp_path)
+    w.notes().set_version_note(B1, pair=(A1, B1), pid=pid(P1), label="before the boss")
+    thinning.pin_version(w.root, A1, pair=(A1, B0), pid=pid(P1))      # History: Pin on row A1
+    after = w.notes().state().versions
+    assert after[A1].locked and after[A1].pair == (A1, B0) and after[A1].pid == pid(P1)
+    assert after[B1].locked is False and after[B1].label == "before the boss"
+    assert thinning.pinned_versions(w.root) == {A1, B0}
+    thinning.pin_version(w.root, B1)                    # its own note: locked, its words kept
+    after = w.notes().state().versions
+    assert after[B1].locked and after[B1].label == "before the boss" and after[B1].pair == (A1, B1)
+
+
+def test_a_pinned_version_is_kept_by_the_schedule_as_its_own_row(tmp_path):
+    w = World(tmp_path)
+    w.add((1, P1, at(2026, 11, 19, 12), "now"))
+    old = w.add((1, P1, at(2026, 3, 3, 12), "old"))                   # March, the older one
+    w.add((1, P1, at(2026, 3, 20, 12), "later"))
+    newer = w.add((1, P1, at(2026, 3, 25, 12), "newer"))
+    vid = old.members[0].vid
+    w.notes().set_version_note(newer.members[0].vid, pair=(newer.members[0].vid, vid),
+                               pid=pid(P1), label="a row whose pair names the old save")
+    thinning.pin_version(w.root, vid, pair=(vid, None), pid=pid(P1))
+    assert w.notes().state().versions[vid].locked
+    assert old.id not in ids(w.plan().candidates)
 
 
 def test_the_reminder_size_is_kept_in_the_settings_and_the_vault_size_read_from_manifests(

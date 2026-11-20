@@ -32,6 +32,12 @@ FREE_OLD_TIP = ("Delete the old backup folders that are now in the version store
 SLOT_MARKERS_TIP = ("* = the save the game loads. / moved = the file was moved here from "
                     "another slot.")
 
+#: Pins against thinning (docs/thinning.md Q2): a backup in the Backups list, a version in
+#: History (the version note's lock). The mark follows a pinned row's name.
+PIN_LABEL = "Pin (thinning never deletes it)"
+UNPIN_LABEL = "Unpin"
+PIN_MARK = "  (pinned)"
+
 #: Apps that share the vault, by the name their records carry (core.appinfo), as people know
 #: them. An app not listed is shown by its record name.
 APP_NAMES = {"nms-savecraft": "NMS Savecraft"}

@@ -113,6 +113,44 @@ def test_the_operations_log_lists_moves_and_enables_undo(view, gui_app):
     win.destroy()
 
 
+def test_a_move_whose_backup_was_thinned_says_so_in_the_log(view, gui_app, monkeypatch):
+    from nms_save_vault.core.store import thinning
+    from nms_save_vault.ui.fmt import local_time
+
+    outcome = _place(view, gui_app, occupied=True)
+    when = "2026-11-19T10:00:00Z"
+    gone = thinning.ThinnedEntry("snapshot-steam-20261101-100000", when,
+                                 "a newer save from that day is kept", 1, "snapshot",
+                                 "auto: place", "2026-11-01T10:00:00Z", outcome.op_id, True)
+    other = thinning.ThinnedEntry("full-steam-20261001-100000", when, "", 1, "full", "",
+                                  "2026-10-01T10:00:00Z", None, True)
+    roots = []
+    monkeypatch.setattr(O.thinning, "thinned_entries",
+                        lambda root: roots.append(root) or {gone.id: gone, other.id: other})
+    view.open_log(select=outcome.op_id)
+    win = view.log_window
+    _wait(gui_app, lambda: outcome.op_id in win.rows)
+    date = local_time(thinning.epoch_utc(when))[:10]
+    assert win.tree.set(outcome.op_id, "what").endswith(f"(its backup was thinned on {date})")
+    assert roots == [view.organizer.vault_root]
+    assert O.thinned_by_op({gone.id: gone, other.id: other}) == {outcome.op_id: date}
+    win.destroy()
+
+
+def test_a_backup_whose_thinning_is_still_pending_does_not_read_thinned():
+    """Review finding 6: an entry recorded as being thinned (an interrupted run: done False) is
+    not thinned yet; it reads so only once its deletion is finished."""
+    from nms_save_vault.core.store import thinning
+
+    def entry(entry_id, op_id, when, done):
+        return thinning.ThinnedEntry(entry_id, when, "", 1, "snapshot", "auto: place",
+                                     "2026-11-01T10:00:00Z", op_id, done)
+    pending = entry("snapshot-steam-20261101-100000", "op-a", "2026-11-19T10:00:00Z", False)
+    done = entry("snapshot-steam-20261102-100000", "op-b", "2026-11-18T10:00:00Z", True)
+    assert O.thinned_by_op({pending.id: pending, done.id: done}) == {
+        "op-b": O.local_time(thinning.epoch_utc(done.when))[:10]}
+
+
 def test_done_text_and_the_bar_clears():
     out = liveops.OpOutcome("op-1", "done", "Put 'A' into Steam slot 5", (), None, "pending", None)
     assert O.done_text(out) == ("Done. Put 'A' into Steam slot 5. Waiting for the next game "

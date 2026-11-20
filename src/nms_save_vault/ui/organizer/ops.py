@@ -19,9 +19,10 @@ from ...core.liveops import (
     EmptySlotGuide, OpContext, OpOutcome, OpSummary, PlacePlan, RecoveryItem, Warning, execute,
     op_history, resolve_recovery)
 from ...core.organizer.model import LiveTarget
+from ...core.store import thinning
 from ..dialogs import bind_escape, cap_minsize, grab_owner, keep_on_screen
 from ..dpi import px, pxs
-from ..fmt import play_time
+from ..fmt import local_time, play_time
 from ..redact import rtitle, set_label, shown
 from ..themeaware import ThemeRegistry
 from ..worker import UiWorker, finisher, release_tk_variables, weak
@@ -494,15 +495,30 @@ class StepsWindow(_Dialog):
                                   foreground=self._pal["fg"])
 
 
+def thinned_by_op(thinned) -> dict[str, str]:
+    """The local date each operation's backup was thinned on (docs/thinning.md: the History
+    says "thinned on <date>" for an operation whose backup went), from ``thinned_entries()``;
+    the earliest when one operation lost more than one. An entry whose deletion is still to
+    be finished (an interrupted run) is not thinned yet."""
+    out: dict[str, str] = {}
+    for t in thinned.values():
+        if t.op_id and t.done:
+            date = local_time(thinning.epoch_utc(t.when))[:10] or t.when[:10]
+            out[t.op_id] = min(out.get(t.op_id, date), date)
+    return out
+
+
 def _read_log(make_context, targets):
-    """The worker's job for the log: a closure over plain data, never over the window."""
-    def job() -> list[OpSummary]:
+    """The worker's job for the log: a closure over plain data, never over the window. Its
+    result: the operations, newest first, and the date each one's backup was thinned on."""
+    def job() -> tuple[list[OpSummary], dict[str, str]]:
         ctx = make_context()
         merged: dict[str, OpSummary] = {}
         for t in targets:
             for s in op_history(ctx, t):
                 merged.setdefault(s.op_id, s)
-        return sorted(merged.values(), key=lambda s: (s.when, s.op_id), reverse=True)
+        rows = sorted(merged.values(), key=lambda s: (s.when, s.op_id), reverse=True)
+        return rows, thinned_by_op(thinning.thinned_entries(ctx.vault.root))
     return job
 
 
@@ -541,13 +557,16 @@ class OpsLogWindow(_Dialog):
         worker.submit(_read_log(make_context, list(targets)), on_done=weak(self._loaded),
                       on_error=weak(self._failed))
 
-    def _loaded(self, rows: list[OpSummary]) -> None:
+    def _loaded(self, result: tuple[list[OpSummary], dict[str, str]]) -> None:
         if not self.winfo_exists():
             return
+        rows, thinned = result
         self.rows = {s.op_id: s for s in rows}
         for s in rows:
+            what = s.text + (f"  (its backup was thinned on {thinned[s.op_id]})"
+                             if s.op_id in thinned else "")
             self.tree.insert("", "end", iid=s.op_id, values=tuple(
-                shown(self, v) for v in (s.when, s.text, s.status, s.verify)))
+                shown(self, v) for v in (s.when, what, s.status, s.verify)))
         set_label(self.status, f"{len(rows)} operations" if rows else "No operations yet.")
         if self.select in self.rows:
             self.tree.selection_set(self.select)

@@ -109,7 +109,8 @@ src/nms_save_vault/
     platform.py   per-OS facts the rest of core asks for (Steam roots, worker policy)
     aliases.py    account-id -> display-name filter (accounts.ini); display only
     store/        the version store: objects, manifests, upgrade, fold, copy-in, rollback, fsck
-                  (docs/organizer/designs/D3-storage-version-store.md)
+                  (docs/organizer/designs/D3-storage-version-store.md); thinning and pins
+                  (docs/thinning.md)
     index/        the content index: extractors, facts, "what changed", worker pool, sqlite
                   cache in the per-machine folder (docs/organizer/designs/D4-content-index.md)
     savejson.py, hashname.py  full save decode; the game's hashed key names
@@ -140,6 +141,8 @@ src/nms_save_vault/
     fmt.py        play time and local time as every view shows them
     tooltip.py    hover text for tree rows and canvas items, built on hover
     menubar.py, menuhint.py  the in-window menu bar for the dark theme; menu hint text
+    thinning.py   Thin the vault...: the list window (plan and run in the worker, ticks, progress)
+    settings.py   Tools > Settings...: the size at which the status bar reminds to thin
     organizer/    the Organizer tab
       table.py    OrganizerTable: lines with > / v, chips, Find, sort, column chooser
       live.py     LiveArea: one or two live folders as canvas lists, markers, refill warning

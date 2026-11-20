@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 
 from ...core.organizer.readmodel import ReadModel
 from ...core.organizer.lineage import Corrections
+from ...core.store import thinning
 from .compare import CompareWindow
 from .correct import CorrectDialog
 from .history import HistoryWindow
@@ -61,15 +62,23 @@ class HistoryHooks:
         return self.history
 
     def lock(self, pid: str, head: str, locked: bool) -> None:
-        """Lock or unlock a version (never pruned, never deleted), in the worker."""
+        """Pin or unpin a version (the version note's lock: thinning never deletes it), in
+        the worker, through the core's pin, which is refused while the vault is read-only;
+        the refusal is said in the alert bar."""
         view = self.view
         row = next((r for r in view.model.versions(pid) if r.head == head), None) \
             if view.model else None
         if row is None or view.organizer is None:
             return
-        view.worker.submit(view.organizer.notes.set_version_note, head, pair=row.pair,
-                           pid=row.pid, locked=locked, on_done=lambda _r: view.reload(),
-                           on_error=view._worker_error("Lock"))
+        root = view.organizer.vault_root
+        if locked:
+            view.worker.submit(thinning.pin_version, root, head, pair=row.pair, pid=row.pid,
+                               on_done=lambda _r: view.reload(),
+                               on_error=view._worker_error("Pin"))
+        else:
+            view.worker.submit(thinning.unpin_version, root, head,
+                               on_done=lambda _r: view.reload(),
+                               on_error=view._worker_error("Pin"))
 
     # --- Compare --------------------------------------------------------------------------
 

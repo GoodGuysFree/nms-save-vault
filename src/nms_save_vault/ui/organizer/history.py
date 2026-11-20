@@ -27,7 +27,8 @@ from ..redact import RedactingTreeview, rtext, rtitle, set_label
 from ..themeaware import ThemeRegistry
 from .lanes import LaneCell, lane_cells, lane_width
 from ..tooltip import Tooltip
-from .words import NOT_LINKED_TIP, edited_by_words, line_name, version_numbers
+from .words import (NOT_LINKED_TIP, PIN_LABEL, PIN_MARK, UNPIN_LABEL, edited_by_words, line_name,
+                    version_numbers)
 
 STYLE = "Organizer.Treeview"
 MODES = ("key", "all")
@@ -100,7 +101,8 @@ def _note(row: VersionRow, since: str = "") -> str:
     text = row.label or next(iter(row.comment.splitlines()), "")
     if row.label:
         text = f'"{text}"'
-    return "  ".join(filter(None, [text, edited_by_words(row.edited_by), since]))
+    pin = PIN_MARK.strip() if row.locked else ""
+    return "  ".join(filter(None, [pin, text, edited_by_words(row.edited_by), since]))
 
 
 def key_counts(model: ReadModel, pid: str) -> tuple[int, int]:
@@ -484,6 +486,12 @@ class HistoryWindow(tk.Toplevel):
         self.dated_tip = Tooltip(self.tree, lambda _w, iid: NOT_LINKED_TIP if (
             self.rows.get(iid) is not None and self.rows[iid].key == ("sec", "dated")) else "")
         self.tree.bind("<Button-1>", self._clicked, add="+")
+        self.tree.bind("<Button-3>", self._right_click)
+        for key in ("<Shift-F10>", "<App>"):
+            try:
+                self.tree.bind(key, self._menu_key)
+            except tk.TclError:
+                pass                     # a keysym this platform does not have
 
         self.panel_title = ttk.Label(right, text="", style="Head.TLabel", anchor="w",
                                      wraplength=px(300))
@@ -496,7 +504,7 @@ class HistoryWindow(tk.Toplevel):
         self.move_button = ttk.Button(actions, text="Move to live...", command=self.move)
         self.compare_button = ttk.Button(actions, text="Compare...", command=self.compare)
         self.label_button = ttk.Button(actions, text="Label", command=self.label)
-        self.lock_button = ttk.Button(actions, text="Lock", command=self.lock)
+        self.lock_button = ttk.Button(actions, text="Pin", command=self.lock)
         self.correct_button = ttk.Button(actions, text="Correct...", command=self.correct)
         for b in (self.move_button, self.compare_button, self.label_button, self.lock_button,
                   self.correct_button):
@@ -755,14 +763,14 @@ class HistoryWindow(tk.Toplevel):
         line = self.model.line(self.pid)
         set_label(self.panel_title, f"{local_time(row.saved_at)}  "
                                     f"{play_time(row.play_time) or '0h00'}"
-                                    f"{'  [locked]' if row.locked else ''}")
+                                    f"{'  [pinned]' if row.locked else ''}")
         bits = [f"#{numbers[row.head]}", "Steam" if row.platform == "steam" else "Xbox"]
         if row.mode or row.difficulty:
             bits.append(row.mode or row.difficulty)
         if line is not None:
             bits.insert(0, line_name(line))
         set_label(self.panel_sub, " - ".join(bits))
-        set_label(self.lock_button, "Unlock" if row.locked else "Lock")
+        set_label(self.lock_button, "Unpin" if row.locked else "Pin")
         parts = panel_segments(self.model, self.pid, row.head,
                                self.facts() if self.facts is not None else None)
         for part, tags in parts:
@@ -826,9 +834,49 @@ class HistoryWindow(tk.Toplevel):
             self.on_label(self.pid, self.head)
 
     def lock(self) -> None:
-        row = next((r for r in self.model.versions(self.pid) if r.head == self.head), None)
+        """Pin or unpin the selected version: the version note's lock, which thinning never
+        deletes (docs/thinning.md Q2)."""
+        self._pin(self.head)
+
+    def _pin(self, head: str | None) -> None:
+        row = next((r for r in self.model.versions(self.pid) if r.head == head), None)
         if self.on_lock is not None and row is not None:
             self.on_lock(self.pid, row.head, not row.locked)
+
+    def version_menu(self, iid: str, x_root: int, y_root: int) -> None:
+        """Right click on a version: Pin, or Unpin a pinned one. Other rows have no menu."""
+        hrow = self.rows.get(iid)
+        row = next((r for r in self.model.versions(self.pid)
+                    if hrow is not None and r.head == hrow.head), None)
+        if hrow is None or hrow.kind != "ver" or row is None:
+            return
+        menu = tk.Menu(self, tearoff=False)
+        menu.add_command(label=UNPIN_LABEL if row.locked else PIN_LABEL,
+                         command=lambda: self._pin(row.head))
+        self._post(menu, x_root, y_root)
+
+    def _right_click(self, event) -> None:
+        iid = self.tree.identify_row(event.y)
+        if iid:
+            self.tree.selection_set(iid)
+            self.version_menu(iid, event.x_root, event.y_root)
+
+    def _menu_key(self, _event=None) -> str:
+        """Shift+F10 / the Menu key: the focused row's menu, beside it."""
+        iid = self.tree.focus()
+        box = self.tree.bbox(iid) if iid else None
+        if box:
+            self.version_menu(iid, self.tree.winfo_rootx() + box[0] + px(40),
+                              self.tree.winfo_rooty() + box[1] + box[3])
+        return "break"
+
+    @staticmethod
+    def _post(menu: tk.Menu, x_root: int, y_root: int) -> None:
+        """Posting blocks (modal) until the menu closes; tests replace this."""
+        try:
+            menu.tk_popup(x_root, y_root)
+        finally:
+            menu.grab_release()
 
     def correct(self) -> None:
         if self.on_correct is not None and self.head is not None:

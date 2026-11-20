@@ -327,20 +327,22 @@ def _read_facts(root: Path, store: VersionStore, *, check: bool) -> _Facts:
     return _Facts(entries, known, vault, notes, ops, blocked)
 
 
-def _unseen_manifests(store: VersionStore) -> str:
+def _unseen_manifests(store: VersionStore, *, part_way: bool = False) -> str:
     """Why nothing may be deleted when a manifest the store lists is not one it could read
     (damaged, or not readable just now: a cloud file not on this machine, a file held open):
-    what it names is not known. "" when every one was read."""
+    what it names is not known. "" when every one was read. ``part_way``: said during a run,
+    which may have deleted entries before this one."""
     unseen = sorted({*store.corrupt_manifests, *store.unreadable_manifests()})
     if not unseen:
         return ""
     names = ", ".join(n[:-5] for n in unseen[:3]) + (" ..." if len(unseen) > 3 else "")
+    stop = "the rest is not thinned" if part_way else "nothing is thinned"
     return (f"{len(unseen)} backup(s) in the store cannot be read ({names}), so what they hold "
-            "is not known; nothing is thinned until they can be (nmsvault-cli store fsck).")
+            f"is not known; {stop} until they can be (nmsvault-cli store fsck).")
 
 
 def _require_every_manifest_read(store: VersionStore) -> None:
-    unseen = _unseen_manifests(store)
+    unseen = _unseen_manifests(store, part_way=True)
     if unseen:
         raise ThinError("damaged", unseen)
 
@@ -776,8 +778,15 @@ def run_thin(vault_root: str | Path, plan: ThinPlan, chosen_ids: Iterable[str], 
         return result
     thinned = before.thinned + result.thinned
     freed = before.freed_bytes + result.freed_bytes
-    left = before.left + result.left
-    return ThinResult(thinned, freed, left, result.cancelled,
+    # an entry the earlier run's finish deleted is also listed (the plan was made while it was
+    # pending): it reads as deleted only, never also as "no longer in the vault"; one kept
+    # twice is said once
+    left, seen = [], set(thinned)
+    for entry_id, why in (*before.left, *result.left):
+        if entry_id not in seen:
+            seen.add(entry_id)
+            left.append((entry_id, why))
+    return ThinResult(thinned, freed, tuple(left), result.cancelled,
                       _message(thinned, freed, left, result.cancelled))
 
 
@@ -1169,17 +1178,19 @@ def pinned_entries(vault_root: str | Path) -> frozenset[str]:
 def pin_version(vault_root: str | Path, vid: str, *, pair: tuple[str | None, str | None] | None
                 = None, pid: str | None = None) -> None:
     """Pin one version (the sha256 of a save's data): the version-note lock, "the owner's keep
-    mark" (organizer/notes.py). A version note that names it already is locked; else one is
-    made for the slot ``pair`` (A, B) and playthrough ``pid`` it was kept with (default: as
-    the newest entry holding it says). KeyError when the vault holds no such version."""
+    mark" (organizer/notes.py), on ``vid``'s own note - the one it heads, never another row's
+    that holds it as a partner. Its own note, when there is one, is locked with its words and
+    pair kept; else one is made for the slot ``pair`` (A, B) and playthrough ``pid`` it was
+    kept with (default: as the newest entry holding it says). KeyError when no pair is given
+    and the vault holds no such version."""
     root = Path(vault_root)
     if not is_digest(vid):
         raise ValueError("a version is the sha256 of a save's data")
     notes = _notes_to_write(root)
-    note = next((n for n in notes.state().versions.values() if vid in (n.head, *n.pair)), None)
+    own = notes.state().versions.get(vid)
     with _writing():
-        if note is not None:
-            notes.set_version_note(note.head, pair=note.pair, pid=note.pid, locked=True)
+        if own is not None and vid in own.pair:
+            notes.set_version_note(vid, pair=own.pair, pid=own.pid, locked=True)
             return
         if pair is None or pid is None:
             found_pair, found_pid = _kept_as(root, vid)
@@ -1203,14 +1214,22 @@ def _kept_as(root: Path, vid: str) -> tuple[tuple[str | None, str | None], str]:
 
 
 def unpin_version(vault_root: str | Path, vid: str) -> None:
-    """Take the lock off every version note that names ``vid``; their text stays."""
+    """Take the lock off ``vid``'s own version note (the one it heads); its text stays, and the
+    pin of any other version - another save of its slot that holds ``vid`` as its partner - is
+    left as it is. Nothing to do when ``vid`` is not pinned. ValueError when ``vid`` is kept
+    only by such another version's pin: unpinning ``vid`` cannot take that pin off."""
     if not is_digest(vid):
         raise ValueError("a version is the sha256 of a save's data")
     notes = _notes_to_write(Path(vault_root))
+    state = notes.state()
+    own = state.versions.get(vid)
+    if own is None or not own.locked:
+        if vid in state.locked_vids():
+            raise ValueError("this save stays pinned: the other save of its slot at that moment "
+                             "is pinned, and its pin keeps both. Unpin that one.")
+        return
     with _writing():
-        for note in notes.state().versions.values():
-            if note.locked and vid in (note.head, *note.pair):
-                notes.set_version_note(note.head, pair=note.pair, pid=note.pid, locked=False)
+        notes.set_version_note(vid, pair=own.pair, pid=own.pid, locked=False)
 
 
 def pinned_versions(vault_root: str | Path) -> frozenset[str]:
