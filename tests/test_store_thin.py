@@ -818,6 +818,33 @@ def test_unpinning_a_save_kept_only_by_its_partners_pin_is_refused_and_says_why(
     assert fingerprint(w.root / "organizer") == before
 
 
+def test_pinning_a_version_locks_its_own_note_never_another_rows(tmp_path):
+    w = World(tmp_path)
+    w.notes().set_version_note(B1, pair=(A1, B1), pid=pid(P1), label="before the boss")
+    thinning.pin_version(w.root, A1, pair=(A1, B0), pid=pid(P1))      # History: Pin on row A1
+    after = w.notes().state().versions
+    assert after[A1].locked and after[A1].pair == (A1, B0) and after[A1].pid == pid(P1)
+    assert after[B1].locked is False and after[B1].label == "before the boss"
+    assert thinning.pinned_versions(w.root) == {A1, B0}
+    thinning.pin_version(w.root, B1)                    # its own note: locked, its words kept
+    after = w.notes().state().versions
+    assert after[B1].locked and after[B1].label == "before the boss" and after[B1].pair == (A1, B1)
+
+
+def test_a_pinned_version_is_kept_by_the_schedule_as_its_own_row(tmp_path):
+    w = World(tmp_path)
+    w.add((1, P1, at(2026, 11, 19, 12), "now"))
+    old = w.add((1, P1, at(2026, 3, 3, 12), "old"))                   # March, the older one
+    w.add((1, P1, at(2026, 3, 20, 12), "later"))
+    newer = w.add((1, P1, at(2026, 3, 25, 12), "newer"))
+    vid = old.members[0].vid
+    w.notes().set_version_note(newer.members[0].vid, pair=(newer.members[0].vid, vid),
+                               pid=pid(P1), label="a row whose pair names the old save")
+    thinning.pin_version(w.root, vid, pair=(vid, None), pid=pid(P1))
+    assert w.notes().state().versions[vid].locked
+    assert old.id not in ids(w.plan().candidates)
+
+
 def test_the_reminder_size_is_kept_in_the_settings_and_the_vault_size_read_from_manifests(
         tmp_path):
     state = appstate.AppState(thin_reminder_bytes=2 << 30)

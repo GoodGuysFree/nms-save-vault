@@ -1148,17 +1148,19 @@ def pinned_entries(vault_root: str | Path) -> frozenset[str]:
 def pin_version(vault_root: str | Path, vid: str, *, pair: tuple[str | None, str | None] | None
                 = None, pid: str | None = None) -> None:
     """Pin one version (the sha256 of a save's data): the version-note lock, "the owner's keep
-    mark" (organizer/notes.py). A version note that names it already is locked; else one is
-    made for the slot ``pair`` (A, B) and playthrough ``pid`` it was kept with (default: as
-    the newest entry holding it says). KeyError when the vault holds no such version."""
+    mark" (organizer/notes.py), on ``vid``'s own note - the one it heads, never another row's
+    that holds it as a partner. Its own note, when there is one, is locked with its words and
+    pair kept; else one is made for the slot ``pair`` (A, B) and playthrough ``pid`` it was
+    kept with (default: as the newest entry holding it says). KeyError when no pair is given
+    and the vault holds no such version."""
     root = Path(vault_root)
     if not is_digest(vid):
         raise ValueError("a version is the sha256 of a save's data")
     notes = _notes_to_write(root)
-    note = next((n for n in notes.state().versions.values() if vid in (n.head, *n.pair)), None)
+    own = notes.state().versions.get(vid)
     with _writing():
-        if note is not None:
-            notes.set_version_note(note.head, pair=note.pair, pid=note.pid, locked=True)
+        if own is not None and vid in own.pair:
+            notes.set_version_note(vid, pair=own.pair, pid=own.pid, locked=True)
             return
         if pair is None or pid is None:
             found_pair, found_pid = _kept_as(root, vid)
