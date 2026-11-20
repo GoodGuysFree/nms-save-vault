@@ -83,6 +83,10 @@ NAMED = "you named it"
 NOTED = "you wrote a note on it"
 VERSION_PINNED = "it holds a save you pinned"
 VERSION_NOTED = "it holds a save you wrote a note on"
+#: How long a change to the live saves that went through keeps what its undo needs; after that
+#: the schedule decides about it like any other save (GGF 2026-11-20, thinning question 2:
+#: "B"). A copy the owner asked the vault to keep stays however old.
+OP_KEEP_DAYS = 30
 OP_UNFINISHED = "an unfinished change to your live saves still needs it"
 OP_UNREADABLE = "a change to your live saves whose record cannot be read names it"
 OP_RESTORE = "the Undo of a whole-folder restore puts it back"
@@ -384,7 +388,7 @@ def _decide(f: _Facts, now: datetime) -> _Decision:
         if e.schema > ENTRY_SCHEMA:
             forced[e.id].add(NEWER_APP)
     catalog_listed = _catalog_rules(f, forced)
-    _op_rules(f, forced, kept)
+    _op_rules(f, forced, kept, now_ts)
     _undo_walk(f, forced)
 
     marked: set[Key] = set()
@@ -552,10 +556,22 @@ def _old_folder(vault: Vault, c: CatalogEntry) -> Path:
     return subdir / c.id
 
 
-def _op_rules(f: _Facts, forced: dict[str, set[str]], kept: dict[Key, set[str]]) -> None:
+def _op_time(rec) -> float | None:
+    """When an op ended (its last event's time), None when that does not read."""
+    event = rec.last("done") or (rec.events[-1] if rec.events else None)
+    utc = event.get("utc") if isinstance(event, dict) else None
+    try:
+        return datetime.fromisoformat(str(utc).replace("Z", "+00:00")).timestamp()
+    except (TypeError, ValueError):
+        return None
+
+
+def _op_rules(f: _Facts, forced: dict[str, set[str]], kept: dict[Key, set[str]],
+              now_ts: float) -> None:
     """What the operations of ``ops.jsonl`` still need: everything an unfinished one names;
-    of one that went through, the snapshot its undo restores, its preserves and kept copies,
-    the versions it evicted (its undo puts them back) and the account data it replaced."""
+    of one that went through in the last :data:`OP_KEEP_DAYS` days (or whose time does not
+    read), the snapshot its undo restores, its preserves, the versions it evicted (its undo
+    puts them back) and the account data it replaced; a keep op's copy, however old."""
     by_op: dict[str, set[str]] = defaultdict(set)
     for e in f.entries.values():
         if e.op_id:
@@ -569,8 +585,10 @@ def _op_rules(f: _Facts, forced: dict[str, set[str]], kept: dict[Key, set[str]])
             for vid in _named_vids(rec.events):
                 kept[("m", vid)].add(OP_UNDO)
         elif status == "done":
+            ended = _op_time(rec)
+            recent = ended is None or now_ts - ended <= OP_KEEP_DAYS * 86400
             try:
-                _done_op(rec, forced, kept)
+                _done_op(rec, forced, kept, recent=recent)
             except (KeyError, TypeError, ValueError, AttributeError) as exc:
                 log.warning("thinning: the record of op %s does not read (%s); what it names "
                             "stays", rec.op_id, exc)
@@ -578,13 +596,16 @@ def _op_rules(f: _Facts, forced: dict[str, set[str]], kept: dict[Key, set[str]])
                     forced[entry_id].add(OP_UNREADABLE)
 
 
-def _done_op(rec, forced: dict[str, set[str]], kept: dict[Key, set[str]]) -> None:
+def _done_op(rec, forced: dict[str, set[str]], kept: dict[Key, set[str]], *,
+             recent: bool = True) -> None:
     from ..liveops.account import KIND as ACCOUNT_KIND
 
     if rec.kind == "keep":
         entry_id = (rec.last("done") or {}).get("entry_id")
         if isinstance(entry_id, str):
             forced[entry_id].add(OP_KEEP)
+        return
+    if not recent:                      # older than OP_KEEP_DAYS: the schedule decides
         return
     writing = rec.last("writing")
     if writing is None:

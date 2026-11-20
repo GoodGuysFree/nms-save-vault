@@ -142,9 +142,11 @@ Where this design was silent, the choice that keeps more:
   in the vault, while it is a copy-in of the owner's own folder, or when the catalog entry has
   a note; a leftover catalog entry goes with its store entry.
 - Operations: an open op (and one recovered but not closed, or left part-way by the owner)
-  keeps everything it names, and every entry carrying its op id. Of a finished op: a
-  whole-folder restore's snapshot, the preserves and kept copies, a keep op's copy, the
-  versions it evicted, an unlock's earlier account data. A place's own safety snapshot may go.
+  keeps everything it names, and every entry carrying its op id. Of a finished op, for 30 days
+  after it ended (GGF 2026-11-20, "B": then the schedule decides, and its undo is refused as
+  the version cannot be read; an op whose time does not read counts as recent): a
+  whole-folder restore's snapshot, the preserves, the versions it evicted, an unlock's earlier
+  account data. A keep op's copy stays however old. A place's own safety snapshot may go.
 - The run refuses: a store the quick check finds damaged (checked before an interrupted run is
   finished too), a manifest that is damaged or cannot be read just now (checked again under
   the lock before each entry and before its objects go), a journal, notes file or format of a

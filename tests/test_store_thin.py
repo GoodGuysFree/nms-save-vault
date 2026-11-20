@@ -86,7 +86,8 @@ class World:
     def notes(self) -> Notes:
         return Notes(OrganizerStore(self.root, create=True))
 
-    def op(self, kind, status, targets=(), *, done=None, note="", op_id=None):
+    def op(self, kind, status, targets=(), *, done=None, note="", op_id=None,
+           utc="2026-11-19T10:00:00.000Z"):
         """An operation as ops.jsonl records it: preparing, writing (with ``targets``), then
         ``status`` (none for an op still open)."""
         self.ops += 1
@@ -102,7 +103,7 @@ class World:
         with open(path, "a", encoding="ascii") as f:
             for seq, (event, payload) in enumerate(events, 1):
                 f.write(json.dumps({"j": 1, "op_id": op_id, "seq": seq, "event": event,
-                                    "utc": "2026-11-19T10:00:00.000Z", "machine": MACHINE,
+                                    "utc": utc, "machine": MACHINE,
                                     **payload}) + "\n")
         return op_id
 
@@ -266,6 +267,54 @@ def test_the_versions_an_undo_puts_back_stay(tmp_path):
     plan = w.plan()
     assert ids(plan.candidates) == {evicted.id}                  # the newest holder stays
     assert reasons(plan) == {again.id: (thinning.OP_UNDO,)} and later.id not in reasons(plan)
+
+
+def test_what_a_change_s_undo_needs_stays_30_days_then_the_schedule_decides(tmp_path):
+    """GGF 2026-11-20 (thinning question 2, "B"): a change that went through keeps what its
+    undo needs for 30 days; an older one's saves go by the schedule like any other (its undo
+    is refused then: that version cannot be read from the vault)."""
+    w = World(tmp_path)
+    w.add((1, P1, at(2026, 11, 19, 12), "now"))
+    evicted = w.add((1, P1, at(2026, 3, 3, 12), "evicted"), made=at(2026, 3, 3, 13))
+    again = w.add((1, P1, at(2026, 3, 3, 12), "evicted"), made=at(2026, 3, 4, 13))
+    w.add((1, P1, at(2026, 3, 20, 12), "later"))
+    snapshot, preserve, _plain, _newest = _twins(w, 4)
+    vid = evicted.members[0].vid
+    w.op("place", "done", [target(evicted=vid, preserved=[(preserve.id, vid)])],
+         utc="2026-10-20T10:00:00.000Z")                     # 31 days before NOW
+    w.op("panic_restore", "done", [target(snapshot=snapshot.id)],
+         utc="2026-10-20T09:00:00.000Z")
+    plan = w.plan()
+    assert {evicted.id, again.id, preserve.id} <= ids(plan.candidates)
+    assert snapshot.id not in reasons(plan) or thinning.OP_RESTORE not in reasons(plan)[snapshot.id]
+
+
+def test_a_change_of_the_last_30_days_keeps_what_its_undo_needs(tmp_path):
+    w = World(tmp_path)
+    w.add((1, P1, at(2026, 11, 19, 12), "now"))
+    w.add((1, P1, at(2026, 3, 3, 12), "evicted"), made=at(2026, 3, 3, 13))
+    again = w.add((1, P1, at(2026, 3, 3, 12), "evicted"), made=at(2026, 3, 4, 13))
+    w.add((1, P1, at(2026, 3, 20, 12), "later"))           # March's pick: not the evicted
+    w.op("place", "done", [target(evicted=again.members[0].vid)],
+         utc="2026-10-22T10:00:00.000Z")                     # 29 days before NOW
+    assert reasons(w.plan()) == {again.id: (thinning.OP_UNDO,)}
+
+
+def test_a_change_whose_time_does_not_read_keeps_what_its_undo_needs(tmp_path):
+    w = World(tmp_path)
+    w.add((1, P1, at(2026, 11, 19, 12), "now"))
+    w.add((1, P1, at(2026, 3, 3, 12), "evicted"), made=at(2026, 3, 3, 13))
+    again = w.add((1, P1, at(2026, 3, 3, 12), "evicted"), made=at(2026, 3, 4, 13))
+    w.add((1, P1, at(2026, 3, 20, 12), "later"))           # March's pick: not the evicted
+    w.op("place", "done", [target(evicted=again.members[0].vid)], utc="not a time")
+    assert reasons(w.plan()) == {again.id: (thinning.OP_UNDO,)}
+
+
+def test_a_copy_the_owner_asked_to_keep_stays_however_old(tmp_path):
+    w = World(tmp_path)
+    kept, _newest = _twins(w, 2)
+    w.op("keep", "done", done={"entry_id": kept.id}, utc="2026-01-01T10:00:00.000Z")
+    assert reasons(w.plan()) == {kept.id: (thinning.OP_KEEP,)}
 
 
 def test_the_snapshot_the_next_whole_folder_undo_lands_on_stays(tmp_path):
