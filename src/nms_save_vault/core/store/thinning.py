@@ -24,6 +24,7 @@ import json
 import logging
 import os
 import re
+import time
 from collections import defaultdict
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import ExitStack, contextmanager
@@ -63,6 +64,9 @@ WEEKLY = 183 * DAY          # then one per ISO week; after that one per month
 THINNING_FORMAT = "nmsvault-thinning"
 THINNING_SCHEMA = 1
 ThinFault = Callable[[str], None]     # tests: raise at a named point to simulate a crash
+#: How long a deletion waits out a file another program holds open (Windows) before the run
+#: stops; the entry is then finished at the next start.
+BUSY_WAIT_SECONDS = 2.0
 
 # --- why an entry stays, in the owner's words -------------------------------------------------
 
@@ -889,7 +893,7 @@ def _finish_one(root: Path, store: VersionStore, entry_id: str, statuses: dict,
                 faults: ThinFault | None) -> None:
     """The deletion of an entry recorded as thinning, from wherever it stopped."""
     record = statuses[entry_id]
-    store._drop_manifest(entry_id)
+    store._drop_manifest(entry_id, remove=_unlink_when_free)
     _fault(faults, "thin.after_manifest")
     _require_every_manifest_read(store)        # an unread manifest may name any of them
     named = set().union(*(e.object_digests() for e in store.entries()))
@@ -910,11 +914,33 @@ def _delete_object(store: VersionStore, digest: str) -> None:
     """The one deletion of an object anywhere (objects.py): the caller holds the vault lock and
     found that no manifest names it."""
     path = store.objects.path_for(digest)
-    try:
-        path.unlink()
-    except FileNotFoundError:
-        return
-    safety.fsync_dir(path.parent)
+    if _unlink_when_free(path):
+        safety.fsync_dir(path.parent)
+
+
+def _unlink_when_free(path: Path) -> bool:
+    """Delete a file of the store, waiting out a sharing violation (another program holds it
+    open) for BUSY_WAIT_SECONDS; True when it was there. Still held, or any other failure:
+    ThinError, and the entry, recorded as thinning, is finished at the next start."""
+    deadline = time.monotonic() + BUSY_WAIT_SECONDS
+    pause = 0.005
+    while True:
+        try:
+            path.unlink()
+            return True
+        except FileNotFoundError:
+            return False
+        except PermissionError as exc:
+            if time.monotonic() >= deadline:
+                raise ThinError("busy", "A file of the vault is in use by another program "
+                                        f"({exc.strerror or exc}). Close it and start the app "
+                                        "again: the deletion is finished then.") from exc
+            time.sleep(pause)
+            pause = min(pause * 2, 0.2)
+        except OSError as exc:
+            raise ThinError("failed", f"A file of the vault could not be deleted "
+                                      f"({exc.strerror or exc}); the deletion is finished at "
+                                      "the next start.") from exc
 
 
 def _drop_catalog_entry(root: Path, entry_id: str) -> None:

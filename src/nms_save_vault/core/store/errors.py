@@ -93,9 +93,11 @@ class FreeError(StoreError):
 
 
 class ThinError(StoreError):
-    """Thinning the vault did not run (docs/thinning.md); ``code`` says why: busy (another
-    window writes, upgrades or thins), blocked (the plan says why it cannot run), damaged (the
-    check of the store found damage, or the thinning record cannot be read), other-vault."""
+    """Thinning the vault did not run, or stopped (docs/thinning.md); ``code`` says why: busy
+    (another window writes, upgrades or thins; or a file is held open by another program),
+    blocked (the plan says why it cannot run), damaged (the check of the store found damage, a
+    backup cannot be read, or the thinning record cannot be read), failed (a file could not be
+    deleted), other-vault. An entry it stopped in is finished at the next start."""
 
     def __init__(self, code: str, message: str) -> None:
         super().__init__(message)

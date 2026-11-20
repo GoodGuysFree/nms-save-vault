@@ -569,16 +569,16 @@ class VersionStore:
         if stamp is not None:
             return stamp[0]
         if entry is None:
-            raise KeyError(f"the store has no entry {entry_id!r}")
+            raise EntryNotFound(entry_id)
         return len(entry.to_bytes())
 
-    def _drop_manifest(self, entry_id: str) -> None:
-        """Delete an entry's manifest (thinning only, under the vault lock) and forget it."""
+    def _drop_manifest(self, entry_id: str, *,
+                       remove: Callable[[Path], object] = lambda p: p.unlink(missing_ok=True)
+                       ) -> None:
+        """Delete an entry's manifest (thinning only, under the vault lock, with ``remove``)
+        and forget it."""
         name = f"{entry_id}.json"
-        try:
-            self._manifest_path(entry_id).unlink()
-        except FileNotFoundError:
-            pass
+        remove(self._manifest_path(entry_id))
         safety.fsync_dir(self._io / ENTRIES)
         with self._index_guard:
             self._forget(name)

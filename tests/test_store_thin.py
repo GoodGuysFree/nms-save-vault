@@ -717,6 +717,48 @@ def test_a_note_or_pin_that_does_not_read_stops_thinning(tmp_path):
         assert w.plan().blocked, broken
 
 
+def test_an_object_held_open_stops_the_run_and_is_finished_at_the_next_start(
+        tmp_path, monkeypatch):
+    """Finding 7: a file another program holds (Windows) is waited for, then the run stops with
+    a ThinError; the entry is finished at the next start."""
+    w = World(tmp_path)
+    old = w.add((1, P1, at(2026, 3, 3, 12), "old"), made=at(2026, 3, 3, 13))
+    w.add((1, P1, at(2026, 3, 20, 12), "later"))
+    w.add((1, P1, at(2026, 11, 19, 12), "now"))
+    held = open_vault_store(w.root).objects.path_for(next(iter(old.object_digests())))
+    real = Path.unlink
+
+    def busy(self, *a, **k):
+        if self.name == held.name:
+            raise PermissionError(13, "The process cannot access the file", None, 32)
+        return real(self, *a, **k)
+
+    monkeypatch.setattr(Path, "unlink", busy)
+    monkeypatch.setattr(thinning, "BUSY_WAIT_SECONDS", 0.05, raising=False)
+    with pytest.raises(vstore.ThinError) as refused:
+        thinning.run_thin(w.root, w.plan(), [old.id])
+    assert refused.value.code == "busy" and thinning.thinning_pending(w.root)
+    monkeypatch.setattr(Path, "unlink", real)
+    assert thinning.finish_thinning(w.root).thinned == (old.id,)
+    store = open_vault_store(w.root)
+    assert store.fsck().ok and not store.objects.has(held.name)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="a file held open blocks its deletion on Windows")
+def test_an_object_another_program_reads_stops_the_run_with_a_thin_error(tmp_path, monkeypatch):
+    w = World(tmp_path)
+    old = w.add((1, P1, at(2026, 3, 3, 12), "old"), made=at(2026, 3, 3, 13))
+    w.add((1, P1, at(2026, 3, 20, 12), "later"))
+    w.add((1, P1, at(2026, 11, 19, 12), "now"))
+    monkeypatch.setattr(thinning, "BUSY_WAIT_SECONDS", 0.05, raising=False)
+    held = open_vault_store(w.root).objects.path_for(next(iter(old.object_digests())))
+    with open(held, "rb"):                               # a deep check in another window
+        with pytest.raises(vstore.ThinError) as refused:
+            thinning.run_thin(w.root, w.plan(), [old.id])
+    assert refused.value.code == "busy" and thinning.thinning_pending(w.root)
+    assert thinning.finish_thinning(w.root).thinned == (old.id,)
+
+
 # --- pins and the reminder --------------------------------------------------------------------
 
 
