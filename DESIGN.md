@@ -217,7 +217,9 @@ src/nms_save_vault/
    recovery or a rollback never writes over a slot the game has written since. The app never
    empties a slot.
 9. The version store never writes into a live save folder and never deletes an object or a
-   manifest by itself: damaged objects are quarantined, the pre-upgrade copy is read-only
+   manifest by itself: only thinning does, when the owner asks, after the list of what goes was
+   shown, and only what no other entry needs (`docs/thinning.md`); damaged objects are
+   quarantined, the pre-upgrade copy is read-only
    input, and the upgrade and its undo leave a marker (`store/state/upgrade.json`) so an
    interrupted run is finished or abandoned explicitly, with every other vault write refused
    meanwhile.

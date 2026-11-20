@@ -119,6 +119,31 @@ accepts a fold record whose entry was thinned (`_check_migration`).
 store's size from the manifests (`VersionStore.stored_bytes`), so the status bar does not walk
 the objects.
 
+### As built (core, `store/thinning.py`)
+
+Where this design was silent, the choice that keeps more:
+
+- Periods by each version's own age: under 30 days by day, under 183 days by ISO week, then by
+  month, in the time zone of `now`. A version's time is the newest `meta_ts` any entry records
+  for it; a version without one stays. An account's data file is dated by its file time.
+- A version that stays keeps the newest entry holding it, unless an entry that stays anyway
+  holds it (no smallest-cover search). Versions in a pinned, named or noted entry count as the
+  owner's pick for their period.
+- Old-layout catalog entries: a store entry the catalog also lists stays while its old folder is
+  in the vault, while it is a copy-in of the owner's own folder, or when the catalog entry has
+  a note; a leftover catalog entry goes with its store entry.
+- Operations: an open op (and one recovered but not closed, or left part-way by the owner)
+  keeps everything it names, and every entry carrying its op id. Of a finished op: a
+  whole-folder restore's snapshot, the preserves and kept copies, a keep op's copy, the
+  versions it evicted, an unlock's earlier account data. A place's own safety snapshot may go.
+- The run refuses: a store the quick check finds damaged, a journal, notes file or format of a
+  newer app, notes that do not parse, a thinning record that does not read, another window
+  holding the live-op or upgrade lock. Only the thinned entries' own objects are deleted;
+  objects nobody named before (an interrupted capture's) stay. A commit checks its objects under
+  the vault lock, so a capture racing a run commits nothing rather than a broken entry.
+- The object store keeps no delete method; the one deletion of an object is in thinning.
+- `app_state` is `AppState.thin_reminder_bytes`; a hand-edited value that is not a size is off.
+
 ## The apps (after the core)
 
 - **NMS Save Vault:** Thin the vault... by the Backups list (plan in a worker thread, the list

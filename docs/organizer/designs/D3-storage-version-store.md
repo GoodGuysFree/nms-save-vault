@@ -782,8 +782,10 @@ verifies anyway (2.7).
   (`safety.exclusive_lock(<vault>/organizer/.lock)`) and holds it for milliseconds: re-check
   `vault_mode`, assign the entry id (unique across catalog and store), write and rename the
   manifest, fsync the folder. Objects are written before, outside the lock: they are immutable and
-  content-named, and no code path deletes an object, so a concurrent writer can at worst write the
-  same object twice (2.6 handles a busy rename). A fold holds the lock only for each entry's
+  content-named, so a concurrent writer can at worst write the same object twice (2.6 handles a
+  busy rename). Thinning (`docs/thinning.md`) deletes, under the lock, an object no manifest names;
+  so the commit checks, under the lock and before the manifest is written, that every object it
+  names is there (else nothing is committed). A fold holds the lock only for each entry's
   commit; nothing in the store holds it for longer.
 - **`LockTimeout`** (another process holds the lock for more than D1's 10 s) fails that one
   write with `StoreBusy` ("The vault is busy. Try again."); it never switches the session to
@@ -807,8 +809,9 @@ verifies anyway (2.7).
    every read verifies it.
 2. An entry exists only once its manifest is committed, and a committed manifest references only
    objects that were written or re-verified before the commit.
-3. No code path deletes an object or a manifest. Quarantine renames a bad object aside and keeps
-   it.
+3. No code path deletes an object or a manifest, but thinning: on the owner's request, after the
+   list was shown, under the vault lock, an entry no keep rule holds and the objects no remaining
+   manifest names (`docs/thinning.md`). Quarantine renames a bad object aside and keeps it.
 4. Legacy folders are deleted only by "free old folders" (phase 5): on the owner's request, after
    a deep fsck passed, after a fresh byte-for-byte re-verification against the folded store entry,
    only managed folders strictly inside `<vault>/{backups,snapshots,extracts}`; never a hand-made
