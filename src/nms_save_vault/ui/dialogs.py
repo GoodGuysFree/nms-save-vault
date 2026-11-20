@@ -108,6 +108,34 @@ def cap_minsize(win: tk.Misc, width: float, height: float, share: float = SCREEN
     win.minsize(w, h)
 
 
+def over(master: tuple[int, int, int, int], size: tuple[int, int]) -> tuple[int, int]:
+    """Where a window of ``size`` goes over ``master`` (x, y, width, height): centred, a third
+    of the way down as the app's question boxes sit, and never left of or above it (a master
+    on a monitor left of the main one has negative coordinates)."""
+    mx, my, mw, mh = master
+    width, height = size
+    return mx + max(0, (mw - width) // 2), my + max(0, (mh - height) // 3)
+
+
+def window_size(win: tk.Misc) -> tuple[int, int]:
+    """The size ``win`` was given (its geometry) or asks for, whichever is larger: a window not
+    mapped yet reports neither through ``winfo_width``."""
+    win.update_idletasks()
+    given = str(win.wm_geometry()).split("+", 1)[0].split("x")
+    try:
+        width, height = int(given[0]), int(given[1])
+    except (IndexError, ValueError):
+        width = height = 0
+    return max(width, win.winfo_reqwidth()), max(height, win.winfo_reqheight())
+
+
+def place_over(win: tk.Misc, master: tk.Misc) -> None:
+    """Open ``win`` over the main window ``master`` (see :func:`over`)."""
+    x, y = over((master.winfo_rootx(), master.winfo_rooty(), master.winfo_width(),
+                 master.winfo_height()), window_size(win))
+    win.wm_geometry(f"+{x}+{y}")
+
+
 def keep_on_screen(win: tk.Misc, share: float = SCREEN_SHARE) -> None:
     """Shrink a window that was sized larger than ``share`` of the screen."""
     win.update_idletasks()

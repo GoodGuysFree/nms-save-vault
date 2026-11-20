@@ -18,11 +18,15 @@ from .test_store_thin import P1, P2, World, at
 
 @pytest.fixture
 def world(tmp_path, monkeypatch):
-    """Two full backups of one month long ago (the older may go), each playthrough's newest, and
-    two backups of one old save of which the older is pinned. Dated against the real clock: the
-    command plans for now."""
     monkeypatch.setattr(appstate, "load", lambda *a, **k: None)
     monkeypatch.setattr(discover, "all_live_paths", lambda *a, **k: [])
+    return thin_world(tmp_path)
+
+
+def thin_world(tmp_path) -> World:
+    """Two full backups of one month long ago (the older may go), each playthrough's newest, and
+    two backups of one old save of which the older is pinned. Dated against the real clock: the
+    apps plan for now."""
     w = World(tmp_path)
     recent = int((datetime.now(timezone.utc) - timedelta(days=1)).timestamp())
     full = {"kind": "full", "label": ""}
