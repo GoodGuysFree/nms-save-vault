@@ -103,7 +103,7 @@ def test_the_window_shows_rows_tips_panel_and_follows_the_buttons(host, gui_app,
         assert win.counts.cget("text").startswith("6 versions - 2 branch tips")
         assert "Key versions" in win.key_button.cget("text")
         assert [r.kind for r in win.rows.values()].count("run") == 1
-        assert "WHAT CHANGED" in win.panel_text() and win.lock_button.cget("text") == "Lock"
+        assert "WHAT CHANGED" in win.panel_text() and win.lock_button.cget("text") == "Pin"
         win.move()
         win.compare()
         win.lock()
@@ -189,9 +189,82 @@ def test_history_opens_from_the_tab_and_a_lock_goes_through_the_worker(view, gui
     win.lock()
     _wait(gui_app, lambda: not view.scanning and any(
         r.locked for r in view.model.versions(pid) if r.head == head))
-    assert win.lock_button.cget("text") == "Unlock"          # the window followed the new model
+    assert win.lock_button.cget("text") == "Unpin"           # the window followed the new model
     again = view.histories.open_history(pid)
     assert again is win
+
+
+# --- pins (docs/thinning.md Q2: a version pin is the version note's lock) -------------------------
+
+
+def test_a_pinned_version_shows_the_mark_and_its_menu_pins_and_unpins(host, gui_app, forked,
+                                                                      monkeypatch):
+    from nms_save_vault.core.organizer.notes import Notes
+    from nms_save_vault.ui.organizer import words
+
+    w, (a, b, c, d, e), _ = forked
+    row = next(r for r in w.refresh().versions(PID) if r.head == d)
+    Notes(w.store).set_version_note(d, pair=row.pair, pid=PID, locked=True)
+    model = w.refresh()
+    rows = {r.head: r for r in H.history_rows(model, PID, "all") if r.head}
+    assert rows[d].values[6].startswith(words.PIN_MARK.strip())
+    assert not rows[c].values[6].startswith(words.PIN_MARK.strip())
+    calls, posted = [], []
+    win = H.HistoryWindow(host, model=model, themed=gui_app.themed, pid=PID, head=d,
+                          on_lock=lambda *x: calls.append(x))
+    monkeypatch.setattr(win, "_post", lambda menu, x, y: posted.append(menu))
+    try:
+        assert win.tree.bind("<Button-3>") and win.lock_button.cget("text") == "Unpin"
+        assert "[pinned]" in win.panel_title.cget("text")
+
+        def labels(head):
+            win.version_menu(win._iid_of_head[head], 0, 0)
+            menu = posted[-1]
+            return {menu.entrycget(i, "label"): i for i in range(menu.index("end") + 1)
+                    if menu.type(i) == "command"}, menu
+        found, menu = labels(d)
+        assert set(found) == {words.UNPIN_LABEL}
+        menu.invoke(found[words.UNPIN_LABEL])
+        found, menu = labels(c)
+        assert set(found) == {words.PIN_LABEL}
+        menu.invoke(found[words.PIN_LABEL])
+        assert calls == [(PID, d, False), (PID, c, True)]
+        section = next(i for i, r in win.rows.items() if r.kind == "sec")
+        count = len(posted)
+        win.version_menu(section, 0, 0)                         # not a version: no menu
+        assert len(posted) == count
+    finally:
+        win.destroy()
+
+
+def test_a_pin_from_history_goes_through_the_core_and_a_refusal_is_said(view, gui_app,
+                                                                        monkeypatch):
+    from nms_save_vault.core.store import StoreTooNew
+    from nms_save_vault.ui.organizer import histhooks
+
+    from .organizer_world import PIDS
+
+    pid = PIDS["other"]
+    view.table.select(pid)
+    view.open_history()
+    win = view.histories.history
+    head = win.head
+    seen = []
+    real = histhooks.thinning.pin_version
+    monkeypatch.setattr(histhooks.thinning, "pin_version",
+                        lambda *a, **k: (seen.append((a, k)), real(*a, **k))[1])
+    win.lock()
+    _wait(gui_app, lambda: not view.scanning and any(
+        r.locked for r in view.model.versions(pid) if r.head == head))
+    assert seen and seen[0][0] == (view.organizer.vault_root, head)
+
+    def refused(*a, **k):
+        raise StoreTooNew()
+    monkeypatch.setattr(histhooks.thinning, "unpin_version", refused)
+    win.lock()
+    _wait(gui_app, lambda: "error:Pin" in view.alerts)
+    assert "newer NMS Save Vault" in view.alerts["error:Pin"].text.cget("text")
+    assert any(r.locked for r in view.model.versions(pid) if r.head == head)
 
 
 # --- the Compare window (U25) -------------------------------------------------------------

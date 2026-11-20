@@ -38,7 +38,8 @@ from .ui.redact import RedactingTreeview
 from .ui.menubar import MenuStrip
 from .ui.menuhint import bind_menu_hints
 from .ui.tooltip import TOOLTIP_STYLE, Tooltip
-from .ui.organizer.words import FREE_OLD_TIP, PROMOTE_TIP, SLOT_MARKERS_TIP, VAULT_UPGRADE_TIP
+from .ui.organizer.words import (FREE_OLD_TIP, PIN_LABEL, PIN_MARK, PROMOTE_TIP,
+                                 SLOT_MARKERS_TIP, UNPIN_LABEL, VAULT_UPGRADE_TIP)
 from .ui.organizer.ops import OpsLogWindow, PlanDialog, StepsWindow
 from .ui.organizer.panic import PanicDialog
 from .ui.organizer.vaultwin import VaultEnv, VaultWindow, needs_attention
@@ -3411,9 +3412,6 @@ _CHECKING = "checking"                  # the game probe has not answered yet
 FREE_LABEL = "Free old backup folders..."
 FINISH_FREE_LABEL = "Finish freeing old backup folders..."
 THIN_LABEL = "Thin the vault..."
-PIN_LABEL = "Pin (thinning never deletes it)"
-UNPIN_LABEL = "Unpin"
-PIN_MARK = "  (pinned)"                 # after a pinned backup's name in the Backups list
 
 
 def _pinned_entries(vault_root: Path) -> frozenset[str]:
