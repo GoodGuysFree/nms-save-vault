@@ -19,6 +19,7 @@ interrupted run is finished by the next run or by :func:`finish_thinning`.
 """
 from __future__ import annotations
 
+import functools
 import json
 import logging
 import os
@@ -29,7 +30,7 @@ from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, get_args
 
 from .. import catalog, safety
 from ..catalog import CatalogEntry, Vault
@@ -99,25 +100,72 @@ NOT_LISTED = "it was not in the list of what may go"
 GONE = "it is no longer in the vault"
 
 # --- the labels the apps write: never the owner's ---------------------------------------------
+#
+# Listed exactly, each from the code that writes it; any other label is the owner's.
 
-_APP_LABELS = tuple(re.compile(p, re.S) for p in (
-    r"auto: .*",                       # operations.snapshot_live; liveops execute and account
-    r"pre-.*",                         # the snapshot reasons of the first releases
-    r"before restoring the whole folder",     # liveops.execute.SNAPSHOT_LABELS
-    r"kept: .*",                       # liveops.execute (keep); store.locator (preserve)
-    r"edited by \S+: .*",              # liveops.edit
-    r"slot \d{1,2} from .*",           # operations.extract_slot without a label
-    r"(Steam|GOG|Xbox)\d{8}-\d{4}",    # gui: the label a backup is offered, Back up all
-))
+_SLOT = r"(?:[1-9]|1[0-5])"
+_ID = r"[A-Za-z0-9][A-Za-z0-9_.-]*"
 
 
-def user_label(label: str, source_name: str | None = None) -> bool:
-    """The owner wrote ``label``: not empty, not one the apps write, and not the folder name an
-    import is labelled with by default (``source_name``)."""
+@functools.cache
+def _app_labels() -> tuple[re.Pattern, ...]:
+    from ..liveops.account import KIND as ACCOUNT_KIND
+    from ..liveops.execute import SNAPSHOT_LABELS
+    from ..liveops.model import PlanKind
+
+    kinds = [k for k in get_args(PlanKind) if k not in SNAPSHOT_LABELS] + [ACCOUNT_KIND]
+    return tuple(re.compile(p, re.S) for p in (
+        # liveops.execute._snapshot ("auto: <plan kind>"), liveops.account ("auto: account_edit")
+        "auto: (?:" + "|".join(map(re.escape, kinds)) + ")",
+        # operations.snapshot_live as the releases before the live operations called it
+        rf"auto: pre-restore of {_ID}", rf"auto: pre-promote slot {_SLOT}[AB]",
+        rf"auto: pre-repopulate slot {_SLOT}", rf"auto: pre-clear slot {_SLOT}",
+        *map(re.escape, SNAPSHOT_LABELS.values()),          # liveops.execute: a whole restore
+        rf"kept: slot {_SLOT}",                             # store.locator: a preserve
+        rf"kept: (?:Steam|GOG|Xbox) slot {_SLOT}(?: \(.*\))?",   # liveops.execute: a keep
+    ))
+
+
+def user_label(label: str, *, platform: str = "steam", names: Iterable[str | None] = (),
+               slots: Iterable[int] = (), origin: Mapping[str, Any] | None = None) -> bool:
+    """The owner wrote ``label``: it is not empty and not one an app writes for an entry of
+    ``platform`` taken of a folder called one of ``names`` (its slots ``slots``, its
+    ``origin``)."""
+    from ..organizer.model import platform_name
+
     text = label.strip()
-    if not text or text == (source_name or "").strip():
+    if not text:
         return False
-    return not any(p.fullmatch(text) for p in _APP_LABELS)
+    names = [n for n in names if isinstance(n, str) and n]
+    if text in names:            # operations.import_backup, and the GUI's and CLI's discover
+        return False
+    if any(p.fullmatch(text) for p in _app_labels()):
+        return False
+    if any(text == f"slot {s} from {n}" for s in slots for n in names):   # extract_slot
+        return False
+    if any(re.fullmatch(re.escape(platform_name(platform, n)) + r"\d{8}-\d{4}", text)
+           for n in [*names, ""]):                  # gui: the label a backup is offered
+        return False
+    while isinstance(origin, Mapping):              # liveops.edit, also merged from elsewhere
+        made_by, what = origin.get("made_by"), origin.get("what")
+        if isinstance(made_by, str) and isinstance(what, str) and made_by and (
+                text == f"edited by {made_by.split(' ')[0]}: {what}"[:120].strip()):
+            return False
+        origin = origin.get("source_origin")
+    return True
+
+
+def _entry_label_is_users(e: StoreEntry) -> bool:
+    wanted = e.scope.get("slots")
+    return user_label(e.label, platform=e.platform,
+                      names=(e.source.get("name"), e.source.get("account_key"), e.account_key),
+                      slots=wanted if isinstance(wanted, list) else e.slots, origin=e.origin)
+
+
+def _catalog_label_is_users(c: CatalogEntry) -> bool:
+    platform = catalog.Vault.tag_of(c.id)
+    return user_label(c.label, platform=platform if platform in ("steam", "xbox") else "steam",
+                      names=(c.source,), slots=[s.slot for s in c.slots])
 
 
 # --- what the plan hands out ------------------------------------------------------------------
@@ -316,7 +364,7 @@ def _decide(f: _Facts, now: datetime) -> _Decision:
     for e in f.entries.values():
         if e.id in pins:
             forced[e.id].add(PINNED)
-        if user_label(e.label, e.source.get("name")):
+        if _entry_label_is_users(e):
             forced[e.id].add(NAMED)
         if e.schema > ENTRY_SCHEMA:
             forced[e.id].add(NEWER_APP)
@@ -448,7 +496,7 @@ def _catalog_rules(f: _Facts, forced: dict[str, set[str]]) -> set[str]:
             continue
         if c.note.strip():
             forced[c.id].add(NOTED)
-        if user_label(c.label, c.source):
+        if _catalog_label_is_users(c):
             forced[c.id].add(NAMED)
         if not c.managed or c.kind == catalog.KIND_INPLACE:
             forced[c.id].add(OWN_FOLDER)

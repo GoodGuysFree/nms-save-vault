@@ -324,17 +324,31 @@ def test_a_folded_backup_whose_old_folder_is_still_there_stays(tmp_path):
 
 
 def test_an_entry_the_owner_named_stays_and_one_the_app_named_does_not(tmp_path):
+    """The labels the apps write, listed exactly from the code that writes them; anything else
+    is the owner's (review finding 3: "pre-..." and free "slot N from ..." text were taken for
+    the app's)."""
     w = World(tmp_path)
-    labels = ["my base before the update", "auto: place", "kept: slot 3", "kept: S7",
-              "before restoring the whole folder", "Steam20261101-1200", "GOG20261101-1200",
-              "slot 3 from st_76561198000000001", "edited by nms-savecraft: rename ship",
-              "pre-restore of full-steam-20260101-000000", "", "imported-folder"]
-    made = [w.add((1, P1, at(2026, 11, 18, 12), "twin"), label=label,
-                  made=at(2026, 11, 18, 13, i)) for i, label in enumerate(labels)]
-    w.add((1, P1, at(2026, 11, 18, 12), "twin"), made=at(2026, 11, 19, 12))
+    edit = {"made_by": "nms-savecraft 0.0.1", "edit_of": "a" * 64, "what": "rename ship 'Ark'"}
+    owners = ["my base before the update", "pre-expedition backup",      # no app wrote "pre-"
+              "slot 1 from my old laptop", "auto: my own words", "kept: the good one",
+              "edited by me: a note", "GOG20261101-1200"]               # not a GOG folder
+    apps = [("auto: place", None), ("auto: swap", None), ("auto: account_edit", None),
+            ("auto: pre-restore of full-steam-20260101-000000", None),
+            ("auto: pre-promote slot 3B", None), ("auto: pre-clear slot 12", None),
+            ("kept: slot 3", None), ("kept: Steam slot 7", None),
+            ("kept: Steam slot 7 (second account)", None),
+            ("before restoring the whole folder", None), ("Steam20261101-1200", None),
+            ("slot 1 from imported-folder", None), ("", None), ("imported-folder", None),
+            ("edited by nms-savecraft: rename ship 'Ark'", edit)]
+    saves = (1, P1, at(2026, 11, 18, 12), "twin")
+    named = [w.add(saves, label=label, made=at(2026, 11, 18, 13, i))
+             for i, label in enumerate(owners)]
+    made = [w.add(saves, label=label, origin=origin, made=at(2026, 11, 18, 14, i))
+            for i, (label, origin) in enumerate(apps)]
+    w.add(saves, made=at(2026, 11, 19, 12))
     plan = w.plan()
-    assert reasons(plan) == {made[0].id: (thinning.NAMED,)}
-    assert ids(plan.candidates) == {e.id for e in made[1:]}
+    assert reasons(plan) == {e.id: (thinning.NAMED,) for e in named}
+    assert ids(plan.candidates) == {e.id for e in made}
     assert all(not thinning.user_label(text) for text in SNAPSHOT_LABELS.values())
 
 
@@ -374,8 +388,8 @@ def test_the_pre_upgrade_copy_is_never_touched_and_the_upgrade_can_still_be_undo
     operations.create_full_backup(vault, live, warnings=[])
     result = vstore.run_upgrade(vstore.plan_upgrade(vault.root, live_roots=[live]))
     copy = vault.root.parent / result.copy_aside
-    first = operations.snapshot_live(vault, live, "one")
-    operations.snapshot_live(vault, live, "two")
+    first = operations.snapshot_live(vault, live, "pre-clear slot 1")   # as early releases did
+    operations.snapshot_live(vault, live, "pre-clear slot 2")
     copy_before, live_before = fingerprint(copy), fingerprint(live)
     plan = thinning.plan_thin(vault.root)
     assert ids(plan.candidates) == {first.id}
