@@ -267,6 +267,20 @@ def test_a_refused_run_is_said_and_the_lists_still_refresh(gui_app, world, opene
     assert win.changed == [1]
 
 
+def test_an_entry_left_pending_by_an_earlier_run_reads_deleted_only(gui_app, world, opened):
+    def crash(point):
+        if point == "thin.after_record":
+            raise KeyboardInterrupt("stopped")
+    with pytest.raises(KeyboardInterrupt):                    # and the start-up finish failed
+        thinning.run_thin(world.root, world.planned, [world.old.id], faults=crash)
+    win = opened(world)
+    assert world.old.id in win.tree.get_children("")
+    win.delete()
+    _wait(gui_app, lambda: not win.busy)
+    assert win.tree.item(world.old.id, "text") == TW.DELETED
+    assert "Kept:" not in win.result.cget("text") and world.old.id not in entries(world)
+
+
 HELD = ("A file of the vault is in use by another program (held). Close it and start the app "
         "again: the deletion is finished then.")
 

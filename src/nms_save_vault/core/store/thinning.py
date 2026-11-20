@@ -757,8 +757,15 @@ def run_thin(vault_root: str | Path, plan: ThinPlan, chosen_ids: Iterable[str], 
         return result
     thinned = before.thinned + result.thinned
     freed = before.freed_bytes + result.freed_bytes
-    left = before.left + result.left
-    return ThinResult(thinned, freed, left, result.cancelled,
+    # an entry the earlier run's finish deleted is also listed (the plan was made while it was
+    # pending): it reads as deleted only, never also as "no longer in the vault"; one kept
+    # twice is said once
+    left, seen = [], set(thinned)
+    for entry_id, why in (*before.left, *result.left):
+        if entry_id not in seen:
+            seen.add(entry_id)
+            left.append((entry_id, why))
+    return ThinResult(thinned, freed, tuple(left), result.cancelled,
                       _message(thinned, freed, left, result.cancelled))
 
 

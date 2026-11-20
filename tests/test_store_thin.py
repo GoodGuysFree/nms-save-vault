@@ -633,6 +633,25 @@ def test_a_manifest_unreadable_part_way_stops_the_run_without_saying_nothing_wen
         open_vault_store(w.root))                       # the plan's own words stay
 
 
+def test_an_entry_finished_from_an_earlier_run_reads_as_deleted_only(tmp_path):
+    """Review finding 5: the list was made while an interrupted run was pending (the start-up
+    finish failed); the run finishes it first and must not also call it kept ("it is no longer
+    in the vault")."""
+    w = World(tmp_path)
+    first, second, _newest = _twins(w, 3)
+
+    def crash(point):
+        if point == "thin.after_record":
+            raise KeyboardInterrupt("stopped")
+    with pytest.raises(KeyboardInterrupt):
+        thinning.run_thin(w.root, w.plan(), [first.id], faults=crash)
+    plan = w.plan()
+    assert thinning.thinning_pending(w.root) and first.id in ids(plan.candidates)
+    result = thinning.run_thin(w.root, plan, [c.id for c in plan.candidates])
+    assert set(result.thinned) == {first.id, second.id} and result.left == ()
+    assert result.message.startswith("2 backups deleted") and "kept" not in result.message
+
+
 def test_an_interrupted_run_is_not_finished_while_a_manifest_is_damaged(tmp_path):
     """Finding 1: the store is checked before an interrupted run is finished."""
     w, named, old, shared = _shared_world(tmp_path)
