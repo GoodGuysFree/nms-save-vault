@@ -483,6 +483,7 @@ class App(tk.Tk):
         self.thin_window: ThinWindow | None = None
         self._refresh_gen = 0               # the newest listing asked for in the worker
         self._entries: list | None = None    # the BACKUPS pane's rows as last listed
+        self._pinned: frozenset[str] = frozenset()   # the backups pinned, as last listed
         self._store_problem: str | None = None   # why the store could not be listed
         self._game_running: object = _CHECKING
         self._sources_shown = 0
@@ -1742,15 +1743,17 @@ class App(tk.Tk):
             pass                                   # the window is closing
 
     def _read_vault(self, vault) -> tuple:
-        """(entries, what is wrong with the store or None, is the game running) - worker."""
+        """(entries, what is wrong with the store or None, is the game running, the entries
+        pinned) - worker."""
         entries, problem = self._list_entries(vault)
-        return entries, problem, ops.safety.is_game_running()
+        return entries, problem, ops.safety.is_game_running(), _pinned_entries(vault.root)
 
     def _listing_ready(self, gen: int, result: tuple) -> None:
         if gen != self._refresh_gen:
             return                                 # a newer refresh is on its way
-        entries, problem, running = result
+        entries, problem, running, pinned = result
         self._game_running = running
+        self._pinned = pinned
         self._populate_backups(entries, problem)
         self._show_status()
 
@@ -1759,6 +1762,7 @@ class App(tk.Tk):
             return
         log.error("the vault could not be listed", exc_info=exc)
         self._game_running = None
+        self._pinned = frozenset()
         self._populate_backups([], _plain_error(exc))
         self._show_status()
 
@@ -1814,7 +1818,8 @@ class App(tk.Tk):
                 if not only:
                     continue
             node = tree.insert(
-                "", "end", text=e.id, open=shown is not None,
+                "", "end", text=e.id + (PIN_MARK if e.id in self._pinned else ""),
+                open=shown is not None,
                 values=(
                     e.kind,
                     len(e.occupied_slots),
@@ -2276,6 +2281,35 @@ class App(tk.Tk):
                 label=f"Copy slot {slot} into a different live slot...",
                 command=lambda: self.on_copy_slot(source=self._source_from(meta)),
             )
+        menu.add_separator()
+        pinned = entry.id in self._pinned
+        menu.add_command(label=UNPIN_LABEL if pinned else PIN_LABEL,
+                         command=lambda: self.pin_entry(entry.id, not pinned))
+
+    def pin_entry(self, entry_id: str, pinned: bool) -> None:
+        """Pin or unpin a backup (docs/thinning.md Q2): thinning never deletes a pinned one.
+        Written in the worker, then the Backups list reads the pins again. Refused, and said,
+        while the vault is read-only."""
+        from .core.store import thinning
+
+        title = "Pin" if pinned else "Unpin"
+        if self.vault.read_only:
+            _showinfo(title, "The vault is read-only just now, so pins cannot be changed.")
+            return
+        job = thinning.pin_entry if pinned else thinning.unpin_entry
+        self.worker.submit(job, self.vault.root, entry_id, on_done=lambda _r: self.refresh(),
+                           on_error=lambda exc: self._pin_failed(title, exc))
+
+    def _pin_failed(self, title: str, exc: BaseException) -> None:
+        if isinstance(exc, KeyError) and not isinstance(exc, ops.OperationError):
+            why = "that backup is no longer in the vault."
+        elif isinstance(exc, (ops.OperationError, ValueError)):
+            why = _gui_text(exc)
+        else:
+            log.error("a pin could not be changed", exc_info=exc)
+            why = _plain_error(exc)
+        _showerror(title, f"The pin was not changed: {why}")
+        self.refresh()
 
     # A slot, or one of the two saves in it, in either pane.
     def _menu_for_slot(self, menu, meta: dict) -> None:
@@ -3377,6 +3411,21 @@ _CHECKING = "checking"                  # the game probe has not answered yet
 FREE_LABEL = "Free old backup folders..."
 FINISH_FREE_LABEL = "Finish freeing old backup folders..."
 THIN_LABEL = "Thin the vault..."
+PIN_LABEL = "Pin (thinning never deletes it)"
+UNPIN_LABEL = "Unpin"
+PIN_MARK = "  (pinned)"                 # after a pinned backup's name in the Backups list
+
+
+def _pinned_entries(vault_root: Path) -> frozenset[str]:
+    """The backups pinned in the vault's notes; none when they cannot be read (logged): the
+    mark is a hint, and thinning reads the pins again itself."""
+    from .core.store import thinning
+
+    try:
+        return thinning.pinned_entries(vault_root)
+    except Exception:  # noqa: BLE001 - the listing must still show
+        log.warning("the pinned backups could not be read", exc_info=True)
+        return frozenset()
 CHOOSE_VAULT_LABEL = "Choose vault folder..."
 BACKUP_ALL_LABEL = "Back up all live folders now"
 AUTO_UPDATE_LABEL = "Check for updates automatically"
