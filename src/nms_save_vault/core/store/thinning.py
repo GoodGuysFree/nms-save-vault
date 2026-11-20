@@ -1182,14 +1182,22 @@ def _kept_as(root: Path, vid: str) -> tuple[tuple[str | None, str | None], str]:
 
 
 def unpin_version(vault_root: str | Path, vid: str) -> None:
-    """Take the lock off every version note that names ``vid``; their text stays."""
+    """Take the lock off ``vid``'s own version note (the one it heads); its text stays, and the
+    pin of any other version - another save of its slot that holds ``vid`` as its partner - is
+    left as it is. Nothing to do when ``vid`` is not pinned. ValueError when ``vid`` is kept
+    only by such another version's pin: unpinning ``vid`` cannot take that pin off."""
     if not is_digest(vid):
         raise ValueError("a version is the sha256 of a save's data")
     notes = _notes_to_write(Path(vault_root))
+    state = notes.state()
+    own = state.versions.get(vid)
+    if own is None or not own.locked:
+        if vid in state.locked_vids():
+            raise ValueError("this save stays pinned: the other save of its slot at that moment "
+                             "is pinned, and its pin keeps both. Unpin that one.")
+        return
     with _writing():
-        for note in notes.state().versions.values():
-            if note.locked and vid in (note.head, *note.pair):
-                notes.set_version_note(note.head, pair=note.pair, pid=note.pid, locked=False)
+        notes.set_version_note(vid, pair=own.pair, pid=own.pid, locked=False)
 
 
 def pinned_versions(vault_root: str | Path) -> frozenset[str]:

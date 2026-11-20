@@ -107,7 +107,9 @@ accepts a fold record whose entry was thinned (`_check_migration`).
 ### Pins
 
 - Version pin: the version-note lock (`Notes.set_version_note(..., locked=True)`); exposed in the
-  API as pin/unpin a version.
+  API as pin/unpin a version. A lock keeps its note's whole pair (the head and its partner).
+  Unpin takes off only the version's own lock (the note it heads); a save kept only by its
+  partner's lock is refused (ValueError: unpin that one), never unlocked behind its back.
 - Entry pin: new, kept in the organizer's `notes.json` (`entries: {id: {"pinned": true, ...}}`),
   journaled and conflict-safe like notes.
 - API: `pin_version`, `unpin_version`, `pin_entry`, `unpin_entry`, `pinned_entries()`,
