@@ -823,6 +823,35 @@ class App(tk.Tk):
         if notice:
             self.after(notice_ms, lambda: _showinfo("Vault upgrade", notice, parent=self))
         self.after(offer_ms, self._offer_interrupted_undo)
+        self.after(offer_ms, lambda: self._finish_thinning(vault_root))
+
+    def _finish_thinning(self, vault_root: Path) -> None:
+        """A run of thinning that stopped part-way (the app or the machine went down) is
+        finished when its vault opens: the owner asked for those deletions. In the worker; it
+        is said when it did anything, and a failure is said too, never fatal (the next start,
+        or Thin the vault..., finishes it)."""
+        from .core.store import thinning
+
+        if not thinning.thinning_pending(vault_root):
+            return
+        self.worker.submit(thinning.finish_thinning, vault_root,
+                           on_done=self._thinning_finished,
+                           on_error=self._thinning_not_finished)
+
+    def _thinning_finished(self, result) -> None:
+        if result is None:
+            return
+        self.vault_changed()
+        _showinfo(THIN_TITLE, "A thinning of the vault that stopped before its end was finished: "
+                              f"{result.message}", parent=self)
+
+    def _thinning_not_finished(self, exc: BaseException) -> None:
+        if not isinstance(exc, ops.OperationError):
+            log.error("an interrupted thinning could not be finished", exc_info=exc)
+        why = _gui_text(exc) if isinstance(exc, ops.OperationError) else _plain_error(exc)
+        _showwarning(THIN_TITLE, "A thinning of the vault that stopped before its end could not "
+                                 f"be finished yet: {why}\n\nThe app tries again at the next "
+                                 "start, and so does Thin the vault...", parent=self)
 
     def switch_vault(self, root: Path) -> bool:
         """Make ``root`` the vault of this window and of the next start. False (and a message)
@@ -3447,6 +3476,7 @@ _CHECKING = "checking"                  # the game probe has not answered yet
 FREE_LABEL = "Free old backup folders..."
 FINISH_FREE_LABEL = "Finish freeing old backup folders..."
 THIN_LABEL = "Thin the vault..."
+THIN_TITLE = "Thin the vault"
 
 
 @dataclass(frozen=True)

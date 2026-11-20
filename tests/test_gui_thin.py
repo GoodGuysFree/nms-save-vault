@@ -270,3 +270,57 @@ def test_the_settings_window_follows_the_theme(settings, mode):
     win = settings.on_settings()
     settings.update()
     assert audit(win, mode) == []
+
+# --- at start: an interrupted run is finished ----------------------------------------------------
+
+
+def _interrupted(world) -> None:
+    def crash(point):
+        if point == "thin.after_manifest":
+            raise KeyboardInterrupt("stopped")
+    with pytest.raises(KeyboardInterrupt):
+        thinning.run_thin(world.root, world.planned, [world.old.id], faults=crash)
+    assert thinning.thinning_pending(world.root)
+
+
+def test_opening_the_vault_finishes_an_interrupted_run(app, world, monkeypatch):
+    calls = []
+    monkeypatch.setattr(app, "_finish_thinning", calls.append)
+    app._vault_start_checks(world.root, 0, 0)
+    _wait(app, lambda: calls)
+    assert calls == [world.root]
+
+
+def test_an_interrupted_run_is_finished_and_said(app, world, dialogs):
+    _interrupted(world)
+    dialogs.expect()
+    app._finish_thinning(world.root)
+    _wait(app, lambda: not app.worker.busy and dialogs.shown)
+    kind, title, message = dialogs.take()[-1]
+    assert kind == "showinfo" and title == "Thin the vault"
+    assert "stopped before its end" in message and "1 backup deleted" in message
+    assert not thinning.thinning_pending(world.root) and world.old.id not in entries(world)
+    assert app.changed == [1] and vstore.open_store(world.root).fsck().ok
+
+
+def test_nothing_pending_says_nothing(app, world, dialogs):
+    app._finish_thinning(world.root)
+    _wait(app, lambda: not app.worker.busy)
+    assert dialogs.shown == [] and app.changed == []
+
+
+def test_a_finish_that_fails_is_said_and_never_fatal(app, world, dialogs, monkeypatch):
+    from nms_save_vault.core.store import ThinError
+
+    _interrupted(world)
+
+    def busy(root):
+        raise ThinError("busy", "A file of the vault is in use by another program.")
+    monkeypatch.setattr(thinning, "finish_thinning", busy)
+    dialogs.expect()
+    app._finish_thinning(world.root)
+    _wait(app, lambda: not app.worker.busy and dialogs.shown)
+    kind, title, message = dialogs.take()[-1]
+    assert kind == "showwarning" and "in use by another program" in message
+    assert "next start" in message and app.winfo_exists()
+    assert thinning.thinning_pending(world.root)
