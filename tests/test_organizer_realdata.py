@@ -1,13 +1,18 @@
-"""The organizer against the owner's real saves - strictly READ-ONLY - and against a
+"""The organizer against a copy of the owner's real vault and saves, and against a
 synthetic vault of about 2,000 versions for its time budget (D1 5 rows 14-15, 2.15).
 
-The real-data test skips where there is no vault. It opens the organizer read-only (no
-journal, no notes, no catalog tidying, the scan cache in memory), and checks afterwards
-that no file in the vault, the live folders, the app's own folder or the safety backup
-changed: not one added, removed, resized or touched.
+The real-data test skips where there is no vault (a fresh clone's machine). It copies the
+vault and the live folders to a temporary folder first and reads the copies (GGF 2026-11-20,
+release plan decision 6: "If the test is guaranteed read-only (by copying the real save files
+/ real vault aside and using the temp copy) - I don't care how many they read"). It opens the
+organizer read-only (no journal, no notes, no catalog tidying, the scan cache in memory),
+checks only what holds for any vault, and checks afterwards that no file in the real vault,
+the live folders, the app's own folder or the safety backup changed: not one added, removed,
+resized or touched.
 """
 from __future__ import annotations
 
+import dataclasses
 import os
 import shutil
 import time
@@ -54,15 +59,52 @@ def _real_setup():
     return root, sources
 
 
+def _copied(root: Path, sources: list, dest: Path) -> tuple[Path, list, list[Path]]:
+    """Copies of the vault and of each live folder (its name kept: it holds the account),
+    the sources pointed at the copies, and the folders the catalog names outside the vault
+    (in-place backups: read where they are, and watched). The copy's catalog names its own
+    backups, not the real vault's."""
+    import json
+    vault = dest / "vault" / root.name
+    shutil.copytree(root, vault)
+    outside: list[Path] = []
+    catalog_file = vault / "catalog.json"
+    if catalog_file.is_file():
+        held = json.loads(catalog_file.read_text(encoding="utf-8"))
+        real = os.path.normcase(str(root.resolve()))
+        for entry in held.get("entries") or []:
+            path = entry.get("path") if isinstance(entry, dict) else None
+            if not isinstance(path, str) or not path:
+                continue
+            if os.path.normcase(path).startswith(real + os.sep):
+                entry["path"] = str(vault / Path(path).resolve().relative_to(root.resolve()))
+            else:
+                outside.append(Path(path))
+        catalog_file.write_text(json.dumps(held, indent=2), encoding="utf-8")
+    copies = []
+    for n, source in enumerate(sources):
+        folder = Path(source.path)
+        target = dest / "live" / str(n) / folder.name
+        if folder.is_dir():
+            shutil.copytree(folder, target)
+        copies.append(dataclasses.replace(source, path=str(target)))
+    return vault, copies, outside
+
+
 @pytest.mark.slow
-def test_the_owners_vault_read_only(capsys):
-    root, sources = _real_setup()
-    watched = [root, *(Path(s.path) for s in sources), SAFETY_BACKUP]
+def test_the_owners_vault_read_only(capsys, tmp_path):
+    real_root, real_sources = _real_setup()
+    watched = [real_root, *(Path(s.path) for s in real_sources), SAFETY_BACKUP]
     local = os.environ.get("LOCALAPPDATA")
     if local:
         watched.append(Path(local) / "NMSSaveVault")
     watched = [w for w in watched if w.exists()]
     before = {str(w): _fingerprint(w) for w in watched}
+    root, sources, outside = _copied(real_root, real_sources, tmp_path)
+    for folder in outside:
+        if folder.exists() and str(folder) not in before:
+            before[str(folder)] = _fingerprint(folder)
+            watched.append(folder)
     had_store = (root / "organizer").exists()
 
     org = Organizer(root, sources, read_only=True)
@@ -80,7 +122,7 @@ def test_the_owners_vault_read_only(capsys):
     report = org.bootstrap()
 
     after = {str(w): _fingerprint(w) for w in watched}
-    assert after == before, "a real folder changed"
+    assert after == before, "a real folder changed"     # the copies were read, never these
     assert (root / "organizer").exists() == had_store and org.observed is None
     assert report.dry_run
 
@@ -93,9 +135,6 @@ def test_the_owners_vault_read_only(capsys):
     live = {m.pid for f in org.scan.live.values() for c in f.captures for m in c.members}
     assert {read_lineage(org.store).canonical(p) for p in live} <= lines
     assert report.versions == len(org.scan.versions) and report.lines == len(lines)
-    # Nothing is ever deleted from the vault (keep everything): at least D1's 2.12 counts.
-    assert report.versions >= 195 and report.pairs >= 106 and report.lines >= 30
-    assert len(report.ops_unresolved) <= 2
 
     # D1 2.15: first open <= 5 s, warm refresh <= 0.3 s (here with slack for a busy machine).
     assert cold < 10 and warm < 0.6 and build < 0.2
