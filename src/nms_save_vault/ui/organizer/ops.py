@@ -498,10 +498,11 @@ class StepsWindow(_Dialog):
 def thinned_by_op(thinned) -> dict[str, str]:
     """The local date each operation's backup was thinned on (docs/thinning.md: the History
     says "thinned on <date>" for an operation whose backup went), from ``thinned_entries()``;
-    the earliest when one operation lost more than one."""
+    the earliest when one operation lost more than one. An entry whose deletion is still to
+    be finished (an interrupted run) is not thinned yet."""
     out: dict[str, str] = {}
     for t in thinned.values():
-        if t.op_id:
+        if t.op_id and t.done:
             date = local_time(thinning.epoch_utc(t.when))[:10] or t.when[:10]
             out[t.op_id] = min(out.get(t.op_id, date), date)
     return out
