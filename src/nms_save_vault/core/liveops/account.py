@@ -156,6 +156,9 @@ def plan_unlock_undo(ctx: OpContext, op_id: str) -> AccountPlan:
     if account is None or not added:
         blocked = (warning("UNLOCK_UNDO_UNKNOWN"),)
         return AccountPlan(account, "", "", (), ("", ""), blocked, undo_of=op_id)
+    if undone(ctx, op_id):              # an id it added that is back since is not its (R34-2)
+        return AccountPlan(account, "", "", (), ("", ""), (warning("UNLOCK_UNDONE"),),
+                           undo_of=op_id)
     acct = resolve_account(ctx, account)
     label = account_label(ctx, account)
     what = f"undo: {preparing.get('note') or 'an unlock'}"
@@ -178,6 +181,64 @@ def plan_unlock_undo(ctx: OpContext, op_id: str) -> AccountPlan:
     blocked = () if removes else (warning("NOTHING_TO_UNDO_UNLOCK"),)
     return AccountPlan(acct.account, label, what, (), pre, blocked, removes=removes,
                        undo_of=op_id)
+
+
+@dataclass(frozen=True)
+class AccountChange:
+    """One account write of an app that went through: an unlock (``adds``, (list, id)
+    pairs), or the undo of the unlock ``undo_of`` (``removes``)."""
+
+    op_id: str
+    at: int                             # UTC unix, when it was done
+    app: str                            # its stamp, "<name> <version>"
+    platform: str
+    account_key: str                    # the folder's name: never shown raw
+    note: str                           # what the app called it
+    adds: tuple[tuple[str, str], ...] = ()
+    removes: tuple[tuple[str, str], ...] = ()
+    undo_of: str | None = None
+
+
+def changes_by(ops: Mapping[str, opjournal.OpRecord], app: str) -> list[AccountChange]:
+    """Every account write ``app`` made that went through, oldest first (review R34-3: an
+    app whose own record of one was lost tells from these that it went through)."""
+    from ..appinfo import app_of
+    out = []
+    for rec in ops.values():
+        preparing = rec.last("preparing") or {}
+        done = rec.last("done")
+        account = opjournal.account_ref(rec)
+        if rec.kind != KIND or rec.status != "done" or done is None or account is None \
+                or app_of(preparing.get("app")) != app:
+            continue
+        adds, removes = _pairs(preparing.get("adds")), _pairs(preparing.get("removes"))
+        undo_of = preparing.get("undo_of")
+        if adds is None or removes is None or not isinstance(undo_of, (str, type(None))):
+            continue                    # a record this core does not read: never guessed
+        note = preparing.get("note")
+        out.append(AccountChange(rec.op_id, int(opjournal.parse_utc(done["utc"]) or 0),
+                                 preparing.get("app") or "", account.platform,
+                                 account.account_key, note if isinstance(note, str) else "",
+                                 adds, removes, undo_of or None))
+    return out
+
+
+def _pairs(raw: object) -> tuple[tuple[str, str], ...] | None:
+    """The journal's (list, id) pairs (none recorded: none); None for any other shape."""
+    if raw is None:
+        return ()
+    if not isinstance(raw, list) or not all(
+            isinstance(p, list) and len(p) == 2 and all(isinstance(x, str) for x in p)
+            for p in raw):
+        return None
+    return tuple((p[0], p[1]) for p in raw)
+
+
+def undone(ctx: OpContext, op_id: str) -> bool:
+    """Whether an account write that went through undid the unlock ``op_id``."""
+    return any(rec.kind == KIND and rec.status == "done"
+               and (rec.last("preparing") or {}).get("undo_of") == op_id
+               for rec in opjournal.read_ops(ctx).values())
 
 
 def _grouped(pairs: object) -> dict[str, list[str]]:

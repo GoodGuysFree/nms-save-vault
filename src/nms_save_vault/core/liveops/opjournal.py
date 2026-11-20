@@ -288,8 +288,14 @@ def _target_or_none(raw: object) -> LiveTarget | None:
 
 def read_ops(ctx: OpContext) -> dict[str, OpRecord]:
     """Every op in the order they started. Only the ops with new events are folded again."""
+    return read_ops_at(ops_path(ctx))
+
+
+def read_ops_at(path: Path) -> dict[str, OpRecord]:
+    """:func:`read_ops` of the journal file ``path`` (none there: no ops). Nothing is
+    written."""
     with _tails_guard:
-        tail = _refresh(ops_path(ctx))
+        tail = _refresh(path)
         for op_id in tail.dirty:
             tail.records[op_id] = _record(op_id, tail.by_op[op_id])
         tail.dirty.clear()

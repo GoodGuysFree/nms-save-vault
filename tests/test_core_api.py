@@ -23,12 +23,15 @@ from .store_helpers import fingerprint, new_vault, open_vault_store, steam_live
 # removed or changed meaning.
 PINNED = {
     "API_VERSION": ("value", "int"),
+    "AccountChange": ("fields", ("op_id", "at", "app", "platform", "account_key", "note", "adds",
+                                 "removes", "undo_of"), ()),
     "AppChange": ("fields", ("op_id", "kind", "at", "app", "target", "placed", "evicted", "kept",
                              "snapshot", "made", "seq", "undo_of"), ()),
     "Before": ("fields", ("change", "pair", "kept"), ()),
     "KeptCopy": ("fields", ("kind", "entry", "slot", "member"), ()),
     "LiveTarget": ("fields", ("platform", "account_key", "slot", "instance", "at"), ("ref",)),
     "VaultHistory": ("class", {
+        "account_changes_by": "(self, app: 'str') -> 'list[AccountChange]'",
         "changes_by": "(self, app: 'str') -> 'list[AppChange]'",
         "made_by": "(self, app: 'str') -> 'set[str]'",
         "touched_by": "(self, app: 'str') -> 'set[str]'",

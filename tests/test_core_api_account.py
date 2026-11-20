@@ -229,10 +229,16 @@ def test_an_unlock_undone_already_or_gone_since_has_nothing_to_undo(world):
     plan = session.plan_unlock_undo(op)
     undo = session.write_account(plan, plan.confirmations)
     assert undo.status == "done"
-    assert [b.code for b in session.plan_unlock_undo(op).blocked] == ["NOTHING_TO_UNDO_UNLOCK"]
+    assert [b.code for b in session.plan_unlock_undo(op).blocked] == ["UNLOCK_UNDONE"]  # R34-2
     # an undo is not undone in turn, and no other op is an unlock
     assert [b.code for b in session.plan_unlock_undo(undo.op_id).blocked] == ["UNLOCK_UNDO_UNKNOWN"]
     assert [b.code for b in session.plan_unlock_undo("op-nope").blocked] == ["UNLOCK_UNDO_UNKNOWN"]
+    other = session.write_account(session.plan_unlock(world.live, {"UnlockedSeasonRewards":
+                                                                   ["^S4"]}, what="unlock"))
+    assert other.status == "done", other.text
+    give_account(world.live, UnlockedSeasonRewards=["S1"])            # the id went since
+    assert [b.code for b in session.plan_unlock_undo(other.op_id).blocked] == \
+        ["NOTHING_TO_UNDO_UNLOCK"]
 
 
 def test_an_unlock_another_app_made_is_undone_in_that_app(world):

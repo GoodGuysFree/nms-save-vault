@@ -44,15 +44,16 @@ from .index.nodes import PrivacyError, get, items
 from .liveops import context_for, execute, pending_recovery, plan_undo, resolve_recovery
 from .liveops.classic import _ad_hoc
 from .liveops.context import OpContext
-from .liveops.account import (UNLOCK_LISTS, AccountPlan, plan_unlock, plan_unlock_undo,
-                              write_unlock)
+from .liveops import account as _account
+from .liveops.account import (UNLOCK_LISTS, AccountChange, AccountPlan, plan_unlock,
+                              plan_unlock_undo, write_unlock)
 from .liveops.duplicate import plan_duplicate
 from .liveops.edit import plan_edit, plan_edits
 from .liveops.errors import ConfirmationRequired, LiveOpError, TargetError
 from .liveops.targets import canonical, resolve_target
 from .liveops.model import OpOutcome, PlacePlan, Severity
 from .catalog import Vault
-from .liveops.opjournal import OPS, machine_id, read_ops
+from .liveops.opjournal import OPS, machine_id, read_ops, read_ops_at
 from .organizer import Organizer, provenance
 from .organizer import store as orgstore
 from .store import versionstore
@@ -103,8 +104,8 @@ __all__ = [
     "FileEntry", "StoreEntry", "StoreError", "StoreNotUpgraded", "StoreTooNew",
     "StoreUnavailable", "VaultReader", "open_vault",
     # which versions an app made, and the last one before its change
-    "AppChange", "Before", "KeptCopy", "LiveTarget", "VaultHistory", "open_history",
-    "slot_of",
+    "AccountChange", "AppChange", "Before", "KeptCopy", "LiveTarget", "VaultHistory",
+    "open_history", "slot_of",
     # an edit of a live save, and its undo
     "AddMember", "Insert", "Remove", "Replace", "dumps", "dumps_named",
     # changes an app holds before it writes them: shown first, then written as one
@@ -417,12 +418,18 @@ class VaultHistory:
     Apps are named as :func:`set_app` names them (``"nms-savecraft"``, ``"nms-save-vault"``).
     A snapshot: open it again to see later changes."""
 
-    def __init__(self, state) -> None:
+    def __init__(self, state, ops: Mapping | None = None) -> None:
         self._state = state
+        self._ops = ops or {}
 
     def changes_by(self, app: str) -> list[AppChange]:
         """Every operation ``app`` ran on a live slot that went through, oldest first."""
         return provenance.changes_by(self._state, app)
+
+    def account_changes_by(self, app: str) -> list[AccountChange]:
+        """Every write ``app`` made to an account's data that went through (an unlock, or the
+        undo of one), oldest first: they name no slot, so :meth:`changes_by` has none."""
+        return _account.changes_by(self._ops, app)
 
     def made_by(self, app: str) -> set[str]:
         """The versions (sha256 of a save's data) ``app``'s operations wrote new content into:
@@ -448,7 +455,8 @@ def open_history(vault_root: str | Path | None = None) -> VaultHistory:
     root = Path(vault_root) if vault_root is not None else vault_dir()
     if not root.is_dir():
         raise StoreUnavailable("The vault is not reachable.")
-    return VaultHistory(Journal(OrganizerStore(root, create=False, read_only=True), {}).replay())
+    return VaultHistory(Journal(OrganizerStore(root, create=False, read_only=True), {}).replay(),
+                        read_ops_at(orgstore.store_root(root) / OPS))
 
 
 # --- an edit of a live save, and its undo ---------------------------------------------------

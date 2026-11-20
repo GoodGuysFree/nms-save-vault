@@ -162,6 +162,7 @@ TEXTS = {
                             "was changed."),
     "NOTHING_TO_UNDO_UNLOCK": ("block", "The account no longer holds any of those unlocks: there "
                                "is nothing to undo. Nothing was changed."),
+    "UNLOCK_UNDONE": ("block", "That unlock was undone already. Nothing was changed."),
     "ACCOUNTDATA_ROLLBACK": ("confirm", "This also restores the account data, which rolls back "
                              "unlocks and settings."),
 }

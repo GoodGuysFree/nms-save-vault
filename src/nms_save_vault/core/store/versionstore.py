@@ -452,13 +452,11 @@ class VersionStore:
             fresh = time.time() - st.st_mtime < FRESH_SECONDS
             self._entries_seen = None if fresh else st.st_mtime_ns
             for name in [f"{entry_id}.json" for entry_id in self._index] + list(self._corrupt):
-                if name not in listed or self._stamps.get(name, listed[name]) != listed[name]:
+                # one this store wrote carries the stamp it had then (review R34-4)
+                if name not in listed or self._stamps.get(name) != listed[name]:
                     self._forget(name)
             for name, stamp in listed.items():
                 if name in self._stamps:
-                    continue
-                if name[:-5] in self._index:                 # this store wrote it
-                    self._stamps[name] = stamp
                     continue
                 known = shared.get(name)
                 if known is None or known[0] != stamp:
@@ -810,8 +808,16 @@ class VersionStore:
                 tmp.unlink()
             except FileNotFoundError:
                 pass
+        try:                            # as written: one replaced on disk since is read again
+            st = os.stat(dest)
+            stamp: _Stamp | None = (st.st_size, st.st_mtime_ns)
+        except OSError:
+            stamp = None                # then the next look reads it again (review R34-4)
         with self._index_guard:
+            self._forget(dest.name)
             self._index_entry(entry)
+            if stamp is not None:
+                self._stamps[dest.name] = stamp
         self._fault("entry.after_replace")
 
     def _check_present(self, entry: StoreEntry) -> None:
