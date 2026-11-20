@@ -92,6 +92,31 @@ class FreeError(StoreError):
         self.code = code
 
 
+class ThinError(StoreError):
+    """Thinning the vault did not run, or stopped (docs/thinning.md); ``code`` says why: busy
+    (another window writes, upgrades or thins; or a file is held open by another program),
+    blocked (the plan says why it cannot run), damaged (the check of the store found damage, a
+    backup cannot be read, or the thinning record cannot be read), failed (a file could not be
+    deleted), other-vault. An entry it stopped in is finished at the next start."""
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+class EntryNotFound(StoreError, KeyError):
+    """The store holds no entry of that id: never, or not any more (thinned since). A KeyError
+    too, as the store's lookups always were."""
+
+    def __init__(self, entry_id: str) -> None:
+        super().__init__(f"The vault holds no backup {entry_id!r} (it may have been thinned "
+                         "since it was listed).")
+        self.entry_id = entry_id
+
+    def __str__(self) -> str:                    # the message, not KeyError's repr of it
+        return str(self.args[0])
+
+
 class PreserveMismatch(StoreError, PreserveFailed):
     """A live slot no longer holds the version the caller planned to keep: re-plan."""
 

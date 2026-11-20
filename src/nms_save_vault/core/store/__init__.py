@@ -3,6 +3,7 @@ from .capture import CaptureScope
 from .errors import (
     Cancelled,
     EntryCorrupt,
+    EntryNotFound,
     FoldVerifyError,
     FreeError,
     InsufficientSpace,
@@ -16,6 +17,7 @@ from .errors import (
     StoreNotUpgraded,
     StoreTooNew,
     StoreUnavailable,
+    ThinError,
     UpgradeError,
 )
 from .damage import DamageRecord

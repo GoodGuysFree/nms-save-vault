@@ -172,6 +172,37 @@ PINNED = {
     "open_live": ("function", "(vault_root: 'str | Path | None' = None, *, "
                               "live_dirs: 'Sequence[str | Path] | None' = None) "
                               "-> 'LiveSession'"),
+    # thinning the vault, pins, the size the reminder compares (docs/thinning.md)
+    "ThinCandidate": ("fields", ("id", "kind", "created", "created_utc", "label", "saves",
+                                 "bytes", "reason"), ()),
+    "ThinError": ("error", ("StoreError", "OperationError")),
+    "ThinKept": ("fields", ("id", "kind", "created", "created_utc", "label", "saves",
+                            "reasons"), ()),
+    "ThinPlan": ("fields", ("vault_root", "now", "candidates", "kept", "entries", "bytes",
+                            "blocked", "objects", "object_sizes", "manifest_sizes"), ()),
+    "ThinProgress": ("fields", ("done", "total", "current"), ()),
+    "ThinResult": ("fields", ("thinned", "freed_bytes", "left", "cancelled", "message"), ()),
+    "ThinSave": ("fields", ("slot", "name"), ()),
+    "ThinnedEntry": ("fields", ("id", "when", "why", "bytes", "kind", "label", "created_utc",
+                                "op_id", "done"), ()),
+    "plan_thin": ("function", "(vault_root: 'str | Path', *, now: 'datetime | None' = None) "
+                              "-> 'ThinPlan'"),
+    "run_thin": ("function", "(vault_root: 'str | Path', plan: 'ThinPlan', "
+                             "chosen_ids: 'Iterable[str]', *, "
+                             "progress: 'Callable[[ThinProgress], None] | None' = None, "
+                             "cancel: 'threading.Event | None' = None) -> 'ThinResult'"),
+    "finish_thinning": ("function", "(vault_root: 'str | Path') -> 'ThinResult | None'"),
+    "thinning_pending": ("function", "(vault_root: 'str | Path') -> 'bool'"),
+    "thinned_entries": ("function", "(vault_root: 'str | Path') -> 'dict[str, ThinnedEntry]'"),
+    "pin_entry": ("function", "(vault_root: 'str | Path', entry_id: 'str') -> 'None'"),
+    "unpin_entry": ("function", "(vault_root: 'str | Path', entry_id: 'str') -> 'None'"),
+    "pinned_entries": ("function", "(vault_root: 'str | Path') -> 'frozenset[str]'"),
+    "pin_version": ("function", "(vault_root: 'str | Path', vid: 'str', *, "
+                                "pair: 'tuple[str | None, str | None] | None' = None, "
+                                "pid: 'str | None' = None) -> 'None'"),
+    "unpin_version": ("function", "(vault_root: 'str | Path', vid: 'str') -> 'None'"),
+    "pinned_versions": ("function", "(vault_root: 'str | Path') -> 'frozenset[str]'"),
+    "vault_size": ("function", "(vault_root: 'str | Path') -> 'int'"),
 }
 
 # Types the API hands out inside its own (MemberView.ref and .info, StoreEntry.members).
@@ -330,6 +361,76 @@ def test_the_vault_opens_to_read_and_nothing_in_it_is_written(tmp_path):
 def test_no_vault_is_a_store_error(tmp_path):
     with pytest.raises(api.StoreError):
         api.open_vault(tmp_path / "none", live_roots=())
+
+
+def _two_backups_of_one_folder(tmp_path):
+    vault = new_vault(tmp_path)
+    live = steam_live(tmp_path / "in")
+    store = open_vault_store(vault)
+    made = [store.add_from_folder(live, kind="full", label="", source={"type": "folder",
+                                                                       "name": "x"})
+            for _ in range(2)]
+    return vault, made
+
+
+def test_the_vault_is_thinned_through_the_api(tmp_path):
+    vault, (older, newer) = _two_backups_of_one_folder(tmp_path)
+    plan = api.plan_thin(vault)
+    assert [c.id for c in plan.candidates] == [older.id] and plan.blocked == ()
+    assert plan.candidates[0].reason.endswith("also in a backup that stays")
+    assert not api.thinning_pending(vault) and api.finish_thinning(vault) is None
+    seen = []
+    result = api.run_thin(vault, plan, [older.id], progress=seen.append)
+    assert result.thinned == (older.id,) and result.freed_bytes == plan.bytes and seen
+    assert [e.id for e in api.open_vault(vault, live_roots=()).entries()] == [newer.id]
+    thinned = api.thinned_entries(vault)[older.id]
+    assert thinned.done and thinned.bytes == plan.bytes and thinned.kind == "full"
+    assert api.vault_size(vault) == open_vault_store(vault).stored_bytes()
+
+
+def test_an_entry_thinned_meanwhile_is_a_store_error_to_a_reader(tmp_path):
+    """Review finding 6: VaultReader says StoreError for an entry that is gone, as documented
+    (an app catches that; a KeyError would crash its history read during a run elsewhere)."""
+    vault, (older, _newer) = _two_backups_of_one_folder(tmp_path)
+    reader = api.open_vault(vault, live_roots=())
+    assert older.id in {e.id for e in reader.entries()}
+    api.run_thin(vault, api.plan_thin(vault), [older.id])
+    path = next(fe.path for fe in older.files if fe.inline is None)
+    for read in (lambda: reader.entry(older.id), lambda: reader.read_file(older.id, path),
+                 lambda: reader.entry("never-was")):
+        with pytest.raises(api.StoreError):
+            read()
+
+
+def test_pins_round_trip_through_the_api_and_are_refused_while_the_vault_is_read_only(
+        tmp_path):
+    vault, (older, newer) = _two_backups_of_one_folder(tmp_path)
+    vid = older.members[0].vid
+    api.pin_entry(vault, older.id)
+    api.pin_version(vault, vid)
+    assert api.pinned_entries(vault) == {older.id} and vid in api.pinned_versions(vault)
+    plan = api.plan_thin(vault)              # the pinned one stays; its twin need not
+    assert [c.id for c in plan.candidates] == [newer.id]
+    assert [k.id for k in plan.kept] == [older.id]
+    assert plan.kept[0].reasons[:2] == ("you pinned it", "it holds a save you pinned")
+    api.unpin_entry(vault, older.id)
+    api.unpin_version(vault, vid)
+    assert api.pinned_entries(vault) == frozenset() == api.pinned_versions(vault)
+    notes = vault / "organizer" / "notes.json"
+    before = notes.read_bytes()
+    for part in ("store", "organizer"):
+        path = (vault / "store" / "FORMAT") if part == "store" else (
+            vault / "organizer" / "organizer.json")
+        saved = path.read_bytes()
+        d = json.loads(saved)
+        d["write_compat" if part == "store" else "schema"] += 1
+        path.write_text(json.dumps(d), encoding="ascii")
+        for pin in (lambda: api.pin_entry(vault, older.id), lambda: api.pin_version(vault, vid),
+                    lambda: api.unpin_entry(vault, older.id)):
+            with pytest.raises(api.StoreTooNew):
+                pin()
+        path.write_bytes(saved)
+    assert notes.read_bytes() == before                     # nothing was written
 
 
 def test_a_playthrough_and_a_slot_are_named_as_the_history_names_them(tmp_path):

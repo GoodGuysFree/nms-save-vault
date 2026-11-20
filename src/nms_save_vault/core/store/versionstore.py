@@ -36,6 +36,7 @@ from .damage import merge as merge_damage
 from .errors import (
     Cancelled,
     EntryCorrupt,
+    EntryNotFound,
     InsufficientSpace,
     ObjectMissing,
     StoreBusy,
@@ -306,6 +307,7 @@ class VersionStore:
         self._index: dict[str, StoreEntry] = {}
         self._vids: dict[str, list[tuple[str, int, str]]] = {}   # vid -> (entry, slot, member)
         self._corrupt: dict[str, str] = {}          # manifest file name -> why it is unreadable
+        self._unreadable: dict[str, str] = {}       # manifest file name -> its I/O error just now
         self._index_guard = threading.Lock()
         self._entries_seen: int | None = None       # entries/ mtime_ns at the last listing
         self._stamps: dict[str, _Stamp] = {}        # manifest file name -> as it was read
@@ -346,13 +348,14 @@ class VersionStore:
         return sorted(entries, key=lambda e: (e.created_utc, e.id))
 
     def entry(self, entry_id: str) -> StoreEntry:
-        """The entry; KeyError when there is none, EntryCorrupt when its manifest is bad."""
+        """The entry; EntryNotFound (a StoreError and a KeyError) when there is none, not any
+        more (thinned), EntryCorrupt when its manifest is bad."""
         self._refresh()
         if entry_id in self._index:
             return self._index[entry_id]
         if f"{entry_id}.json" in self._corrupt:
             raise EntryCorrupt(f"entry {entry_id}: {self._corrupt[f'{entry_id}.json']}")
-        raise KeyError(f"the store has no entry {entry_id!r}")
+        raise EntryNotFound(entry_id)
 
     def has_entry(self, entry_id: str) -> bool:
         self._refresh()
@@ -430,6 +433,22 @@ class VersionStore:
         self._refresh()
         return dict(self._corrupt)
 
+    def unreadable_manifests(self) -> dict[str, str]:
+        """The manifest files ``entries/`` lists that cannot be read just now (an I/O error,
+        not damage: a cloud file not on this machine, a file another program holds open), by
+        name and why. What they hold is not known, so nothing they may name may be deleted.
+        Looked at again on every call."""
+        try:
+            listed = _listed_manifests(self._io / ENTRIES)
+        except OSError as exc:
+            raise StoreUnavailable(f"The vault is not reachable ({exc.strerror or exc}).") from exc
+        self._refresh(force=True)
+        with self._index_guard:
+            missed = [n for n in listed if n not in self._stamps]
+            why = dict(self._unreadable)
+        return {n: why.get(n, "it could not be read") for n in missed
+                if (self._io / ENTRIES / n).exists()}         # not one deleted meanwhile
+
     def _refresh(self, *, force: bool = False) -> None:
         """Index the manifests of ``entries/`` when it changed since the last look (its
         modification time, D3 2.7) or ``force``: a new one is parsed, or taken from another
@@ -467,6 +486,7 @@ class VersionStore:
                     with _PARSED_GUARD:
                         shared[name] = known
                 self._stamps[name] = stamp
+                self._unreadable.pop(name, None)
                 if isinstance(known[1], str):
                     self._corrupt[name] = known[1]
                 else:
@@ -474,11 +494,13 @@ class VersionStore:
 
     def _parse(self, name: str) -> StoreEntry | str | None:
         """The manifest file ``name``, parsed and checked; why it is damaged; None when it
-        cannot be read now."""
+        cannot be read now (call under ``_index_guard``: the error is kept for
+        :meth:`unreadable_manifests`)."""
         try:
             raw = (self._io / ENTRIES / name).read_bytes()
         except OSError as exc:
             log.warning("could not read the store manifest %s: %s", name, exc)
+            self._unreadable[name] = exc.strerror or type(exc).__name__
             return None
         try:
             entry = StoreEntry.from_bytes(raw)
@@ -537,6 +559,31 @@ class VersionStore:
 
     def damage(self) -> list[DamageRecord]:
         return read_damage(self.root)
+
+    def manifest_size(self, entry_id: str) -> int:
+        """The bytes the entry's manifest takes, as the listing recorded it."""
+        self._refresh()
+        with self._index_guard:
+            stamp = self._stamps.get(f"{entry_id}.json")
+            entry = self._index.get(entry_id)
+        if stamp is not None:
+            return stamp[0]
+        if entry is None:
+            raise EntryNotFound(entry_id)
+        return len(entry.to_bytes())
+
+    def _drop_manifest(self, entry_id: str, *,
+                       remove: Callable[[Path], object] = lambda p: p.unlink(missing_ok=True)
+                       ) -> None:
+        """Delete an entry's manifest (thinning only, under the vault lock, with ``remove``)
+        and forget it."""
+        name = f"{entry_id}.json"
+        remove(self._manifest_path(entry_id))
+        safety.fsync_dir(self._io / ENTRIES)
+        with self._index_guard:
+            self._forget(name)
+        with _PARSED_GUARD:
+            _PARSED.get(self._parsed_key, {}).pop(name, None)
 
     def stored_bytes(self) -> int:
         """What the entries take in the store: each object they name once, and the manifests,
@@ -717,6 +764,7 @@ class VersionStore:
                 fields["source"] = {k: v for k, v in source.source.items() if k != "folder"}
                 fields["op_id"] = None
                 entry = StoreEntry.new(**dict(fields, id=new_id, origin=origin))
+                self._check_present(entry)
                 self._write_manifest(entry)
         except safety.LockTimeout as exc:
             raise StoreBusy() from exc
@@ -756,6 +804,7 @@ class VersionStore:
                     stamp = f"{fields['kind']}-{fields['platform']}-{local:%Y%m%d-%H%M%S}"
                     entry_id = self._free_id(stamp, catalog_ids=self._catalog_ids())
                 entry = StoreEntry.new(id=entry_id, **fields)
+                self._check_present(entry)
                 self._write_manifest(entry)
         except safety.LockTimeout as exc:
             raise StoreBusy() from exc
@@ -821,8 +870,11 @@ class VersionStore:
         self._fault("entry.after_replace")
 
     def _check_present(self, entry: StoreEntry) -> None:
-        """Every object the new entry references is on disk with its size (a medium that lost a
-        rename shows here, not at the next read)."""
+        """Every object the new entry references is on disk with its size. Checked under the
+        vault lock before the manifest is written (the objects were put before the lock, and
+        thinning deletes, under the lock, an object no manifest names: then nothing is
+        committed), and again after it (a medium that lost a rename shows here, not at the
+        next read)."""
         for fe in entry.files:
             if fe.inline is None and self.objects.size_of(fe.sha256) != fe.size:
                 raise ObjectMissing(fe.sha256, f"{fe.path} of the new entry {entry.id}")

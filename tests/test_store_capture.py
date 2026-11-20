@@ -345,6 +345,23 @@ def test_an_object_lost_before_the_commit_is_reported(tmp_path):
         _live_add(store, live, kind="snapshot", scope=SNAP)
 
 
+def test_an_object_deleted_before_the_commit_lock_commits_nothing(tmp_path):
+    """Thinning deletes an object no manifest names, under the vault lock; a capture that put
+    (or deduplicated onto) that object before the lock finds it gone under the lock and commits
+    nothing, rather than a manifest naming a missing object."""
+    vault = new_vault(tmp_path)
+    live = steam_live(tmp_path / "live")
+    store = open_vault_store(vault)
+    lost = _sha((live / "save.hg").read_bytes())
+
+    def thinned_meanwhile(_records):
+        store.objects.path_for(lost).unlink()
+
+    with pytest.raises(vstore.ObjectMissing):
+        _live_add(store, live, kind="snapshot", scope=SNAP, finish=thinned_meanwhile)
+    assert store.entries() == [] and list((vault / "store" / "entries").iterdir()) == []
+
+
 def test_the_vault_lock_is_held_for_the_commit_only(tmp_path):
     vault = new_vault(tmp_path)
     live = steam_live(tmp_path / "live")

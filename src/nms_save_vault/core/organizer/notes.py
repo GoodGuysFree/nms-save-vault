@@ -3,7 +3,9 @@
 - a living **save-file note** per playthrough, with every earlier revision kept, and a
   **pin** (never suggest evicting this save from its slot);
 - a **version note** per version (keyed by the head of its pair): a label, a comment and a
-  lock (the owner's "keep" mark).
+  lock (the owner's "keep" mark);
+- an **entry pin** per vault entry (a whole backup, snapshot or extract, by its id): thinning
+  never deletes a pinned entry (docs/thinning.md).
 
 Each new version journals the save-file note's revision as it was (``note_revs``), so the
 note can be read back as it stood at any version. Text is stored as Unicode; two windows
@@ -15,7 +17,7 @@ import logging
 import time
 import unicodedata
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from .model import EMPTY_PAIR, ModelError, PairKey, Pid, Vid, is_pid, is_vid, pair_from_json
@@ -57,9 +59,20 @@ class VersionNote:
 
 
 @dataclass(frozen=True)
+class EntryNote:
+    entry_id: str
+    pinned: bool
+    at: int
+
+
+@dataclass(frozen=True)
 class NotesState:
     save_files: Mapping[Pid, SaveNote]
     versions: Mapping[Vid, VersionNote]
+    entries: Mapping[str, EntryNote] = field(default_factory=dict)
+    #: What was skipped because it is not in the expected form (a hand edit, another tool):
+    #: what the owner meant there is not known (thinning refuses then).
+    damaged: tuple[str, ...] = ()
 
     def locked_vids(self) -> frozenset[Vid]:
         """Every member of a locked version: its head and its partner."""
@@ -67,6 +80,9 @@ class NotesState:
 
     def pinned_pids(self) -> frozenset[Pid]:
         return frozenset(pid for pid, n in self.save_files.items() if n.pinned)
+
+    def pinned_entries(self) -> frozenset[str]:
+        return frozenset(e for e, n in self.entries.items() if n.pinned)
 
 
 class NoteConflict(Exception):
@@ -82,21 +98,32 @@ def read_notes(store: OrganizerStore) -> NotesState:
 
 
 def parse_notes(doc: Mapping[str, Any]) -> NotesState:
-    """The notes in ``doc``; an entry that is not in the expected form is skipped (and
-    logged) rather than taking every other note down with it."""
-    files: dict[Pid, SaveNote] = {}
-    for pid, raw in (doc.get("save_files") or {}).items():
+    """The notes in ``doc``; an entry that is not in the expected form is skipped (logged, and
+    named in ``damaged``) rather than taking every other note down with it."""
+    damaged: list[str] = []
+    files = _section(doc, "save_files", _save_note, "the note of the save file", damaged)
+    versions = _section(doc, "versions", _version_note, "the note of the version", damaged)
+    entries = _section(doc, "entries", _entry_note, "the pin of the entry", damaged)
+    return NotesState(files, versions, entries, tuple(damaged))
+
+
+def _section(doc: Mapping[str, Any], name: str, parse: Callable[[str, Any], Any], what: str,
+             damaged: list[str]) -> dict:
+    raw_section = doc.get(name)
+    if raw_section is None:
+        return {}
+    if not isinstance(raw_section, dict):
+        damaged.append(f"notes.json: '{name}' is not a list of notes")
+        log.warning("%s", damaged[-1])
+        return {}
+    out = {}
+    for key, raw in raw_section.items():
         try:
-            files[pid] = _save_note(pid, raw)
-        except (ModelError, KeyError, TypeError, ValueError) as exc:
-            log.warning("notes.json: the note of %s was skipped: %s", pid, exc)
-    versions: dict[Vid, VersionNote] = {}
-    for head, raw in (doc.get("versions") or {}).items():
-        try:
-            versions[head] = _version_note(head, raw)
-        except (ModelError, KeyError, TypeError, ValueError) as exc:
-            log.warning("notes.json: the note of version %s was skipped: %s", head[:8], exc)
-    return NotesState(files, versions)
+            out[key] = parse(key, raw)
+        except (ModelError, AttributeError, KeyError, TypeError, ValueError) as exc:
+            damaged.append(f"notes.json: {what} {str(key)[:16]} was skipped ({exc})")
+            log.warning("%s", damaged[-1])
+    return out
 
 
 class Notes:
@@ -179,6 +206,22 @@ class Notes:
     def locked_vids(self) -> frozenset[Vid]:
         return self.state().locked_vids()
 
+    # --- entry pins -------------------------------------------------------------------
+
+    def set_entry_pinned(self, entry_id: str, pinned: bool) -> None:
+        """Pin a vault entry (thinning never deletes it), or unpin it: the record goes."""
+        if not is_entry_id(entry_id):
+            raise ValueError(f"not an entry id: {entry_id!r}")
+        with self.store.transaction() as tx:
+            doc = tx.doc(NOTES)
+            entries = doc.setdefault("entries", {})
+            if pinned:
+                entries[entry_id] = {"pinned": True, "at": int(self.clock())}
+            else:
+                entries.pop(entry_id, None)
+                if not entries:
+                    del doc["entries"]
+
 
 # --- text ---------------------------------------------------------------------
 
@@ -224,6 +267,20 @@ def _version_note(head: Vid, raw: Mapping[str, Any]) -> VersionNote:
     pair = pair_from_json(raw["pair"]) if raw.get("pair") is not None else EMPTY_PAIR
     return VersionNote(head, _str(raw["label"]), _str(raw["comment"]), bool(raw["locked"]),
                        pair, pid, _int(raw["at"]))
+
+
+def is_entry_id(value: object) -> bool:
+    from ..store.manifest import is_entry_id as entry_id_form      # the store imports this package
+
+    return entry_id_form(value)
+
+
+def _entry_note(entry_id: str, raw: Mapping[str, Any]) -> EntryNote:
+    if not is_entry_id(entry_id):
+        raise ValueError(f"not an entry id: {entry_id!r}")
+    if not isinstance(raw.get("pinned"), bool):
+        raise ValueError(f"the pin of {entry_id} is not true or false")
+    return EntryNote(entry_id, raw["pinned"], _int(raw["at"]))
 
 
 def _check_pid(pid: object) -> None:

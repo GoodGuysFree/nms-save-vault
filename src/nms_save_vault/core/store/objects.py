@@ -1,7 +1,9 @@
 """Content-addressed objects: ``objects/<aa>/<sha256>``, verbatim bytes written once (D3 2.6).
 
 Invariants (D3 2.13): an object's name is the sha256 of its bytes; every read verifies it; no
-code path deletes or modifies an object. A bad object is renamed into ``quarantine/`` and kept.
+code path modifies an object, and nothing here deletes one. A bad object is renamed into
+``quarantine/`` and kept. Only thinning (store/thinning.py) deletes objects: when the owner
+asked, under the vault lock, and only one no manifest names any more.
 """
 from __future__ import annotations
 

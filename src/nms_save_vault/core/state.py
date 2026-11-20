@@ -77,6 +77,11 @@ def _float_or(value, fallback: float) -> float:
         return fallback
 
 
+def _size_or_off(value) -> int:
+    """A size in bytes as state.json may hold it; anything else (hand-edited) is off (0)."""
+    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else 0
+
+
 @dataclass
 class AppState:
     """The whole on-disk configuration."""
@@ -95,6 +100,9 @@ class AppState:
     # Per-machine window preferences of the GUI (D6 3.15): last tab, live-area mode, sort,
     # columns, ... A plain dict the GUI owns; this module only keeps it.
     ui: dict = field(default_factory=dict)
+    # The vault size (bytes) past which the status bar reminds the owner to thin the vault
+    # (docs/thinning.md); 0 = no reminder.
+    thin_reminder_bytes: int = 0
 
     # --- lookups -------------------------------------------------------------
 
@@ -123,6 +131,7 @@ class AppState:
             "update_check": self.update_check,
             "update_last_check": self.update_last_check,
             "ui": self.ui,
+            "thin_reminder_bytes": self.thin_reminder_bytes,
             "sources": [asdict(s) for s in self.sources],
         }
 
@@ -137,6 +146,7 @@ class AppState:
             update_check=d.get("update_check", "ask"),
             update_last_check=d.get("update_last_check", ""),
             ui=d["ui"] if isinstance(d.get("ui"), dict) else {},
+            thin_reminder_bytes=_size_or_off(d.get("thin_reminder_bytes")),
         )
         _migrate(state)
         return state

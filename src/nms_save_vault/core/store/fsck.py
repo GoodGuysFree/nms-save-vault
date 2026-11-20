@@ -2,7 +2,8 @@
 
 * quick: FORMAT readable; every manifest parses with a matching checksum (inline payloads
   included); every referenced object is there with its size; temp leftovers; objects no entry
-  references; ``state/migration.json`` agrees with ``entries/``.
+  references; ``state/migration.json`` agrees with ``entries/`` (an entry the owner thinned
+  since, recorded in ``state/thinning.json``, may be gone).
 * deep: quick, plus every object re-hashed; every Steam meta decrypts with its recorded ordinal
   and its member's validity comes out as recorded; every Xbox index parses and names its
   members.
@@ -29,7 +30,7 @@ from .. import catalog, lz4_block, msstore
 from .. import meta as metacrypt
 from . import capture
 from .errors import ObjectCorrupt, ObjectMissing, StoreError
-from .listing import read_migration
+from .listing import THINNING_JSON, read_migration
 from .manifest import FileEntry, StoreEntry
 from .objects import read_when_free, sha256
 from .versionstore import STATE, TMP, read_format
@@ -81,6 +82,8 @@ def fsck(store: "VersionStore", *, deep: bool = False, repair: bool = False,
     for name, why in sorted(store.corrupt_manifests.items()):
         problems.append(FsckProblem("manifest", name[:-5], "", "", why))
         store.record_damage(name[:-5], None, "manifest", why)
+    for name, why in sorted(store.unreadable_manifests().items()):     # not damage: not recorded
+        problems.append(FsckProblem("manifest", name[:-5], "", "", f"cannot be read now ({why})"))
     entries = store.entries()
     refs: dict[str, list[tuple[StoreEntry, str, int]]] = defaultdict(list)
     for entry in entries:
@@ -187,7 +190,8 @@ def _check_index(store: "VersionStore", entry: StoreEntry) -> list[FsckProblem]:
 
 
 def _check_migration(store: "VersionStore") -> list[FsckProblem]:
-    """Every old backup the fold reports as folded is a store entry."""
+    """Every old backup the fold reports as folded is a store entry, unless the owner thinned
+    it since (``state/thinning.json`` records it as thinning or thinned)."""
     path = store.root / STATE / "migration.json"
     try:
         d = json.loads(path.read_bytes().decode("utf-8"))
@@ -199,11 +203,25 @@ def _check_migration(store: "VersionStore") -> list[FsckProblem]:
     states = fold.get("entries") if isinstance(fold, dict) else None
     if not isinstance(states, dict):
         return []
-    return [FsckProblem("migration", entry_id, "", "",
-                        "recorded as folded but the store has no such entry")
-            for entry_id, rec in sorted(states.items())
-            if isinstance(rec, dict) and rec.get("status") in ("folded", "verified")
-            and not store.has_entry(entry_id)]
+    problems: list[FsckProblem] = []
+    thinned: set[str] = set()
+    try:
+        record = json.loads((store.root / STATE / THINNING_JSON).read_bytes().decode("utf-8"))
+        records = record.get("entries") if isinstance(record, dict) else None
+        if not isinstance(records, dict):
+            raise ValueError("no entries")
+        thinned = {k for k, v in records.items()
+                   if isinstance(v, dict) and v.get("status") in ("thinning", "thinned")}
+    except FileNotFoundError:
+        pass
+    except (OSError, ValueError, AttributeError) as exc:
+        problems.append(FsckProblem("migration", "", f"state/{THINNING_JSON}", "",
+                                    f"unreadable ({exc})"))
+    return problems + [FsckProblem("migration", entry_id, "", "",
+                                   "recorded as folded but the store has no such entry")
+                       for entry_id, rec in sorted(states.items())
+                       if isinstance(rec, dict) and rec.get("status") in ("folded", "verified")
+                       and entry_id not in thinned and not store.has_entry(entry_id)]
 
 
 # --- repair -----------------------------------------------------------------------------------
