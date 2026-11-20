@@ -125,10 +125,19 @@ Where this design was silent, the choice that keeps more:
 
 - Periods by each version's own age: under 30 days by day, under 183 days by ISO week, then by
   month, in the time zone of `now`. A version's time is the newest `meta_ts` any entry records
-  for it; a version without one stays. An account's data file is dated by its file time.
+  for it; a version without one stays. An account's data file is dated by its file time. Of
+  versions of one time (an edit keeps the meta's time) the one the vault first kept later is
+  the newer; versions alike in both all count as the newest (each stays).
+- Every other file an entry holds counts on its own (a save kept without its partner, a file
+  of the folder the game does not know): one copy of each stays. A save's own files, the
+  account's, the Xbox index and the game's thumbnail cache do not count apart.
 - A version that stays keeps the newest entry holding it, unless an entry that stays anyway
   holds it (no smallest-cover search). Versions in a pinned, named or noted entry count as the
   owner's pick for their period.
+- The labels the apps write are listed exactly, from the code that writes them (`auto: <op
+  kind>`, the early `auto: pre-restore of ...` and its kin, `kept: ...`, the whole-restore
+  label, and, checked against the entry, `slot N from <its folder>`, an import's folder name,
+  the offered backup label, `edited by <app>: <what>`); any other label is the owner's.
 - Old-layout catalog entries: a store entry the catalog also lists stays while its old folder is
   in the vault, while it is a copy-in of the owner's own folder, or when the catalog entry has
   a note; a leftover catalog entry goes with its store entry.
@@ -136,9 +145,13 @@ Where this design was silent, the choice that keeps more:
   keeps everything it names, and every entry carrying its op id. Of a finished op: a
   whole-folder restore's snapshot, the preserves and kept copies, a keep op's copy, the
   versions it evicted, an unlock's earlier account data. A place's own safety snapshot may go.
-- The run refuses: a store the quick check finds damaged, a journal, notes file or format of a
-  newer app, notes that do not parse, a thinning record that does not read, another window
-  holding the live-op or upgrade lock. Only the thinned entries' own objects are deleted;
+- The run refuses: a store the quick check finds damaged (checked before an interrupted run is
+  finished too), a manifest that is damaged or cannot be read just now (checked again under
+  the lock before each entry and before its objects go), a journal, notes file or format of a
+  newer app, notes that do not parse or a single note or pin that does not read, a thinning
+  record that does not read, another window holding the live-op or upgrade lock. A file held
+  open by another program is waited for 2 s, then the run stops (ThinError) and the entry is
+  finished at the next start. Only the thinned entries' own objects are deleted;
   objects nobody named before (an interrupted capture's) stay. A commit checks its objects under
   the vault lock, so a capture racing a run commits nothing rather than a broken entry.
 - The object store keeps no delete method; the one deletion of an object is in thinning.
