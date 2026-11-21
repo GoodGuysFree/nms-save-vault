@@ -684,6 +684,7 @@ class App(tk.Tk):
 
         about = menu("Help")
         about.add_command(label="Help", command=self.on_help, accelerator="F1", underline=0)
+        about.add_command(label=whatsnew.MENU_LABEL, command=self.on_whats_new, underline=0)
         about.add_command(label="About NMS Save Vault", command=self.on_about, underline=0)
         # The native bar is the default (OS look, screen readers, the global bar on macOS).
         # Windows draws it light whatever the theme, so in the dark theme there - and only
@@ -3062,6 +3063,10 @@ class App(tk.Tk):
                 "Account display names",
                 f"Could not read the account display names.\n\nFix or delete this file:\n{exc}",
             )
+
+    def on_whats_new(self) -> None:
+        _showinfo(f"What's new in v{__version__}",
+                  whatsnew.notes_for(__version__) or whatsnew.NO_NOTES, parent=self)
 
     def on_about(self) -> None:
         _showinfo(

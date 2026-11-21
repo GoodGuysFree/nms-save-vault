@@ -70,6 +70,38 @@ def test_the_app_shows_the_notes_once_and_records_it(fresh_app):
     assert len(shown) == 1
 
 
+def _help_menu(app):
+    bar = app.menubar
+    for i in range(bar.index("end") + 1):
+        if bar.entrycget(i, "label") == "Help":
+            return app.nametowidget(bar.entrycget(i, "menu"))
+    raise AssertionError("no Help menu")
+
+
+def _invoke_whats_new(app):
+    menu = _help_menu(app)
+    for i in range(menu.index("end") + 1):
+        if menu.type(i) != "separator" and menu.entrycget(i, "label") == whatsnew.MENU_LABEL:
+            menu.invoke(i)
+            return
+    raise AssertionError(f"no Help entry {whatsnew.MENU_LABEL!r}")
+
+
+def test_help_shows_the_notes_again_once_seen(fresh_app):
+    """GGF 2026-11-21: "Do add a help menu entry"."""
+    app, shown, _saved = fresh_app
+    app.state.ui[whatsnew.SEEN_KEY] = __version__
+    _invoke_whats_new(app)
+    assert shown == [(f"What's new in v{__version__}", whatsnew.NOTES.strip())]
+
+
+def test_help_says_so_when_this_version_has_no_notes(fresh_app, monkeypatch):
+    app, shown, _saved = fresh_app
+    monkeypatch.setattr(whatsnew, "NOTES_VERSION", "0.0.0")
+    _invoke_whats_new(app)
+    assert shown == [(f"What's new in v{__version__}", whatsnew.NO_NOTES)]
+
+
 def test_the_notes_come_before_the_update_question(fresh_app, monkeypatch):
     """Both are startup dialogs; one at a time, the release's news first."""
     app, shown, _saved = fresh_app
