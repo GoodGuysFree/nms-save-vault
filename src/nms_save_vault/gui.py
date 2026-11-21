@@ -45,6 +45,7 @@ from .ui.organizer.panic import PanicDialog
 from .ui.organizer.vaultwin import VaultEnv, VaultWindow, needs_attention
 from .ui.organizer.view import OrganizerView
 from .ui import thinning as thin_words
+from .ui import whatsnew
 from .ui.settings import SettingsWindow
 from .ui.thinning import ThinWindow
 from .ui.themeaware import ThemeRegistry
@@ -512,7 +513,7 @@ class App(tk.Tk):
             self.after(200, self.organizer_view.rescan)
             self.after(VAULT_WATCH_MS, self._watch_vault)
         self.refresh()
-        self.after(300, self._startup_update_check)  # after the window is on screen
+        self.after(300, self._startup_dialogs)  # after the window is on screen
         # Sweep up after a previous update. Deliberately late: when this run *is* the
         # update, the script that started it is still finishing its own cleanup.
         self.after(30_000, updates.clean_temp)
@@ -1452,6 +1453,22 @@ class App(tk.Tk):
         self.state.font_scale = wanted
         self._apply_theme()
         self._save_state_quietly()
+
+    # --- startup dialogs -----------------------------------------------------
+
+    def _startup_dialogs(self) -> None:
+        """One at a time: the release's news, then the update question."""
+        self._show_whats_new()
+        self._startup_update_check()
+
+    def _show_whats_new(self) -> None:
+        """This release's summary, the first time this version starts (ui/whatsnew.py)."""
+        notes = whatsnew.to_show(self.state.ui, __version__)
+        if notes is None:
+            return
+        self.state.ui[whatsnew.SEEN_KEY] = __version__
+        self._save_state_quietly()
+        _showinfo(f"What's new in v{__version__}", notes, parent=self)
 
     # --- update checking -----------------------------------------------------
 

@@ -27,6 +27,11 @@ Update the version in all three places (keep them identical):
 Then in `README.md`: add a row to the **Version history** table and bump the
 `NMSSaveVault-Setup-vX.Y.Z.zip` filename mentioned in QuickStart / Install.
 
+And in `src/nms_save_vault/ui/whatsnew.py`: set `NOTES_VERSION` to the new version and write
+`NOTES`, the short summary the app pops up once the first time this version starts. Plain words,
+a few lines per change; it is shown in a message box. `tests/test_whatsnew.py` fails until
+`NOTES_VERSION` matches.
+
 ## 2. Run the tests
 
 ```pwsh

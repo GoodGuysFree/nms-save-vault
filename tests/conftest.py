@@ -608,11 +608,16 @@ def gui_app(tmp_path_factory):
     mp.setattr(aliases, "_active", aliases.AliasMap())
     # update_check="off" matters: the App schedules its startup check 300ms after
     # construction, and the default "ask" would pop a modal dialog partway through the
-    # suite and hang it. Tests that exercise update checking set the flag themselves.
+    # suite and hang it. Tests that exercise update checking set the flag themselves. The
+    # release's notes are marked seen for the same reason (tests/test_whatsnew.py).
+    from nms_save_vault import __version__
+    from nms_save_vault.ui import whatsnew
+
     mp.setattr(
         appstate,
         "load",
-        lambda *a, **k: appstate.AppState(sources=[], vault=None, update_check="off"),
+        lambda *a, **k: appstate.AppState(sources=[], vault=None, update_check="off",
+                                          ui={whatsnew.SEEN_KEY: __version__}),
     )
     # Keep the real machine's save folder out of the test: the App falls back to it when
     # the config lists no sources.
