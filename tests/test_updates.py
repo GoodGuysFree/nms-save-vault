@@ -270,3 +270,28 @@ def test_a_completed_check_records_the_date(quiet_app):
     quiet_app.state.update_last_check = ""
     quiet_app._update_check_done(None, quiet=True)
     assert quiet_app.state.update_last_check == date.today().isoformat()
+
+
+# --- starting the updater ----------------------------------------------------
+
+
+def test_the_updater_runs_without_a_console_window(monkeypatch, tmp_path):
+    """GGF 2026-11-22: a console window doing ping popped up after the download. The script
+    was started with no console at all (DETACHED_PROCESS), so every console program it ran
+    (the ping it waits with, xcopy) opened a window of its own. With a hidden console
+    (CREATE_NO_WINDOW) they share that one instead."""
+    seen = {}
+
+    class FakePopen:
+        def __init__(self, args, **kw):
+            seen.update(kw, args=args)
+
+    monkeypatch.setattr(updates.subprocess, "Popen", FakePopen)
+    script = tmp_path / "update.cmd"
+    staged = updates.StagedUpdate(version="9.9.9", script=script, app_dir=tmp_path,
+                                  install_dir=tmp_path, log=tmp_path / "update.log")
+    updates.launch(staged)
+    no_window, detached = 0x08000000, 0x00000008
+    assert seen["creationflags"] & no_window
+    assert not seen["creationflags"] & detached     # it would make CREATE_NO_WINDOW ignored
+    assert seen["args"][-1] == str(script)

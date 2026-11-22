@@ -484,7 +484,7 @@ if exist "%WORK%" rmdir /s /q "%WORK%"
 exit /b
 
 :say
-rem This script has no console of its own, so a message box is the only way to be heard.
+rem This script's console is hidden, so a message box is the only way to be heard.
 set "MSG=%~1"
 powershell -NoProfile -NonInteractive -Command "Add-Type -AssemblyName System.Windows.Forms; [void][System.Windows.Forms.MessageBox]::Show($env:MSG, 'NMS Save Vault', 'OK', 'Warning')"
 exit /b 0
@@ -600,7 +600,9 @@ def _cmd_exe() -> str:
 def launch(staged: StagedUpdate) -> None:
     """Start the updater and return. The caller must then exit promptly -- the script is
     already waiting for this process to release its files."""
-    flags = getattr(subprocess, "DETACHED_PROCESS", 0x00000008) | getattr(
+    # A hidden console, not none: started with no console (DETACHED_PROCESS), every console
+    # program the script runs (the ping it waits with, xcopy) opened a visible window of its own.
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000) | getattr(
         subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200
     )
     try:
