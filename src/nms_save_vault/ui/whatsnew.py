@@ -9,19 +9,20 @@ from __future__ import annotations
 #: Where state.json's ``ui`` preferences keep the last version whose notes were shown.
 SEEN_KEY = "whats_new_seen"
 
-NOTES_VERSION = "0.4.1"
+NOTES_VERSION = "0.4.2"
 
 NOTES = """\
-Thinning the vault
-- Tools > Thin the vault... lists every backup it would delete, each one ticked. Nothing is \
-deleted until you press Delete.
-- It keeps every backup from the last 7 days, then one a day, one a week and one a month.
-- The newest backup of each save always stays, and so do pinned, named and noted backups and \
-anything an undo still needs.
-- Settings and the status bar remind you of the vault's size.
+Filter the backups
+- Above the backups, "Type" lists only one type of backup (full, snapshot, ...) and "Pin" \
+only the pinned or unpinned ones. Both combine with "Save file".
 
-Pins
-- A backup's lock is now called its pin: Pin / Unpin in the Backups list and in History.
+What's new
+- This window: the first time a new version starts, it shows what changed. \
+Help > What's new in this version shows it again.
+
+Updates
+- Installing an update no longer opens a console window. The version you are updating \
+from runs the install, so you will see this from the next update on.
 """
 
 

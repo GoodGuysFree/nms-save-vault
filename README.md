@@ -29,7 +29,7 @@ All data below is invented (a demo world, not anyone's saves).
 
 **Just want to run it? No Python needed.** Download the ready-to-use Windows kit from the
 [**latest release**](https://github.com/GoodGuysFree/nms-save-vault/releases/latest) — grab
-`NMSSaveVault-Setup-v0.4.1.zip` under **Assets**.
+`NMSSaveVault-Setup-v0.4.2.zip` under **Assets**.
 
 Extract the zip, open the `NMSSaveVault` folder and run **`NMSSaveVault.exe`**. That is the
 whole thing — Python and Tkinter are bundled, nothing is installed, and because the app
@@ -213,8 +213,8 @@ Both platforms have a portable kit on the
 
 | Platform | Asset |
 |---|---|
-| Linux / Steam Deck (x86_64) | `NMSSaveVault-v0.4.1-linux-x86_64.tar.gz` |
-| macOS (Apple Silicon) | `NMSSaveVault-v0.4.1-macos-arm64.tar.gz` |
+| Linux / Steam Deck (x86_64) | `NMSSaveVault-v0.4.2-linux-x86_64.tar.gz` |
+| macOS (Apple Silicon) | `NMSSaveVault-v0.4.2-macos-arm64.tar.gz` |
 
 ### Read this first: back up your saves by hand
 
@@ -246,7 +246,7 @@ saw last. It is not a substitute for the copy above.
 ### Then run it
 
 ```sh
-tar -xzf NMSSaveVault-v0.4.1-linux-x86_64.tar.gz
+tar -xzf NMSSaveVault-v0.4.2-linux-x86_64.tar.gz
 cd NMSSaveVault
 ./NMSSaveVault          # the app;  ./nmsvault-cli status  for the command line
 ```
@@ -275,7 +275,7 @@ and can only draw ISO8859-1. Every string the app displays is therefore plain AS
 
 ## Run it (Windows, no Python needed)
 
-Download **`NMSSaveVault-Setup-v0.4.1.zip`** from the
+Download **`NMSSaveVault-Setup-v0.4.2.zip`** from the
 [**Releases**](https://github.com/GoodGuysFree/nms-save-vault/releases) page (under the
 release's **Assets**) and extract it. Open the `NMSSaveVault` folder and run
 **`NMSSaveVault.exe`** — that is all. Everything (Python + Tkinter) is bundled, nothing is
@@ -682,6 +682,7 @@ does the same.
 
 | Version | Date | Highlights |
 |---|---|---|
+| **0.4.2** | 2026-11-22 | **Filters and what's new.** Above the backups, "Type" lists only one type of backup (full, snapshot, ...) and "Pin" only the pinned or unpinned ones; both combine with "Save file". The first time a new version starts it shows what changed, and Help > What's new in this version shows it again. The updater no longer opens a console window while it installs; since the running version starts the updater, this shows from the update after this one. |
 | **0.4.1** | 2026-11-21 | **Thinning the vault.** Thin the vault... lists every backup it would delete, each one ticked, and nothing is deleted until you press Delete. It follows a schedule: every backup from the last 7 days, then one a day, one a week and one a month. The newest backup of each save always stays, and so do pinned, named and noted backups and anything an undo still needs. A size reminder shows in Settings and the status bar. A run that was interrupted is finished the next time the app starts, the operations log says "thinned on <date>", and `nmsvault-cli store thin` does the same from the command line. A version's lock is now called its pin everywhere (`note --pin` / `--unpin`). The core library (`.whl`) gains thinning, pins, the vault's size and `ASSET_VOLATILE` for apps that share the vault. |
 | **0.4.0** | 2026-11-16 | **The whole-folder restore.** Its plan lists the slots one per row and names each save once, two playthroughs that share a name included, and it asks about the account data once. It keeps what it replaces in one snapshot, "before restoring the whole folder", instead of a backup per slot as well, and keeps that snapshot only when it holds every slot as planned. A save the game made into an empty slot after a write was planned now stops that write as stale; before, it was overwritten and kept only in the snapshot. |
 | **0.3.10** | 2026-11-10 | **A write stays its folder's.** A save folder is journaled with where it is, so when a second folder of the same name is listed later (a copy, a second Proton prefix), earlier writes stay in the right slot's history and their undo puts back the folder they were written to. A restore that brings back the account data writes it under the same one-writer-at-a-time lock as every other write. The core library (`.whl`) gains what NMS Savecraft uses to unlock account rewards, give a copied base or settlement its new owner, and duplicate a save into an empty slot as a new playthrough. |
