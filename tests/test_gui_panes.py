@@ -19,7 +19,11 @@ def app(gui_app):
 @pytest.fixture(autouse=True)
 def _reset_app(app):
     """Undo whatever the previous test did, since the App is shared across the module."""
+    from nms_save_vault import gui
+
     app._history_key, app._report = None, None
+    app.type_var.set(gui.ALL_TYPES)
+    app.pin_var.set(gui.ALL_PINS)
     app._populate_backups()
     app._sort_key, app._sort_reverse = "saved", True
     app._apply_backup_sort()
@@ -211,6 +215,58 @@ def test_choosing_all_saves_brings_every_backup_back(app):
     app.history_var.set(gui.ALL_SAVES)
     app._on_history_changed()
     assert len(app.backup_tree.get_children("")) == 3
+
+
+def _choose(combo, var, value) -> None:
+    """Pick ``value`` in a read-only combobox as the user does (it must be on its list)."""
+    assert value in combo.cget("values"), (value, combo.cget("values"))
+    var.set(value)
+    combo.event_generate("<<ComboboxSelected>>")
+
+
+def test_filtering_by_type_lists_only_that_kind(app):
+    """GGF 2026-11-22: "filter the backups by type ... full / snapshot / etc"."""
+    from nms_save_vault import gui
+
+    assert list(app.type_combo.cget("values")) == [gui.ALL_TYPES, "extract", "full", "inplace"]
+    _choose(app.type_combo, app.type_var, "full")
+    assert [text for text, _ in _top_rows(app)] == ["full-steam-20260101-000000"]
+
+    _choose(app.type_combo, app.type_var, gui.ALL_TYPES)
+    assert len(_top_rows(app)) == 3
+
+
+def test_filtering_by_pin_lists_pinned_or_the_rest(app, monkeypatch):
+    """GGF 2026-11-22: "and by pinned / non-pinned"."""
+    from nms_save_vault import gui
+
+    monkeypatch.setattr(app, "_pinned", frozenset({"inplace-20260201-000000"}))
+    _choose(app.pin_combo, app.pin_var, gui.PINNED_ONLY)
+    assert [text for text, _ in _top_rows(app)] == ["inplace-20260201-000000" + gui.PIN_MARK]
+
+    _choose(app.pin_combo, app.pin_var, gui.NOT_PINNED)
+    assert sorted(text for text, _ in _top_rows(app)) == [
+        "extract-steam-20260301-000000", "full-steam-20260101-000000"]
+
+
+def test_tab_goes_through_the_filters_left_to_right(app):
+    """Tab follows the stacking order (``winfo children``, lowest first), which packing the
+    row right to left had reversed."""
+    wanted = [app.history_combo, app.type_combo, app.pin_combo, app.thin_button]
+    stacked = [w for w in app.thin_button.master.winfo_children() if w in wanted]
+    assert stacked == wanted
+
+
+def test_the_filters_combine_with_the_save_file(app, monkeypatch):
+    from nms_save_vault import gui
+
+    p = _one_run_in(app, {"full-steam-20260101-000000": 2, "inplace-20260201-000000": 1})
+    app._history_key = p.key
+    monkeypatch.setattr(app, "_pinned", frozenset({"full-steam-20260101-000000"}))
+    _choose(app.type_combo, app.type_var, "inplace")
+    assert [text for text, _ in _top_rows(app)] == ["inplace-20260201-000000"]
+    _choose(app.pin_combo, app.pin_var, gui.PINNED_ONLY)
+    assert _top_rows(app) == []
 
 
 def test_show_history_from_a_slot_narrows_to_that_run(app):

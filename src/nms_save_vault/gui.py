@@ -107,6 +107,11 @@ BACKUP_COLUMNS = (
 )
 
 ALL_SAVES = "All saves"
+#: The Backups list's Type and Pin filters (GGF 2026-11-22).
+ALL_TYPES = "All types"
+ALL_PINS = "Pinned or not"
+PINNED_ONLY = "Pinned"
+NOT_PINNED = "Not pinned"
 _SLOTS_LATER = ":slots"                 # iid suffix of the marker row of an unopened backup
 
 @dataclass(frozen=True)
@@ -1228,16 +1233,33 @@ class App(tk.Tk):
         body = self.backup_tree.master
         filter_row = ttk.Frame(body.master)
         filter_row.pack(side=tk.TOP, fill=tk.X, pady=pxs(0, 2), before=body)
+        # Packed right to left first, so a narrow window narrows the save-file list, not these.
+        self.thin_button = ttk.Button(filter_row, text=THIN_LABEL, command=self.on_thin)
+        self.thin_button.pack(side=tk.RIGHT)
+        self.pin_var = tk.StringVar(value=ALL_PINS)
+        self.pin_combo = ttk.Combobox(
+            filter_row, textvariable=self.pin_var, state="readonly", width=14,
+            values=[ALL_PINS, PINNED_ONLY, NOT_PINNED])
+        self.pin_combo.pack(side=tk.RIGHT, padx=pxs(4, 12))
+        ttk.Label(filter_row, text="Pin:").pack(side=tk.RIGHT)
+        self.type_var = tk.StringVar(value=ALL_TYPES)
+        self.type_combo = ttk.Combobox(
+            filter_row, textvariable=self.type_var, state="readonly", width=12,
+            values=[ALL_TYPES])
+        self.type_combo.pack(side=tk.RIGHT, padx=pxs(4, 12))
+        ttk.Label(filter_row, text="Type:").pack(side=tk.RIGHT)
+        for combo in (self.type_combo, self.pin_combo):
+            combo.bind("<<ComboboxSelected>>", self._on_backup_filter_changed)
         ttk.Label(filter_row, text="Save file:").pack(side=tk.LEFT)
         self.history_var = tk.StringVar(value=ALL_SAVES)
         self.history_combo = ttk.Combobox(
             filter_row, textvariable=self.history_var, state="readonly", width=80,
             values=[ALL_SAVES], postcommand=self._fill_history_combo,
         )
-        self.history_combo.pack(side=tk.LEFT, padx=pxs(4, 0))
+        self.history_combo.pack(side=tk.LEFT, padx=pxs(4, 0), fill=tk.X, expand=True)
         self.history_combo.bind("<<ComboboxSelected>>", self._on_history_changed)
-        self.thin_button = ttk.Button(filter_row, text=THIN_LABEL, command=self.on_thin)
-        self.thin_button.pack(side=tk.RIGHT)
+        for widget in (self.history_combo, self.type_combo, self.pin_combo, self.thin_button):
+            widget.lift()                  # Tab goes left to right, not in packing order
         # Which tree the toolbar acts on: whichever the user last selected in.
         self._active_tree = self.live_tree
         # Backups start newest-first; clicking a heading re-sorts.
@@ -1893,7 +1915,14 @@ class App(tk.Tk):
         tree.delete(*tree.get_children())
         self._meta = {k: v for k, v in self._meta.items() if k[0] != str(tree)}
         shown = self._history_playthrough()
+        self.type_combo["values"] = [ALL_TYPES, *sorted({e.kind for e in entries})]
+        kind = self.type_var.get()
+        pins = self.pin_var.get()
         for e in entries:
+            if kind != ALL_TYPES and e.kind != kind:
+                continue
+            if pins != ALL_PINS and (e.id in self._pinned) != (pins == PINNED_ONLY):
+                continue
             only = None
             if shown is not None:
                 where = playtime.entry_location(e.id, e.path)
@@ -2104,6 +2133,9 @@ class App(tk.Tk):
 
     def _on_history_changed(self, _event=None) -> None:
         self._history_key = self._history_choices.get(self.history_var.get())
+        self._populate_backups(self._entries, self._store_problem)
+
+    def _on_backup_filter_changed(self, _event=None) -> None:
         self._populate_backups(self._entries, self._store_problem)
 
     def _show_history_of(self, folder: str, slot: int) -> None:
@@ -3676,8 +3708,8 @@ BUTTONS
 - Tools > Free old backup folders: after the vault upgrade, deletes the old backup folders
   that are now in the version store (after a full check; it shows what it will free and
   asks first). Every backup stays listed.
-- Thin the vault... (right of "Save file", above the backups; also in Tools): deletes old
-  backups by a schedule, and only when you ask. Of each save file it keeps every save of
+- Thin the vault... (right of "Save file", "Type" and "Pin", above the backups; also in
+  Tools): deletes old backups by a schedule, and only when you ask. Of each save file it keeps every save of
   the last 7 days, then one a day until 30 days, one a week until 6 months and one a month
   after that, and always the newest. What you pinned, named or wrote a note on stays, and
   so does what an undo still needs. The window lists every backup that would go (date,
@@ -3770,6 +3802,8 @@ WORKFLOWS
 - Bring in an outside save: Import the folder, then copy the slot you want into live.
 - See when you backed a save up: pick it under "Save file" above the backups. Renamed
   copies, and copies in other slots, are included.
+- List only one type of backup (full, snapshot, ...), or only the pinned or unpinned ones:
+  pick it under "Type" or "Pin" above the backups. They combine with "Save file".
 
 UPDATES
 The first time you run it, the app asks whether it may check for new versions. If you
