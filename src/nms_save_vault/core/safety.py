@@ -16,7 +16,7 @@ import stat
 import tempfile
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -160,9 +160,29 @@ def sha256_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+#: Windows refuses to replace a file another process holds open for a moment (a reader,
+#: Defender, the search indexer, Steam Cloud: WinError 5/32); the replace is tried again for
+#: about a second before it fails (audit H-02, 2026-11-23). Elsewhere a refusal is real.
+REPLACE_RETRY = os.name == "nt"
+REPLACE_TRIES = 6
+REPLACE_PAUSE = 0.2
+
+
+def _replace_retrying(src: str | Path, dst: str | Path) -> None:
+    for attempt in range(REPLACE_TRIES if REPLACE_RETRY else 1):
+        try:
+            os.replace(src, dst)  # atomic on same volume (Windows & POSIX)
+            return
+        except PermissionError:
+            if attempt + 1 >= (REPLACE_TRIES if REPLACE_RETRY else 1):
+                raise
+            time.sleep(REPLACE_PAUSE)
+
+
 def atomic_write_bytes(path: str | Path, data: bytes, temp_prefix: str = ".tmp_") -> None:
     """Write ``data`` to ``path`` atomically (temp file in same dir, fsync, os.replace). The
-    temp file is ``<temp_prefix><random>.part``, so a caller can recognise its own leftovers."""
+    temp file is ``<temp_prefix><random>.part``, so a caller can recognise its own leftovers.
+    A replace refused for a moment (Windows: the file held open) is tried again."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=temp_prefix, suffix=".part")
@@ -171,9 +191,37 @@ def atomic_write_bytes(path: str | Path, data: bytes, temp_prefix: str = ".tmp_"
             f.write(data)
             f.flush()
             os.fsync(f.fileno())
-        os.replace(tmp, path)  # atomic on same volume (Windows & POSIX)
+        _replace_retrying(tmp, path)
     except BaseException:
         _silent_unlink(tmp)
+        raise
+
+
+def write_files_together(files: Mapping[Path, bytes]) -> None:
+    """Write each file atomically, all or none: when one fails, the ones already written are
+    put back as they were (a file that was not there is removed again) and the error is raised
+    (audit H-01: ``accountdata.hg`` must never be left with the other ``mf_accountdata.hg``)."""
+    before: dict[Path, bytes | None] = {}
+    for path in files:
+        path = Path(path)
+        try:
+            before[path] = path.read_bytes()
+        except FileNotFoundError:
+            before[path] = None
+    done: list[Path] = []
+    try:
+        for path, data in files.items():
+            atomic_write_bytes(Path(path), data)
+            done.append(Path(path))
+    except BaseException:
+        for path in reversed(done):
+            try:
+                if before[path] is None:
+                    _silent_unlink(path)
+                else:
+                    atomic_write_bytes(path, before[path])
+            except OSError:
+                log.exception("could not put %s back after a failed write", path)
         raise
 
 

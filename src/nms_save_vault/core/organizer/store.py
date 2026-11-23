@@ -270,8 +270,28 @@ class OrganizerStore:
                     self._journal.append(record)
             self._journal_stamp = (st.st_ino, offset)
         if self._journal_tail and locked:
-            self._problem(f"{JOURNAL}: the last line is incomplete and was ignored")
+            whole = self._whole_record(self._journal_tail)
+            if whole is not None and not self.read_only:
+                # a record that lost only its newline in a crash was written whole: it counts,
+                # or the next one would take its seq and id (audit M-07)
+                _seal(path)
+                ino, offset = self._journal_stamp
+                self._journal.append(whole)
+                self._journal_stamp = (ino, offset + len(self._journal_tail) + 1)
+                self._journal_tail = b""
+                log.info("organizer store: %s: a record without its newline was sealed", JOURNAL)
+            else:
+                self._problem(f"{JOURNAL}: the last line is incomplete and was ignored")
         return self._journal
+
+    @staticmethod
+    def _whole_record(raw: bytes) -> dict | None:
+        """``raw`` as a journal record when it is one whole (said nothing about otherwise)."""
+        try:
+            record = json.loads(raw.decode("utf-8"))
+        except ValueError:
+            return None
+        return record if _valid_envelope(record) else None
 
     def _parse_record(self, raw: bytes) -> dict | None:
         if not raw.strip():
@@ -377,6 +397,17 @@ def _dump_doc(doc: dict) -> bytes:
 def _dump_record(record: dict) -> bytes:
     text = json.dumps(record, ensure_ascii=True, allow_nan=False, separators=(",", ":"))
     return (text + "\n").encode("ascii")
+
+
+def _seal(path: Path) -> None:
+    """End the file's last line (one whose record lost only its newline), fsynced."""
+    with open(path, "a+b", buffering=0) as f:
+        size = f.seek(0, os.SEEK_END)
+        if size:
+            f.seek(size - 1)
+            if f.read(1) != b"\n":
+                f.write(b"\n")
+                os.fsync(f.fileno())
 
 
 def _append(path: Path, data: bytes) -> None:

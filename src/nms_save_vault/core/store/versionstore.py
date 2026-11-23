@@ -59,6 +59,12 @@ from .objects import ObjectStore, sha256
 
 log = logging.getLogger(__name__)
 
+
+class _Thinned(ObjectMissing):
+    """At the commit, an object the new entry names is gone: a thinning removed it after the
+    capture found it already kept (nothing was committed; the capture is taken again)."""
+
+
 VaultMode = Literal["legacy", "upgrading", "store"]
 FaultHook = Callable[[str], None]   # tests: raise at a named point to simulate a crash
 
@@ -649,14 +655,25 @@ class VersionStore:
                          cancel=None, progress=None, finish=finish,
                          app_version=None if app_version is None else appinfo.checked(app_version))
 
-    def _add(self, folder: Path, *, platform: Platform, account_key: str | None, live: bool,
-             kind: EntryKind, label: str, source: Mapping[str, Any], scope: CaptureScope,
-             entry_id: str | None, origin: Mapping[str, Any] | None, created_local: str | None,
-             op_id: str | None, reason: str, cancel: Callable[[], bool] | None,
-             progress: Callable[[int, int], None] | None,
-             finish: Callable[[list[MemberRecord]], str | None] | None = None,
-             verify: Callable[[Mapping[str, FileEntry]], None] | None = None,
-             app_version: str | None = None) -> StoreEntry:
+    def _add(self, folder: Path, **kw) -> StoreEntry:
+        """Capture and commit; once more when a thinning (another window or app) removed an
+        object this capture had found already kept, between finding it and the commit (audit
+        H-04: it failed as "damaged, Run Check vault"; nothing had been committed)."""
+        try:
+            return self._add_once(folder, **kw)
+        except _Thinned:
+            log.info("a thinning removed a kept copy this capture shared; taking it again")
+            return self._add_once(folder, **kw)
+
+    def _add_once(self, folder: Path, *, platform: Platform, account_key: str | None, live: bool,
+                  kind: EntryKind, label: str, source: Mapping[str, Any], scope: CaptureScope,
+                  entry_id: str | None, origin: Mapping[str, Any] | None,
+                  created_local: str | None, op_id: str | None, reason: str,
+                  cancel: Callable[[], bool] | None,
+                  progress: Callable[[int, int], None] | None,
+                  finish: Callable[[list[MemberRecord]], str | None] | None = None,
+                  verify: Callable[[Mapping[str, FileEntry]], None] | None = None,
+                  app_version: str | None = None) -> StoreEntry:
         if kind not in ENTRY_KINDS:
             raise ValueError(f"not an entry kind: {kind!r}")
         if entry_id is not None and not is_entry_id(entry_id):
@@ -804,7 +821,10 @@ class VersionStore:
                     stamp = f"{fields['kind']}-{fields['platform']}-{local:%Y%m%d-%H%M%S}"
                     entry_id = self._free_id(stamp, catalog_ids=self._catalog_ids())
                 entry = StoreEntry.new(id=entry_id, **fields)
-                self._check_present(entry)
+                try:
+                    self._check_present(entry)
+                except ObjectMissing as exc:        # thinned since it was found: none kept
+                    raise _Thinned(exc.digest, exc.detail) from None
                 self._write_manifest(entry)
         except safety.LockTimeout as exc:
             raise StoreBusy() from exc

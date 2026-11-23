@@ -401,7 +401,7 @@ def cleanup_interrupted_upgrade(vault_root: str | Path) -> UpgradeResult | None:
     root = Path(vault_root)
     marker = store_root(root) / STATE / UPGRADE_JSON
     if not marker.is_file():
-        return None
+        return _remove_empty_skeleton(root)
     try:
         with safety.exclusive_lock(upgrade_lock_path(root), timeout=0):
             try:
@@ -418,6 +418,28 @@ def cleanup_interrupted_upgrade(vault_root: str | Path) -> UpgradeResult | None:
             partial, dest = _recorded_copy(record)
             _remove_unfinished(root, partial, dest, store_owned=True)
     except (safety.LockTimeout, RuntimeError):
+        return None
+    return UpgradeResult(None, 0, 0, 0, "The last upgrade was interrupted and has been cleaned "
+                                        "up. Your vault was not changed.")
+
+
+def _remove_empty_skeleton(root: Path) -> UpgradeResult | None:
+    """An upgrade killed after it made ``store/`` (and ``store/state/``) but before it wrote
+    ``upgrade.json`` leaves only those empty folders, which would make the vault read as a
+    damaged store for good (audit H-03). Only empty folders are removed, never a file."""
+    store = store_root(root)
+    try:
+        inside = sorted(p.name for p in store.iterdir()) if store.is_dir() else None
+    except OSError:
+        return None
+    if inside is None or inside not in ([], [STATE]):
+        return None
+    try:
+        with safety.exclusive_lock(upgrade_lock_path(root), timeout=0):
+            if STATE in inside:
+                (store / STATE).rmdir()             # fails (and stops) unless empty
+            store.rmdir()
+    except (safety.LockTimeout, RuntimeError, OSError):
         return None
     return UpgradeResult(None, 0, 0, 0, "The last upgrade was interrupted and has been cleaned "
                                         "up. Your vault was not changed.")

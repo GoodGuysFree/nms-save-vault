@@ -85,7 +85,7 @@ def append(ctx: OpContext, op_id: str, event: str, payload: Mapping[str, Any] | 
     path = ops_path(ctx)
     with ctx.store.transaction():
         with _tails_guard:      # under the store lock the tail holds every append so far
-            seq = 1 + len(_refresh(path).by_op.get(op_id, ()))
+            seq = 1 + len(_refresh(path, seal=True).by_op.get(op_id, ()))
         record = {"j": JOURNAL_VERSION, "op_id": op_id, "seq": seq, "event": event,
                   "utc": utc_text(ctx.clock()), "machine": ctx.machine_id, **payload}
         line = json.dumps(record, ensure_ascii=True, allow_nan=False, separators=(",", ":"))
@@ -118,6 +118,26 @@ def _append_line(path: Path, data: bytes) -> None:
     _write_line(path, data)
     if created:
         safety.fsync_dir(path.parent)
+
+
+def _whole_event(raw: bytes) -> bool:
+    try:
+        record = json.loads(raw.decode("utf-8"))
+    except ValueError:
+        return False
+    return (isinstance(record, dict) and is_op_id(record.get("op_id"))
+            and isinstance(record.get("seq"), int) and record.get("event") in EVENTS)
+
+
+def _seal(path: Path) -> None:
+    """End the file's last line, fsynced."""
+    with open(path, "a+b", buffering=0) as f:
+        size = f.seek(0, os.SEEK_END)
+        if size:
+            f.seek(size - 1)
+            if f.read(1) != b"\n":
+                f.write(b"\n")
+                os.fsync(f.fileno())
 
 
 def _write_line(path: Path, data: bytes) -> None:
@@ -163,8 +183,11 @@ _tails: dict[str, _Tail] = {}
 _tails_guard = threading.RLock()
 
 
-def _refresh(path: Path) -> _Tail:
-    """The cached tail of ``path`` brought up to date. Call under ``_tails_guard``."""
+def _refresh(path: Path, *, seal: bool = False) -> _Tail:
+    """The cached tail of ``path`` brought up to date. Call under ``_tails_guard``.
+    ``seal`` (an append, under the store lock): a last line that is a whole event and lost
+    only its newline in a crash is ended and counted, or the next append would take its seq
+    (audit M-07); without the lock it may be an append in progress, and is left alone."""
     key = os.path.abspath(path)
     try:
         st = path.stat()
@@ -180,8 +203,15 @@ def _refresh(path: Path) -> _Tail:
         f.seek(tail.offset)
         data = f.read()
     lines = data.split(b"\n")
-    if lines.pop().strip():
-        log.warning("%s: the last line is incomplete (an append did not finish); ignored", OPS)
+    last = lines.pop()
+    if last.strip():
+        if seal and _whole_event(last):
+            _seal(path)
+            lines.append(last)
+            log.info("%s: an event without its newline was sealed", OPS)
+        else:
+            log.warning("%s: the last line is incomplete (an append did not finish); ignored",
+                        OPS)
     for raw in lines:
         tail.offset += len(raw) + 1
         tail.lines += 1

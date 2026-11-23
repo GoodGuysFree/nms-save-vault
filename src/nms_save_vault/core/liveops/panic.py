@@ -179,8 +179,8 @@ def _restore_accountdata(ctx: OpContext, plan: PlacePlan, account: LiveRef,
     folder = resolve_account(ctx, account).folder
     kept = account_files(ctx, snapshot_id or "")
     with jr.liveop_lock(ctx):
-        for name, data in kept.items():
-            safety.atomic_write_bytes(folder / name, data)
+        # both files or neither: a failure part way puts the first back (audit H-01)
+        safety.write_files_together({folder / name: data for name, data in kept.items()})
 
 
 def account_files(ctx: OpContext, entry_id: str) -> dict[str, bytes]:
