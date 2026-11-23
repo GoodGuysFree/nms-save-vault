@@ -27,10 +27,25 @@ number of *valid* bytes consumed (which equals the meta's ``size_disk``).
 """
 from __future__ import annotations
 
+import os
 import struct
 from dataclasses import dataclass
 
 from . import formats
+
+# The LZ4 C library (python-lz4, BSD; the kits ship it inside, so nothing is downloaded): when
+# it is there it does the block work, tens of times faster than the pure Python below, which
+# stays the fallback. NMSVAULT_PURE_LZ4=1 chooses the pure Python. The checks are the same
+# either way: the claims before anything is allocated, the format's end rules on every block
+# made, and every container made is decoded back and compared (lz4-accel branch, 2026-11-23).
+try:
+    if os.environ.get("NMSVAULT_PURE_LZ4") == "1":
+        raise ImportError("the pure-Python code was asked for")
+    import lz4.block as _c_lz4
+except ImportError:
+    _c_lz4 = None
+#: Whether the LZ4 C library does the block work.
+FAST = _c_lz4 is not None
 
 
 class LZ4FormatError(ValueError):
@@ -135,6 +150,16 @@ def decompress_block(
     produce (both checked before anything is allocated).
     """
     _check_claim(expected_size, len(src), limit, "an LZ4 block")
+    if FAST:
+        # The reference library insists on the format's end rules, which the game's own blocks
+        # keep; a block it refuses goes to the decoder below, which reads every block it read
+        # before and refuses the rest as it always did, with the same words.
+        try:
+            got = _c_lz4.decompress(src, uncompressed_size=expected_size)
+        except _c_lz4.LZ4BlockError:
+            got = None
+        if got is not None and (not exact or len(got) == expected_size):
+            return got
     out = bytearray(expected_size)
     s = 0
     d = 0
@@ -284,6 +309,8 @@ def _common(src: bytes, a: int, b: int, limit: int) -> int:
 def compress_block(src: bytes) -> bytes:
     """One raw LZ4 block holding ``src`` (no size header): what each save chunk carries.
     :func:`decompress_block` gives ``src`` back."""
+    if FAST:
+        return _c_lz4.compress(src, mode="default", store_size=False)
     n = len(src)
     out = bytearray()
     view = memoryview(src)

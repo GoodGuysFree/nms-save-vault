@@ -58,8 +58,29 @@ def test_the_core_never_imports_the_app_around_it():
     assert not outside, "\n".join(outside)
 
 
+#: What the core may use besides the standard library when it is there, never needing it:
+#: the LZ4 C library the kits ship (lz4-accel branch, 2026-11-23), with the pure-Python
+#: code as the fallback.
+OPTIONAL = {("nms_save_vault.core.lz4_block", "lz4.block")}
+
+
 def test_the_core_needs_only_the_standard_library():
     foreign = sorted({f"{mod} imports {target}" for mod, target, _ in _imports()
                       if target and not _inside("nms_save_vault", target)
-                      and target.split(".")[0] not in sys.stdlib_module_names})
+                      and target.split(".")[0] not in sys.stdlib_module_names
+                      and (mod, target) not in OPTIONAL})
     assert not foreign, "\n".join(foreign)
+
+
+def test_the_core_runs_without_its_optional_library():
+    """The core imported with the LZ4 C library missing: the pure-Python code does the work."""
+    import subprocess
+    code = ("import sys; sys.modules['lz4'] = None; sys.modules['lz4.block'] = None\n"
+            "from nms_save_vault.core import lz4_block\n"
+            "raw = b'{\"a\":1}' * 999 + bytes(1)\n"
+            "assert not lz4_block.FAST\n"
+            "assert lz4_block.decompress(lz4_block.compress(raw)) == raw\n"
+            "print('ok')")
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
+                         encoding="utf-8", timeout=120)
+    assert out.stdout.strip() == "ok", out.stderr

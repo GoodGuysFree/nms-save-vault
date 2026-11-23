@@ -10,7 +10,10 @@ requires-python = ">=3.10"
 dependencies = []
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "pytest-xdist>=3.5"]
+dev = ["pytest>=8", "pytest-xdist>=3.5", "lz4==4.4.5"]
+# the LZ4 C library the kits ship (lz4_block uses it when it is there; the pure-Python code
+# is the fallback): lz4-accel branch, 2026-11-23
+fast = ["lz4==4.4.5"]
 
 [project.scripts]
 nmsvault-cli = "nms_save_vault.cli:main"
