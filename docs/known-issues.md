@@ -12,3 +12,25 @@ the release notes when we publish"). Found by review R31 (of the whole-folder re
 - **The same when the kept copy cannot be read back.** After the snapshot is taken, the
   restore reads the copies it keeps back from the vault. If that read fails, the restore
   stops and writes nothing, and again the snapshot stays in the vault.
+
+From the data-corruption audit of 2026-11-23 (docs/CORRUPTION_AUDIT_REPORT.md); the findings
+that could lose or wedge data were fixed, these were judged rare or harmless and left as is:
+
+- **A whole-folder restore with the account data, cut off at one moment.** If the program is
+  killed between writing accountdata.hg and mf_accountdata.hg, the two can disagree. A failed
+  write puts the first back; only a kill at that instant leaves them apart.
+- **Undo from the Organizer of a whole-folder restore leaves the account data.** Undo last
+  restore asks whether to put the account data back; the Organizer's Undo does not.
+- **Pin and unpin of one version at the same moment from two windows** can lose one of them.
+- **A two-save move cut off by a crash, then synced by Steam Cloud** before the next start can
+  only be left as it is, with the asset in both saves.
+- **Two NMS Save Vault windows at once:** the last to close keeps its window settings, and
+  the slot identities one found for old saves may be forgotten by the other.
+- **Xbox:** a failed write of an xgs mirror file is not rolled back by itself.
+- **An edit stopped while it is prepared** can leave a temporary copy in %TEMP% and an unused
+  extract in the vault.
+- **Undoing a vault upgrade resumed after a crash** can ask for more free space than it needs;
+  keeping the upgrade after a crash at one moment can leave a backup inside .rollback.
+- **After Check vault repairs damaged copies**, the vault window can still say damaged files
+  were found.
+- **The search index set aside as damaged** while another window uses it is rebuilt there too.
