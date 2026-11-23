@@ -9,20 +9,21 @@ from __future__ import annotations
 #: Where state.json's ``ui`` preferences keep the last version whose notes were shown.
 SEEN_KEY = "whats_new_seen"
 
-NOTES_VERSION = "0.4.2"
+NOTES_VERSION = "0.4.3"
 
 NOTES = """\
-Filter the backups
-- Above the backups, "Type" lists only one type of backup (full, snapshot, ...) and "Pin" \
-only the pinned or unpinned ones. Both combine with "Save file".
+It shows when it is working
+- When something takes a moment, the pointer says so: the hourglass while the window \
+waits, and the arrow with the hourglass while work goes on in the background and the \
+window still answers. On a slow computer you no longer wonder whether a click was taken.
 
-What's new
-- This window: the first time a new version starts, it shows what changed. \
-Help > What's new in this version shows it again.
-
-Updates
-- Installing an update no longer opens a console window. The version you are updating \
-from runs the install, so you will see this from the next update on.
+Safer writes
+- A file the vault writes is tried again for a moment when Windows holds it open (an \
+antivirus scan, the search indexer, Steam Cloud) instead of failing.
+- A vault upgrade cut off right as it started no longer leaves a vault that will not open.
+- A backup made while the vault is being thinned no longer fails as "damaged".
+- Restoring the account data writes its two files together, or neither.
+- A journal line cut off by a crash can no longer leave two records with the same number.
 """
 
 
