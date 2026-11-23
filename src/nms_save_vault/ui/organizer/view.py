@@ -27,6 +27,7 @@ from ...core.liveops import (
 from ...core.organizer import Organizer
 from ...core.organizer.model import platform_name
 from ...core.organizer.readmodel import BoardSlot, LiveSource, ReadModel
+from .. import waiting
 from ..dialogs import grab_owner
 from ..dpi import px, pxs
 from ..menuhint import bind_menu_hints
@@ -487,6 +488,7 @@ class OrganizerView(ttk.Frame):
         self.rescan(record=False)
         return True
 
+    @waiting.waits                       # a scan landed: the tables and open windows again
     def _scanned(self, result) -> None:
         organizer, model, extras = result
         self._scan_over()

@@ -28,7 +28,7 @@ from ...core.organizer.readmodel import (
     sort_lines,
 )
 from ... import theme
-from .. import dpi, raster
+from .. import dpi, raster, waiting
 from ..dialogs import bind_escape, bind_return, focus_first
 from ..dpi import px, pxs
 from ..fmt import local_time, play_time
@@ -540,6 +540,7 @@ class OrganizerTable(ttk.Frame):
 
     # --- the model ----------------------------------------------------------------
 
+    @waiting.waits                       # every line again, the open ones' graphs drawn
     def set_model(self, model: ReadModel | None) -> None:
         """Show a new read model, updating rows in place (open lines, selection and
         scroll position are kept)."""
@@ -610,6 +611,7 @@ class OrganizerTable(ttk.Frame):
 
     # --- versions under an open line ------------------------------------------------
 
+    @waiting.waits                       # a save file's versions, its graph drawn pixel by pixel
     def _fill_versions(self, pid: str) -> None:
         """Bring an open line's rows up to date in place: a row keeps its iid (and so its
         selection) for as long as its version is there (D6 3.1.2)."""

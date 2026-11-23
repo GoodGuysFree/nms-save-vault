@@ -19,7 +19,7 @@ from tkinter import ttk
 
 from ... import theme
 from ...core.organizer.readmodel import Line, ReadModel, VersionRow
-from .. import dpi, raster
+from .. import dpi, raster, waiting
 from ..dialogs import bind_escape, focus_first, tab_last
 from ..dpi import fit_to_content, px, pxs
 from ..fmt import local_time, play_time
@@ -580,6 +580,7 @@ class HistoryWindow(tk.Toplevel):
         self.open_runs.clear()
         self._fill(select=head)
 
+    @waiting.waits                       # the graph of every version drawn again
     def set_model(self, model: ReadModel) -> None:
         """A newer read model: rebuild, keeping the mode, the opened runs and the selection."""
         self.model = model

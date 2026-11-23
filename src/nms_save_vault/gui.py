@@ -28,7 +28,7 @@ from .core import platform as host_platform
 from .core import playtime, savedir
 from .core import state as appstate
 from .core.catalog import OperationError, Vault
-from .ui import dpi, logfile
+from .ui import dpi, logfile, waiting
 from .ui.dialogs import bind_escape, bind_return, focus_first, grab_held, tab_last
 from .core.organizer import Organizer
 from .core.organizer.model import platform_name
@@ -506,6 +506,9 @@ class App(tk.Tk):
         # The organizer's slow work runs here, one job at a time (D6 3.9); classic widgets
         # and images drawn in code take each new palette from the registry (D6 3.12).
         self.worker = UiWorker(self)
+        # the arrow with the hourglass while a worker job runs (GGF 2026-11-23): every one of
+        # them changes what the window shows when it ends, a scan or a listing too
+        self.indicator = waiting.Indicator(self, lambda: self.worker.busy)
         self.themed = ThemeRegistry()
         # Every window opened later gets the title bar of the current theme when it maps.
         for window_class in ("Toplevel", self.winfo_class()):
@@ -547,6 +550,7 @@ class App(tk.Tk):
                 pass  # read-only location; the sources stay in memory
         return st
 
+    @waiting.waits
     def _live_paths(self) -> list[Path]:
         """Every live folder, configured (enabled or not) or on disk: what undo and the
         clear plan must never take for another folder of the same name, or for a backup.
@@ -872,7 +876,7 @@ class App(tk.Tk):
             _showerror(title, "That folder is inside the vault in use, or holds it. A vault "
                               "cannot be nested in another.")
             return False
-        for folder in discover.all_live_paths(self.state):
+        for folder in self._live_paths():          # found on disk, under the busy pointer
             if root.resolve() == Path(folder).resolve() or Path(folder).resolve() in root.resolve().parents:
                 _showerror(title, "That is a live save folder (or inside one). A vault must be "
                                   "kept apart from the saves it protects.")
@@ -888,9 +892,10 @@ class App(tk.Tk):
             return False
         fresh = Vault(root)
         try:
-            _refuse_pre_upgrade_copy(root)
-            fresh.ensure()
-            fresh.load()
+            with waiting.wait_cursor(self):     # reads the vault's catalog
+                _refuse_pre_upgrade_copy(root)
+                fresh.ensure()
+                fresh.load()
         except OperationError as exc:
             _showerror(title, _gui_text(exc))
             return False
@@ -940,7 +945,8 @@ class App(tk.Tk):
 
         title = "Free old backup folders"
         try:
-            store = store_classic.store_of(self.vault, app_state=self.state)
+            with waiting.wait_cursor(self):     # opens the store before the first wait window
+                store = store_classic.store_of(self.vault, app_state=self.state)
         except ops.OperationError as exc:
             _showerror(title, str(exc))
             return
@@ -1280,6 +1286,7 @@ class App(tk.Tk):
 
     # --- theme ---------------------------------------------------------------
 
+    @waiting.waits                       # every window restyled, its pictures drawn again
     def _apply_theme(self, *, persist: bool = False) -> None:
         """Restyle everything for the current choice and re-colour the row tags.
 
@@ -1405,17 +1412,18 @@ class App(tk.Tk):
             return                       # an unsaved note: the owner chose to keep editing
         worker = self.__dict__.get("worker")   # absent if __init__ failed early (no getattr:
         # Tk forwards unknown attributes to its interpreter, which is not there yet either)
-        if view is not None:
-            view.index_strip.stop()
-        if worker is not None:
-            worker.shutdown(wait=True)       # a job still running ends first
-        organizer = getattr(view, "organizer", None) if view is not None else None
-        service = getattr(organizer, "facts", None)
-        if service is not None and hasattr(service, "close"):
-            try:
-                service.close()           # joins the index's writer and dispatcher
-            except Exception:  # noqa: BLE001 - closing must never keep the window open
-                log.exception("the content index did not close cleanly")
+        with waiting.wait_cursor(self):     # the jobs and the index end first: seconds, maybe
+            if view is not None:
+                view.index_strip.stop()
+            if worker is not None:
+                worker.shutdown(wait=True)       # a job still running ends first
+            organizer = getattr(view, "organizer", None) if view is not None else None
+            service = getattr(organizer, "facts", None)
+            if service is not None and hasattr(service, "close"):
+                try:
+                    service.close()           # joins the index's writer and dispatcher
+                except Exception:  # noqa: BLE001 - closing must never keep the window open
+                    log.exception("the content index did not close cleanly")
         super().destroy()
 
     def _windows(self) -> list[tk.Misc]:
@@ -1771,6 +1779,7 @@ class App(tk.Tk):
     def _meta_for(self, tree, row: str) -> dict | None:
         return self._meta.get((str(tree), row))
 
+    @waiting.waits                       # it scans every live folder (an Xbox one: every blob)
     def refresh(self) -> None:
         for tree in (self.live_tree, self.backup_tree):
             tree.delete(*tree.get_children())
@@ -2089,13 +2098,9 @@ class App(tk.Tk):
     def _playthrough_report(self) -> playtime.PlaytimeReport:
         """Every save folded onto its playthrough; read once per refresh, on demand."""
         if self._report is None:
-            self.config(cursor="watch")
-            self.update_idletasks()
-            try:
+            with waiting.wait_cursor(self):     # the whole window, not only its background
                 live = [s.path for s in self.state.live_sources if s.exists]
                 self._report = playtime.collect(self.vault, live, app_state=self.state)
-            finally:
-                self.config(cursor="")
         return self._report
 
     def _history_playthrough(self) -> playtime.Playthrough | None:
@@ -2580,9 +2585,11 @@ class App(tk.Tk):
         self._classic_ops += 1
         t.start()
         try:
-            while t.is_alive():
-                self.update()  # keep the bar animating / window responsive
-                time.sleep(0.02)
+            # the busy pointer over the main window too, not only the moving bar (GGF 2026-11-23)
+            with waiting.wait_cursor(self):
+                while t.is_alive():
+                    self.update()  # keep the bar animating / window responsive
+                    time.sleep(0.02)
         finally:
             self._classic_ops -= 1
             win.grab_release()
@@ -2800,7 +2807,8 @@ class App(tk.Tk):
             source, dest_dir, dest_slot = outcome
         else:
             dest_dir = Path(dest_dir or self.live_dir)
-            view = savedir.scan_any(dest_dir)
+            with waiting.wait_cursor(self):     # reads the target folder's saves
+                view = savedir.scan_any(dest_dir)
             occupant = view.slots[dest_slot].display_name if dest_slot in view.slots else ""
             if not _askyesno(
                 "Copy into a live slot",
@@ -2895,7 +2903,8 @@ class App(tk.Tk):
         """Import another Save Vault folder: compare it to the current vault, then offer to
         copy its new entries in or index them in place."""
         try:
-            pv = ops.preview_vault_import(self.vault, directory)
+            with waiting.wait_cursor(self):     # reads the other vault's catalog or its store
+                pv = ops.preview_vault_import(self.vault, directory)
         except ops.OperationError as exc:
             _showerror("Import vault", str(exc))
             return
@@ -2951,20 +2960,21 @@ class App(tk.Tk):
 
     def on_rescan(self) -> None:
         """Re-scan AppData for live sources and merge any new accounts into the config."""
-        added = discover.merge_live_sources(self.state)
-        try:
-            appstate.save(self.state, self.state_path)
-        except OSError as exc:
-            _showwarning("Rescan", f"Found sources but could not save config:\n{exc}")
-        # If we had no active writable source yet, adopt the first one found.
-        if self.active_source_id is None:
-            writable = self._writable_sources()
-            if writable:
-                self.active_source_id = writable[0].id
-                self.live_dir = Path(writable[0].path)
-        self.refresh()
-        self.organizer_view.sources_changed()
-        self.organizer_view.rescan()
+        with waiting.wait_cursor(self):
+            added = discover.merge_live_sources(self.state)
+            try:
+                appstate.save(self.state, self.state_path)
+            except OSError as exc:
+                _showwarning("Rescan", f"Found sources but could not save config:\n{exc}")
+            # If we had no active writable source yet, adopt the first one found.
+            if self.active_source_id is None:
+                writable = self._writable_sources()
+                if writable:
+                    self.active_source_id = writable[0].id
+                    self.live_dir = Path(writable[0].path)
+            self.refresh()
+            self.organizer_view.sources_changed()
+            self.organizer_view.rescan()
         _showinfo(
             "Rescan",
             f"Added {added} new live source(s).\n"
@@ -2975,28 +2985,29 @@ class App(tk.Tk):
     def on_discover(self) -> None:
         # No live folder, enabled or not, is a backup (a copy-paste "st_... - Copy" still
         # is one); the vault itself is not searched.
-        live = discover.live_folders(discover.all_live_paths(self.state))
-        dirs = discover.discover_inplace_backups(live=live, exclude=[self.vault.root])
-        known = {Path(e.path).resolve() for e in self.vault.entries}
-        added = 0
-        warns: list[str] = []
-        failures: list[str] = []
-        try:
-            for d in dirs:
-                try:
-                    if d.resolve() in known:
-                        continue
-                    ops.import_backup(self.vault, d, label=d.name, copy_into_vault=False, warnings=warns)
-                    added += 1
-                except Exception as exc:  # noqa: BLE001 - one folder must not stop the rest
-                    failures.append(f"{d}: {exc}")
-        finally:
-            self.vault_changed()
-        lines = [f"Added {added} newly found backup(s) to the catalog."]
-        if failures:
-            lines.append("Could not add:\n - " + "\n - ".join(failures))
-        # Entries an older version made of live folders are pointed out, never changed.
-        vault_is_live, aliased = discover.entries_in_live_folders(self.vault, live)
+        with waiting.wait_cursor(self):
+            live = discover.live_folders(discover.all_live_paths(self.state))
+            dirs = discover.discover_inplace_backups(live=live, exclude=[self.vault.root])
+            known = {Path(e.path).resolve() for e in self.vault.entries}
+            added = 0
+            warns: list[str] = []
+            failures: list[str] = []
+            try:
+                for d in dirs:
+                    try:
+                        if d.resolve() in known:
+                            continue
+                        ops.import_backup(self.vault, d, label=d.name, copy_into_vault=False, warnings=warns)
+                        added += 1
+                    except Exception as exc:  # noqa: BLE001 - one folder must not stop the rest
+                        failures.append(f"{d}: {exc}")
+            finally:
+                self.vault_changed()
+            lines = [f"Added {added} newly found backup(s) to the catalog."]
+            if failures:
+                lines.append("Could not add:\n - " + "\n - ".join(failures))
+            # Entries an older version made of live folders are pointed out, never changed.
+            vault_is_live, aliased = discover.entries_in_live_folders(self.vault, live)
         if vault_is_live:
             lines.append(
                 f"Note: the vault ({self.vault.root}) is or lies inside a live save folder; "
@@ -3057,9 +3068,10 @@ class App(tk.Tk):
                 return
             directory = self.live_dir
         directory = Path(directory)
-        others = self._live_paths()
         try:
-            plan = ops.plan_undo(self.vault, directory, other_live_dirs=others)
+            with waiting.wait_cursor(self):     # opens the organizer and lists the history
+                others = self._live_paths()
+                plan = ops.plan_undo(self.vault, directory, other_live_dirs=others)
         except ops.OperationError as exc:
             _showerror("Cannot undo", str(exc))
             return
@@ -3339,6 +3351,7 @@ class ChooseSourceDialog(tk.Toplevel):
         self.grab_set()
         self.wait_window()
 
+    @waiting.waits                       # every live folder scanned, the vault listed
     def _populate(self) -> None:
         for source in self.app.state.live_sources:
             if not Path(source.path).is_dir():
@@ -3490,6 +3503,7 @@ class CopySlotDialog(tk.Toplevel):
     def _target_source(self):
         return self._target_labels.get(self.target_var.get(), self._targets[0])
 
+    @waiting.waits                       # the target folder's saves read
     def _reload_slots(self, select: int | None = None) -> None:
         keep = select or self._selected_slot()
         self.slots.delete(*self.slots.get_children())
@@ -3906,6 +3920,7 @@ def main(argv=None) -> int:
     options, _unknown = parser.parse_known_args(argv)
     # First: under pythonw there is no console, so warnings and tracebacks go to a file.
     logfile.configure(host_platform.user_cache_dir() / "logs")
+    waiting.time_callbacks()    # a handler that took a second or more is logged by name
     # Before the first tk.Tk(): Tk reads the DPI once, when the root is made. Without this
     # Windows stretches a 96-dpi bitmap of the window, which is blurry at 150 %.
     _enable_dpi_awareness()

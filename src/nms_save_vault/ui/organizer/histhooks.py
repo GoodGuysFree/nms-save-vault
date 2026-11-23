@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 from ...core.organizer.readmodel import ReadModel
 from ...core.organizer.lineage import Corrections
 from ...core.store import thinning
+from .. import waiting
 from .compare import CompareWindow
 from .correct import CorrectDialog
 from .history import HistoryWindow
@@ -55,11 +56,15 @@ class HistoryHooks:
             self.history.deiconify()
             self.history.lift()
             return self.history
-        self.history = HistoryWindow(
+        with waiting.wait_cursor(view):    # the graph of every version is drawn first
+            self.history = self._new_history(view, pid, head)
+        return self.history
+
+    def _new_history(self, view, pid, head) -> HistoryWindow:
+        return HistoryWindow(
             view.winfo_toplevel(), model=view.model, themed=view.themed, pid=pid, head=head,
             on_move=view.open_move_for, on_compare=self.open_compare, on_label=view.open_notes_for, on_lock=self.lock, on_correct=self.open_correct,
             facts=lambda: view.facts)
-        return self.history
 
     def lock(self, pid: str, head: str, locked: bool) -> None:
         """Pin or unpin a version (the version note's lock: thinning never deletes it), in
