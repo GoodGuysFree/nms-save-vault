@@ -17,8 +17,10 @@ save's own bytes (:func:`value_bytes` of a span), so it arrives exactly as the g
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import re
+from collections import OrderedDict
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, replace
 from typing import Any, Union
@@ -624,6 +626,27 @@ def apply(body: bytes, edits: Iterable[Edit]) -> bytes:
         _VIEW = None                    # the text view of a big save: not kept past the edit
 
 
+#: The batches proven, by (the body's sha256, the batch's): the result's sha256. An app that
+#: holds changes proves each batch as it holds it, then hands the same batches to the write,
+#: which proved them again on the same bytes: a full parse of each edit's container, twice,
+#: up to 1.3 s a batch on a big save (2026-11-23). The splice is still made from the bytes
+#: every time; one whose result hashes to the one proven before is the same bytes, and is
+#: taken as proven. Anything else is proven in full. Only hashes are kept.
+_PROVEN: OrderedDict = OrderedDict()
+PROVEN_MAX = 256
+
+
+def forget_proven() -> None:
+    """Forget the batches proven (tests)."""
+    _PROVEN.clear()
+
+
+def _proof_key(body: bytes, edits: list[Edit]) -> tuple[bytes, bytes]:
+    # every field of every edit is in its repr (frozen dataclasses): the batch, exactly
+    named = repr(tuple(edits)).encode("utf-8", errors="backslashreplace")
+    return hashlib.sha256(body).digest(), hashlib.sha256(named).digest()
+
+
 def _apply(body: bytes, edits: list[Edit]) -> bytes:
     cache: dict = {}
     removes = [e for e in edits if isinstance(e, Remove)]
@@ -645,6 +668,11 @@ def _apply(body: bytes, edits: list[Edit]) -> bytes:
     new = bytes(out)
     if b"\x00" in new:
         raise PatchRefused("the edited save would hold a NUL byte")
+    key = _proof_key(body, edits)
+    made = hashlib.sha256(new).digest()
+    if _PROVEN.get(key) == made:            # these very bytes, proven before
+        _PROVEN.move_to_end(key)
+        return new
     # The proof, on the part the edits share (GGF 2026-11-17: "verifying only the changed
     # area"): every splice inside it, the bytes before and after it the same, and the part
     # reading as the original part with exactly these edits made.
@@ -679,4 +707,7 @@ def _apply(body: bytes, edits: list[Edit]) -> bytes:
         raise PatchRefused("the edited save does not parse") from None
     if _canonical(got) != _canonical(expected):
         raise PatchRefused("the edited save is not the original with exactly these edits")
+    _PROVEN[key] = made
+    while len(_PROVEN) > PROVEN_MAX:
+        _PROVEN.popitem(last=False)
     return new
