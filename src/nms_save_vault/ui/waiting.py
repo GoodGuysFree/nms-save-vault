@@ -154,9 +154,14 @@ class Indicator:
             self._after = None
 
 
+_timing = {"threshold": SLOW_SECONDS, "logger": log}
+
+
 def time_callbacks(threshold: float = SLOW_SECONDS, logger: logging.Logger = log) -> None:
     """Log every handler of the window (a command, a binding, an ``after``) that took
-    ``threshold`` seconds or more, by name; once per process."""
+    ``threshold`` seconds or more, by name. Put in place once per process; called again, it
+    takes the new threshold and log."""
+    _timing.update(threshold=threshold, logger=logger)
     if getattr(tk.CallWrapper.__call__, "_timed", False):
         return
     real = tk.CallWrapper.__call__
@@ -170,10 +175,10 @@ def time_callbacks(threshold: float = SLOW_SECONDS, logger: logging.Logger = log
         finally:
             depth[0] -= 1
             took = time.perf_counter() - start
-            if took >= threshold:
+            if took >= _timing["threshold"]:
                 func = getattr(self, "func", None)
                 name = getattr(func, "__qualname__", None) or repr(func)
-                logger.info("slow: %s took %.1f s%s", name, took,
-                            " (inside another handler)" if depth[0] else "")
+                _timing["logger"].info("slow: %s took %.1f s%s", name, took,
+                                       " (inside another handler)" if depth[0] else "")
     timed._timed = True  # type: ignore[attr-defined]
     tk.CallWrapper.__call__ = timed

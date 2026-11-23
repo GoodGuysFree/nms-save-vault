@@ -230,3 +230,26 @@ def test_a_real_steam_save_renamed_shows_the_new_name_in_its_meta(live_save_dir)
     assert savejson.decode_save(out.data).root[K("CommonStateData")][K("SaveName")] == \
         "Renamed Save"
     assert meta.parse(out.meta, 0).save_name == "Renamed Save"
+
+
+def test_a_rebuild_decodes_the_new_container_once(tmp_path, monkeypatch):
+    """Responsiveness (2026-11-23): lz4_block.compress decodes its container back and checks
+    it gives the edited JSON; rebuild decoded the same bytes a second time right after. Now
+    once: the old save's decode and compress's own check, no third."""
+    _m, data, plain = steam_member(tmp_path / "st_1")
+    calls = []
+    real = lz4_block.decompress
+    monkeypatch.setattr(lz4_block, "decompress", lambda d, *a, **k: calls.append(len(d)) or
+                        real(d, *a, **k))
+    out = saveedit.rebuild("steam", data, plain, [savepatch.Replace(UNITS, b"77")])
+    assert len(calls) == 2
+    assert savejson.decode_save(out.data).root[K("PlayerStateData")][K("Units")] == 77
+
+
+def test_an_edit_that_puts_a_nul_in_the_json_is_still_refused(tmp_path, monkeypatch):
+    _m, data, plain = steam_member(tmp_path / "st_1")
+    real = savepatch.apply_steps
+    monkeypatch.setattr(saveedit.savepatch, "apply_steps",
+                        lambda body, steps: real(body, steps).replace(b"Main", b"Ma\x00n"))
+    with pytest.raises(saveedit.EditRefused):
+        saveedit.rebuild("steam", data, plain, [savepatch.Replace(UNITS, b"78")])

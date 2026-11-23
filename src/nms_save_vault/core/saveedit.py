@@ -93,7 +93,11 @@ def rebuild(platform: str, data: bytes, meta_plain: bytes,
         new_data = lz4_block.compress(raw)
     except lz4_block.LZ4FormatError as exc:
         raise EditRefused(f"the edited save could not be compressed ({exc})") from None
-    if body_of(new_data) != new_body:                  # as the game will read it back
+    # as the game will read it back: compress decoded new_data and found exactly raw, the
+    # edited JSON and its one NUL; body_of would decode it again only to split at that NUL
+    # (responsiveness, 2026-11-23), so what it checks besides is checked here
+    if not lz4_block.is_chunked(new_data) or new_data.startswith(lz4_block.HGSAVEV2_HEADER) \
+            or b"\x00" in new_body:
         raise EditRefused("the rebuilt save does not read back as the edited JSON")
     name = None
     if _may_rename(edits):          # reading the name scans the save: only when it may change
