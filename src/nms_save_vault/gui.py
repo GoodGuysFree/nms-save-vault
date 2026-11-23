@@ -508,7 +508,8 @@ class App(tk.Tk):
         self.worker = UiWorker(self)
         # the arrow with the hourglass while a worker job runs (GGF 2026-11-23): every one of
         # them changes what the window shows when it ends, a scan or a listing too
-        self.indicator = waiting.Indicator(self, lambda: self.worker.busy)
+        self._side_jobs = 0             # work on threads of its own the user asked for
+        self.indicator = waiting.Indicator(self, lambda: self.worker.busy or self._side_jobs > 0)
         self.themed = ThemeRegistry()
         # Every window opened later gets the title bar of the current theme when it maps.
         for window_class in ("Toplevel", self.winfo_class()):
@@ -1560,17 +1561,33 @@ class App(tk.Tk):
     def _check_for_updates(self, *, quiet: bool) -> None:
         """Run the check off the Tk thread so a slow network never freezes the window."""
 
+        box: dict = {}
+
         def worker() -> None:
             try:
-                outcome = updates.check()
+                box["outcome"] = updates.check()
             except updates.UpdateCheckError as exc:
-                outcome = exc
-            try:
-                self.after(0, lambda: self._update_check_done(outcome, quiet))
-            except (tk.TclError, RuntimeError):
-                pass  # window closed while the check was still in flight
+                box["outcome"] = exc
 
-        threading.Thread(target=worker, daemon=True).start()
+        thread = threading.Thread(target=worker, daemon=True)
+        thread.start()
+        if not quiet:          # asked for: the arrow with the hourglass until the answer
+            self._side_jobs += 1
+            self.indicator.update()
+
+        def answered() -> None:          # on the Tk thread: never an after() from the check's
+            if thread.is_alive():
+                self.after(100, answered)
+                return
+            if not quiet:
+                self._side_jobs -= 1
+                self.indicator.update()
+            if "outcome" in box:
+                self._update_check_done(box["outcome"], quiet)
+            else:
+                log.warning("the update check ended without an answer")
+
+        self.after(100, answered)
 
     def _update_check_done(self, outcome, quiet: bool) -> None:
         self.state.update_last_check = date.today().isoformat()

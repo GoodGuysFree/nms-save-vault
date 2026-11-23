@@ -60,3 +60,28 @@ def test_the_live_paths_are_found_under_the_busy_pointer(gui_app, monkeypatch):
                         lambda state: seen.append(waiting.is_held(gui_app)) or [])
     assert gui_app._live_paths() == []
     assert seen == [True] and not waiting.is_held(gui_app)
+
+
+def test_a_check_for_updates_asked_for_shows_it_until_the_answer(gui_app, monkeypatch):
+    """Check for updates... runs on a thread of its own, up to six seconds: the arrow with the
+    hourglass until the answer comes."""
+    import threading
+    import time
+
+    gate = threading.Event()
+    monkeypatch.setattr(gui.updates, "check", lambda *a, **k: gate.wait(5) and None)
+    answered = []
+    monkeypatch.setattr(gui.App, "_update_check_done",
+                        lambda self, outcome, quiet: answered.append(quiet))
+    gui_app._check_for_updates(quiet=False)
+    try:
+        gui_app.indicator.update()
+        assert str(gui_app.cget("cursor")) in (waiting.STARTING, waiting.WAIT)
+    finally:
+        gate.set()
+    end = time.monotonic() + 10
+    while not answered and time.monotonic() < end:
+        gui_app.update()
+        time.sleep(0.01)
+    gui_app.indicator.update()
+    assert answered == [False] and str(gui_app.cget("cursor")) == ""
