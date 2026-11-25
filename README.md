@@ -29,7 +29,7 @@ All data below is invented (a demo world, not anyone's saves).
 
 **Just want to run it? No Python needed.** Download the ready-to-use Windows kit from the
 [**latest release**](https://github.com/GoodGuysFree/nms-save-vault/releases/latest) — grab
-`NMSSaveVault-Setup-v0.4.3.zip` under **Assets**.
+`NMSSaveVault-Setup-v0.4.4.zip` under **Assets**.
 
 Extract the zip, open the `NMSSaveVault` folder and run **`NMSSaveVault.exe`**. That is the
 whole thing — Python and Tkinter are bundled, nothing is installed, and because the app
@@ -275,7 +275,7 @@ and can only draw ISO8859-1. Every string the app displays is therefore plain AS
 
 ## Run it (Windows, no Python needed)
 
-Download **`NMSSaveVault-Setup-v0.4.3.zip`** from the
+Download **`NMSSaveVault-Setup-v0.4.4.zip`** from the
 [**Releases**](https://github.com/GoodGuysFree/nms-save-vault/releases) page (under the
 release's **Assets**) and extract it. Open the `NMSSaveVault` folder and run
 **`NMSSaveVault.exe`** — that is all. Everything (Python + Tkinter) is bundled, nothing is
@@ -667,7 +667,7 @@ The vault lives outside `st_<id>`, so it is never scanned by the game or synced 
 ## Status
 
 Working. Core format/crypto and all operations are verified against the real save files and
-in a temp sandbox (3413 tests). Xbox / Game Pass saves are supported for reading **and**
+in a temp sandbox (3474 tests). Xbox / Game Pass saves are supported for reading **and**
 writing, including Steam ↔ Xbox moves (validated in the real game) — verified against a real install (reads) and synthetic `wgs` fixtures
 (writes). A full file-copy safety backup of the live folder was made before development
 (`C:\Devel\NMS-SaveBackup-SAFETY-2026-06-24`). The Organizer is in (see above); a
@@ -682,6 +682,7 @@ does the same.
 
 | Version | Date | Highlights |
 |---|---|---|
+| **0.4.4** | 2026-11-25 | **The new game version.** Saves from the No Man's Sky update of 2026-11-25 on Steam are supported; before, the app refused them as written by a newer game version. Xbox / Game Pass follows when its game update arrives. **Faster writes:** apps that share the vault and bundle the core library (`.whl`) write and apply edits to a save faster: each new save is checked once instead of twice, a batch of edits already proven on a save is not proven again, and the LZ4 C library does the compression work when the app bundles it (the pure-Python code stays the fallback). |
 | **0.4.3** | 2026-11-23 | **It shows when it is working.** When something takes a moment, the pointer says so: the hourglass while the window waits (a refresh scanning the live folders, the playthrough report, closing, Discover, Rescan, choosing a vault, the History graph, ...), and the arrow with the hourglass while a job runs in the background and the window still answers. A handler that keeps the window waiting a second or more is logged by name. **Safer writes:** a file the vault writes is tried again for a moment when Windows holds it open (an antivirus scan, the indexer, Steam Cloud); a vault upgrade cut off as it started no longer leaves a vault that will not open; a backup made during a thinning no longer fails as "damaged"; restoring the account data writes its two files together or neither; a journal line cut off by a crash can no longer leave two records with the same number. The core library (`.whl`) carries the same write fixes. |
 | **0.4.2** | 2026-11-22 | **Filters and what's new.** Above the backups, "Type" lists only one type of backup (full, snapshot, ...) and "Pin" only the pinned or unpinned ones; both combine with "Save file". The first time a new version starts it shows what changed, and Help > What's new in this version shows it again. The updater no longer opens a console window while it installs; since the running version starts the updater, this shows from the update after this one. |
 | **0.4.1** | 2026-11-21 | **Thinning the vault.** Thin the vault... lists every backup it would delete, each one ticked, and nothing is deleted until you press Delete. It follows a schedule: every backup from the last 7 days, then one a day, one a week and one a month. The newest backup of each save always stays, and so do pinned, named and noted backups and anything an undo still needs. A size reminder shows in Settings and the status bar. A run that was interrupted is finished the next time the app starts, the operations log says "thinned on <date>", and `nmsvault-cli store thin` does the same from the command line. A version's lock is now called its pin everywhere (`note --pin` / `--unpin`). The core library (`.whl`) gains thinning, pins, the vault's size and `ASSET_VOLATILE` for apps that share the vault. |

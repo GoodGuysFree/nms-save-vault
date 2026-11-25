@@ -9,21 +9,18 @@ from __future__ import annotations
 #: Where state.json's ``ui`` preferences keep the last version whose notes were shown.
 SEEN_KEY = "whats_new_seen"
 
-NOTES_VERSION = "0.4.3"
+NOTES_VERSION = "0.4.4"
 
 NOTES = """\
-It shows when it is working
-- When something takes a moment, the pointer says so: the hourglass while the window \
-waits, and the arrow with the hourglass while work goes on in the background and the \
-window still answers. On a slow computer you no longer wonder whether a click was taken.
+The new game version
+- Saves from today's No Man's Sky update on Steam are supported. Before, the app refused \
+them as written by a newer game version.
+- Xbox / Game Pass follows when its game update arrives.
 
-Safer writes
-- A file the vault writes is tried again for a moment when Windows holds it open (an \
-antivirus scan, the search indexer, Steam Cloud) instead of failing.
-- A vault upgrade cut off right as it started no longer leaves a vault that will not open.
-- A backup made while the vault is being thinned no longer fails as "damaged".
-- Restoring the account data writes its two files together, or neither.
-- A journal line cut off by a crash can no longer leave two records with the same number.
+Faster writes
+- Apps that share the vault (NMS Savecraft) write and apply edits to a save faster: each \
+new save is checked once instead of twice, and the LZ4 C library does the compression \
+work when the app bundles it.
 """
 
 
