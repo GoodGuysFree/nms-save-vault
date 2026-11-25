@@ -29,7 +29,9 @@ class KnownFormat:
 
 #: Raise these (and only these) after the maintenance steps pass for a new game version.
 KNOWN = {
-    "steam": KnownFormat(formats.META_FORMAT_4, 4234, ("saveN.hg chunked LZ4 (HGSAVEV1)",)),
+    # 4235: Steam build 26918301 (NMS.exe 186686, 2026-11-25); Xbox stays until its package
+    # updates (INSTALLED.json same_release)
+    "steam": KnownFormat(formats.META_FORMAT_4, 4235, ("saveN.hg chunked LZ4 (HGSAVEV1)",)),
     "xbox": KnownFormat(formats.META_FORMAT_4, 4234, ("containers.index blob (GameSaveBlob)",)),
 }
 #: A container kind not listed here stays refused (never decoded): lz4_block.UnsupportedContainer.
