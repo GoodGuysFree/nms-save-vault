@@ -243,6 +243,7 @@ class JournalState:
     note_rev: Mapping[Vid, int]         # the save-file note revision when first journaled
     problems: tuple[str, ...]
     records: tuple[Record, ...] = ()    # every record, in replay order
+    homes: Mapping[Vid, LiveTarget] = field(default_factory=dict)   # where each vid was first seen
 
 
 @dataclass(frozen=True)
@@ -320,6 +321,7 @@ def replay(records: tuple[Record, ...], registry: Mapping[Vid, VersionInfo],
     """D1 2.6.3, per slot over its records in ``(at, seq)`` order."""
     ordered = sorted(records, key=lambda r: r.order)
     metas: dict[Vid, MemberObs] = {}
+    homes: dict[Vid, LiveTarget] = {}
     note_rev: dict[Vid, int] = {}
     first_seen: dict[Vid, ObsOrder] = {}
     for info in registry.values():
@@ -333,6 +335,7 @@ def replay(records: tuple[Record, ...], registry: Mapping[Vid, VersionInfo],
         for vid, m in rec.members.items():
             if vid not in metas:
                 metas[vid] = m
+                homes[vid] = rec.target
                 if isinstance(rec, ObsRecord) and m.pid in rec.note_revs:
                     note_rev[vid] = rec.note_revs[m.pid]
     run = _Replay(metas, registry, first_seen)
@@ -354,6 +357,7 @@ def replay(records: tuple[Record, ...], registry: Mapping[Vid, VersionInfo],
         targets=run.states, edges=tuple(run.edges), events=tuple(e for _, e in run.events),
         events_by_seq={k: tuple(v) for k, v in by_seq.items()}, ops=run.ops, metas=metas,
         first_seen=first_seen, note_rev=note_rev, problems=problems, records=tuple(ordered),
+        homes=homes,
     )
 
 

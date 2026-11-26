@@ -131,7 +131,8 @@ def run(vault_root: Path | None, sources: Sequence[Source], *,
                 report.saves += 1
                 report.live += 1
                 seen.add(_sha(data))
-                check_save(report, platform, data, meta_format=member.info.meta_format,
+                check_save(report, gameversion.guard_for(platform, folder.name), data,
+                           meta_format=member.info.meta_format,
                            base_version=member.info.base_version,
                            bare_size_hint=member.info.size_decompressed)
                 if progress:

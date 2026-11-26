@@ -27,7 +27,7 @@ def test_a_steam_format_folder_named_default_user_is_gog():
     assert platform_letter("steam", "DefaultUser") == "G"
     assert platform_name("xbox", "DefaultUser") == "Xbox"     # the name only counts on Steam's format
     assert [sync_name("steam", STEAM), sync_name("steam", "DefaultUser"), sync_name("xbox")] == \
-        ["Steam Cloud", "Cloud sync", "Xbox sync"]
+        ["Steam Cloud", "GOG Galaxy", "Xbox sync"]           # one name for GOG's cloud everywhere
     assert slot_label("steam", 7, account_key="DefaultUser") == "GOG slot 7"
     assert [slot_words("G7"), slot_words("S2.7")] == ["GOG slot 7", "Steam 2 slot 7"]
 
@@ -94,6 +94,7 @@ def test_gog_against_xbox_is_named_gog_not_steam(tmp_path, make_wgs_account):
     steam_save(gog, 2, 0, "Main Save", 7000, MAIN, T0)
     w.add_xbox(make_wgs_account, [("Slot4Auto", '{"x":"x1"}', "Main Save", "", 8000, T0, MAIN)])
     line = w.refresh().line(PID)
-    assert line.cross_platform == "steam-behind"
+    assert line.cross_platform == "gog-behind"          # GOG's own tip (GGF 2026-11-26)
+    assert line.stores == ("gog", "xbox")
     assert "GOG behind" in state_words(line) and "Steam" not in state_words(line)
     assert _platform_sentence(line).startswith("the GOG copy is behind")

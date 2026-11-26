@@ -2187,6 +2187,9 @@ class App(tk.Tk):
         if view.steam_cloud:
             lines.append("Steam Cloud: enabled for this folder (Steam syncs it as a whole,")
             lines.append("             so there is no per-save cloud state to show)")
+        elif platform_name(source.platform, Path(source.path).name) == "GOG":
+            lines.append("GOG Galaxy: its cloud sync, when on, can put a save back here at the")
+            lines.append("            next game start; the folder does not say whether it is on")
         return "\n".join(lines)
 
     def _slot_tip(self, sv, view: savedir.SaveDirView) -> str:
@@ -3860,6 +3863,12 @@ SAFETY
   cleared slot reappears at the next launch. Turn off "Keep game saves in the Steam
   Cloud" (game Properties > General), clear the slot, launch and quit the game, then
   turn Cloud back on. Xbox / Game Pass deletes propagate on their own.
+- GOG: the GOG edition keeps its saves in the DefaultUser folder beside the Steam ones, in
+  the same format. The app shows and counts it as GOG, apart from Steam: GOG slots read G1
+  to G15, its backups are named full-gog-... (in a vault that had its Vault upgrade), and
+  the Organizer has a GOG filter of its own. If GOG Galaxy asks at the next launch which copy to keep, keep the one on this PC. To clear a
+  slot for good, first turn off cloud saves (GOG Galaxy: No Man's Sky > Manage installation
+  > Configure), then turn them back on after one launch.
 """
 
 

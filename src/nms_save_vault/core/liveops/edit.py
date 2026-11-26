@@ -25,7 +25,7 @@ from pathlib import Path
 
 from .. import gameversion, meta, slotmap
 from ..organizer.locator import Location
-from ..organizer.model import LiveTarget, StoreRef
+from ..organizer.model import LiveTarget, StoreRef, store_of
 from ..saveedit import EditRefused, rebuild
 from ..savepatch import Edit
 from ..store import CaptureScope
@@ -191,7 +191,9 @@ def _stage(ctx: OpContext, target: LiveTarget, edits: Iterable[Edit], what: str,
                     shutil.copyfile(rt.folder / name, stage / name)
         entry = ctx.versions.add_from_folder(
             stage, kind="extract", label=f"edited by {ctx.app().split(' ')[0]}: {what}"[:120],
-            source={"type": "folder", "name": "edit"}, scope=CaptureScope(slots=(target.slot,)),
+            source={"type": "folder", "name": "edit",       # "store": names the id (extract-gog-)
+                    "store": store_of(target.platform, target.account_key)},
+            scope=CaptureScope(slots=(target.slot,)),
             origin={"made_by": ctx.app(), "edit_of": loaded.vid, "what": what[:200]},
             reason="edit")
     finally:

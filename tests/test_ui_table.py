@@ -87,7 +87,9 @@ def test_chip_counts_come_from_every_line(world):
     counts = T.chip_counts(world.model.lines())
     assert counts["all"] == 5 and counts["live"] == 4 and counts["vault"] == 1
     assert counts["steam"] == 4 and counts["xbox"] == 2 and counts["both"] == 1
+    assert counts["gog"] == 0                     # GOG has its own chip, never counted as Steam
     assert counts["note"] == 1 and counts["pinned"] == 1 and counts["risk"] == 4
+    assert T.CHIP["gog"].label == "GOG" and T.CHIP["both"].label == "On several"
 
 
 def test_chips_or_within_a_group_and_across_groups(world):

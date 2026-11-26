@@ -19,6 +19,7 @@ from collections.abc import Callable, Collection, Iterable, MutableMapping
 from dataclasses import dataclass
 from tkinter import ttk
 
+from ...core.organizer.model import store_of
 from ...core.organizer.readmodel import (
     Line,
     LineFilter,
@@ -38,7 +39,8 @@ from ..tooltip import Tooltip
 from . import factsui
 from .lanes import lane_cells, lane_width
 from .words import (APP_EDITED_TIP, NO_BACKUP, NO_BACKUP_TIP, NOT_LINKED_TIP, OUTSIDE_ONLY_TIP,
-                    edited_by_words, line_name, tip_name, tips_letters, version_numbers)
+                    edited_by_words, line_name, stores_word, tip_name, tips_letters,
+                    version_numbers)
 
 STYLE = "Organizer.Treeview"
 FIND_DELAY_MS = 150
@@ -86,9 +88,10 @@ class Chip:
 CHIPS = (
     Chip("live", "source", "Live", LineFilter(live=True)),
     Chip("vault", "source", "Vault only", LineFilter(live=False)),
-    Chip("steam", "platform", "Steam", LineFilter(platform="steam")),
-    Chip("xbox", "platform", "Xbox", LineFilter(platform="xbox")),
-    Chip("both", "platform", "On both", LineFilter(cross_platform=True)),
+    Chip("steam", "platform", "Steam", LineFilter(store="steam")),
+    Chip("gog", "platform", "GOG", LineFilter(store="gog")),    # never counted as Steam
+    Chip("xbox", "platform", "Xbox", LineFilter(store="xbox")),
+    Chip("both", "platform", "On several", LineFilter(cross_platform=True)),
     Chip("note", "flags", "Has note", LineFilter(has_note=True)),
     Chip("pinned", "flags", "Pinned", LineFilter(pinned=True)),
     Chip("risk", "flags", "No backup yet", LineFilter(at_risk=True)),
@@ -106,11 +109,9 @@ def state_words(line: Line, view=None) -> str:
     words = []
     if "at-risk" in line.flags:
         words.append(NO_BACKUP)
-    tips = {t.platform: t for t in line.platform_tips}
-    if line.cross_platform == "xbox-behind" and "xbox" in tips:
-        words.append(f"Xbox behind {play_time(tips['xbox'].behind_by)}")
-    elif line.cross_platform == "steam-behind" and "steam" in tips:
-        words.append(f"{tip_name(tips['steam'])} behind {play_time(tips['steam'].behind_by)}")
+    if line.cross_platform.endswith("-behind"):         # Steam, GOG or Xbox: each its own tip
+        words += [f"{tip_name(t)} behind {play_time(t.behind_by)}"
+                  for t in line.platform_tips if t.behind_by]
     elif line.cross_platform == "diverged":
         words.append(f"two branches {tips_letters(line)}")
     if not line.live:
@@ -143,7 +144,7 @@ def line_values(line: Line, view=None, active: bool = False) -> dict[str, str]:
         "last": local_time(line.last_played),
         "mode": _mode(line.mode, line.difficulty),
         "state": state_words(line, view),
-        "platforms": ", ".join("Steam" if p == "steam" else "Xbox" for p in line.platforms),
+        "platforms": stores_word(line),
         "branches": str(line.branch_count) if line.branch_count else "",
         "note": line.note_preview,
     }
@@ -183,7 +184,7 @@ def version_values(row: VersionRow, live_labels: dict, view=None, active: bool =
         "last": local_time(row.saved_at),
         "mode": _mode(row.mode, row.difficulty),
         "state": "; ".join(words),
-        "platforms": "Steam" if row.platform == "steam" else "Xbox",
+        "platforms": stores_word(row),
         "branches": "",
         "note": row.label or next(iter(row.comment.splitlines()), "") or auto_note,
     }
@@ -205,7 +206,8 @@ def _dot(row: VersionRow, linked: bool) -> tuple[str, str]:
     """A live version: a disc in its platform colour; a linked one: the main lane's colour;
     one listed by date: grey (lanes arrive with the history view, phase 4)."""
     if row.live_in:
-        return "live", row.platform
+        first = row.live_in[0]
+        return "live", store_of(first.platform, first.account_key)     # GOG purple
     return "dot", "lane0" if linked else "muted"
 
 
@@ -533,7 +535,7 @@ class OrganizerTable(ttk.Frame):
         p = self._palette
         out = {}
         for kind in raster.DOT_KINDS:
-            for colour in ("muted", "steam", "xbox", "lane0"):
+            for colour in ("muted", "steam", "gog", "xbox", "lane0"):
                 out[(kind, colour)] = raster.version_dot(
                     px(18), h, kind, colour=p[colour], scale=scale).image(self)
         return out

@@ -35,7 +35,7 @@ from ..themeaware import ThemeRegistry
 from ..worker import UiWorker, finisher, release_tk_variables, weak
 from .detail import Segment
 from .pick import VersionPicker
-from .words import find_row, line_name, plain
+from .words import find_row, line_name, plain, platform_word
 
 SEVERITY_ORDER = {"block": 0, "confirm": 1, "warn": 2, "info": 3}
 MARKS = {"info": "i", "warn": "!", "confirm": "?", "block": "X"}
@@ -497,8 +497,12 @@ class MoveDialog(tk.Toplevel):
         text.configure(state="normal")
         text.delete("1.0", "end")
         rtext(text, "end", f"{self.name or s.name}\n", "h")
+        vid = s.vid_a or s.vid_b
+        row = next((r for r in self.model.versions(s.pid) if vid in r.pair), None) \
+            if self.model is not None and s.pid and vid else None
+        stores = row.stores if row is not None and row.stores else (s.platform,)
         rtext(text, "end", f"{play_time(s.play_time)}  -  saved {local_time(s.saved_at)}  -  "
-              f"{'Xbox' if s.platform == 'xbox' else 'Steam'}\n\n", "k")
+              f"{', '.join(platform_word(x) for x in stores)}\n\n", "k")   # GOG, not Steam
         for part, tags in self.card:
             tags = tuple(t for t in tags if t in ("h", "b", "k", "warn", "small"))
             rtext(text, "end", part, *tags, "hang")

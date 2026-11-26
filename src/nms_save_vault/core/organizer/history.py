@@ -273,7 +273,7 @@ def format_history(graph: HistoryGraph, name: str, *,
         if v.label:
             notes.append(f'"{v.label}"')
         out.append(f"{cells(node.row, node.lane, '*')} {_stamp(v, tz)}  "
-                   f"{_hours(v.play_time):>6}  {_plat(v.platform)}  {node.vid[:8]}  "
+                   f"{_hours(v.play_time):>6}  {_plat(v)}  {node.vid[:8]}  "
                    f"{', '.join(notes)}".rstrip())
     if graph.dated:
         out.append("     no recorded link, by date:" if graph.nodes
@@ -288,7 +288,7 @@ def format_history(graph: HistoryGraph, name: str, *,
             if v.label:
                 notes.append(f'"{v.label}"')
             out.append(f"-{' ' * (2 * width - 1)} {_stamp(v, tz)}  {_hours(v.play_time):>6}  "
-                       f"{_plat(v.platform)}  {v.head[:8]}  {', '.join(notes)}".rstrip())
+                       f"{_plat(v)}  {v.head[:8]}  {', '.join(notes)}".rstrip())
     return out
 
 
@@ -305,5 +305,7 @@ def _hm(seconds: int) -> str:
     return f"{h}h{rem // 60:02d}"
 
 
-def _plat(platform: str) -> str:
-    return "X" if platform == "xbox" else "S"
+def _plat(v) -> str:
+    """S, G or X: the stores of a version (GOG is G, never S)."""
+    return "/".join({"steam": "S", "gog": "G", "xbox": "X"}.get(s, "S")
+                    for s in (getattr(v, "stores", ()) or (v.platform,)))

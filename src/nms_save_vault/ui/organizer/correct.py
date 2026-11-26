@@ -24,7 +24,7 @@ from ..fmt import local_time, play_time
 from ..redact import RedactingTreeview, rtitle, set_label
 from ..themeaware import ThemeRegistry
 from ..worker import UiWorker
-from .words import line_name, version_numbers
+from .words import line_name, platform_word, version_numbers
 
 NO_PARENT = "(nothing - it has no known parent)"
 CURRENT_LINK = "(the link it has now)"
@@ -62,7 +62,7 @@ def into_labels(model: ReadModel, pid: str) -> dict[str, str]:
     for line in others:
         name = line_name(line)
         if names.count(name) > 1:
-            plat = "/".join("Steam" if p == "steam" else "Xbox" for p in line.platforms)
+            plat = "/".join(platform_word(p) for p in (line.stores or line.platforms))
             name = (f"{name} ({plat}, last played {local_time(line.last_played)}, "
                     f"{line.pid[-6:]})")
         out[name] = line.pid

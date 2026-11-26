@@ -14,8 +14,8 @@ from .targets import resolve_account, resolve_target
 REFILL = {
     "steam-cloud": "While this slot is empty, Steam Cloud may put a save back into it at the "
                    "next game start.",
-    "gog": "While this slot is empty, cloud sync may put a save back into it at the next game "
-           "start.",
+    "gog": "While this slot is empty, GOG Galaxy's cloud sync may put a save back into it at "
+           "the next game start.",
     "xbox": "While this slot is empty, Xbox sync may put a save back into it.",
 }
 

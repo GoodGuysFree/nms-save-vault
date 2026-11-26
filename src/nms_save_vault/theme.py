@@ -182,6 +182,7 @@ PALETTES = {
         # The organizer (D6 3.12): platforms, states, version rows, cards and the move
         # dialog's in (green) / out (amber) pair.
         "steam": "#1f5fa8",
+        "gog": "#7b3fb5",            # as NMS Savecraft draws GOG
         "xbox": "#147a31",
         "warn": "#a35200",
         "warn_bg": "#fff1d6",
@@ -239,6 +240,7 @@ PALETTES = {
         "banner_bg": "#40381a",
         "banner_fg": "#ffe9a3",
         "steam": "#6aa8f0",
+        "gog": "#c39bf0",
         "xbox": "#5fd58a",
         "warn": "#f0a35a",
         "warn_bg": "#3d2e14",

@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from .. import appinfo, catalog, discover, safety, savedir
-from ..organizer.model import Platform
+from ..organizer.model import Platform, store_of
 from ..state import AppState
 from . import capture
 from .capture import CaptureScope
@@ -818,7 +818,7 @@ class VersionStore:
                         entry_id = self._free_id(entry_id, suffix="-L", first_suffix="",
                                                  catalog_ids=self._catalog_ids())
                 else:
-                    stamp = f"{fields['kind']}-{fields['platform']}-{local:%Y%m%d-%H%M%S}"
+                    stamp = f"{fields['kind']}-{_id_tag(fields)}-{local:%Y%m%d-%H%M%S}"
                     entry_id = self._free_id(stamp, catalog_ids=self._catalog_ids())
                 entry = StoreEntry.new(id=entry_id, **fields)
                 try:
@@ -1073,6 +1073,17 @@ def _lineage(origin: Mapping[str, Any] | None) -> set[tuple[str, str]]:
             out.add((store_id, entry_id))
         origin = origin.get("source_origin")
     return out
+
+
+def _id_tag(fields: Mapping[str, Any]) -> str:
+    """The middle of a new entry's id: its platform, or ``gog`` for what was taken from GOG's
+    folder, so a GOG backup is never named a Steam one (GGF 2026-11-26). The manifest keeps
+    the platform, ``steam``: nothing reads it back from the id."""
+    source = fields.get("source") or {}
+    if source.get("store") in ("steam", "gog", "xbox"):    # said by the maker (an edit's extract)
+        return source["store"]
+    name = fields.get("account_key") or source.get("account_key") or source.get("name")
+    return store_of(fields["platform"], name)
 
 
 def _same_files(a: Sequence[FileEntry], b: Sequence[FileEntry]) -> bool:

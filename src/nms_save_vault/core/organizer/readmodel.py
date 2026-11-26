@@ -43,18 +43,22 @@ from .model import (
     Pid,
     Platform,
     RawLocation,
+    Store,
     StoreRef,
     Vid,
     head_of,
     is_identified,
     platform_letter,
     platform_name,
+    store_of,
     sync_name,
 )
 from .notes import NotesState
 from .scanner import ScanResult, live_refs
 
-CrossPlatform = Literal["n/a", "same", "steam-behind", "xbox-behind", "diverged"]
+#: Between the line's live copies in two or more stores (Steam, GOG, Xbox); "<store>-behind"
+#: names the least played one.
+CrossPlatform = Literal["n/a", "same", "steam-behind", "gog-behind", "xbox-behind", "diverged"]
 
 #: Operations that put a pair into one slot or took it out (whole-folder restores bind
 #: slots in the journal but do not mark versions).
@@ -98,7 +102,7 @@ class LiveBadge:
 
 @dataclass(frozen=True)
 class PlatformTip:
-    platform: Platform
+    platform: Store         # the store: GOG has its own tip beside Steam's
     target: LiveTarget
     head: Vid
     play_time: int
@@ -132,6 +136,7 @@ class Line:
     representative: Vid
     facts: object | None = None
     edited_by: tuple[str, ...] = ()     # other apps that made or touched one of its versions
+    stores: tuple[Store, ...] = ()      # Steam, GOG, Xbox, as counted (platforms: as written)
 
 
 @dataclass(frozen=True)
@@ -173,6 +178,7 @@ class VersionRow:
     folded_into: Vid | None = None
     facts: object | None = None
     edited_by: tuple[str, ...] = ()     # other apps (appinfo names) that made or touched it
+    stores: tuple[Store, ...] = ()      # Steam, GOG, Xbox (platform: the format it is written in)
 
 
 @dataclass(frozen=True)
@@ -227,6 +233,7 @@ class LineEvent:
 class LineFilter:
     live: bool | None = None            # True: live somewhere; False: vault only
     platform: Platform | None = None
+    store: Store | None = None          # Steam, GOG or Xbox, as counted
     cross_platform: bool | None = None
     has_note: bool | None = None
     pinned: bool | None = None
@@ -398,6 +405,33 @@ class _Builder:
             return info.platform
         obs = self.journal.metas.get(vid)
         return obs.platform if obs is not None else "steam"
+
+    def stores(self, vid: Vid) -> tuple[Store, ...]:
+        """Where ``vid`` is from as the owner counts it: Steam, GOG or Xbox (GGF 2026-11-26).
+        A GOG save is Steam-format, so only the folder it was in tells: a live folder's name,
+        or the folder a backup was taken from; a version gone from both, the first folder the
+        journal saw it in."""
+        platform = self.platform(vid)
+        if platform != "steam":
+            return (platform,)
+        found = {s for s in map(self._store_of_location, self.locations(vid)) if s is not None}
+        home = self.journal.homes.get(vid) if not found else None
+        if home is not None:
+            found.add(store_of(home.platform, home.account_key))
+        return tuple(sorted(found or {"steam"}, key=_platform_order))
+
+    def _store_of_location(self, loc: RawLocation) -> Store | None:
+        """The store a copy tells by itself: a live folder's, or that of the live folder a backup
+        was taken from; None for a copy from anywhere else (an edit's extract, an imported or
+        in-place folder), which says nothing of the game that wrote it."""
+        if isinstance(loc.where, LiveRef):
+            return store_of(loc.where.platform, loc.where.account_key)
+        key = loc.where.entry_id if isinstance(loc.where, EntryRef) else loc.where.key
+        entry = self.scan.entries.get(key)
+        source = entry.source if entry is not None else None
+        if not source or not _LIVE_FOLDER_NAME.fullmatch(source):
+            return None
+        return store_of("steam", source)
 
     def locations(self, vid: Vid) -> tuple[RawLocation, ...]:
         info = self.scan.versions.get(vid)
@@ -642,8 +676,9 @@ class _Builder:
             flags.add("evicted")
         if meta is not None and not meta.valid:
             flags.add("unreadable")
-        if meta is not None and meta.valid and gameversion.newer(
-                self.platform(p.head), meta.meta_format, meta.base_version):
+        stores = tuple(sorted({s for v in vids for s in self.stores(v)}, key=_platform_order))
+        if meta is not None and meta.valid and any(   # the stores are gameversion.KNOWN's keys
+                gameversion.newer(s, meta.meta_format, meta.base_version) for s in stores):
             flags.add("newer")           # written by a newer game version: no live write (D5)
         return VersionRow(
             pid=pid, pair=p.pair, head=p.head, head_member=p.head_member, partner=p.partner,
@@ -661,7 +696,7 @@ class _Builder:
             children=n_children, in_tree=in_tree, key=False,
             label=note.label if note else "", comment=note.comment if note else "",
             locked=bool(note and note.locked), note_rev=self.journal.note_rev.get(p.head),
-            facts=self._view(p.head), edited_by=edited_by,
+            facts=self._view(p.head), edited_by=edited_by, stores=stores,
         )
 
     def _mark_keys(self, rows: list[VersionRow]) -> list[VersionRow]:
@@ -763,8 +798,8 @@ class _Builder:
         flags = set()
         if live:
             flags.add("live")
-        if len({t.platform for t, _ in live}) > 1:
-            flags.add("cross-platform")
+        if len({store_of(t.platform, t.account_key) for t, _ in live}) > 1:
+            flags.add("cross-platform")                  # live in two stores: Steam and GOG too
         if state == "diverged":
             flags.add("diverged")
         if any(n > 1 for n in live_folders.values()):
@@ -805,6 +840,7 @@ class _Builder:
             pinned=bool(note and note.pinned), locked_count=locked_count,
             flags=frozenset(flags), representative=rep, facts=self._view(rep),
             edited_by=line_edited_by,
+            stores=tuple(sorted({s for r in rows for s in r.stores}, key=_platform_order)),
         )
 
     def _line_name(self, pid: Pid, names: list[str]) -> str:
@@ -820,7 +856,8 @@ class _Builder:
         return names[1:]
 
     def _badge_order(self, target: LiveTarget) -> tuple:
-        return (_platform_order(target.platform), self.tokens.get(target.ref, 99), target.slot)
+        return (_platform_order(store_of(target.platform, target.account_key)),
+                self.tokens.get(target.ref, 99), target.slot)
 
     def _platforms(self, pid: Pid, live_heads) -> tuple[tuple[PlatformTip, ...], CrossPlatform]:
         """D1 2.8: each platform's most-progressed live copy, compared without ancestry."""
@@ -828,53 +865,56 @@ class _Builder:
         for t, p, m in live_heads:
             if m is None:
                 continue
-            if t.platform not in best or (m.play_time, m.meta_ts) > (
-                    best[t.platform][2].play_time, best[t.platform][2].meta_ts):
-                best[t.platform] = (t, p, m)
+            store = store_of(t.platform, t.account_key)      # GOG is its own (GGF 2026-11-26)
+            if store not in best or (m.play_time, m.meta_ts) > (
+                    best[store][2].play_time, best[store][2].meta_ts):
+                best[store] = (t, p, m)
+        ordered = sorted(best.items(), key=lambda x: _platform_order(x[0]))
         if len(best) < 2:
-            tips = tuple(PlatformTip(pl, t, p.head, m.play_time, m.meta_ts, 0)
-                         for pl, (t, p, m) in sorted(best.items(), key=lambda x: _platform_order(x[0])))
+            tips = tuple(PlatformTip(pl, t, p.head, m.play_time, m.meta_ts, 0)  # type: ignore[arg-type]
+                         for pl, (t, p, m) in ordered)
             return tips, "n/a"
-        s, x = best["steam"], best["xbox"]
-        if s[2].play_time == x[2].play_time:
+        top = max(m.play_time for _t, _p, m in best.values())
+        if all(m.play_time == top for _t, _p, m in best.values()):
             state: CrossPlatform = "same"
         elif self._diverged(pid):
             state = "diverged"
         else:
-            state = "xbox-behind" if x[2].play_time < s[2].play_time else "steam-behind"
+            last = min(ordered, key=lambda x: x[1][2].play_time)[0]
+            state = f"{last}-behind"                            # type: ignore[assignment]
 
-        def behind(own, other) -> int:
-            if state in ("same", "diverged"):
-                return 0
-            return max(0, other[2].play_time - own[2].play_time)
+        def behind(m: MetaSnap) -> int:
+            return 0 if state in ("same", "diverged") else max(0, top - m.play_time)
 
-        tips = (PlatformTip("steam", s[0], s[1].head, s[2].play_time, s[2].meta_ts, behind(s, x)),
-                PlatformTip("xbox", x[0], x[1].head, x[2].play_time, x[2].meta_ts, behind(x, s)))
+        tips = tuple(PlatformTip(pl, t, p.head, m.play_time, m.meta_ts, behind(m))  # type: ignore[arg-type]
+                     for pl, (t, p, m) in ordered)
         return tips, state
 
     def _diverged(self, pid: Pid) -> bool:
-        """Both platforms played since they were last in step, as the journal saw it."""
+        """Two or more stores (Steam, GOG, Xbox) played since they were last in step, as the
+        journal saw it."""
         play_edges = {(e.target, e.created, e.child) for e in self.journal.edges
                       if e.kind == "play" and e.tier in ("recorded", "observed") and e.target}
-        heads: dict[str, dict[LiveTarget, int]] = {"steam": {}, "xbox": {}}
-        seen_pt: dict[str, set[int]] = {"steam": set(), "xbox": set()}
+        heads: dict[str, dict[LiveTarget, int]] = {}
+        seen_pt: dict[str, set[int]] = {}
         sync, progressed = None, set()
         for rec in self.journal.records:
             vids = [v for v in rec.pair if v]
             if not vids or self.pid(vids[0]) != pid:
                 continue
-            here, there = rec.target.platform, "xbox" if rec.target.platform == "steam" else "steam"
+            here = store_of(rec.target.platform, rec.target.account_key)
+            elsewhere = set().union(*(pts for s, pts in seen_pt.items() if s != here))
             plays = [self.meta(v).play_time for v in vids if self.meta(v)]
-            heads[here][rec.target] = max(plays, default=0)
-            top = {p: max(h.values(), default=None) for p, h in heads.items()}
-            if top["steam"] is not None and top["xbox"] is not None and top["steam"] == top["xbox"]:
+            heads.setdefault(here, {})[rec.target] = max(plays, default=0)
+            top = {s: max(h.values()) for s, h in heads.items() if h}
+            if len(top) > 1 and len(set(top.values())) == 1:
                 sync, progressed = rec.at, set()
             elif sync is not None and any(
                     (rec.target, rec.at, v) in play_edges and self.meta(v)
-                    and self.meta(v).play_time not in seen_pt[there] for v in vids):
+                    and self.meta(v).play_time not in elsewhere for v in vids):
                 progressed.add(here)
-            seen_pt[here].update(plays)
-        return sync is not None and progressed == {"steam", "xbox"}
+            seen_pt.setdefault(here, set()).update(plays)
+        return sync is not None and len(progressed) > 1
 
     # --- the board ----------------------------------------------------------------------
 
@@ -1038,6 +1078,8 @@ _BADGE = re.compile(r"[SGX][0-9]+(?:\.[0-9]+)?", re.IGNORECASE)
 def _name(ref: LiveRef) -> str:
     return platform_name(ref.platform, ref.account_key)
 _HEX = re.compile(r"[0-9a-fA-F]+")
+#: The names of the folders the game writes: a Steam account's, and GOG's.
+_LIVE_FOLDER_NAME = re.compile(rf"st_[0-9]+|{re.escape(formats.GOG_ACCOUNT_DIR)}")
 
 
 class RefError(ValueError):
@@ -1169,9 +1211,11 @@ def sort_lines(lines: Iterable[Line], key: str = "last_played",
         "play_time": lambda line: line.play_time,
         "last_played": lambda line: line.last_played,
         "versions": lambda line: line.version_count,
-        "live": lambda line: (not line.live, [_platform_order(b.target.platform) for b in line.live],
+        "live": lambda line: (not line.live, [_platform_order(store_of(b.target.platform,
+                                                                       b.target.account_key))
+                                              for b in line.live],
                               [b.target.slot for b in line.live]),
-        "platform": lambda line: [_platform_order(p) for p in line.platforms],
+        "platform": lambda line: [_platform_order(p) for p in line.stores],
         "difficulty": lambda line: line.difficulty.casefold(),
         "risk": lambda line: ("at-risk" in line.flags, "live" in line.flags),
         "note": lambda line: (not line.has_note, line.note_preview.casefold()),
@@ -1193,6 +1237,8 @@ def filter_lines(lines: Iterable[Line], f: LineFilter) -> tuple[Line, ...]:
         if any(want is not None and want != have for want, have in checks):
             return False
         if f.platform is not None and f.platform not in line.platforms:
+            return False
+        if f.store is not None and f.store not in line.stores:
             return False
         if f.text:
             needle = f.text.casefold()
@@ -1275,7 +1321,8 @@ def _durable(loc: RawLocation) -> bool:
 
 
 def _platform_order(platform: str) -> int:
-    return 0 if platform == "steam" else 1
+    """Steam, GOG, Xbox: a platform or a :data:`Store`."""
+    return {"steam": 0, "gog": 1}.get(platform, 2)
 
 
 def _sync_badness(state: int) -> int:

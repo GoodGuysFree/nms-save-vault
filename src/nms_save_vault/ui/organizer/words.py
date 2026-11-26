@@ -8,7 +8,7 @@ from collections import defaultdict
 
 from ...core import aliases
 from ...core.liveops.planner import TEXTS
-from ...core.organizer.model import platform_letter, platform_name
+from ...core.organizer.model import platform_letter, platform_name, store_of
 from ...core.organizer.readmodel import Line, ReadModel, VersionRow
 
 #: The warning on a version only the live folder holds, and what it means (hover text).
@@ -83,8 +83,24 @@ def find_row(model: ReadModel, pid: str, head: str) -> VersionRow | None:
     return next((r for r in model.versions(pid) if r.head == head), None)
 
 
+#: A store's name (core.organizer.model.Store): GOG is counted on its own, not as Steam.
+STORE_WORDS = {"steam": "Steam", "gog": "GOG", "xbox": "Xbox"}
+
+
 def platform_word(platform: str) -> str:
-    return "Xbox" if platform == "xbox" else "Steam"
+    """A platform's or a store's name: ``Steam``, ``GOG`` or ``Xbox``."""
+    return STORE_WORDS.get(platform, "Steam")
+
+
+def stores_word(item) -> str:
+    """``Steam``, ``GOG``, ``Steam, GOG``: the stores of a line or version row."""
+    stores = item.stores or getattr(item, "platforms", None) or (item.platform,)
+    return ", ".join(platform_word(s) for s in stores)
+
+
+def store_colour(palette, platform: str, account_key: str = "") -> str:
+    """The colour of a live folder's (or store's) chips: Steam blue, GOG purple, Xbox green."""
+    return palette[store_of(platform, account_key) if platform != "gog" else "gog"]
 
 
 #: A live badge's first letter (S9, G9, X2.4) and the kind of account it names.

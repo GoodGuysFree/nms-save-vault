@@ -27,7 +27,7 @@ from ..tooltip import Tooltip
 from . import factsui
 from .live import NEVER_EMPTIES, refill_text
 from .words import (METHOD_WORDS, NO_BACKUP, NO_BACKUP_TIP, OUTSIDE_ONLY_TIP, PIN_TIP,
-                    edited_by_words, find_row, line_name, slot_words, tip_name,
+                    edited_by_words, find_row, line_name, slot_words, stores_word, tip_name,
                     version_numbers)
 
 #: A segment of a page: its text and its tags. ``("link", head)`` makes a link to a version
@@ -109,18 +109,20 @@ def line_summary(model: ReadModel, pid: str) -> list[Segment]:
 
 
 def _platform_sentence(line) -> str:
-    tips = {t.platform: t for t in line.platform_tips}
-    steam = tip_name(tips["steam"]) if "steam" in tips else "Steam"
-    if line.cross_platform == "xbox-behind":
-        return (f"the Xbox copy is behind ({play_time(tips['xbox'].behind_by)} less play than "
-                f"the {steam} copy); each platform's copy is its own tip")
-    if line.cross_platform == "steam-behind":
-        return (f"the {steam} copy is behind ({play_time(tips['steam'].behind_by)} less play "
-                "than the Xbox copy); each platform's copy is its own tip")
+    """Steam, GOG and Xbox copies of one save, each its own tip (GOG counted apart from Steam)."""
+    tips = line.platform_tips
+    if line.cross_platform.endswith("-behind"):
+        lead = tip_name(max(tips, key=lambda t: t.play_time))
+        behind = "; ".join(f"the {tip_name(t)} copy is behind ({play_time(t.behind_by)} less "
+                           f"play than the {lead} copy)" for t in tips if t.behind_by)
+        return f"{behind}; each platform's copy is its own tip"
     if line.cross_platform == "diverged":
-        return "both copies were played since they were last the same: two branches"
+        both = "both copies" if len(tips) == 2 else "the copies"
+        return f"{both} were played since they were last the same: two branches"
     if line.cross_platform == "same":
-        return f"the {steam} and Xbox copies have the same play time"
+        names = [tip_name(t) for t in tips]
+        listed = " and ".join([", ".join(names[:-1]), names[-1]]) if len(names) > 1 else names[0]
+        return f"the {listed} copies have the same play time"
     return ""
 
 
@@ -131,7 +133,7 @@ def version_title(model: ReadModel, pid: str, head: str) -> tuple[str, str]:
         return "", ""
     number = version_numbers(model, pid)[head]
     bits = [f"saved {local_time(row.saved_at)}", f"{play_time(row.play_time) or '0h00'} played",
-            "Steam" if row.platform == "steam" else "Xbox"]
+            stores_word(row)]
     return f"{line_name(line)} #{number}", " - ".join(bits)
 
 

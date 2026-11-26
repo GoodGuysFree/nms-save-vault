@@ -23,7 +23,7 @@ from ..fmt import local_time, play_time
 from ..redact import RedactingTreeview, rtext, rtitle, set_label
 from ..themeaware import ThemeRegistry
 from .history import fresh_row, where_text
-from .words import line_name, version_numbers
+from .words import line_name, stores_word, version_numbers
 
 NOT_INDEXED = "not indexed"
 
@@ -78,7 +78,7 @@ CONTENT = (
 
 
 def _platform(row: VersionRow) -> str:
-    return "Steam" if row.platform == "steam" else "Xbox"
+    return stores_word(row)
 
 
 def compare_facts(model: ReadModel, pid: str, a: VersionRow, b: VersionRow) -> list[FactRow]:

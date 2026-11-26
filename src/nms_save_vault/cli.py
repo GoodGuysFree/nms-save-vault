@@ -636,7 +636,7 @@ def _resolve(fn, model, ref):
 
 def cmd_saves(args) -> int:
     _, model = _model(args)
-    wanted = LineFilter(live=True if args.live_only else None, platform=args.platform,
+    wanted = LineFilter(live=True if args.live_only else None, store=args.platform,
                         text=args.find or "")
     lines = sort_lines(filter_lines(model.lines(), wanted), args.sort)
     if args.json:
@@ -1039,7 +1039,8 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("saves", help="every save file, live and in the vault, one line each")
     s.add_argument("--sort", choices=SORT_KEYS, default="last_played", help="what to order by")
     s.add_argument("--live-only", action="store_true", help="only save files that are live")
-    s.add_argument("--platform", choices=["steam", "xbox"], help="only this platform")
+    s.add_argument("--platform", choices=["steam", "gog", "xbox"],
+                   help="only this platform (GOG is its own, never counted as Steam)")
     s.add_argument("--find", help="text in the name, a former name or the note")
     s.add_argument("--json", action="store_true", help="machine-readable output")
     s.add_argument("--no-cache", action="store_true", help="hash everything; keep no cache")

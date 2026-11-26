@@ -10,8 +10,8 @@ selector. Mode and folders are kept in ``ui`` (``live_mode``, ``live_sources``).
 Each list is drawn on a Canvas: per slot a chip (``S9`` in the platform colour; outlined
 grey when empty), the name, ``+X8`` when the save is live on the other platform too, play
 time, and markers - amber triangle: not in the vault; pin: pinned; clock: waiting for the
-next launch; red: reverted; cloud: an empty slot that Steam Cloud or Xbox sync may fill
-again (the app never empties a slot). The legend lists only the markers in use. The slots
+next launch; red: reverted; cloud: an empty slot that Steam Cloud, GOG Galaxy or Xbox sync may
+fill again (the app never empties a slot). The legend lists only the markers in use. The slots
 of the selected save file are outlined in the accent colour. Read-only in phase 1: a click
 selects that slot's save file; the right-click menu and Enter (Replace with...) are the
 seams the live operations plug into (``on_context``, ``on_activate``).
@@ -33,7 +33,7 @@ from ..fmt import local_time, play_time
 from ..redact import ctext, shown
 from ..themeaware import ThemeRegistry
 from ..tooltip import Tooltip
-from .words import NO_BACKUP_TIP, edited_by_words, slot_words
+from .words import NO_BACKUP_TIP, edited_by_words, slot_words, store_colour
 
 ONE, TWO = "one", "two"
 SLOT, GAME = "slot", "game"
@@ -42,7 +42,7 @@ NEVER_EMPTIES = "The app never empties a slot; this one was emptied outside the 
 
 #: What each marker means, in the legend and in words wherever it is drawn.
 MARKERS = {
-    "empty": "empty: Steam Cloud / Xbox sync may fill it again",
+    "empty": "empty: Steam Cloud / GOG Galaxy / Xbox sync may fill it again",
     "risk": "no backup yet",
     "pin": "pinned: never suggested",
     "pending": "waiting for the next game launch",
@@ -70,8 +70,8 @@ def refill_text(source: LiveSource) -> str | None:
     if source.platform == "xbox":
         return "While this slot is empty, Xbox sync may put a save back into it."
     if _is_gog(source):
-        return ("While this slot is empty, cloud sync may put a save back into it at the next "
-                "game start.")
+        return ("While this slot is empty, GOG Galaxy's cloud sync may put a save back into it "
+                "at the next game start.")
     if source.steam_cloud is False:
         return None
     return ("While this slot is empty, Steam Cloud may put a save back into it at the next "
@@ -81,7 +81,7 @@ def refill_text(source: LiveSource) -> str | None:
 def refill_inline(source: LiveSource) -> str:
     if source.platform == "xbox":
         return "Xbox sync may put a save back here"
-    sync = "Cloud sync" if _is_gog(source) else "Steam Cloud"
+    sync = "GOG Galaxy" if _is_gog(source) else "Steam Cloud"
     return f"{sync} may put a save back here at the next game start"
 
 
@@ -389,7 +389,7 @@ class LiveArea(ttk.Frame):
     def _draw_list(self, source, x0, x1, row_h, head_h, wide, used, base, bold, small,
                    italic) -> None:
         canvas, p = self.canvas, self._p
-        colour = p["xbox"] if source.platform == "xbox" else p["steam"]
+        colour = store_colour(p, source.ref.platform, source.ref.account_key)
         canvas.create_rectangle(x0, px(2), x0 + px(3), head_h - px(4), fill=colour, width=0)
         ctext(canvas, x0 + px(10), head_h / 2, text=f"{source.label} live", anchor="w",
               font=bold, fill=p["fg"])
@@ -416,7 +416,7 @@ class LiveArea(ttk.Frame):
                                      outline=p["accent"] if selected else p["border"],
                                      width=px(2) if selected else 1, tags=(tag, "bg"))
         self.drawn[token] = _Drawn(token, source, slot, (x0, y0, x1, y1), bg)
-        colour = p["xbox"] if source.platform == "xbox" else p["steam"]
+        colour = store_colour(p, source.ref.platform, source.ref.account_key)
         chip_w = px(30)
         cy = (y0 + y1) / 2
         canvas.create_rectangle(x0 + px(3), y0 + px(3), x0 + px(3) + chip_w, y1 - px(3),
@@ -457,7 +457,8 @@ class LiveArea(ttk.Frame):
         others = " ".join(labels.get(t, "") for t in slot.other_platform).strip()
         if others:
             other = "+" + others.replace(" ", " +")
-            colour = p["xbox"] if slot.other_platform[0].platform == "xbox" else p["steam"]
+            first = slot.other_platform[0]
+            colour = store_colour(p, first.platform, first.account_key)
             ctext(canvas, right, cy, text=other, anchor="e", font=bold, fill=colour,
                   tags=(tag,))
             right -= bold.measure(other) + px(8)

@@ -215,6 +215,19 @@ def platform_name(platform: str, account_key: str = "") -> str:
     return "GOG" if account_key == GOG_ACCOUNT_DIR else "Steam"
 
 
+#: Where a save is from, as the owner counts them: GOG's saves are Steam-format (platform
+#: "steam" for every read and write) but are GOG's own, live and in the vault (GGF 2026-11-26).
+#: The values are also gameversion.KNOWN's keys.
+Store = Literal["steam", "gog", "xbox"]
+
+
+def store_of(platform: str, account_key: str | None = "") -> Store:
+    """The store of a live folder, or of what was taken from one (``account_key``: its name)."""
+    if platform == "xbox":
+        return "xbox"
+    return "gog" if account_key == GOG_ACCOUNT_DIR else "steam"
+
+
 def platform_letter(platform: str, account_key: str = "") -> str:
     """The first letter of :func:`platform_name`: a live slot's badge reads S7, G7 or X7."""
     return platform_name(platform, account_key)[0]
@@ -222,8 +235,8 @@ def platform_letter(platform: str, account_key: str = "") -> str:
 
 def sync_name(platform: str, account_key: str = "") -> str:
     """What can put a save back into a live folder behind the app's back."""
-    return {"Xbox": "Xbox sync", "Steam": "Steam Cloud"}.get(
-        platform_name(platform, account_key), "Cloud sync")
+    return {"Xbox": "Xbox sync", "Steam": "Steam Cloud", "GOG": "GOG Galaxy"}[
+        platform_name(platform, account_key)]
 
 
 @dataclass(frozen=True)

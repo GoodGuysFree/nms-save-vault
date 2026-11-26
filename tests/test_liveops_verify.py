@@ -75,7 +75,7 @@ def test_a_revert_on_gog_names_its_cloud_and_offers_the_steps(tmp_path):
     world.refresh()
     (item,) = update_verification(world.ctx)
     assert (item.state, item.label) == ("reverted", "GOG slot 1")
-    assert item.text.startswith("Cloud sync put the old save back in GOG slot 1")
+    assert item.text.startswith("GOG Galaxy put the old save back in GOG slot 1")
     assert item.actions == ("place_again", "show_steps", "dismiss")
 
 

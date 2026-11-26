@@ -144,6 +144,86 @@ def test_one_save_live_in_steam_and_gog_is_live_elsewhere_not_a_twin(tmp_path):
     assert (s9.twin, s9.other_platform) == (False, (g4.target,))
 
 
+def _gog(w):
+    gog = w.tmp / "NMS" / "DefaultUser"
+    w.sources.append(Source(id="gog", platform="steam", account="", path=str(gog)))
+    return gog
+
+
+def test_a_gog_save_is_gog_s_and_not_counted_as_steam(tmp_path):
+    """GGF 2026-11-26: "GOG cannot be counted as Steam ... It's a separate version." A GOG save
+    is Steam-format (platform "steam" for every write), but it is shown and counted as GOG's,
+    live or only in the vault."""
+    w = World(tmp_path)
+    gog = _gog(w)
+    steam_save(w.steam, 9, 0, "Main Save", 5000, MAIN, T0)
+    steam_save(gog, 4, 0, "Other Run", 100, OTHER, T0 - 900)
+    operations.create_full_backup(w.vault, gog, warnings=[])
+    for f in gog.glob("*save*.hg"):
+        f.unlink()                                       # the GOG save now only in the vault
+    model = w.refresh()
+
+    main, other = model.line(PID), model.line(OTHER_PID)
+    assert (main.stores, other.stores) == (("steam",), ("gog",))
+    assert (main.platforms, other.platforms) == (("steam",), ("steam",))   # writes: Steam format
+    assert [r.stores for r in model.versions(OTHER_PID)] == [("gog",)]
+    lines = model.lines()
+    assert [ln.pid for ln in filter_lines(lines, LineFilter(store="gog"))] == [OTHER_PID]
+    assert [ln.pid for ln in filter_lines(lines, LineFilter(store="steam"))] == [PID]
+
+
+def test_one_save_live_in_steam_and_gog_is_on_two_stores_with_a_tip_each(tmp_path):
+    w = World(tmp_path)
+    gog = _gog(w)
+    steam_save(w.steam, 9, 0, "Main Save", 5000, MAIN, T0, extra="a")
+    steam_save(gog, 4, 0, "Main Save", 4000, MAIN, T0 - 900, extra="b")
+    line = w.refresh().line(PID)
+
+    assert line.stores == ("steam", "gog") and "cross-platform" in line.flags
+    tips = {t.platform: t for t in line.platform_tips}
+    assert (tips["steam"].behind_by, tips["gog"].behind_by) == (0, 1000)
+    assert line.cross_platform == "gog-behind"
+
+
+def test_steam_and_gog_both_played_since_in_step_are_two_branches(tmp_path):
+    """SV review finding 1: the divergence check knew only Steam and Xbox."""
+    w = World(tmp_path)
+    gog = _gog(w)
+    steam_save(w.steam, 2, 0, "Main Save", 9000, MAIN, T0, extra="s1")
+    steam_save(gog, 4, 0, "Main Save", 9000, MAIN, T0, extra="g1")
+    assert w.refresh().line(PID).cross_platform == "same"
+    steam_save(w.steam, 2, 0, "Main Save", 9500, MAIN, T0 + 100, extra="s2")
+    steam_save(gog, 4, 0, "Main Save", 9200, MAIN, T0 + 90, extra="g2")
+    line = w.refresh().line(PID)
+    assert line.cross_platform == "diverged"
+    assert [t.behind_by for t in line.platform_tips] == [0, 0]
+
+
+def test_three_stores_each_have_a_tip_and_the_least_played_is_named(tmp_path, make_wgs_account):
+    w = World(tmp_path)
+    gog = _gog(w)
+    steam_save(w.steam, 2, 0, "Main Save", 9000, MAIN, T0, extra="s")
+    steam_save(gog, 4, 0, "Main Save", 7000, MAIN, T0 - 50, extra="g")
+    w.add_xbox(make_wgs_account, [("Slot4Auto", '{"x":"x1"}', "Main Save", "", 8000, T0, MAIN)])
+    line = w.refresh().line(PID)
+    assert line.stores == ("steam", "gog", "xbox") and line.cross_platform == "gog-behind"
+    assert [(t.platform, t.behind_by) for t in line.platform_tips] == [
+        ("steam", 0), ("gog", 2000), ("xbox", 1000)]
+
+
+def test_a_copy_from_elsewhere_does_not_make_a_gog_save_steam_s(tmp_path):
+    """SV review finding 3: a folder of the owner's (or an edit's extract) says nothing of the
+    game that wrote the save, so it must not add Steam to a GOG save."""
+    w = World(tmp_path)
+    gog = _gog(w)
+    steam_save(gog, 4, 0, "Other Run", 100, OTHER, T0 - 900)
+    mine = tmp_path / "my copy"
+    shutil.copytree(gog, mine)
+    operations.import_backup(w.vault, mine, label="my copy")
+    model = w.refresh()
+    assert model.line(OTHER_PID).stores == ("gog",)
+
+
 def _date(summary) -> str:
     from datetime import datetime, timezone
     return datetime.fromtimestamp(summary.location.seen_at, timezone.utc).strftime("%Y-%m-%d")

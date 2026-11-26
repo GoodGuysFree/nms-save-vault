@@ -28,7 +28,7 @@ from ..themeaware import ThemeRegistry
 from .lanes import LaneCell, lane_cells, lane_width
 from ..tooltip import Tooltip
 from .words import (NOT_LINKED_TIP, PIN_LABEL, PIN_MARK, UNPIN_LABEL, edited_by_words, line_name,
-                    version_numbers)
+                    stores_word, version_numbers)
 
 STYLE = "Organizer.Treeview"
 MODES = ("key", "all")
@@ -765,7 +765,7 @@ class HistoryWindow(tk.Toplevel):
         set_label(self.panel_title, f"{local_time(row.saved_at)}  "
                                     f"{play_time(row.play_time) or '0h00'}"
                                     f"{'  [pinned]' if row.locked else ''}")
-        bits = [f"#{numbers[row.head]}", "Steam" if row.platform == "steam" else "Xbox"]
+        bits = [f"#{numbers[row.head]}", stores_word(row)]
         if row.mode or row.difficulty:
             bits.append(row.mode or row.difficulty)
         if line is not None:

@@ -27,6 +27,7 @@ from pathlib import Path
 
 from . import formats, lz4_block, savedir
 from .catalog import Vault
+from .organizer.model import store_of
 
 # The playthrough id inside the (obfuscated) save JSON. Both forms are hunted in the raw
 # bytes rather than by parsing: the file is up to ~18 MB of JSON and the field sits in the
@@ -101,6 +102,12 @@ class PlaytimeReport:
 
 def _platform(folder: Path) -> str:
     return savedir.platform_of(folder) or "unknown"
+
+
+def _shown(platform: str, folder_name: str | None) -> str:
+    """The platform a run is listed under: `gog` for a save from GOG's folder, which is
+    Steam-format but never counted as Steam (GGF 2026-11-26)."""
+    return store_of(platform, folder_name) if platform == "steam" else platform
 
 
 def _id_from_bytes(raw: bytes, expected_size: int) -> int | None:
@@ -308,7 +315,8 @@ def _fold_store(store, folding: _Folding, cache: IdCache | None) -> tuple[int, i
                     key, identified = _store_name_key(entry, r), False
             folding.add(
                 key, identified, source=entry.id, where=entry_location(entry.id), slot=r.slot,
-                platform=entry.platform, name=r.name,
+                platform=_shown(entry.platform, entry.account_key or entry.source.get("name")),
+                name=r.name,
                 difficulty=formats.difficulty_label(r.difficulty, r.game_mode),
                 play_time=r.play_time, when=r.meta_ts or int(r.file_time_ns / 1_000_000_000))
     return scanned, unsupported
@@ -344,6 +352,7 @@ def collect(vault: Vault, live_dirs, use_cache: bool = True, app_state=None) -> 
 
     folding = _Folding()
     scanned = unsupported = 0
+    taken_from = {e.id: e.source for e in vault.entries}
     for source, folder in folders:
         if not folder.is_dir():
             continue
@@ -364,7 +373,9 @@ def collect(vault: Vault, live_dirs, use_cache: bool = True, app_state=None) -> 
                     key, identified = name_key(m, platform), False
                 folding.add(
                     key, identified, source=source, where=str(folder), slot=slot.slot,
-                    platform=platform, name=m.info.save_name,
+                    platform=_shown(platform, folder.name if source == "live"
+                                    else taken_from.get(source)),
+                    name=m.info.save_name,
                     difficulty=m.info.difficulty_label, play_time=m.info.total_play_time,
                     when=m.effective_timestamp)
     if store is not None:

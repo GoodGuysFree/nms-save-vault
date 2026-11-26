@@ -47,6 +47,17 @@ def _gog_world(tmp_path, *, cloud=False):
     return world
 
 
+def test_a_gog_folder_draws_in_gog_s_colour():
+    """SV review finding 2: "+G4" beside a Steam slot is GOG purple, not the list's colour."""
+    from nms_save_vault import theme
+    from nms_save_vault.ui.organizer.words import store_colour
+
+    palette = theme.PALETTES[theme.LIGHT]
+    assert store_colour(palette, "steam", "DefaultUser") == palette["gog"] == "#7b3fb5"
+    assert store_colour(palette, "steam", STEAM_ACCOUNT) == palette["steam"]
+    assert store_colour(palette, "xbox", "x") == palette["xbox"]
+
+
 def test_the_guard_of_a_folder_is_gog_only_for_gog_s_own_folder():
     assert gameversion.guard_for("steam", "DefaultUser") == "gog"
     assert gameversion.guard_for("steam", STEAM_ACCOUNT) == "steam"
@@ -68,6 +79,21 @@ def test_a_save_newer_than_gog_s_game_is_not_put_into_gog(tmp_path, gog_behind):
     assert "GAME_NEWER" not in codes(plan_place(ctx, fresh, STEAM.target(5)).blocked)
 
 
+def test_a_swap_that_puts_a_newer_save_into_gog_is_blocked(tmp_path, gog_behind):
+    """The guard of the folder a save goes to holds for swaps too (the shared _plan path)."""
+    from nms_save_vault.core.liveops.planner import plan_swap
+
+    world = _gog_world(tmp_path)
+    steam_save(world.live, 4, 0, "Fresh", 100, POLESTAR + 1, T0 + 500, base_version=NEWEST)
+    steam_save(world.other, 4, 0, "Old", 100, POLESTAR + 3, T0 + 400, base_version=NEWEST - 1)
+    ctx = world.refresh()
+    swap = plan_swap(ctx, STEAM.target(4), GOG.target(4))
+    assert "GAME_NEWER" in codes(swap.blocked)
+    steam_save(world.other, 6, 0, "Old2", 100, POLESTAR + 4, T0 + 400, base_version=NEWEST - 1)
+    ctx = world.refresh()
+    assert "GAME_NEWER" not in codes(plan_swap(ctx, GOG.target(4), GOG.target(6)).blocked)
+
+
 def test_a_gog_save_newer_than_gog_s_game_is_not_edited(tmp_path, gog_behind):
     world = _gog_world(tmp_path)
     for member in (0, 1):
@@ -78,6 +104,20 @@ def test_a_gog_save_newer_than_gog_s_game_is_not_edited(tmp_path, gog_behind):
     with pytest.raises(EditRefused, match="newer game version"):
         plan_edit(ctx, GOG.target(1), [AddMember((), "Units", b"1")], what="x")
     plan_edit(ctx, STEAM.target(1), [AddMember((), "Units", b"1")], what="x")   # Steam: fine
+
+
+def test_a_backup_of_gog_s_folder_is_named_gog_and_kept_as_steam_format(tmp_path):
+    """GGF 2026-11-26: a GOG backup "should say gog", not full-steam-..."""
+    from nms_save_vault.core import store as vstore
+
+    world = steam_world(tmp_path, other_name="DefaultUser")
+    store = vstore.open_store(world.vault_root, live_roots=[world.live, world.other])
+    gog = store.add_from_live(world.other, platform="steam", account_key="DefaultUser",
+                              kind="full", label="x", scope=vstore.CaptureScope())
+    steam = store.add_from_live(world.live, platform="steam", account_key=STEAM_ACCOUNT,
+                                kind="snapshot", label="y", scope=vstore.CaptureScope())
+    assert gog.id.startswith("full-gog-") and gog.platform == "steam"
+    assert steam.id.startswith("snapshot-steam-")
 
 
 def test_known_game_version_judges_a_gog_save_by_gog_s_game(tmp_path, gog_behind):
@@ -138,6 +178,9 @@ def test_an_edit_and_an_unlock_go_through_the_api_in_gog_s_folder(tmp_path, monk
         last = history.last_before("nms-savecraft", slot=slot)
         assert last is not None and last.change.op_id == done.op_id
         assert history.last_before("nms-savecraft", slot=api.slot_of(world.live, 1)) is None
+        edits = [e for e in api.open_vault(world.vault_root, live_roots=()).entries()
+                 if e.reason == "edit"]
+        assert [e.id.split("-")[:2] for e in edits] == [["extract", "gog"]]   # not extract-steam
         undo = session.plan_undo(done.op_id)
         assert session.write(undo, undo.confirmations).status == "done"
         assert (world.other / "save.hg").read_bytes() == gog_before

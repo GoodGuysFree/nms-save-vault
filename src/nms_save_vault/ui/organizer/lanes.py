@@ -7,6 +7,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from ...core.organizer.history import HistoryGraph
+from ...core.organizer.model import store_of
 
 #: More lanes than this are drawn, but they repeat the colours of the first ones.
 LANE_COLOURS = 4
@@ -21,7 +22,7 @@ class LaneCell:
     down: bool                      # a parent below (the line goes on to it)
     joins: tuple[int, ...]          # lanes of children that join this node from the side
     kind: str                       # "dot" | "live" | "member"
-    platform: str = "steam"
+    platform: str = "steam"         # the store: "steam", "gog" or "xbox" (a palette key)
 
 
 def lane_cells(graph: HistoryGraph) -> dict[str, LaneCell]:
@@ -42,8 +43,16 @@ def lane_cells(graph: HistoryGraph) -> dict[str, LaneCell]:
             n.lane in kids, n.vid in has_parent,
             tuple(sorted({k for k in kids if k != n.lane})),
             "member" if n.kind == "fork-member" else ("live" if live else "dot"),
-            n.version.platform)
+            _store(n.version))
     return out
+
+
+def _store(version) -> str:
+    """The colour key of a live dot: where it is live (GOG purple, not Steam blue)."""
+    if version.live_in:
+        first = version.live_in[0]
+        return store_of(first.platform, first.account_key)
+    return (version.stores or (version.platform,))[0]
 
 
 def lane_width(lanes: int) -> int:
