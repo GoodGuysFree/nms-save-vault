@@ -355,6 +355,7 @@ def build(target: Target) -> Path:
             add_bytes(tar, f"{KIT_NAME}/{name}", script.encode("utf-8"), mode=0o755)
 
         add_bytes(tar, f"{KIT_NAME}/README.txt", readme(target, version).encode("utf-8"))
+        add_bytes(tar, f"{KIT_NAME}/CHANGELOG.md", (ROOT / "CHANGELOG.md").read_bytes())
 
         if target.bundle:
             contents = f"{KIT_NAME}/{APP_BUNDLE}/Contents"

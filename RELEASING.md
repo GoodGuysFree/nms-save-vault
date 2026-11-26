@@ -27,10 +27,15 @@ Update the version in all three places (keep them identical):
 Then in `README.md`: add a row to the **Version history** table and bump the
 `NMSSaveVault-Setup-vX.Y.Z.zip` filename mentioned in QuickStart / Install.
 
-And in `src/nms_save_vault/ui/whatsnew.py`: set `NOTES_VERSION` to the new version and write
-`NOTES`, the short summary the app pops up once the first time this version starts. Plain words,
-a few lines per change; it is shown in a message box. `tests/test_whatsnew.py` fails until
-`NOTES_VERSION` matches.
+Then `CHANGELOG.md`: rename its `## Unreleased` section to `## X.Y.Z - YYYY-MM-DD` and start a
+new empty `## Unreleased` above it. Each top-level bullet is one short highlight (at most 60
+characters, at most 7 of them), and the indented lines under it add the detail.
+
+And in `src/nms_save_vault/ui/whatsnew.py`: set `NOTES_VERSION` to the new version and copy that
+section's top-level bullets, word for word, into `NOTES`. The app pops them up once, the first
+time this version starts. `tests/test_whatsnew.py` fails until `NOTES_VERSION` matches, the
+bullets match the changelog's, and each one is short. The kits ship `CHANGELOG.md` beside the
+program, so commit it before building.
 
 ## 2. Run the tests
 

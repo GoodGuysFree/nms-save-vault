@@ -110,6 +110,8 @@ foreach ($f in @("$tag.dll", "python3.dll", "vcruntime140.dll", "vcruntime140_1.
 }
 Copy-Item (Join-Path $emb "LICENSE.txt") (Join-Path $OutDir "PYTHON_LICENSE.txt")
 Copy-Item (Join-Path $pkgDir "nmsvault.ico") (Join-Path $OutDir "nmsvault.ico")
+# What changed in each release, beside the program (GGF 2026-11-26).
+Copy-Item (Join-Path $root "CHANGELOG.md") (Join-Path $OutDir "CHANGELOG.md")
 
 # Stdlib and extension modules.
 Copy-Item (Join-Path $emb "$tag.zip") $runtime

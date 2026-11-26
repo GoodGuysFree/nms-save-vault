@@ -1,9 +1,10 @@
 """What's new in this release: shown once, the first time a version starts, on a new install
 and after an update alike.
 
-At each release set ``NOTES_VERSION`` to the new version and write ``NOTES`` for it (RELEASING.md
-step 1); tests/test_whatsnew.py fails until they match ``__version__``. The notes are code, not a
-data file, because the Linux and macOS kits pack only the ``.py`` files."""
+At each release set ``NOTES_VERSION`` to the new version and copy the version's highlights from
+CHANGELOG.md into ``NOTES`` (RELEASING.md step 1); tests/test_whatsnew.py fails until they match
+``__version__`` and the changelog. The notes are code, not a data file, because the app reads no
+data files at run time and the Linux and macOS kits pack only the ``.py`` files."""
 from __future__ import annotations
 
 #: Where state.json's ``ui`` preferences keep the last version whose notes were shown.
@@ -11,16 +12,14 @@ SEEN_KEY = "whats_new_seen"
 
 NOTES_VERSION = "0.5.0"
 
+#: The highlights, one short line each: word for word the top-level bullets of this version in
+#: CHANGELOG.md, which adds the detail (GGF 2026-11-26).
 NOTES = """\
-GOG
-- The GOG edition of No Man's Sky is supported, live and in the vault. Its saves are found \
-by themselves.
-- GOG is counted on its own, never as Steam: its slots read G1 to G15 (in purple), its \
-backups are named full-gog-..., and the Organizer has a GOG filter beside Steam and Xbox. \
-"On both" is now "On several".
-- A save live on Steam and on GOG shows each copy's progress, for example "GOG behind 2h".
-- Moving a save between Steam and GOG asks first, as between two accounts. If GOG Galaxy \
-asks at the next launch which copy to keep, keep the one on this PC.
+- GOG is supported, live and in the vault.
+- GOG is counted on its own, never as Steam.
+- A save on Steam and GOG shows each copy's progress.
+- Moving a save between Steam and GOG asks first.
+- GOG's game version is checked on its own.
 """
 
 

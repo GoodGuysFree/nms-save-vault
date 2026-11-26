@@ -16,6 +16,35 @@ def test_the_notes_are_for_this_version():
     assert whatsnew.NOTES.strip()
 
 
+def _changelog_bullets(version: str) -> list[str]:
+    """The top-level bullets of ``version``'s section of CHANGELOG.md (its detail is indented)."""
+    from pathlib import Path
+
+    text = (Path(__file__).resolve().parents[1] / "CHANGELOG.md").read_text(encoding="utf-8")
+    bullets, inside = [], False
+    for line in text.splitlines():
+        if line.startswith("## "):
+            inside = line[3:].split(" ")[0] == version
+        elif inside and line.startswith("- "):
+            bullets.append(line)
+    return bullets
+
+
+def test_the_notes_are_the_changelog_s_highlights_word_for_word():
+    """GGF 2026-11-26: the notes are "a bullet list of the highlights", and the changelog file
+    has the same bullets, with a little more detail under each."""
+    bullets = [ln for ln in whatsnew.NOTES.strip().splitlines()]
+    assert bullets and all(ln.startswith("- ") for ln in bullets)
+    assert bullets == _changelog_bullets(whatsnew.NOTES_VERSION)
+
+
+def test_each_highlight_is_one_short_line():
+    """GGF 2026-11-26: "much shorter per bullet"."""
+    for line in whatsnew.NOTES.strip().splitlines():
+        assert len(line) <= 60, line
+    assert len(whatsnew.NOTES.strip().splitlines()) <= 7
+
+
 def test_shown_the_first_time_a_version_starts(monkeypatch):
     monkeypatch.setattr(whatsnew, "NOTES_VERSION", "9.9.9")
     monkeypatch.setattr(whatsnew, "NOTES", "- something new")
