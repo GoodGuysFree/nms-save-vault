@@ -33,10 +33,10 @@ GOG = "gog"
 
 #: Raise these (and only these) after the maintenance steps pass for a new game version.
 KNOWN = {
-    # 4235: Steam build 26918301 (NMS.exe 186686, 2026-11-25); Xbox stays until its package
-    # updates (INSTALLED.json same_release)
+    # 4235: Steam build 26918301 (NMS.exe 186686, 2026-11-25); Xbox 7.15.0 (not the Steam
+    # build: INSTALLED.json same_release false) by the owner's Xbox save of 2026-11-26
     "steam": KnownFormat(formats.META_FORMAT_4, 4235, ("saveN.hg chunked LZ4 (HGSAVEV1)",)),
-    "xbox": KnownFormat(formats.META_FORMAT_4, 4234, ("containers.index blob (GameSaveBlob)",)),
+    "xbox": KnownFormat(formats.META_FORMAT_4, 4235, ("containers.index blob (GameSaveBlob)",)),
     # 4235: GOG NMS.exe 186923, the build of Steam 7.15.1 (INSTALLED.json gog_same_release)
     GOG: KnownFormat(formats.META_FORMAT_4, 4235, ("saveN.hg chunked LZ4 (HGSAVEV1)",)),
 }

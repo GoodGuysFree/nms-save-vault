@@ -396,7 +396,9 @@ build, the Xbox package version, and `same_release`: true when every file in the
 matches the Steam build's. The Xbox `NMS.exe` cannot be read on disk, so its version fields are
 null, each with a `_why` note. **Owner decision (2026-11-07):** that evidence is trusted as it
 is. While `same_release` is true, the Xbox guard is raised with the Steam guard, without
-waiting for an Xbox save from the new game.
+waiting for an Xbox save from the new game. Otherwise it waits for one. Xbox 7.15.0 is not the
+Steam 7.15.1 build (`same_release` false), so its guard stayed at 4234 until the owner's Xbox save
+of 2026-11-26 showed BaseVersion 4235 and meta format 2004, and decoded: the guard is now 4235.
 
 GOG writes the Steam format into its `DefaultUser` folder, so its saves are platform `"steam"`
 everywhere. Only the game it runs can lag Steam's, so that folder has a guard of its own,

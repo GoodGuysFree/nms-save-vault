@@ -62,14 +62,15 @@ def test_the_known_format_is_recorded_per_platform_with_the_container_kind():
     assert not gameversion.newer("unknown-platform", 9999, 9999)
 
 
-def test_steam_knows_build_26918301_s_saves_and_xbox_waits_for_its_own_update():
+def test_steam_and_xbox_know_the_7_15_saves():
     """Patch day 2026-11-25: Steam build 26918301 (NMS.exe 186686) writes BaseVersion 4235, meta
-    format 2004 (NMS-Unpack savefields: 5 fields added, none removed or retyped). The Xbox
-    package is still 7.14 (INSTALLED.json same_release false), so its guard stays at 4234
-    (DESIGN.md, owner decision 2026-11-07)."""
-    assert not gameversion.newer("steam", formats.META_FORMAT_4, 4235)
-    assert gameversion.newer("steam", formats.META_FORMAT_4, 4236)
-    assert gameversion.newer("xbox", formats.META_FORMAT_4, 4235)
+    format 2004 (NMS-Unpack savefields: 5 fields added, none removed or retyped). Xbox 7.15.0
+    is not the Steam build (INSTALLED.json same_release false), so its guard waited for an Xbox
+    save from it (DESIGN.md, owner decision 2026-11-07): the owner's, 2026-11-26, is BaseVersion
+    4235, meta format 2004, and decodes."""
+    for platform in ("steam", "xbox"):
+        assert not gameversion.newer(platform, formats.META_FORMAT_4, 4235)
+        assert gameversion.newer(platform, formats.META_FORMAT_4, 4236)
 
 
 def test_a_newer_source_blocks_place_and_is_stated_in_plain_words(world):
