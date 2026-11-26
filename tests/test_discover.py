@@ -187,6 +187,22 @@ def test_merge_preserves_manual_and_adds_new(tmp_path):
     assert {s.account for s in st.sources if s.origin == state.ORIGIN_AUTO} == {ACCT_A, ACCT_B}
 
 
+def test_new_live_sources_are_the_folders_the_settings_do_not_list_yet(tmp_path):
+    """GGF 2026-11-26: a GOG folder appeared and the app did not notice. At startup it asks about
+    the folders on disk that its settings do not list; this finds them and changes nothing."""
+    root = _make_nms_root(tmp_path)
+    _make_steam_dir(root, f"st_{ACCT_A}")
+    st = discover.bootstrap_state(root, ms_dirs=[])
+    assert discover.new_live_sources(st, root, ms_dirs=[]) == []
+    _make_steam_dir(root, "DefaultUser")
+    before = [s.id for s in st.sources]
+    (new,) = discover.new_live_sources(st, root, ms_dirs=[])
+    assert new.label == "GOG" and Path(new.path).name == "DefaultUser"
+    assert [s.id for s in st.sources] == before                    # only looked
+    st.upsert(new)
+    assert discover.new_live_sources(st, root, ms_dirs=[]) == []
+
+
 # --- P9: a live folder is never catalogued as a backup of itself -------------------------------
 
 

@@ -313,6 +313,17 @@ def bootstrap_state(
     return AppState(sources=sources, vault=str(locations.default_vault_dir()))
 
 
+def new_live_sources(
+    existing: AppState,
+    nms_root: str | Path | None = None,
+    ms_dirs: list[Path] | None = None,
+) -> list[Source]:
+    """The live folders on disk that ``existing`` does not list yet (a GOG install, another
+    Steam account); ``existing`` is not changed. The app asks about them at startup."""
+    return [found for found in discover_live_sources(nms_root, ms_dirs=ms_dirs)
+            if existing.get(found.id) is None]
+
+
 def merge_live_sources(
     existing: AppState,
     nms_root: str | Path | None = None,

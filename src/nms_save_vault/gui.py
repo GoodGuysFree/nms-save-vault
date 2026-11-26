@@ -1489,9 +1489,47 @@ class App(tk.Tk):
     # --- startup dialogs -----------------------------------------------------
 
     def _startup_dialogs(self) -> None:
-        """One at a time: the release's news, then the update question."""
+        """One at a time: the release's news, new live folders, then the update question."""
         self._show_whats_new()
+        self._offer_new_live_folders()
         self._startup_update_check()
+
+    def _offer_new_live_folders(self) -> None:
+        """A live folder on disk the settings do not list (a GOG install, another Steam account)
+        is offered once (GGF 2026-11-26): yes adds it and backs it up, no is remembered, and
+        Live > Rescan live folders still adds it."""
+        declined = set(self.state.ui.get(DECLINED_LIVE_KEY) or ())
+        try:
+            new = [s for s in discover.new_live_sources(self.state) if s.id not in declined]
+        except OSError as exc:
+            log.warning("new live folders could not be looked for: %s", exc)
+            return
+        if not new:
+            return
+        names = "\n".join(f"  {_source_caption(s)}" for s in new)
+        one = len(new) == 1
+        if _askyesno(
+            "New save folder" if one else "New save folders",
+            f"NMS Save Vault found {'a save folder' if one else 'save folders'} it does not "
+            f"know yet:\n\n{names}\n\nAdd {'it' if one else 'them'}? A backup of "
+            f"{'it' if one else 'each'} is made now, and {'it shows' if one else 'they show'} "
+            "in both tabs.\n\nIf you say no, you are not asked again; Live > Rescan live "
+            "folders adds it later.",
+            parent=self,
+        ):
+            for source in new:
+                self.state.upsert(source)
+            self._save_state_quietly()
+            self.refresh()
+            self.organizer_view.sources_changed()
+            self._back_up_new_folders({Path(s.path): _source_caption(s) for s in new})
+        else:
+            self.state.ui[DECLINED_LIVE_KEY] = sorted(declined | {s.id for s in new})
+            self._save_state_quietly()
+
+    def _back_up_new_folders(self, folders: dict) -> None:
+        """One full backup of each folder just added, as File > Back up all live folders does."""
+        self._back_up(folders, "Backing up the new save folder - please wait...")
 
     def _show_whats_new(self) -> None:
         """This release's summary, the first time this version starts (ui/whatsnew.py)."""
@@ -2651,6 +2689,10 @@ class App(tk.Tk):
         if not folders:
             _showerror("No live folder", "Could not locate any live save folder.")
             return
+        self._back_up(folders, "Backing up every live folder - please wait...")
+
+    def _back_up(self, folders: dict, message: str) -> None:
+        """A full backup of each of ``folders`` (path -> caption), each under a dated label."""
         stamp = f"{datetime.now():%Y%m%d-%H%M}"
         vault = self.vault
 
@@ -2665,7 +2707,7 @@ class App(tk.Tk):
             return ops.OpResult(not any(d.error for d in done), "backup_all", text,
                                 warnings=warns)
 
-        self._run(run, success="", message="Backing up every live folder - please wait...")
+        self._run(run, success="", message=message)
 
     def on_restore(self, target: dict | None = None) -> None:
         if target is None and self.current_view() == ORGANIZER:
@@ -3567,6 +3609,8 @@ THIN_LABEL = "Thin the vault..."
 THIN_TITLE = "Thin the vault"
 CHOOSE_VAULT_LABEL = "Choose vault folder..."
 BACKUP_ALL_LABEL = "Back up all live folders now"
+#: Where state.json's ``ui`` keeps the live folders the owner said no to at startup.
+DECLINED_LIVE_KEY = "live_declined"
 AUTO_UPDATE_LABEL = "Check for updates automatically"
 UNDO_CLASSIC_LABEL = "Undo the last change to the active live folder"
 UNDO_ORGANIZER_LABEL = "Undo the last move (as the Done bar's Undo)"
@@ -3693,8 +3737,9 @@ Expand a folder to see its slots; expand a slot to see its two saves:
 Right-click any row to get the same actions as the buttons, in context.
 
 First run auto-detects your save folders and writes a small config (state.json) in the
-program's own install folder (next to the .exe). Use Rescan to pick up a newly added
-account or a freshly pasted backup later on.
+program's own install folder (next to the .exe). On every later start the app looks again:
+a save folder it does not know yet (a GOG install, another Steam account) is offered once,
+and adding it makes a backup of it at once. Rescan adds such a folder any time.
 
 BUTTONS
 - Backup live: Full snapshot of the entire live folder into the vault. Do this before
@@ -3755,8 +3800,8 @@ BUTTONS
 - Tools > Settings...: the size at which the status bar reminds you to thin the vault
   (0 or empty: no reminder). The reminder only points at Thin the vault...; it never
   deletes anything.
-- Rescan: Re-detect live save folders (new Steam account, new Xbox account) and add them
-  to the LIVE SAVES list. Your manual entries are left untouched.
+- Rescan: Re-detect live save folders (new Steam account, GOG, new Xbox account) and add
+  them to the LIVE SAVES list. Your manual entries are left untouched.
 - Discover: Scan the NMS folder for existing backups and add any new ones found. A live
   save folder is never added; a catalog entry that is (or lies inside) one is pointed
   out, and left as it is.

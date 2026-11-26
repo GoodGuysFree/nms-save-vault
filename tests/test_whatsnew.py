@@ -108,5 +108,6 @@ def test_the_notes_come_before_the_update_question(fresh_app, monkeypatch):
     order = []
     monkeypatch.setattr(app, "_show_whats_new", lambda: order.append("whats_new"))
     monkeypatch.setattr(app, "_startup_update_check", lambda: order.append("update_check"))
+    monkeypatch.setattr(app, "_offer_new_live_folders", lambda: None)
     app._startup_dialogs()
     assert order == ["whats_new", "update_check"]
