@@ -29,7 +29,7 @@ All data below is invented (a demo world, not anyone's saves).
 
 **Just want to run it? No Python needed.** Download the ready-to-use Windows kit from the
 [**latest release**](https://github.com/GoodGuysFree/nms-save-vault/releases/latest) — grab
-`NMSSaveVault-Setup-v0.5.0.zip` under **Assets**.
+`NMSSaveVault-Setup-v0.5.1.zip` under **Assets**.
 
 Extract the zip, open the `NMSSaveVault` folder and run **`NMSSaveVault.exe`**. That is the
 whole thing — Python and Tkinter are bundled, nothing is installed, and because the app
@@ -212,8 +212,8 @@ Both platforms have a portable kit on the
 
 | Platform | Asset |
 |---|---|
-| Linux / Steam Deck (x86_64) | `NMSSaveVault-v0.5.0-linux-x86_64.tar.gz` |
-| macOS (Apple Silicon) | `NMSSaveVault-v0.5.0-macos-arm64.tar.gz` |
+| Linux / Steam Deck (x86_64) | `NMSSaveVault-v0.5.1-linux-x86_64.tar.gz` |
+| macOS (Apple Silicon) | `NMSSaveVault-v0.5.1-macos-arm64.tar.gz` |
 
 ### Read this first: back up your saves by hand
 
@@ -245,7 +245,7 @@ saw last. It is not a substitute for the copy above.
 ### Then run it
 
 ```sh
-tar -xzf NMSSaveVault-v0.5.0-linux-x86_64.tar.gz
+tar -xzf NMSSaveVault-v0.5.1-linux-x86_64.tar.gz
 cd NMSSaveVault
 ./NMSSaveVault          # the app;  ./nmsvault-cli status  for the command line
 ```
@@ -274,7 +274,7 @@ and can only draw ISO8859-1. Every string the app displays is therefore plain AS
 
 ## Run it (Windows, no Python needed)
 
-Download **`NMSSaveVault-Setup-v0.5.0.zip`** from the
+Download **`NMSSaveVault-Setup-v0.5.1.zip`** from the
 [**Releases**](https://github.com/GoodGuysFree/nms-save-vault/releases) page (under the
 release's **Assets**) and extract it. Open the `NMSSaveVault` folder and run
 **`NMSSaveVault.exe`** — that is all. Everything (Python + Tkinter) is bundled, nothing is
@@ -681,6 +681,7 @@ does the same.
 
 | Version | Date | Highlights |
 |---|---|---|
+| **0.5.1** | 2026-11-26 | **Xbox 7.15 and new save folders.** Xbox saves from the 7.15 update are supported (the Xbox game is not the Steam build, so the app waited for an Xbox save from it). A save folder the settings do not list yet, such as a GOG install, is offered at startup, and adding it backs it up at once. The Organizer's Live buttons no longer creep right on each click. A CHANGELOG.md now ships with the app, and What's new is its short highlights. |
 | **0.5.0** | 2026-11-26 | **GOG, as its own platform.** The GOG edition is supported live and in the vault, and counted on its own, never as Steam: its slots read G1-G15 in purple, its backups are named `full-gog-…`, the Organizer has a GOG filter beside Steam and Xbox ("On both" is now "On several"), and a save live on Steam and GOG shows each copy's progress ("GOG behind 2h"). Moves, restores and edits work in the GOG folder; moving between Steam and GOG asks first, as between two accounts. GOG's game version is checked on its own, so a save from a newer game is not put where GOG's game would load it. The core library (`.whl`) judges a save in GOG's folder by GOG's game version and adds the GOG Galaxy note to a plan there. |
 | **0.4.4** | 2026-11-25 | **The new game version.** Saves from the No Man's Sky update of 2026-11-25 on Steam are supported; before, the app refused them as written by a newer game version. Xbox / Game Pass follows when its game update arrives. **Faster writes:** apps that share the vault and bundle the core library (`.whl`) write and apply edits to a save faster: each new save is checked once instead of twice, a batch of edits already proven on a save is not proven again, and the LZ4 C library does the compression work when the app bundles it (the pure-Python code stays the fallback). |
 | **0.4.3** | 2026-11-23 | **It shows when it is working.** When something takes a moment, the pointer says so: the hourglass while the window waits (a refresh scanning the live folders, the playthrough report, closing, Discover, Rescan, choosing a vault, the History graph, ...), and the arrow with the hourglass while a job runs in the background and the window still answers. A handler that keeps the window waiting a second or more is logged by name. **Safer writes:** a file the vault writes is tried again for a moment when Windows holds it open (an antivirus scan, the indexer, Steam Cloud); a vault upgrade cut off as it started no longer leaves a vault that will not open; a backup made during a thinning no longer fails as "damaged"; restoring the account data writes its two files together or neither; a journal line cut off by a crash can no longer leave two records with the same number. The core library (`.whl`) carries the same write fixes. |

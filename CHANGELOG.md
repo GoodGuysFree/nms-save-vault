@@ -7,6 +7,8 @@ indented lines under a bullet add detail. Releases before 0.5.0 are in the READM
 
 ## Unreleased
 
+## 0.5.1 - 2026-11-26
+
 - Xbox saves from the 7.15 update are supported.
   - The Xbox game (7.15.0) is not the Steam build, so the app waited for an Xbox save from it;
     it writes the same save version as Steam's 7.15.
@@ -14,7 +16,7 @@ indented lines under a bullet add detail. Releases before 0.5.0 are in the READM
   - A GOG install or another Steam account that the settings do not list yet is offered once.
     Adding it makes a backup of it at once; if you say no you are not asked again, and Live >
     Rescan live folders adds it any time.
-- Fixed: the Organizer's Live buttons crept right on each click.
+- Fixed: the Organizer's Live buttons crept right.
   - Every click of One / Two, and every refresh, added another 10-pixel gap.
 
 ## 0.5.0 - 2026-11-26

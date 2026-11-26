@@ -10,16 +10,14 @@ from __future__ import annotations
 #: Where state.json's ``ui`` preferences keep the last version whose notes were shown.
 SEEN_KEY = "whats_new_seen"
 
-NOTES_VERSION = "0.5.0"
+NOTES_VERSION = "0.5.1"
 
 #: The highlights, one short line each: word for word the top-level bullets of this version in
 #: CHANGELOG.md, which adds the detail (GGF 2026-11-26).
 NOTES = """\
-- GOG is supported, live and in the vault.
-- GOG is counted on its own, never as Steam.
-- A save on Steam and GOG shows each copy's progress.
-- Moving a save between Steam and GOG asks first.
-- GOG's game version is checked on its own.
+- Xbox saves from the 7.15 update are supported.
+- A new save folder is found at startup and offered.
+- Fixed: the Organizer's Live buttons crept right.
 """
 
 
