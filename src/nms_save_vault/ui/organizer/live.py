@@ -201,6 +201,9 @@ class LiveArea(ttk.Frame):
                            padx=px(10), pady=px(2), relief="flat", borderwidth=1,
                            offrelief="flat", overrelief="raised")
             for text, value in (("One", ONE), ("Two", TWO))]
+        # Made once and packed again by every layout: one made per layout piled up and pushed
+        # the buttons right on each click of One / Two and on every refresh (GGF 2026-11-26).
+        self.mode_gap = ttk.Frame(self.bar, width=px(10))
         self.order_var = tk.StringVar(value=self.order)
         self.order_buttons = [
             tk.Radiobutton(self.bar, text=text, value=value, variable=self.order_var,
@@ -277,7 +280,8 @@ class LiveArea(ttk.Frame):
         self.chosen = chosen
 
     def _layout_bar(self) -> None:
-        for widget in (self.title, *self.mode_buttons, *self.order_buttons, *self.pickers):
+        for widget in (self.title, *self.mode_buttons, self.mode_gap, *self.order_buttons,
+                       *self.pickers):
             widget.pack_forget()
         self.message.pack_forget()
         if not self.sources:
@@ -290,7 +294,7 @@ class LiveArea(ttk.Frame):
             self.mode_var.set(self.mode)
             for button in self.mode_buttons:
                 button.pack(side=tk.LEFT)
-            tk.Frame(self.bar, width=px(10)).pack(side=tk.LEFT)
+            self.mode_gap.pack(side=tk.LEFT)
         for button in self.order_buttons:
             button.pack(side=tk.LEFT)
         if len(self.sources) == 1:

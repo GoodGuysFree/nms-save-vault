@@ -84,6 +84,20 @@ def test_one_folder_with_a_selector_shows_the_last_played_and_the_warning(host, 
     assert "2026-" in texts or "20" in texts                   # the last played column
 
 
+def test_the_bar_stays_put_however_often_it_is_laid_out(host, gui_app, world):
+    """GGF 2026-11-26: "Every time I click 'One' ... the buttons move to the right". Each
+    layout packed a new spacer beside the old ones; a click on One / Two and every refresh
+    lays the bar out again."""
+    area = _area(host, gui_app, world.model)
+    before = len(area.bar.winfo_children())
+    for mode in (L.ONE, L.TWO, L.ONE, L.ONE, L.TWO):
+        area.set_mode(mode)
+    area.set_model(world.model)                       # a refresh
+    assert len(area.bar.winfo_children()) == before
+    packed = [w for w in area.bar.pack_slaves()]
+    assert packed.count(area.mode_gap) == 1 and len(packed) == len(set(packed))
+
+
 def test_only_configured_folders_never_an_empty_column(host, gui_app, tmp_path,
                                                       make_wgs_account):
     xbox = make_wgs_account(tmp_path / "x", [("Slot1Auto", '{"x":1}', "Only Xbox", "", 60,
