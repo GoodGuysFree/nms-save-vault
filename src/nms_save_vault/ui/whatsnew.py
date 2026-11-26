@@ -9,18 +9,18 @@ from __future__ import annotations
 #: Where state.json's ``ui`` preferences keep the last version whose notes were shown.
 SEEN_KEY = "whats_new_seen"
 
-NOTES_VERSION = "0.4.4"
+NOTES_VERSION = "0.5.0"
 
 NOTES = """\
-The new game version
-- Saves from today's No Man's Sky update on Steam are supported. Before, the app refused \
-them as written by a newer game version.
-- Xbox / Game Pass follows when its game update arrives.
-
-Faster writes
-- Apps that share the vault (NMS Savecraft) write and apply edits to a save faster: each \
-new save is checked once instead of twice, and the LZ4 C library does the compression \
-work when the app bundles it.
+GOG
+- The GOG edition of No Man's Sky is supported, live and in the vault. Its saves are found \
+by themselves.
+- GOG is counted on its own, never as Steam: its slots read G1 to G15 (in purple), its \
+backups are named full-gog-..., and the Organizer has a GOG filter beside Steam and Xbox. \
+"On both" is now "On several".
+- A save live on Steam and on GOG shows each copy's progress, for example "GOG behind 2h".
+- Moving a save between Steam and GOG asks first, as between two accounts. If GOG Galaxy \
+asks at the next launch which copy to keep, keep the one on this PC.
 """
 
 
