@@ -23,7 +23,7 @@ import tempfile
 from collections.abc import Iterable, Sequence
 from pathlib import Path
 
-from .. import meta, slotmap
+from .. import gameversion, meta, slotmap
 from ..organizer.locator import Location
 from ..organizer.model import LiveTarget, StoreRef
 from ..saveedit import EditRefused, rebuild
@@ -170,7 +170,8 @@ def _stage(ctx: OpContext, target: LiveTarget, edits: Iterable[Edit], what: str,
     if not meta.is_valid_for(blob, ordinal):
         raise EditRefused(f"{rt.label}: the save's meta was written for another slot (files "
                           "moved by hand?); it is not edited")
-    out = rebuild("steam", data, meta.decrypt(blob, ordinal), edits)
+    out = rebuild("steam", data, meta.decrypt(blob, ordinal), edits,
+                  guard=gameversion.guard_for(target.platform, target.account_key))
     new_vid = hashlib.sha256(out.data).hexdigest()
     if new_vid == loaded.vid:
         raise EditRefused("the edits change nothing")

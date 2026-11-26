@@ -28,8 +28,8 @@ else:
 
 log = logging.getLogger(__name__)
 
-# The game executable is "NMS.exe" for both the Steam and the Microsoft Store / Game Pass
-# editions (same HelloGames binary, just packaged differently), so this one name covers both.
+# The game executable is "NMS.exe" for the Steam, GOG and Microsoft Store / Game Pass editions
+# (the same HelloGames game, packaged differently), so this one name covers all three.
 NMS_PROCESS_NAME = "NMS.exe"
 
 

@@ -106,6 +106,8 @@ TEXTS = {
                       "keep."),
     "STEAM_CLOUD_OTHER_DEVICE": ("info", "If Steam asks at the next launch, choose the copy on "
                                  "this PC."),
+    "GOG_CLOUD_OTHER_DEVICE": ("info", "If GOG Galaxy asks at the next launch, keep the copy on "
+                               "this PC."),
     "XBOX_SYNC_BUSY": ("block", "Xbox is still syncing. Try again in a minute."),
     "XBOX_QUOTA_NEAR": ("warn", "Xbox cloud space would be nearly full."),
     "XBOX_QUOTA": ("block", "Xbox cloud space would be over the 256 MB limit."),
@@ -345,14 +347,23 @@ def newer_source(src: LoadedSource) -> bool:
 
 def newer_slot(slot: SlotNow) -> bool:
     """A save in the slot was written by a newer game version than the app knows."""
-    return any(gameversion.newer(slot.target.platform, m.meta.meta_format, m.meta.base_version)
+    guard = gameversion.guard_for(slot.target.platform, slot.target.account_key)
+    return any(gameversion.newer(guard, m.meta.meta_format, m.meta.base_version)
                for m in slot.present)
+
+
+def newer_for_target(src: LoadedSource, target: LiveTarget) -> bool:
+    """The source is newer than the game of ``target``'s folder knows: a Steam save is fine for
+    Steam but not for GOG's folder while GOG's game is behind (gameversion.KNOWN["gog"])."""
+    guard = gameversion.guard_for(target.platform, target.account_key)
+    return any(m is not None and gameversion.newer_plain(src.platform, m.meta_plain, guard=guard)
+               for m in (src.pair.a, src.pair.b))
 
 
 def _slot_warnings(ctx: OpContext, src: LoadedSource, now: AccountNow, slot: SlotNow,
                    kind: str, label: str, kept: dict) -> list[Warning]:
     out = []
-    if newer_slot(slot):
+    if newer_slot(slot) or (src is not None and newer_for_target(src, slot.target)):
         out.append(warning("GAME_NEWER"))
     head = slot.head
     if kind == "noop":
@@ -435,6 +446,8 @@ def _plan_warnings(ctx: OpContext, src: LoadedSource, account: LiveRef,
             out.append(warning("CROSS_SAVE_ON"))
         if now.account.cloud_mode == "steam-cloud":
             out.append(warning("STEAM_CLOUD_OTHER_DEVICE"))
+        elif now.account.cloud_mode == "gog":
+            out.append(warning("GOG_CLOUD_OTHER_DEVICE"))
         if _sync_busy(ctx, now):
             out.append(warning("XBOX_SYNC_BUSY"))
     return out
@@ -686,7 +699,8 @@ def _plan(ctx: OpContext, kind: str, parts, warnings: list[Warning], outcome: st
         quota = _quota(parts, write_bytes)
         if quota:
             warnings = list(warnings) + [quota]
-    if any(newer_slot(slot) or (src is not None and newer_source(src))
+    if any(newer_slot(slot) or (src is not None and (newer_source(src)
+                                                     or newer_for_target(src, slot.target)))
            for _rt, _now, slot, src, _ps in parts):
         warnings = list(warnings) + [warning("GAME_NEWER")]       # swap, promote, undo, restore
     warnings = _unique(warnings)

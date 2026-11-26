@@ -398,6 +398,14 @@ null, each with a `_why` note. **Owner decision (2026-11-07):** that evidence is
 is. While `same_release` is true, the Xbox guard is raised with the Steam guard, without
 waiting for an Xbox save from the new game.
 
+GOG writes the Steam format into its `DefaultUser` folder, so its saves are platform `"steam"`
+everywhere. Only the game it runs can lag Steam's, so that folder has a guard of its own,
+`KNOWN["gog"]` (`gameversion.guard_for`). A save newer than it is not placed, swapped, restored
+or edited there (`GAME_NEWER`, the same code and text). The same rule applies as for Xbox
+(2026-11-26): while `INSTALLED.json`'s `gog_same_release` is true, the GOG guard is raised with
+the Steam guard. Otherwise it waits for a GOG save from the new game. It is 4235: GOG
+`NMS.exe` 186923 is the build of Steam 7.15.1.
+
 A save crosses platforms (Steam to Xbox, Xbox to Steam) only when both platforms' guards know
 its version. While one platform's app is still on the older game, a save from the newer game
 stays on its own platform: the older game would refuse to load it.

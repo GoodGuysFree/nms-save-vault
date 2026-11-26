@@ -68,11 +68,13 @@ def body_of(data: bytes) -> bytes:
 
 
 def rebuild(platform: str, data: bytes, meta_plain: bytes,
-            edits: Iterable[savepatch.Edit] | savepatch.Steps) -> Rebuilt:
+            edits: Iterable[savepatch.Edit] | savepatch.Steps, *,
+            guard: str | None = None) -> Rebuilt:
     """``data`` with ``edits`` made (each proven, :func:`savepatch.apply`; :class:`savepatch.Steps`
     one batch after another), compressed again, and ``meta_plain`` with its sizes set. Refused
     with :class:`EditRefused`, or :class:`savepatch.PatchRefused` for an edit that cannot be
-    made exactly."""
+    made exactly. ``guard``: the :data:`gameversion.KNOWN` key the save's folder is judged by
+    (:func:`gameversion.guard_for`; default ``platform``)."""
     steps = savepatch.as_steps(edits)
     edits = [e for batch in steps for e in batch]
     if platform == "steam":
@@ -81,7 +83,7 @@ def rebuild(platform: str, data: bytes, meta_plain: bytes,
         recorded, base_version, meta_format = _xbox_fields(meta_plain)
     else:
         raise EditRefused(f"not a platform: {platform!r}")
-    if gameversion.newer(platform, meta_format, base_version):
+    if gameversion.newer(guard or platform, meta_format, base_version):
         raise EditRefused(gameversion.GAME_NEWER_TEXT)
     body = body_of(data)
     chunks, _ = lz4_block.walk_chunks(data)

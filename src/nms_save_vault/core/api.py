@@ -384,12 +384,14 @@ def _player_states(target: dict, context: str) -> list:
 def known_game_version(member: MemberView, *, platform: str) -> bool:
     """The save's meta reads and its game version is one this core is tested with. Anything
     else - a newer game, an unreadable or invalid meta - may be shown but never written.
-    ``platform`` is the folder's (:func:`platform_of`); another value raises ``ValueError``."""
+    ``platform`` is the folder's (:func:`platform_of`); another value raises ``ValueError``.
+    A save in GOG's folder is judged by the version GOG's game knows."""
     if platform not in PLATFORMS:
         raise ValueError(f"platform {platform!r} is not one of {PLATFORMS}")
     if not member.valid:
         return False
-    return not gameversion.newer(platform, member.info.meta_format, member.info.base_version)
+    guard = gameversion.guard_for(platform, Path(member.data_path).parent.name)
+    return not gameversion.newer(guard, member.info.meta_format, member.info.base_version)
 
 
 def playthrough_of(member: MemberView) -> str | None:

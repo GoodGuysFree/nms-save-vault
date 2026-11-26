@@ -27,34 +27,49 @@ class KnownFormat:
     containers: tuple[str, ...]
 
 
+#: The guard of GOG's folder (formats.GOG_ACCOUNT_DIR). GOG writes the Steam format, so its saves
+#: are platform "steam" everywhere else; only the version its game knows can lag Steam's.
+GOG = "gog"
+
 #: Raise these (and only these) after the maintenance steps pass for a new game version.
 KNOWN = {
     # 4235: Steam build 26918301 (NMS.exe 186686, 2026-11-25); Xbox stays until its package
     # updates (INSTALLED.json same_release)
     "steam": KnownFormat(formats.META_FORMAT_4, 4235, ("saveN.hg chunked LZ4 (HGSAVEV1)",)),
     "xbox": KnownFormat(formats.META_FORMAT_4, 4234, ("containers.index blob (GameSaveBlob)",)),
+    # 4235: GOG NMS.exe 186923, the build of Steam 7.15.1 (INSTALLED.json gog_same_release)
+    GOG: KnownFormat(formats.META_FORMAT_4, 4235, ("saveN.hg chunked LZ4 (HGSAVEV1)",)),
 }
 #: A container kind not listed here stays refused (never decoded): lz4_block.UnsupportedContainer.
 REFUSED_CONTAINERS = ("HGSAVEV2",)
 
 
+def guard_for(platform: str, account_key: str = "") -> str:
+    """The :data:`KNOWN` key a live folder is judged by: :data:`GOG` for GOG's own folder,
+    else its platform."""
+    return GOG if platform == "steam" and account_key == formats.GOG_ACCOUNT_DIR else platform
+
+
 def newer(platform: str, meta_format: int, base_version: int) -> bool:
-    """Is a save with these meta fields newer than the app's tested format?"""
+    """Is a save with these meta fields newer than the app's tested format? ``platform`` is a
+    :data:`KNOWN` key (:func:`guard_for` gives a live folder's)."""
     known = KNOWN.get(platform)
     if known is None:
         return False
     return meta_format > known.meta_format or base_version > known.base_version
 
 
-def newer_plain(platform: str, plain: bytes) -> bool:
-    """The same for a meta plaintext (Steam: the decrypted meta; Xbox: the blob's meta)."""
+def newer_plain(platform: str, plain: bytes, *, guard: str | None = None) -> bool:
+    """The same for a meta plaintext (Steam: the decrypted meta; Xbox: the blob's meta), read
+    as ``platform``'s and judged by ``guard`` (a :data:`KNOWN` key; default ``platform``)."""
+    guard = guard or platform
     try:
-        if platform == "steam":
+        if platform in ("steam", GOG):
             info = meta.parse(plain, 0)
-            return newer(platform, info.meta_format, info.base_version)
+            return newer(guard, info.meta_format, info.base_version)
         if len(plain) < msstore.MS_META_LEN_WAYPOINT:
             return False                      # not a meta blob: nothing to judge
         fields = msstore.parse_ms_meta(plain)
-        return newer(platform, fields.get("meta_format", 0), fields.get("base_version", 0))
+        return newer(guard, fields.get("meta_format", 0), fields.get("base_version", 0))
     except (ValueError, KeyError, OSError):
         return False

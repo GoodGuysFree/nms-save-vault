@@ -450,6 +450,8 @@ unless the caller echoes it; `block` means `execute` refuses.
 | `GAME_STATE_UNKNOWN` | confirm | plan | `game_probe() is None` | "Could not check whether No Man's Sky is running. Make sure it is closed." |
 | `CROSS_SAVE_ON` | warn | plan | accountdata CrossSaves true (if known) | "Hello Games cross-save is on: the game may ask which copy to keep." |
 | `STEAM_CLOUD_OTHER_DEVICE` | info | plan | cloud mode steam-cloud | "If Steam asks at the next launch, choose the copy on this PC." |
+| `GOG_CLOUD_OTHER_DEVICE` | info | plan | cloud mode gog | "If GOG Galaxy asks at the next launch, keep the copy on this PC." |
+| `GAME_NEWER` | block | slot + plan | a save in the slot, or the source, is newer than the game of the target folder knows (`gameversion.guard_for`: GOG's `DefaultUser` by `KNOWN["gog"]`; a Steam save into Xbox is refused by the Xbox guard as well, already in the convert step) | "This save was written by a newer game version than this app knows. Update the app before moving it." |
 | `XBOX_SYNC_BUSY` | block (soft) | plan | `containers.index` mtime < 60 s ago | "Xbox is still syncing. Try again in a minute." |
 | `XBOX_QUOTA` | warn / block | plan | wgs total after the op > 200 MB / > 256 MB | "Xbox cloud space would be nearly full / over the 256 MB limit." |
 | `VAULT_UPGRADE_NEEDED` | block | plan | `core.store.vault_mode(vault_root) != "store"` (D3 upgrade not done, running or failed) | "Upgrade the vault first: Tools > Vault upgrade... Nothing was changed." |
