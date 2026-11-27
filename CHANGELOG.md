@@ -7,6 +7,13 @@ indented lines under a bullet add detail. Releases before 0.5.0 are in the READM
 
 ## Unreleased
 
+- Fixed: other apps lost the vault after a test build.
+  A copy of the app run from a development folder no longer changes the file that tells
+  other apps (such as an editor sharing the vault) where the vault's settings are. If that
+  file names settings that were deleted, the installed app's settings are used, and with
+  none the message says the settings file is missing and where it was expected, instead of
+  asking to connect a drive.
+
 ## 0.5.1 - 2026-11-26
 
 - Xbox saves from the 7.15 update are supported.

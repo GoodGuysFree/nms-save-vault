@@ -300,7 +300,8 @@ def vault_settings(host: platform.Host | None = None) -> list[AppState]:
     ``state.json`` files of :func:`state_candidates` that exist. Empty when there is none. Only
     reads. A file that exists but cannot be read, the pointer included, and settings the
     pointer names that are gone (a drive not connected) raise ``ValueError``: what they switch
-    off is then not known, and is never guessed."""
+    off is then not known, and is never guessed. Settings the pointer names that were deleted
+    from a drive that is there give way to the other files; with none, that raises too."""
     def strict(path: Path) -> dict:
         try:
             raw = json.loads(path.read_bytes().decode("utf-8-sig"))
@@ -321,10 +322,17 @@ def vault_settings(host: platform.Host | None = None) -> list[AppState]:
             if not isinstance(named, str) or not named.strip():
                 raise ValueError(f"NMS Save Vault's settings ({_where(path)}) cannot be read")
             settings = Path(named)
+            if not settings.is_file() and not unplugged(settings):
+                # deleted from a drive that is there (a kit folder rebuilt or removed): the
+                # pointer gives way to the other settings files, as _chosen passes it over
+                if any(other.is_file() for other in state_candidates(host)
+                       if other.name != POINTER):
+                    continue
+                raise ValueError(f"NMS Save Vault's settings file is missing: it was expected "
+                                 f"at {settings}. Open NMS Save Vault once to set it again")
             if not settings.is_file():
                 vault = pointer.get("vault")
-                if unplugged(settings) and isinstance(vault, str) and \
-                        chosen_vault(host) not in (None, Path(vault)):
+                if isinstance(vault, str) and chosen_vault(host) not in (None, Path(vault)):
                     continue        # a newer choice beat this stale pointer (_chosen)
                 raise ValueError(f"NMS Save Vault's settings ({_where(settings)}) cannot be "
                                  "found: connect the drive they are on, or choose the vault "
@@ -430,9 +438,31 @@ def save(state: AppState, path: str | Path | None = None) -> Path:
         return p
     safety.atomic_write_bytes(p, json.dumps(state.to_dict(), indent=2).encode("utf-8"),
                               temp_prefix=p.name + ".tmp_")
-    if path is None and state.vault:
+    if path is None and state.vault and not development_run():
         _point_to(state.vault, p)
     return p
+
+
+def _checkout(folder: Path) -> Path | None:
+    """The git working tree ``folder`` is in, or None."""
+    for parent in (folder, *folder.parents):
+        if (parent / ".git").exists():
+            return parent
+    return None
+
+
+def development_run() -> bool:
+    """Whether this program runs from a development checkout: from its source, or from a kit
+    built into it (``dist``) that the next build deletes. Such a run leaves the user's
+    :data:`POINTER` as it is: only the app the user installed may name the vault for the other
+    apps sharing it (GGF 2026-11-27: a run of a built kit pointed another app at a
+    ``state.json`` the next build deleted)."""
+    portable_root = os.environ.get("NMSVAULT_PORTABLE_ROOT")
+    program = Path(portable_root) if portable_root else Path(__file__).parent
+    try:
+        return _checkout(program.resolve()) is not None
+    except OSError:
+        return False
 
 
 #: The per-user file that names the vault NMS Save Vault uses, wherever its own state.json

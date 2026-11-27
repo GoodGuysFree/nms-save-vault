@@ -9,6 +9,7 @@ import json
 import os
 import sys
 import time
+from pathlib import Path
 
 import pytest
 
@@ -236,16 +237,51 @@ def test_unreadable_vault_settings_stop_the_session(world, damaged):
     assert path.read_text(encoding="utf-8") == "{damaged"            # never moved aside
 
 
-def test_settings_the_pointer_names_that_are_gone_stop_the_session(world, tmp_path):
+def test_settings_the_pointer_names_that_are_gone_stop_the_session(world, tmp_path,
+                                                                    monkeypatch):
     pointer = state.pointer_path(platform.Host.current())
     pointer.parent.mkdir(parents=True, exist_ok=True)
     gone = tmp_path / "unplugged" / "state.json"        # e.g. a portable kit on a removed drive
     pointer.write_text(json.dumps({"vault": str(world.vault_root), "state": str(gone)}),
                        encoding="utf-8")
+    real = state.unplugged
+    monkeypatch.setattr(state, "unplugged", lambda p, *a: Path(p) == gone or real(p, *a))
     live_before = tree_hash(world.live)
-    with pytest.raises(ValueError, match="cannot be found"):
+    with pytest.raises(ValueError, match="connect the drive"):
         _session(world)
     assert tree_hash(world.live) == live_before
+
+
+def _dangling_pointer(world, tmp_path) -> Path:
+    """The pointer names the settings of a kit folder deleted from a drive that is there (a
+    build's dist folder, GGF 2026-11-27)."""
+    pointer = state.pointer_path(platform.Host.current())
+    pointer.parent.mkdir(parents=True, exist_ok=True)
+    deleted = tmp_path / "dist" / "NMSSaveVault" / "state.json"
+    pointer.write_text(json.dumps({"vault": str(world.vault_root), "state": str(deleted)}),
+                       encoding="utf-8")
+    return deleted
+
+
+def test_settings_a_pointer_names_that_were_deleted_give_way_to_the_installed_apps(world,
+                                                                                tmp_path):
+    _dangling_pointer(world, tmp_path)
+    world.own.write_text(json.dumps({"vault": str(world.vault_root), "theme": "own"}),
+                         encoding="utf-8")
+    assert [s.theme for s in state.vault_settings(platform.Host.current())] == ["own"]
+    _session(world)                                     # opens: no "cannot be found"
+
+
+def test_deleted_settings_with_no_other_say_they_are_missing_and_where(world, tmp_path):
+    deleted = _dangling_pointer(world, tmp_path)
+    for other in state.state_candidates(platform.Host.current()):
+        if other.name != state.POINTER and other.is_file():
+            other.unlink()
+    with pytest.raises(ValueError) as caught:
+        state.vault_settings(platform.Host.current())
+    text = str(caught.value)
+    assert "missing" in text and str(deleted) in text
+    assert "connect" not in text                        # not an unplugged drive
 
 
 def test_a_folder_with_the_name_of_one_nms_save_vault_uses_is_written_by_its_path(world,

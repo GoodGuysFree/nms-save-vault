@@ -1,6 +1,8 @@
 """state.json load + version migration."""
 from __future__ import annotations
 
+import json
+
 from nms_save_vault.core import state
 
 
@@ -41,6 +43,37 @@ def test_install_dir_prefers_the_portable_root(tmp_path, monkeypatch):
     """A packaged kit keeps its config beside the program, on every platform."""
     monkeypatch.setenv("NMSVAULT_PORTABLE_ROOT", str(tmp_path / "kit"))
     assert state.install_dir() == tmp_path / "kit"
+
+
+def _save_with_a_vault(tmp_path):
+    st = state.AppState()
+    st.vault = str(tmp_path / "vault")
+    state.save(st)
+
+
+def test_a_kit_built_in_a_development_checkout_leaves_the_shared_pointer_alone(
+        tmp_path, monkeypatch):
+    """A smoke run of the built kit in dist must not point other apps at a state.json that
+    the next build deletes (GGF 2026-11-27); only the app the user installed may."""
+    (tmp_path / "repo" / ".git").mkdir(parents=True)
+    monkeypatch.setenv("NMSVAULT_PORTABLE_ROOT", str(tmp_path / "repo" / "dist" / "NMSSaveVault"))
+    assert state.development_run()
+    _save_with_a_vault(tmp_path)
+    assert (tmp_path / "repo" / "dist" / "NMSSaveVault" / "state.json").is_file()
+    assert not state.pointer_path().exists()
+
+
+def test_a_run_from_source_in_a_checkout_leaves_the_shared_pointer_alone(monkeypatch):
+    monkeypatch.delenv("NMSVAULT_PORTABLE_ROOT", raising=False)
+    assert state.development_run()                      # these tests run from the checkout
+
+
+def test_the_installed_app_names_its_vault_in_the_shared_pointer(tmp_path, monkeypatch):
+    monkeypatch.setenv("NMSVAULT_PORTABLE_ROOT", str(tmp_path / "Programs" / "NMSSaveVault"))
+    assert not state.development_run()
+    _save_with_a_vault(tmp_path)
+    pointer = json.loads(state.pointer_path().read_text(encoding="utf-8"))
+    assert pointer["vault"] == str(tmp_path / "vault")
 
 
 def test_install_dir_falls_back_to_the_os_config_dir(tmp_path, monkeypatch):
