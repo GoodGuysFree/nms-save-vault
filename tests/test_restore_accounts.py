@@ -305,3 +305,113 @@ def test_the_account_data_a_restore_brings_back_is_written_under_the_live_op_loc
     ops.restore_full(vault, backup, b, allow_game_running=True, restore_accountdata=True)
     assert _account_files(b) == _account_files(a)
     assert written and all(written)
+
+
+# --- the backup's Xbox account data given to an account with none, cut off by a power-out ------
+# (GGF 2026-11-28 rule 1, crash-safety audit gap 4: the index and its xgs mirror both written)
+
+_XBOX_SAVES = [("Slot1Auto", '{"a":1}', "One", "", 100, 1000),
+               ("Slot2Auto", '{"b":2}', "Two", "", 200, 2000)]
+_XBOX_NAME, _XBOX_ID = "0000000000000001_XXXX", "account-x"
+
+
+def _xbox_without_account_data(make_wgs_account, tmp_path):
+    """A live account with no AccountData record and an xgs mirror, and a vault holding a
+    backup of it that has one."""
+    bk = make_wgs_account(tmp_path / "bk" / "wgs", [("AccountData", '{"acct":1}', "", "", 0, 500)]
+                          + _XBOX_SAVES, name=_XBOX_NAME, account_id=_XBOX_ID)
+    live = make_wgs_account(tmp_path / "Packages" / "wgs", _XBOX_SAVES, name=_XBOX_NAME,
+                            account_id=_XBOX_ID)
+    twin = live.parent.parent / "xgs" / live.name
+    for c in msstore.parse_containers_index(live)[1]:     # the game's copy of each save
+        (twin / c.identifier).mkdir(parents=True)
+        (twin / c.identifier / "data").write_bytes(c.data_file.read_bytes())
+        (twin / c.identifier / "meta").write_bytes(c.meta_file.read_bytes())
+    assert msstore.xgs_twin(live) == twin
+    vault = _vault(tmp_path)
+    backup = ops.import_backup(vault, bk, label="bk")
+    return live, twin, vault, backup
+
+
+def _wgs_account_data(live):
+    _info, containers = msstore.parse_containers_index(live)
+    c = next((c for c in containers if c.identifier == "AccountData"), None)
+    return None if c is None else c.data_file.read_bytes()
+
+
+def _xbox_account_ops(vault, live):
+    from nms_save_vault.core.liveops import classic
+    from nms_save_vault.core.liveops import opjournal as jr
+    ctx, _ref = classic.open_context(vault, live)
+    return ctx, [r for r in jr.read_ops(ctx).values() if r.kind == "xbox_account_data"]
+
+
+def test_xbox_account_data_given_to_an_account_with_none_is_journaled(make_wgs_account, tmp_path):
+    live, twin, vault, backup = _xbox_without_account_data(make_wgs_account, tmp_path)
+    ops.restore_full(vault, backup, live, allow_game_running=True)
+    assert _wgs_account_data(live) is not None
+    assert (twin / "AccountData" / "data").read_bytes() == _wgs_account_data(live)
+    _ctx, (rec,) = _xbox_account_ops(vault, live)
+    assert rec.status == "done"
+
+
+def test_xbox_account_data_cut_before_its_mirror_is_found_and_finished(make_wgs_account,
+                                                                      tmp_path, monkeypatch):
+    from nms_save_vault.core.liveops import SimulatedCrash
+    from nms_save_vault.core.liveops.recovery import pending_recovery
+
+    live, twin, vault, backup = _xbox_without_account_data(make_wgs_account, tmp_path)
+
+    def cut(*a, **k):
+        raise SimulatedCrash("before the xgs mirror")
+    from nms_save_vault.core.liveops import classic
+    real_give = classic._give_missing_xbox_account_data
+
+    def give(*a, **k):                  # the slots' own writes go through: cut only this one
+        real_xgs = msstore._xgs_write
+        monkeypatch.setattr(msstore, "_xgs_write", cut)
+        try:
+            return real_give(*a, **k)
+        finally:
+            monkeypatch.setattr(msstore, "_xgs_write", real_xgs)
+    monkeypatch.setattr(classic, "_give_missing_xbox_account_data", give)
+    with pytest.raises(SimulatedCrash):
+        ops.restore_full(vault, backup, live, allow_game_running=True)
+    assert _wgs_account_data(live) is not None and not (twin / "AccountData").exists()
+
+    ctx, (rec,) = _xbox_account_ops(vault, live)
+    assert rec.status == "writing"
+    assert pending_recovery(ctx) == []                     # finished: the mirror is written
+    assert (twin / "AccountData" / "data").read_bytes() == _wgs_account_data(live)
+    _ctx, (rec,) = _xbox_account_ops(vault, live)
+    assert rec.status == "done"
+
+
+def test_xbox_account_data_cut_before_the_index_ends_with_nothing_changed(make_wgs_account,
+                                                                         tmp_path, monkeypatch):
+    from nms_save_vault.core.liveops import SimulatedCrash
+    from nms_save_vault.core.liveops.recovery import pending_recovery
+
+    live, twin, vault, backup = _xbox_without_account_data(make_wgs_account, tmp_path)
+
+    def cut(*a, **k):
+        raise SimulatedCrash("before the index")
+    from nms_save_vault.core.liveops import classic
+    real_give = classic._give_missing_xbox_account_data
+
+    def give(*a, **k):                  # the slots' own writes go through: cut only this one
+        real_index = msstore._write_containers_index_file
+        monkeypatch.setattr(msstore, "_write_containers_index_file", cut)
+        try:
+            return real_give(*a, **k)
+        finally:
+            monkeypatch.setattr(msstore, "_write_containers_index_file", real_index)
+    monkeypatch.setattr(classic, "_give_missing_xbox_account_data", give)
+    with pytest.raises(SimulatedCrash):
+        ops.restore_full(vault, backup, live, allow_game_running=True)
+    assert _wgs_account_data(live) is None
+
+    ctx, _recs = _xbox_account_ops(vault, live)
+    assert pending_recovery(ctx) == []
+    _ctx, (rec,) = _xbox_account_ops(vault, live)
+    assert rec.status == "abandoned" and not (twin / "AccountData").exists()

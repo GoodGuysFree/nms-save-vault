@@ -168,7 +168,7 @@ def restore_full(vault: Vault, entry, live_dir: Path, mirror: bool = True,
     result.warnings += notes
     if ref.platform == "xbox" and not restore_accountdata:
         with jr.liveop_lock(ctx, timeout=LIVEOP_TIMEOUT):
-            kept = _give_missing_xbox_account_data(ctx, entry.id, live_dir)
+            kept = _give_missing_xbox_account_data(ctx, entry.id, live_dir, ref)
         if kept:
             result.warnings.append(kept)
     if restore_accountdata:
@@ -417,10 +417,19 @@ def _repair_files(vault, live_dir: Path, index: Path, raw: bytes, why: str,
             "(damaged-index)."]
 
 
-def _give_missing_xbox_account_data(ctx: OpContext, entry_id: str, live_dir: Path) -> str:
+XBOX_ACCOUNT_KIND = "xbox_account_data"
+
+
+def _give_missing_xbox_account_data(ctx: OpContext, entry_id: str, live_dir: Path,
+                                    ref: LiveRef | None = None) -> str:
     """A live Xbox account with no AccountData record gets the backup's (it has none of its
     own to keep), unless the game's second copy (xgs) holds one: those bytes exist nowhere else
-    and the mirror write would replace them, so they are left alone and a note is returned."""
+    and the mirror write would replace them, so they are left alone and a note is returned.
+
+    The write (a new record's blobs, the index, then the xgs mirror) is journaled as an op of
+    kind :data:`XBOX_ACCOUNT_KIND` before it starts: one cut off is found at the next start and
+    finished (the mirror written from the index's copy) or, before the index, ended with the
+    unlisted blobs it left taken out again (:func:`settle_xbox_account`; GGF 2026-11-28)."""
     from ..store import listing
 
     try:
@@ -438,12 +447,72 @@ def _give_missing_xbox_account_data(ctx: OpContext, entry_id: str, live_dir: Pat
             acct = next((c for c in theirs if c.identifier == "AccountData" and c.data_file
                          and c.data_file.is_file() and c.meta_file and c.meta_file.is_file()), None)
             if acct is not None:
-                msstore.write_save(live_dir, "AccountData", acct.data_file.read_bytes(),
-                                   acct.meta_file.read_bytes(), ctx.clock(),
-                                   create_if_missing=True)
+                data, meta_bytes = acct.data_file.read_bytes(), acct.meta_file.read_bytes()
+                _write_xbox_account(ctx, live_dir, ref, data, meta_bytes)
     except (OSError, ValueError) as exc:
         ops.log.warning("the backup's account data was not copied: %s", exc)
     return ""
+
+
+def _blob_dirs(folder: Path) -> list[str]:
+    return sorted(p.name for p in Path(folder).iterdir()
+                  if p.is_dir() and _BLOB_DIR.fullmatch(p.name))
+
+
+def _write_xbox_account(ctx: OpContext, live_dir: Path, ref: LiveRef | None, data: bytes,
+                        meta_bytes: bytes) -> None:
+    from ..organizer.model import new_op_id
+
+    op_id = new_op_id(ctx.clock)
+    target = {"folder": str(Path(live_dir)), "data": hashlib.sha256(data).hexdigest(),
+              "meta": hashlib.sha256(meta_bytes).hexdigest(), "dirs": _blob_dirs(live_dir)}
+    jr.append(ctx, op_id, "preparing", {
+        "kind": XBOX_ACCOUNT_KIND, "app": ctx.app(),
+        "targets": [jr.target_json(ref.target(1))] if ref is not None else [],
+        "sources": [None], "undo_of": None, "note": "account data from the backup",
+        "confirmed": [], "plan_digest": ""})
+    # the target names no slot: an older core reads it as a record it cannot use (leave only)
+    jr.append(ctx, op_id, "writing", {"targets": [{"xbox_account": target}]})
+    try:
+        msstore.write_save(live_dir, "AccountData", data, meta_bytes, ctx.clock(),
+                           create_if_missing=True)
+    except Exception:                   # a crash (a kill, SimulatedCrash) leaves it open
+        state = settle_xbox_account(target)
+        jr.append(ctx, op_id, "done" if state == "post" else "abandoned",
+                  {"oplog": False, "lineage": False} if state == "post"
+                  else {"reason": "write_failed"})
+        raise
+    jr.append(ctx, op_id, "done", {"oplog": False, "lineage": False})
+
+
+def settle_xbox_account(target: dict) -> str:
+    """Bring a cut-off :data:`XBOX_ACCOUNT_KIND` write to an end: "post" (the index holds the
+    record as written: the xgs mirror is written from it), "pre" (the index has none: blob
+    folders the write made and left unlisted are taken out) or "other" (the record differs:
+    the owner's to decide, nothing is touched). Raises ``OSError``/``ValueError`` when the
+    folder cannot be read or written."""
+    folder = Path(target["folder"])
+    _info, containers = msstore.parse_containers_index(folder)
+    rec = next((c for c in containers if c.identifier == "AccountData"), None)
+    if rec is None:
+        listed = {c.dir_guid for c in containers}
+        for name in set(_blob_dirs(folder)) - set(target["dirs"]) - listed:
+            shutil.rmtree(folder / name)
+        return "pre"
+    if rec.data_file is None or rec.meta_file is None or not rec.data_file.is_file() \
+            or not rec.meta_file.is_file():
+        return "other"
+    data, meta_bytes = rec.data_file.read_bytes(), rec.meta_file.read_bytes()
+    if (hashlib.sha256(data).hexdigest(), hashlib.sha256(meta_bytes).hexdigest()) != \
+            (target["data"], target["meta"]):
+        return "other"
+    twin = msstore.xgs_twin(folder)
+    if twin is not None:
+        here = twin / "AccountData"
+        if not (here / "data").is_file() or (here / "data").read_bytes() != data or \
+                not (here / "meta").is_file() or (here / "meta").read_bytes() != meta_bytes:
+            msstore._xgs_write(twin, "AccountData", data, meta_bytes)
+    return "post"
 
 
 def undo_plan(vault: Vault, live_dir: Path) -> ops.UndoPlan:

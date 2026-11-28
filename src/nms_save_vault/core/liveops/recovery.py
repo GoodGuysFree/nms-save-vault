@@ -155,6 +155,16 @@ def _pending(ctx: OpContext) -> list[RecoveryItem]:
             append_quietly(ctx, rec.op_id, "abandoned", {"reason": "not_started"})
             opjournal.remove_marker(ctx, rec.op_id)
             continue
+        if rec.kind == XBOX_ACCOUNT:            # an Xbox account's data from a backup (gap 4)
+            if game_free:
+                item = _xbox_account_pending(ctx, rec)
+                if item is not None:
+                    items.append(item)
+                continue
+            items.append(RecoveryItem(rec.op_id, rec.kind, (), "complete", "forward",
+                                      ("forward", "leave"), XBOX_ACCOUNT_TEXT + " " + GAME_TEXT,
+                                      _local(rec.started)))
+            continue
         if rec.kind == INDEX_REPAIR:            # one file, the Xbox index (gap 3)
             item = _index_repair_pending(ctx, rec)
             if item is not None:
@@ -220,6 +230,17 @@ def _resolve(ctx: OpContext, op_id: str, choice: Choice,
     if probe is None and "GAME_STATE_UNKNOWN" not in confirmed:
         w = game_warning(ctx)
         return refused(op_id, "GAME_STATE_UNKNOWN", w.text if w else GAME_TEXT)
+    if rec.kind == XBOX_ACCOUNT:
+        if choice == "leave":
+            append_quietly(ctx, op_id, "abandoned", {"reason": "user_left"})
+            opjournal.remove_marker(ctx, op_id)
+            return OpOutcome(op_id, "rolled_back", "The account data is left as it is now.", (),
+                             None, "n/a", None)
+        item = _xbox_account_pending(ctx, rec)
+        if item is None:
+            return OpOutcome(op_id, "done", "The account data from the backup is in place.", (),
+                             None, "n/a", None)
+        return refused(op_id, "SLOT_CHANGED", item.text)
     if rec.kind == INDEX_REPAIR:
         if choice != "leave":
             return refused(op_id, "NOT_OFFERED", "That repair can only be left as it is.")
@@ -251,6 +272,46 @@ def _resolve(ctx: OpContext, op_id: str, choice: Choice,
     if choice == "forward":
         return _forward(ctx, op)
     return _back(ctx, op, recovered=True)
+
+
+# --- an Xbox account's data from a backup (classic._give_missing_xbox_account_data) ----------
+
+XBOX_ACCOUNT = "xbox_account_data"
+XBOX_ACCOUNT_TEXT = ("A restore was interrupted while it gave an Xbox account the backup's "
+                     "account data. Finish it (recommended).")
+XBOX_ACCOUNT_OTHER = ("A restore was interrupted while it gave an Xbox account the backup's "
+                      "account data, and that account data has changed since. It is left as "
+                      "it is.")
+
+
+def _xbox_account_pending(ctx: OpContext, rec: opjournal.OpRecord) -> RecoveryItem | None:
+    """Finish (index written: the mirror from it) or end (no record: its unlisted blobs out)
+    a cut-off write by itself; None when settled. Changed since: only leaving it."""
+    from .classic import settle_xbox_account
+    try:
+        (t,) = (rec.last("writing") or {})["targets"]
+        target = t["xbox_account"]
+        if not Path(target["folder"]).is_dir():
+            return RecoveryItem(rec.op_id, rec.kind, (), "unusable", "none", (),
+                                "A restore was interrupted while it gave an Xbox account its "
+                                f"account data, and its folder cannot be found now. {WAIT_TEXT}",
+                                _local(rec.started))
+        state = settle_xbox_account(target)
+    except (KeyError, TypeError, ValueError, OSError) as exc:
+        log.warning("op %s: the Xbox account data write cannot be settled: %r", rec.op_id, exc)
+        return RecoveryItem(rec.op_id, rec.kind, (), "unusable", "leave", ("leave",),
+                            "A restore was interrupted while it gave an Xbox account its account "
+                            "data, and that cannot be finished now.", _local(rec.started))
+    if state == "post":
+        append_quietly(ctx, rec.op_id, "done", {"oplog": False, "lineage": False,
+                                                "recovered": True})
+    elif state == "pre":
+        append_quietly(ctx, rec.op_id, "abandoned", {"reason": "not_started"})
+    else:
+        return RecoveryItem(rec.op_id, rec.kind, (), "superseded", "leave", ("leave",),
+                            XBOX_ACCOUNT_OTHER, _local(rec.started))
+    opjournal.remove_marker(ctx, rec.op_id)
+    return None
 
 
 # --- the repair of a damaged Xbox index (classic.repair_damaged_index) -----------------------
