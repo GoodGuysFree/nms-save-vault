@@ -174,13 +174,27 @@ def panic_restore(ctx: OpContext, account: LiveRef, snapshot_id: str | None = No
 
 def _restore_accountdata(ctx: OpContext, plan: PlacePlan, account: LiveRef,
                          snapshot_id: str | None) -> None:
-    """Steam: the snapshot's account data over the live account's (the owner asked), under
-    the live-op lock: an app may write the account files too (unlocks, build item 14 B)."""
+    """Steam: the snapshot's account data over the live account's (the owner asked)."""
+    outcome = write_account_files(ctx, account, snapshot_id or "")
+    if outcome.status not in ("done",):
+        raise OSError(outcome.text)
+
+
+def write_account_files(ctx: OpContext, account: LiveRef, entry_id: str, *,
+                        only_if_missing: bool = False):
+    """Steam: the account data ``entry_id`` holds over the live account's, as one journaled
+    account op (:func:`.account.write_files`): a power-out between its two files is found at
+    the next start and put back or finished (GGF 2026-11-28). ``only_if_missing``: only for a
+    folder with no account data of its own. Returns the op's outcome."""
+    from . import account as account_ops
+    from .model import OpOutcome
+
+    kept = account_files(ctx, entry_id)
     folder = resolve_account(ctx, account).folder
-    kept = account_files(ctx, snapshot_id or "")
-    with jr.liveop_lock(ctx):
-        # both files or neither: a failure part way puts the first back (audit H-01)
-        safety.write_files_together({folder / name: data for name, data in kept.items()})
+    if not kept or (only_if_missing and (folder / formats.ACCOUNT_DATA_NAME).is_file()):
+        return OpOutcome(None, "done", "The account data was left as it is.", (), None, "n/a",
+                         None)
+    return account_ops.write_files(ctx, account, kept, "The account data was restored")
 
 
 def account_files(ctx: OpContext, entry_id: str) -> dict[str, bytes]:

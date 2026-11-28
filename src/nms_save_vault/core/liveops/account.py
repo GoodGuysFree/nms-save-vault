@@ -39,6 +39,11 @@ from .planner import recovery_pending, vault_problem, warning
 from .targets import account_label, resolve_account
 
 KIND = "account_edit"
+#: A restore's account files written whole (the roll-back the owner asked for, or the backup's
+#: given to a folder with none): journaled as an account write is, found and settled alike.
+RESTORE_KIND = "account_restore"
+#: Every kind of account-data op recovery settles.
+KINDS = (KIND, RESTORE_KIND)
 DATA, META = formats.ACCOUNT_DATA_NAME, formats.ACCOUNT_META_NAME
 #: The account's lists an app may add to (UserSettingsData).
 UNLOCK_LISTS = ("UnlockedSeasonRewards", "UnlockedTwitchRewards", "UnlockedPlatformRewards",
@@ -66,6 +71,17 @@ class AccountPlan:
 
 def _sha(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
+
+
+def _shas_now(folder: Path) -> tuple[str, str]:
+    """Each account file's sha as it is now; "" for one that is not there (or not read)."""
+    out = []
+    for name in (DATA, META):
+        try:
+            out.append(_sha((folder / name).read_bytes()))
+        except OSError:
+            out.append("")
+    return out[0], out[1]
 
 
 def _read(folder: Path) -> tuple[bytes, bytes] | None:
@@ -430,6 +446,81 @@ def _write(ctx: OpContext, plan: AccountPlan, confirmed: frozenset[str]) -> OpOu
                      f"account data.", (), None, "n/a", None)
 
 
+def write_files(ctx: OpContext, account: LiveRef, files: Mapping[str, bytes],
+                what: str) -> OpOutcome:
+    """Write a restore's account files whole into ``account``'s folder (:data:`RESTORE_KIND`),
+    under the live-op lock and journaled as an account write: a safety snapshot of the folder
+    first (it holds the files as they are, or that there are none), the record of both files'
+    before and after, then each file, and both checked. A write cut off part-way is found at
+    the next start and finished or put back (:func:`stopped`); a failure puts it back now.
+    Files ``files`` does not name are left as they are."""
+    try:
+        with opjournal.liveop_lock(ctx):
+            return _write_files(ctx, account, files, what)
+    except opjournal.LiveOpBusy:
+        return refused(None, "BUSY", "Another operation is still running. Try again in a moment.")
+
+
+def _write_files(ctx: OpContext, account: LiveRef, files: Mapping[str, bytes],
+                 what: str) -> OpOutcome:
+    acct = resolve_account(ctx, account)
+    pre = _shas_now(acct.folder)
+    post = tuple(_sha(files[n]) if n in files else was for n, was in zip((DATA, META), pre))
+    if post == pre:
+        return OpOutcome(None, "done", "The account data is already as wanted.", (), None,
+                         "n/a", None)
+    op_id = new_op_id(ctx.clock)
+    ref = {**source_to_json(acct.account)}
+    if not acct.account.instance:
+        ref["at"] = instance_of(acct.folder)
+    shas = {DATA: {"pre": pre[0], "post": post[0]}, META: {"pre": pre[1], "post": post[1]}}
+    try:
+        opjournal.append(ctx, op_id, "preparing", {
+            "kind": RESTORE_KIND, "app": ctx.app(), "targets": [], "account": ref, "note": what,
+            "undo_of": None, "confirmed": [], "plan_digest": ""})
+    except (OrganizerBusy, StoreReadOnly) as exc:
+        return refused(None, "BUSY", f"The vault is busy. Try again. ({exc})")
+    except OSError as exc:
+        return refused(None, "VAULT_WRITE_FAILED", f"The vault could not record the change "
+                       f"({exc}). Nothing was changed.")
+    try:
+        snapshot = ctx.versions.add_from_live(
+            acct.folder, platform=acct.account.platform, account_key=acct.account.account_key,
+            kind="snapshot", label=f"auto: {RESTORE_KIND}", scope=CaptureScope(), op_id=op_id,
+            reason=RESTORE_KIND, app_version=ctx.app())
+        from .panic import account_files
+        kept = account_files(ctx, snapshot.id)
+        if tuple(_sha(kept[n]) if n in kept else "" for n in (DATA, META)) != pre:
+            raise StoreError("the snapshot does not hold the account data as it is")
+    except (StoreError, OSError) as exc:
+        append_quietly(ctx, op_id, "abandoned", {"reason": "snapshot_failed"})
+        return refused(op_id, "SNAPSHOT_FAILED", f"The safety snapshot failed ({exc}). Nothing "
+                       f"was changed.")
+    try:
+        opjournal.append(ctx, op_id, "writing", {"targets": [
+            {"account": ref, "snapshot_id": snapshot.id, "files": shas}]})
+    except (OrganizerBusy, StoreReadOnly, OSError) as exc:
+        append_quietly(ctx, op_id, "abandoned", {"reason": "not_started"})
+        return refused(op_id, "VAULT_WRITE_FAILED", f"The vault could not record the change "
+                       f"({exc}). Nothing was changed.")
+    opjournal.write_marker(ctx, op_id, [account_label(ctx, account)])
+    try:
+        for name, point in ((DATA, "account_data_written"), (META, "account_meta_written")):
+            if name in files:
+                safety.atomic_write_bytes(acct.folder / name, files[name])
+            at(ctx.faults, point)
+        if _shas_now(acct.folder) != post:
+            raise OSError("the account files do not read back as written")
+    except OSError as exc:
+        back = put_back(ctx, op_id, snapshot.id, acct.folder, pre)
+        return OpOutcome(op_id, "rolled_back" if back else "failed",
+                         f"The account data could not be written ({exc}). "
+                         + ("It is as it was." if back else "Put it back from the vault."),
+                         (), None, "n/a", str(exc), "WRITE_FAILED")
+    finish(ctx, op_id)
+    return OpOutcome(op_id, "done", f"{what}.", (), None, "n/a", None)
+
+
 def finish(ctx: OpContext, op_id: str, *, validated: bool = False) -> None:
     """The op's end, when both files are as written (``validated``: said so already)."""
     if not validated:
@@ -440,18 +531,20 @@ def finish(ctx: OpContext, op_id: str, *, validated: bool = False) -> None:
 
 def put_back(ctx: OpContext, op_id: str, snapshot_id: str, folder: Path,
              pre: tuple[str, str]) -> bool:
-    """The snapshot's two account files over the live ones; whether they are as they were."""
+    """The snapshot's two account files over the live ones; whether they are as they were. A
+    file that was not there before (``pre`` ""), which the op wrote, is taken out again."""
     from .panic import account_files
     kept = account_files(ctx, snapshot_id)
     try:
-        for name in (DATA, META):
+        for name, was in zip((DATA, META), pre):
             if name in kept:
                 safety.atomic_write_bytes(folder / name, kept[name])
+            elif not was and (folder / name).is_file():
+                (folder / name).unlink()
     except OSError:
         append_quietly(ctx, op_id, "failed", {"reason": "rollback_failed"})
         return False
-    now = _read(folder)
-    if now is None or (_sha(now[0]), _sha(now[1])) != pre:
+    if _shas_now(folder) != pre:
         append_quietly(ctx, op_id, "failed", {"reason": "rollback_failed"})
         return False
     append_quietly(ctx, op_id, "rolled_back", {})
@@ -489,8 +582,7 @@ def stopped(ctx: OpContext, rec: opjournal.OpRecord) -> Stopped:
         return Stopped(None, "", ("", ""), "unusable")
     except TargetError as exc:          # the folder, for now: it waits (review R22-1)
         return Stopped(None, "", ("", ""), "unavailable", exc.detail)
-    now = _read(folder)
-    shas = (_sha(now[0]), _sha(now[1])) if now is not None else ("", "")
+    shas = _shas_now(folder)
     if shas == pre:
         state = "pre"
     elif shas == post:

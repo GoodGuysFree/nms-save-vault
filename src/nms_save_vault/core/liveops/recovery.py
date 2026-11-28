@@ -155,7 +155,7 @@ def _pending(ctx: OpContext) -> list[RecoveryItem]:
             append_quietly(ctx, rec.op_id, "abandoned", {"reason": "not_started"})
             opjournal.remove_marker(ctx, rec.op_id)
             continue
-        if rec.kind == account.KIND:            # an account's data, not a slot (14 B)
+        if rec.kind in account.KINDS:           # an account's data, not a slot (14 B)
             item = _account_pending(ctx, rec, game_free)
             if item is not None:
                 items.append(item)
@@ -215,7 +215,7 @@ def _resolve(ctx: OpContext, op_id: str, choice: Choice,
     if probe is None and "GAME_STATE_UNKNOWN" not in confirmed:
         w = game_warning(ctx)
         return refused(op_id, "GAME_STATE_UNKNOWN", w.text if w else GAME_TEXT)
-    if rec.kind == account.KIND:
+    if rec.kind in account.KINDS:
         return _account_resolve(ctx, rec, choice)
     op = _open(ctx, rec)
     if op.problem and not op.damaged:

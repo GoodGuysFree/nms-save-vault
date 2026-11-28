@@ -89,9 +89,11 @@ def test_files_written_together_a_new_one_is_removed_again(tmp_path, monkeypatch
     assert not data.exists() and meta.read_bytes() == b"meta-old"
 
 
-def test_the_account_restore_writes_its_files_together():
+def test_the_account_restore_is_one_journaled_account_op():
+    """Superseded H-01's write_files_together: a power-out between the two files must be found
+    at the next start too (GGF 2026-11-28; tests/test_liveops_account_restore.py)."""
     from nms_save_vault.core.liveops import panic
-    assert "write_files_together" in panic._restore_accountdata.__code__.co_names
+    assert "write_account_files" in panic._restore_accountdata.__code__.co_names
 
 
 # --- H-03: an upgrade killed before its marker leaves an empty store skeleton -----------------

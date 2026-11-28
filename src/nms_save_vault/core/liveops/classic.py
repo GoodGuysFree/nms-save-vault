@@ -172,13 +172,17 @@ def restore_full(vault: Vault, entry, live_dir: Path, mirror: bool = True,
         if kept:
             result.warnings.append(kept)
     if restore_accountdata:
-        panic._restore_accountdata(ctx, plan, ref, entry.id)
+        # journaled (gap 1); the slots are restored already, so a failure is said, not raised
+        rolled = panic.write_account_files(ctx, ref, entry.id)
+        if rolled.status != "done":
+            result.warnings.append(rolled.text)
     elif ref.platform == "steam":
         theirs = panic.account_files(ctx, entry.id)
         if not (live_dir / "accountdata.hg").is_file():
-            with jr.liveop_lock(ctx, timeout=LIVEOP_TIMEOUT):   # one writer of them at a time
-                for name, data in theirs.items():  # a folder with none of its own gets the backup's
-                    safety.atomic_write_bytes(live_dir / name, data)
+            # a folder with none of its own gets the backup's, as one journaled op (gap 2)
+            given = panic.write_account_files(ctx, ref, entry.id, only_if_missing=True)
+            if given.status != "done":
+                result.warnings.append(given.text)
         elif any(not (live_dir / n).is_file() or (live_dir / n).read_bytes() != data
                  for n, data in theirs.items()):
             result.warnings.append(ops.ACCOUNT_DATA_KEPT)

@@ -120,11 +120,11 @@ _ID = r"[A-Za-z0-9][A-Za-z0-9_.-]*"
 
 @functools.cache
 def _app_labels() -> tuple[re.Pattern, ...]:
-    from ..liveops.account import KIND as ACCOUNT_KIND
+    from ..liveops.account import KINDS as ACCOUNT_KINDS
     from ..liveops.execute import SNAPSHOT_LABELS
     from ..liveops.model import PlanKind
 
-    kinds = [k for k in get_args(PlanKind) if k not in SNAPSHOT_LABELS] + [ACCOUNT_KIND]
+    kinds = [k for k in get_args(PlanKind) if k not in SNAPSHOT_LABELS] + list(ACCOUNT_KINDS)
     return tuple(re.compile(p, re.S) for p in (
         # liveops.execute._snapshot ("auto: <plan kind>"), liveops.account ("auto: account_edit")
         "auto: (?:" + "|".join(map(re.escape, kinds)) + ")",
@@ -600,7 +600,7 @@ def _op_rules(f: _Facts, forced: dict[str, set[str]], kept: dict[Key, set[str]],
 
 def _done_op(rec, forced: dict[str, set[str]], kept: dict[Key, set[str]], *,
              recent: bool = True) -> None:
-    from ..liveops.account import KIND as ACCOUNT_KIND
+    from ..liveops.account import KINDS as ACCOUNT_KINDS
 
     if rec.kind == "keep":
         entry_id = (rec.last("done") or {}).get("entry_id")
@@ -613,7 +613,7 @@ def _done_op(rec, forced: dict[str, set[str]], kept: dict[Key, set[str]], *,
     if writing is None:
         return
     for t in writing["targets"]:
-        if rec.kind == ACCOUNT_KIND:
+        if rec.kind in ACCOUNT_KINDS:
             pre = t["files"][ACCOUNT_DATA_NAME]["pre"]
             if is_digest(pre):
                 kept[("a", pre)].add(OP_ACCOUNT)
