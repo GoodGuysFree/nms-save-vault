@@ -32,7 +32,7 @@ from typing import Literal
 
 from .. import msstore, safety
 from ..organizer.locator import LiveMember
-from ..organizer.model import LiveTarget, MetaSnap, target_from_json
+from ..organizer.model import LiveRef, LiveTarget, MetaSnap, target_from_json
 from ..organizer.recorder import LiveOpBusy
 from ..organizer.store import liveop_lock_path
 from . import account, opjournal, pairmeta, steamwrite, transfer
@@ -155,6 +155,11 @@ def _pending(ctx: OpContext) -> list[RecoveryItem]:
             append_quietly(ctx, rec.op_id, "abandoned", {"reason": "not_started"})
             opjournal.remove_marker(ctx, rec.op_id)
             continue
+        if rec.kind == INDEX_REPAIR:            # one file, the Xbox index (gap 3)
+            item = _index_repair_pending(ctx, rec)
+            if item is not None:
+                items.append(item)
+            continue
         if rec.kind in account.KINDS:           # an account's data, not a slot (14 B)
             item = _account_pending(ctx, rec, game_free)
             if item is not None:
@@ -215,6 +220,13 @@ def _resolve(ctx: OpContext, op_id: str, choice: Choice,
     if probe is None and "GAME_STATE_UNKNOWN" not in confirmed:
         w = game_warning(ctx)
         return refused(op_id, "GAME_STATE_UNKNOWN", w.text if w else GAME_TEXT)
+    if rec.kind == INDEX_REPAIR:
+        if choice != "leave":
+            return refused(op_id, "NOT_OFFERED", "That repair can only be left as it is.")
+        append_quietly(ctx, op_id, "abandoned", {"reason": "user_left"})
+        opjournal.remove_marker(ctx, op_id)
+        return OpOutcome(op_id, "rolled_back", "The save index is left as it is now; the "
+                         "damaged one is in the vault (damaged-index).", (), None, "n/a", None)
     if rec.kind in account.KINDS:
         return _account_resolve(ctx, rec, choice)
     op = _open(ctx, rec)
@@ -239,6 +251,52 @@ def _resolve(ctx: OpContext, op_id: str, choice: Choice,
     if choice == "forward":
         return _forward(ctx, op)
     return _back(ctx, op, recovered=True)
+
+
+# --- the repair of a damaged Xbox index (classic.repair_damaged_index) -----------------------
+
+INDEX_REPAIR = "index_repair"
+INDEX_REPAIR_TEXT = ("A repair of {label}'s damaged save index was interrupted, and the index "
+                     "has changed since. The damaged one and the whole folder as it was are in "
+                     "the vault (damaged-index).")
+
+
+def _index_repair_pending(ctx: OpContext, rec: opjournal.OpRecord) -> RecoveryItem | None:
+    """A repair cut off after its record of the write: the index as repaired finishes it (the
+    one file was replaced whole), the index as it was ends it; anything else is the owner's,
+    and only leaving it is offered. None when it was settled here."""
+    try:
+        (t,) = (rec.last("writing") or {})["targets"]
+        pre, post = t["index"]["pre"], t["index"]["post"]
+        folder = Path(t["index"]["folder"])
+        target = target_from_json((rec.events[0] or {})["targets"][0])
+        label = account_label(ctx, LiveRef(target.platform, target.account_key,
+                                           target.instance))
+    except (KeyError, TypeError, ValueError, IndexError):
+        return RecoveryItem(rec.op_id, rec.kind, (), "unusable", "leave", ("leave",),
+                            "A repair of a save index was interrupted; its record cannot be "
+                            "used. The damaged index is in the vault (damaged-index).",
+                            _local(rec.started))
+    if not folder.is_dir():             # a drive not connected: it waits, never guessed
+        return RecoveryItem(rec.op_id, rec.kind, (label,), "unusable", "none", (),
+                            f"A repair of {label}'s save index was interrupted and cannot be "
+                            f"checked now: its folder cannot be found. {WAIT_TEXT}",
+                            _local(rec.started))
+    try:
+        now = safety.sha256_file(folder / "containers.index")
+    except OSError:
+        now = ""
+    if now == post:
+        append_quietly(ctx, rec.op_id, "done", {"oplog": False, "lineage": False,
+                                                "recovered": True})
+        opjournal.remove_marker(ctx, rec.op_id)
+        return None
+    if now == pre:
+        append_quietly(ctx, rec.op_id, "abandoned", {"reason": "not_started"})
+        opjournal.remove_marker(ctx, rec.op_id)
+        return None
+    return RecoveryItem(rec.op_id, rec.kind, (label,), "superseded", "leave", ("leave",),
+                        INDEX_REPAIR_TEXT.format(label=label), _local(rec.started))
 
 
 # --- an account's data (14 B) --------------------------------------------------------------

@@ -295,3 +295,69 @@ def test_no_dialog_and_no_browser_can_open_in_a_test(gui_app, dialogs):
     from nms_save_vault import gui
     assert gui._showinfo.__name__ == "shown"
     assert len(dialogs.take()) == 2            # the attempts were recorded, and all of them raised
+
+
+# --- the repair, cut off by a power-out (GGF 2026-11-28 rule 1, crash-safety audit gap 3) ------
+
+
+def _repair_cut(tmp_path, make_wgs_account, monkeypatch, *, after_write: bool):
+    from nms_save_vault.core.liveops import SimulatedCrash
+
+    live, vault, entry = _xbox_world(tmp_path, make_wgs_account)
+    index = live / "containers.index"
+    index.write_bytes(index.read_bytes()[:-30])                    # the last record is cut off
+    damaged = index.read_bytes()
+    real_write = safety.atomic_write_bytes
+
+    def write(path, data, *a, **k):
+        if Path(path) == index and not after_write:
+            raise SimulatedCrash("before the index")
+        real_write(path, data, *a, **k)
+        if Path(path) == index:
+            raise SimulatedCrash("after the index")
+    monkeypatch.setattr(safety, "atomic_write_bytes", write)
+    with pytest.raises(SimulatedCrash):
+        ops.restore_full(vault, entry, live, allow_game_running=True)
+    monkeypatch.setattr(safety, "atomic_write_bytes", real_write)
+    return live, vault, index, damaged
+
+
+def _repair_ops(vault, live):
+    from nms_save_vault.core.liveops import opjournal as jr
+    ctx, _ref = classic.open_context(vault, live)
+    return ctx, [r for r in jr.read_ops(ctx).values() if r.kind == "index_repair"]
+
+
+def test_a_repair_cut_after_the_index_was_written_is_found_and_finished(
+        tmp_path, make_wgs_account, monkeypatch):
+    from nms_save_vault.core.liveops.recovery import pending_recovery
+    live, vault, index, damaged = _repair_cut(tmp_path, make_wgs_account, monkeypatch,
+                                              after_write=True)
+    ctx, (rec,) = _repair_ops(vault, live)
+    assert rec.status == "writing"                     # the write was recorded before it began
+    assert pending_recovery(ctx) == []                 # the repaired index stands: finished
+    _ctx, (rec,) = _repair_ops(vault, live)
+    assert rec.status == "done" and index.read_bytes() != damaged
+    msstore.split_index(index.read_bytes())
+
+
+def test_a_repair_cut_before_the_index_was_written_ends_with_nothing_changed(
+        tmp_path, make_wgs_account, monkeypatch):
+    from nms_save_vault.core.liveops.recovery import pending_recovery
+    live, vault, index, damaged = _repair_cut(tmp_path, make_wgs_account, monkeypatch,
+                                              after_write=False)
+    ctx, _recs = _repair_ops(vault, live)
+    assert pending_recovery(ctx) == []
+    _ctx, (rec,) = _repair_ops(vault, live)
+    assert rec.status == "abandoned" and index.read_bytes() == damaged
+
+
+def test_a_repaired_index_changed_since_the_cut_is_left_to_the_owner(
+        tmp_path, make_wgs_account, monkeypatch):
+    from nms_save_vault.core.liveops.recovery import pending_recovery
+    live, vault, index, _damaged = _repair_cut(tmp_path, make_wgs_account, monkeypatch,
+                                               after_write=True)
+    index.write_bytes(index.read_bytes() + b"\x00")    # the game wrote it since
+    ctx, _recs = _repair_ops(vault, live)
+    (item,) = pending_recovery(ctx)
+    assert item.kind == "index_repair" and item.choices == ("leave",)

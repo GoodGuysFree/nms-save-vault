@@ -244,9 +244,17 @@ def _repair_locked(ctx, ref, vault, entry, live_dir: Path, raw: bytes, why: str)
         "kind": "index_repair", "app": ctx.app(),
         "targets": [jr.target_json(ref.target(1))], "sources": [None], "undo_of": None,
         "note": "containers.index damaged", "confirmed": [], "plan_digest": ""})
+    def recorded(repaired: bytes) -> None:
+        # before the index is written: a cut-off repair is then found (GGF 2026-11-28, gap 3).
+        # The target is no slot's, so an older core only offers to leave it.
+        # The folder by its path: a damaged index names no slot that resolves.
+        jr.append(ctx, op_id, "writing", {"targets": [{"index": {
+            "folder": str(Path(live_dir)), "pre": hashlib.sha256(raw).hexdigest(),
+            "post": hashlib.sha256(repaired).hexdigest()}}]})
+
     try:
-        notes = _repair_files(vault, Path(live_dir), index, raw, why, plan)
-    except BaseException:
+        notes = _repair_files(vault, Path(live_dir), index, raw, why, plan, recorded)
+    except Exception:           # a crash (SimulatedCrash, a kill) leaves the record open
         jr.append(ctx, op_id, "abandoned", {"reason": "repair_failed"})
         raise
     jr.append(ctx, op_id, "done", {"oplog": False, "lineage": False})
@@ -386,7 +394,7 @@ def _preserve_folder(vault: Vault, live_dir: Path, stamp: str) -> Path:
 
 
 def _repair_files(vault, live_dir: Path, index: Path, raw: bytes, why: str,
-                  plan: _IndexRepairPlan) -> list[str]:
+                  plan: _IndexRepairPlan, recorded=lambda repaired: None) -> list[str]:
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     kept = Path(vault.root) / "damaged-index"
     kept.mkdir(parents=True, exist_ok=True)
@@ -399,6 +407,7 @@ def _repair_files(vault, live_dir: Path, index: Path, raw: bytes, why: str,
     if blobs - held:
         raise ops.OperationError("The repaired index would not list every save in the folder, "
                                  "so it was not written. Nothing was changed.")
+    recorded(repaired)
     safety.atomic_write_bytes(index, repaired)
     note = (f"The live save index was damaged ({why}); it was rebuilt from the {len(plan.records)} "
             "records that could be kept")
