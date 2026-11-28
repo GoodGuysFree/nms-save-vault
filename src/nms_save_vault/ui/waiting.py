@@ -108,15 +108,43 @@ def waits(method: Callable) -> Callable:
     return run
 
 
+def _toplevels(root: tk.Misc) -> list[tk.Misc]:
+    """Every other window of the app: each Toplevel among ``root``'s descendants (a dialog
+    opened from inside another one too)."""
+    out, todo = [], list(root.winfo_children())
+    while todo:
+        w = todo.pop()
+        if isinstance(w, tk.Toplevel):
+            out.append(w)
+        try:
+            todo.extend(w.winfo_children())
+        except tk.TclError:
+            pass
+    return out
+
+
 class Indicator:
-    """The arrow with the hourglass over ``root`` while ``busy()`` says work away from the
-    window is under way (looked at every :data:`POLL_MS`, and at once on :meth:`update`)."""
+    """The arrow with the hourglass over ``root`` and every other window of the app while
+    ``busy()`` says work away from the window is under way (looked at every :data:`POLL_MS`,
+    and at once on :meth:`update`). A Toplevel's pointer is its own, not its parent's: a dialog
+    whose worker job runs shows it too (GGF 2026-11-28), one opened meanwhile at the next look,
+    and each gets back the pointer it had."""
 
     def __init__(self, root: tk.Misc, busy: Callable[[], bool]) -> None:
         self.root, self.busy = root, busy
         self.shown = False
         self._after = None
+        self._own: dict[str, tuple[tk.Misc, str]] = {}    # window -> (it, its own pointer)
         self._tick()
+
+    def _set(self, w: tk.Misc, on: bool, own: str = "") -> None:
+        try:
+            try:
+                w.configure(cursor=STARTING if on else own)
+            except tk.TclError:         # "starting" is Windows' own
+                w.configure(cursor=WAIT if on else own)
+        except tk.TclError:             # the window is going
+            pass
 
     def update(self) -> None:
         try:
@@ -127,16 +155,26 @@ class Indicator:
             now = str(self.root.cget("cursor"))
         except tk.TclError:             # the window is going
             return
+        if on:
+            for w in _toplevels(self.root):
+                key = str(w)
+                try:
+                    theirs = str(w.cget("cursor"))
+                except tk.TclError:
+                    continue
+                if key not in self._own:
+                    self._own[key] = (w, "" if theirs in (STARTING, WAIT) else theirs)
+                if theirs not in (STARTING, WAIT):
+                    self._set(w, True)
+        elif self._own:
+            for w, own in self._own.values():
+                if w.winfo_exists():
+                    self._set(w, False, own)
+            self._own.clear()
         if on == self.shown and (not on or now in (STARTING, WAIT)):
             return                      # as it should be (another hand may have reset it)
         self.shown = on
-        try:
-            try:
-                self.root.configure(cursor=STARTING if on else "")
-            except tk.TclError:         # "starting" is Windows' own
-                self.root.configure(cursor=WAIT if on else "")
-        except tk.TclError:             # the window is going
-            pass
+        self._set(self.root, on)
 
     def _tick(self) -> None:
         self.update()

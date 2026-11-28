@@ -18,6 +18,7 @@ import tkinter as tk
 from collections.abc import Callable
 from tkinter import messagebox, ttk
 
+from .. import waiting
 from ... import theme
 from ...core.organizer.notes import COMMENT_MAX, LABEL_MAX, NoteConflict, Notes
 from ...core.organizer.readmodel import ReadModel, VersionRow
@@ -299,6 +300,7 @@ class NotesWindow(tk.Toplevel):
     def dirty(self) -> bool:
         return self.editor.get("1.0", "end-1c") != self.loaded_text
 
+    @waiting.waits                       # the notes document read from disk
     def _load_note(self, *, keep_text: bool = False) -> None:
         """Show the stored note; ``keep_text`` leaves the editor alone (text typed while a
         save was in flight is not the saved text and must not be replaced)."""
@@ -524,8 +526,9 @@ class NotesWindow(tk.Toplevel):
         if not answer:
             return True
         try:
-            self.notes.set_save_note(self.pid, self.editor.get("1.0", "end-1c"),
-                                     base_rev=self.base_rev)
+            with waiting.wait_cursor(self):     # written under the vault's lock
+                self.notes.set_save_note(self.pid, self.editor.get("1.0", "end-1c"),
+                                         base_rev=self.base_rev)
         except Exception as exc:  # noqa: BLE001 - a conflict or a write failure keeps it open
             if isinstance(exc, NoteConflict):
                 self._note_failed(exc)

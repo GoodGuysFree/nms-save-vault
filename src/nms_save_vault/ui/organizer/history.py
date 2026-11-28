@@ -575,6 +575,7 @@ class HistoryWindow(tk.Toplevel):
 
     # --- showing ----------------------------------------------------------------------------
 
+    @waiting.waits                       # another save file's graph drawn
     def show(self, pid: str, head: str | None = None) -> None:
         self.pid = pid
         self.open_runs.clear()
@@ -586,6 +587,7 @@ class HistoryWindow(tk.Toplevel):
         self.model = model
         self._fill(select=self.head)
 
+    @waiting.waits                       # every row and lane drawn again
     def set_mode(self, mode: str) -> None:
         if mode not in MODES:
             raise ValueError(mode)
@@ -731,6 +733,7 @@ class HistoryWindow(tk.Toplevel):
             return "break"
         return None
 
+    @waiting.waits                       # every row and lane drawn again
     def toggle_run(self, key: tuple) -> None:
         self.open_runs ^= {key}
         self._fill(select=self.head)

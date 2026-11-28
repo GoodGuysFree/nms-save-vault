@@ -85,6 +85,9 @@ class FakeIndex:
         self.log.append(("request", list(vids), Priority(priority)))
         return len(vids)
 
+    def deep(self, vid):                    # as FactsService.deep: what was read, if any
+        return self.deeps.get(vid)
+
     def request_deep(self, vid):
         self._note("request_deep")
         self.log.append(("deep", vid))

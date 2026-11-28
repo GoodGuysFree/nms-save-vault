@@ -16,6 +16,7 @@ from collections.abc import Callable
 from tkinter import messagebox, ttk
 from typing import Any
 
+from .. import waiting
 from ...core.organizer.lineage import Corrections
 from ...core.organizer.readmodel import ReadModel
 from ..dialogs import bind_escape, focus_first
@@ -241,6 +242,7 @@ class CorrectDialog(tk.Toplevel):
         self._fill_existing()
         self._enable()
 
+    @waiting.waits                       # the lineage document read
     def _fill_existing(self) -> None:
         tree = self.existing
         tree.delete(*tree.get_children(""))

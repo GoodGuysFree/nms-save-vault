@@ -509,7 +509,8 @@ class App(tk.Tk):
         # the arrow with the hourglass while a worker job runs (GGF 2026-11-23): every one of
         # them changes what the window shows when it ends, a scan or a listing too
         self._side_jobs = 0             # work on threads of its own the user asked for
-        self.indicator = waiting.Indicator(self, lambda: self.worker.busy or self._side_jobs > 0)
+        self.indicator = waiting.Indicator(
+            self, lambda: self.worker.busy or self._side_jobs > 0 or self._deep_waited())
         self.themed = ThemeRegistry()
         # Every window opened later gets the title bar of the current theme when it maps.
         for window_class in ("Toplevel", self.winfo_class()):
@@ -1324,8 +1325,10 @@ class App(tk.Tk):
         if persist:
             try:
                 appstate.save(self.state, self.state_path)
-            except OSError as exc:
-                _showwarning("Theme", f"Could not save your theme choice:\n{exc}")
+            except OSError as exc:      # said once the wait is over: a message never waits
+                why = str(exc)
+                self.after_idle(lambda: _showwarning(
+                    "Theme", f"Could not save your theme choice:\n{why}", parent=self))
 
     # --- closing -------------------------------------------------------------
 
@@ -1507,7 +1510,8 @@ class App(tk.Tk):
         Live > Rescan live folders still adds it."""
         declined = set(self.state.ui.get(DECLINED_LIVE_KEY) or ())
         try:
-            new = [s for s in discover.new_live_sources(self.state) if s.id not in declined]
+            with waiting.wait_cursor(self):     # looks through the save folders on disk
+                new = [s for s in discover.new_live_sources(self.state) if s.id not in declined]
         except OSError as exc:
             log.warning("new live folders could not be looked for: %s", exc)
             return
@@ -1708,6 +1712,11 @@ class App(tk.Tk):
         # The updater is now waiting on this PID. Leave promptly so it can have the files.
         self.destroy()
 
+    def _deep_waited(self) -> bool:
+        """A deeper detail the owner asked for is being read (on the index's threads)."""
+        view = getattr(self, "organizer_view", None)
+        return view is not None and view.waiting_for_deep()
+
     def _download_update(self, release):
         """Fetch and verify the release behind a progress bar. ``None`` on any failure."""
         win, bar, label = self._download_progress(release.version)
@@ -1724,6 +1733,7 @@ class App(tk.Tk):
 
         thread = threading.Thread(target=worker, daemon=True)
         thread.start()
+        self._side_jobs += 1            # the indicator, over this window and the progress one
         try:
             measured = False
             while thread.is_alive():
@@ -1753,6 +1763,7 @@ class App(tk.Tk):
             # point; there is simply no longer a window to report to.
             return None
         finally:
+            self._side_jobs -= 1
             try:
                 win.grab_release()
                 win.destroy()
@@ -2213,7 +2224,8 @@ class App(tk.Tk):
             _showinfo("Save file history", f"There is no backup of the save in slot {slot} yet.")
             return
         self._history_key = p.key
-        self._populate_backups()
+        with waiting.wait_cursor(self):     # lists every backup of the vault for that save
+            self._populate_backups()
 
     # --- tooltips ------------------------------------------------------------
 
@@ -3029,12 +3041,16 @@ class App(tk.Tk):
 
     def on_rescan(self) -> None:
         """Re-scan AppData for live sources and merge any new accounts into the config."""
+        not_saved = None
         with waiting.wait_cursor(self):
             added = discover.merge_live_sources(self.state)
             try:
                 appstate.save(self.state, self.state_path)
             except OSError as exc:
-                _showwarning("Rescan", f"Found sources but could not save config:\n{exc}")
+                not_saved = exc         # said once the wait is over: a message never waits
+        if not_saved is not None:
+            _showwarning("Rescan", f"Found sources but could not save config:\n{not_saved}")
+        with waiting.wait_cursor(self):
             # If we had no active writable source yet, adopt the first one found.
             if self.active_source_id is None:
                 writable = self._writable_sources()

@@ -9,7 +9,7 @@ import pytest
 
 from nms_save_vault import gui
 from nms_save_vault.ui import waiting
-from nms_save_vault.ui.organizer import histhooks, history, table, view
+from nms_save_vault.ui.organizer import correct, histhooks, history, notes, table, view
 
 
 @pytest.mark.parametrize("method", [
@@ -22,6 +22,15 @@ from nms_save_vault.ui.organizer import histhooks, history, table, view
     table.OrganizerTable.set_model,
     view.OrganizerView._scanned,              # a scan lands: every table and window
     history.HistoryWindow.set_model,          # the graph of every version
+    # the audit of 2026-11-28 (GGF: "go over the entire UI of SV and add the same")
+    history.HistoryWindow.show,               # another save file's graph
+    history.HistoryWindow.set_mode,           # Key versions / All: every row drawn again
+    history.HistoryWindow.toggle_run,         # a run opened or closed: the same
+    table.OrganizerTable.set_chips,           # every line filtered again
+    table.OrganizerTable._find_now,           # Find over every line
+    table.OrganizerTable.sort_by,             # every line sorted again
+    notes.NotesWindow._load_note,             # the notes document read from disk
+    correct.CorrectDialog._fill_existing,     # the lineage document read
 ])
 def test_a_slow_handler_waits_under_the_busy_pointer(method):
     assert getattr(method, "__wrapped__", None) is not None, method.__qualname__
@@ -37,6 +46,9 @@ def test_a_slow_handler_waits_under_the_busy_pointer(method):
     gui.App.on_rescan,               # finds the folders, then says how many
     gui.App.on_discover,             # imports what it finds, then says what
     histhooks.HistoryHooks.open_history,      # the graph of every version, then the window
+    gui.App._show_history_of,        # lists every backup of the vault for that save
+    gui.App._offer_new_live_folders,  # looks for save folders on disk before asking
+    notes.NotesWindow.confirm_close,  # Save chosen: the note written under the lock
 ])
 def test_a_handler_that_asks_waits_only_around_its_slow_part(method):
     assert "wait_cursor" in inspect.getsource(method), method.__qualname__
@@ -85,3 +97,84 @@ def test_a_check_for_updates_asked_for_shows_it_until_the_answer(gui_app, monkey
         time.sleep(0.01)
     gui_app.indicator.update()
     assert answered == [False] and str(gui_app.cget("cursor")) == ""
+
+
+# --- a message never waits under the busy pointer (the audit of 2026-11-28) ------------------
+
+
+def test_rescan_says_a_settings_save_failure_after_the_wait(gui_app, monkeypatch, dialogs):
+    dialogs.expect()
+    held = []
+    monkeypatch.setattr(gui.discover, "merge_live_sources", lambda state: 0)
+    monkeypatch.setattr(gui.appstate, "save", lambda *a, **k: (_ for _ in ()).throw(OSError("x")))
+    monkeypatch.setattr(gui, "_showwarning", lambda *a, **k: held.append(waiting.is_held(gui_app)))
+    monkeypatch.setattr(gui.App, "refresh", lambda self, *a, **k: None)
+    gui_app.on_rescan()
+    gui_app.update()
+    assert held == [False]
+    dialogs.take()
+
+
+def test_a_theme_that_cannot_be_saved_is_said_after_the_wait(gui_app, monkeypatch):
+    held = []
+    monkeypatch.setattr(gui.appstate, "save", lambda *a, **k: (_ for _ in ()).throw(OSError("x")))
+    monkeypatch.setattr(gui, "_showwarning", lambda *a, **k: held.append(waiting.is_held(gui_app)))
+    gui_app._apply_theme(persist=True)
+    gui_app.update()
+    assert held == [False]
+
+
+def test_a_refresh_the_index_asks_for_never_holds_the_window():
+    """Facts arriving refresh the table many times a minute: a busy pointer there would flicker
+    and eat clicks; only what the owner does waits (set_chips, Find, sort_by)."""
+    assert getattr(table.OrganizerTable.refresh, "__wrapped__", None) is None
+
+
+# --- work away from the window the owner waits for (the audit of 2026-11-28) -----------------
+
+
+class _Deep:
+    def __init__(self, has=None):
+        self.asked, self.has = [], has
+
+    def deep(self, vid):
+        return self.has
+
+    def request_deep(self, vid):
+        self.asked.append(vid)
+
+
+class _Event:
+    def __init__(self, vid, kind):
+        self.vid, self.kind = vid, kind
+
+
+def test_read_deeper_detail_shows_the_indicator_until_it_is_ready(gui_app, monkeypatch):
+    view_ = gui_app.organizer_view
+    monkeypatch.setattr(type(view_), "facts", property(lambda self: _Deep()), raising=False)
+    view_.read_deep("v1")
+    assert view_.waiting_for_deep()
+    gui_app.indicator.update()
+    assert str(gui_app.cget("cursor")) in (waiting.STARTING, waiting.WAIT)
+    view_._index_events([_Event("v1", "deep-ready")])
+    assert not view_.waiting_for_deep()
+
+
+def test_deeper_detail_already_read_does_not_wait(gui_app, monkeypatch):
+    view_ = gui_app.organizer_view
+    monkeypatch.setattr(type(view_), "facts", property(lambda self: _Deep(has={"x": 1})),
+                        raising=False)
+    view_.read_deep("v1")
+    assert not view_.waiting_for_deep()
+
+
+def test_deeper_detail_that_never_comes_stops_waiting(gui_app, monkeypatch):
+    view_ = gui_app.organizer_view
+    monkeypatch.setattr(type(view_), "facts", property(lambda self: _Deep()), raising=False)
+    view_.read_deep("v1")
+    monkeypatch.setattr(view.time, "monotonic", lambda: 10 ** 9)
+    assert not view_.waiting_for_deep()
+
+
+def test_installing_an_update_shows_the_indicator_while_it_downloads():
+    assert "_side_jobs" in inspect.getsource(gui.App._download_update)

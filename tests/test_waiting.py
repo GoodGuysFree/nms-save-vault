@@ -114,3 +114,61 @@ def test_a_slow_handler_is_logged_by_name(app, monkeypatch, caplog):
     finally:
         button.destroy()
     assert "sluggish" in caplog.text and "slow:" in caplog.text
+
+
+# --- the indicator over every window of the app (GGF 2026-11-28; cursor audit: a Toplevel's
+# pointer is its own, so a dialog showed nothing while its worker job ran) ---------------------
+
+
+def _cursor(w) -> str:
+    return str(w.cget("cursor"))
+
+
+def test_the_indicator_shows_over_a_dialog_and_one_opened_while_work_runs(app):
+    work = {"on": False}
+    first = tk.Toplevel(app)
+    inner = ttk.Frame(first)
+    inner.pack()
+    ind = waiting.Indicator(app, lambda: work["on"])
+    try:
+        work["on"] = True
+        ind.update()
+        assert _cursor(first) in (waiting.STARTING, waiting.WAIT)
+        second = tk.Toplevel(inner)                       # opened from inside a dialog
+        ind.update()
+        assert _cursor(second) in (waiting.STARTING, waiting.WAIT)
+        work["on"] = False
+        ind.update()
+        assert _cursor(first) == "" and _cursor(second) == "" and _cursor(app) == ""
+    finally:
+        ind.stop()
+        first.destroy()
+
+
+def test_the_indicator_puts_back_a_dialog_s_own_pointer(app):
+    work = {"on": True}
+    own = tk.Toplevel(app, cursor="hand2")
+    ind = waiting.Indicator(app, lambda: work["on"])
+    try:
+        ind.update()
+        assert _cursor(own) in (waiting.STARTING, waiting.WAIT)
+        work["on"] = False
+        ind.update()
+        assert _cursor(own) == "hand2"
+    finally:
+        ind.stop()
+        own.destroy()
+
+
+def test_a_dialog_closed_while_work_runs_breaks_nothing(app):
+    work = {"on": True}
+    gone = tk.Toplevel(app)
+    ind = waiting.Indicator(app, lambda: work["on"])
+    try:
+        ind.update()
+        gone.destroy()
+        work["on"] = False
+        ind.update()
+        assert _cursor(app) == ""
+    finally:
+        ind.stop()

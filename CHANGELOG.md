@@ -13,6 +13,19 @@ indented lines under a bullet add detail. Releases before 0.5.0 are in the READM
   file names settings that were deleted, the installed app's settings are used, and with
   none the message says the settings file is missing and where it was expected, instead of
   asking to connect a drive.
+- Fixed: every restore step now survives a power cut.
+  The account data a restore puts back (Steam and Xbox), and the repair of a damaged Xbox
+  save index, are now recorded before they are written: if the power goes or the program
+  is killed half-way, the next start finishes them or puts them back. Every file the app
+  replaces is on the disk before it goes on (Windows writes it through; Linux and macOS sync
+  the folder).
+- A cut-off copy into an old vault is removed and said.
+  In a vault not yet upgraded to the version store, a backup cut off by a power cut left a
+  half-written folder behind; it is now found at the next start, removed, and named.
+- The waiting pointer shows in every window of the app.
+  Dialogs and the History, Search and Notes windows show it while their work runs, and a
+  few slow actions that showed nothing (sorting, Find, deeper detail, a save file's
+  history, the update download) now show it too.
 
 ## 0.5.1 - 2026-11-26
 

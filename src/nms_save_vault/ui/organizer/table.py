@@ -701,6 +701,7 @@ class OrganizerTable(ttk.Frame):
     def _chip_toggled(self, name: str) -> None:
         self.set_chips({n for n, var in self.chip_vars.items() if var.get()})
 
+    @waiting.waits                       # every line filtered and placed again
     def set_chips(self, chips: Iterable[str]) -> None:
         self.chips = {c for c in chips if c in CHIP}
         for name, var in self.chip_vars.items():
@@ -715,12 +716,14 @@ class OrganizerTable(ttk.Frame):
             self.after_cancel(self._find_after)
         self._find_after = self.after(FIND_DELAY_MS, self._find_now)
 
+    @waiting.waits                       # every line matched against the text
     def _find_now(self) -> None:
         self._find_after = None
         self.refresh()
 
     # --- sorting -------------------------------------------------------------------
 
+    @waiting.waits                       # every line sorted and placed again
     def sort_by(self, column: str) -> None:
         """Sort by a column's key; the same heading again reverses the order."""
         key = BY_KEY[column].sort

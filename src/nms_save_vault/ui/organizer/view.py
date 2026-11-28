@@ -116,6 +116,10 @@ def default_context(organizer: Organizer) -> OpContext:
     host = organizer.host
     return context_for(organizer, host=host, machine_id=machine_id(host))
 
+
+#: How long a deep read asked for keeps the indicator on, at most (s).
+DEEP_WAIT_S = 30.0
+
 
 class OrganizerView(ttk.Frame):
     def __init__(self, master, *, worker: UiWorker, themed: ThemeRegistry,
@@ -133,6 +137,7 @@ class OrganizerView(ttk.Frame):
         self.make_context = make_context or default_context
         self.on_last_change = on_last_change
         self.on_hint = on_hint
+        self._deep_asked: dict[str, float] = {}     # version -> when its deep read was asked
         self.move_dialog: MoveDialog | None = None
         self.plan_dialog: PlanDialog | None = None
         self.log_window: OpsLogWindow | None = None
@@ -331,6 +336,9 @@ class OrganizerView(ttk.Frame):
 
     def _index_events(self, events: list) -> None:
         """Rows update in place as facts arrive; the facts sort re-sorts at most every 3 s."""
+        for e in events:
+            if e.kind in ("deep-ready", "failed"):
+                self._deep_asked.pop(e.vid, None)
         kinds = {e.kind for e in events}
         if kinds & {"indexed", "failed", "stale", "warmed", "changes", "finished", "cleared"}:
             self.table.refresh()           # values and the facts sort, in memory: no rescan
@@ -395,8 +403,20 @@ class OrganizerView(ttk.Frame):
     def read_deep(self, head: str) -> None:
         service = self.facts
         if service is not None:
+            if service.deep(head) is None:      # read on the index's threads: it is waited for
+                self._deep_asked[head] = time.monotonic()
             self.worker.submit(lambda: service.request_deep(head),
                                on_error=self._worker_error("Deeper detail"), low=True)
+
+    def waiting_for_deep(self) -> bool:
+        """Whether a deep read the owner asked for is still under way (the window's indicator
+        shows it, GGF 2026-11-28); one that never came stops counting after
+        :data:`DEEP_WAIT_S`."""
+        now = time.monotonic()
+        for vid, at in list(self._deep_asked.items()):
+            if now - at > DEEP_WAIT_S:
+                del self._deep_asked[vid]
+        return bool(self._deep_asked)
 
     # --- scanning ---------------------------------------------------------------------------
 
