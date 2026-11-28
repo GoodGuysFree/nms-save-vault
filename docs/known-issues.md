@@ -16,9 +16,6 @@ the release notes when we publish"). Found by review R31 (of the whole-folder re
 From the data-corruption audit of 2026-11-23 (docs/CORRUPTION_AUDIT_REPORT.md); the findings
 that could lose or wedge data were fixed, these were judged rare or harmless and left as is:
 
-- **A whole-folder restore with the account data, cut off at one moment.** If the program is
-  killed between writing accountdata.hg and mf_accountdata.hg, the two can disagree. A failed
-  write puts the first back; only a kill at that instant leaves them apart.
 - **Undo from the Organizer of a whole-folder restore leaves the account data.** Undo last
   restore asks whether to put the account data back; the Organizer's Undo does not.
 - **Pin and unpin of one version at the same moment from two windows** can lose one of them.
@@ -34,3 +31,6 @@ that could lose or wedge data were fixed, these were judged rare or harmless and
 - **After Check vault repairs damaged copies**, the vault window can still say damaged files
   were found.
 - **The search index set aside as damaged** while another window uses it is rebuilt there too.
+
+Fixed in 0.6.0 (the kill tests): a whole-folder restore with the account data cut off between
+its two files is now settled with the restore at the next start.
