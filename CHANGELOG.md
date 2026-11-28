@@ -7,6 +7,13 @@ indented lines under a bullet add detail. Releases before 0.5.0 are in the READM
 
 ## Unreleased
 
+## 0.6.1 - 2026-11-28
+
+- Apps sharing the vault can say what recovery did.
+  The core library lets an app such as NMS Savecraft list what the recovery of an
+  interrupted change settled by itself (`LiveSession.settled()`), so it never settles
+  one in silence either. Additive: the core's API version stays 1.
+
 ## 0.6.0 - 2026-11-28
 
 - Fixed: other apps lost the vault after a test build.
