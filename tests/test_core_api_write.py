@@ -1338,3 +1338,27 @@ def test_a_write_stopped_in_another_vault_is_named_where_its_records_are(world, 
     assert "another vault" in item.text
     again = api.open_live(other, live_dirs=[world.live])
     assert [i.op_id for i in again.interrupted()] == [item.op_id] and again.interrupted()[0].choices
+
+
+def test_what_recovery_settled_by_itself_is_said_once(world, monkeypatch):
+    """Savecraft shows it (GGF 2026-11-28, "Yes, add it for v0"): an edit cut off before it
+    wrote is ended at the next start by itself, and LiveSession.settled() says so, once."""
+    before = {n: (world.live / n).read_bytes() for n in ("save.hg", "save2.hg")}
+    session = _session(world)
+    plan = session.plan_edit(_slot(world), UNITS, what="x")
+    make = session._make
+
+    def crashing():                         # the context the write runs in dies before it
+        ctx = make()
+        ctx.faults = FaultInjector({"after_writing"})
+        return ctx
+
+    monkeypatch.setattr(session, "_make", crashing)
+    with pytest.raises(SimulatedCrash):
+        session.write(plan, plan.confirmations)
+    later = _session(world)
+    assert later.interrupted() == []                # settled by itself: nothing had changed
+    (said,) = later.settled()
+    assert "Nothing was changed" in said
+    assert later.settled() == []
+    assert {n: (world.live / n).read_bytes() for n in before} == before

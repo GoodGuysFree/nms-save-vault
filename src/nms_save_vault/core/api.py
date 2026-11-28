@@ -47,7 +47,8 @@ from .index.assets import Asset, assets_of, state_of
 from .index.inventory import Inventory, Slot, SpecialSlot, inventories_of
 from .index import privacy
 from .index.nodes import PrivacyError, get, items
-from .liveops import context_for, execute, pending_recovery, plan_undo, resolve_recovery
+from .liveops import (context_for, execute, pending_recovery, plan_undo, resolve_recovery,
+                      take_settled)
 from .liveops.classic import _ad_hoc
 from .liveops.context import OpContext
 from .liveops import account as _account
@@ -827,6 +828,13 @@ class LiveSession:
                                    tuple(item.choices)))
         self._after_write()
         return out
+
+    def settled(self) -> list[str]:
+        """What recovery settled by itself in this session's vault since the last call (an
+        operation cut off before it changed anything, ended; one cut off after it was all
+        written, finished), each said once: show them after :meth:`interrupted`, so nothing is
+        settled in silence (GGF 2026-11-28)."""
+        return take_settled(self._now())
 
     def resolve(self, op_id: str, choice: str, confirmed: Iterable[str] = ()) -> WriteResult:
         """Finish (``"forward"``), put back (``"back"``) or leave (``"leave"``) an

@@ -147,6 +147,7 @@ PINNED = {
         "plan_undo": "(self, op_id: 'str') -> 'WritePlan'",
         "write": "(self, plan: 'WritePlan', confirmed: 'Iterable[str]' = ()) -> 'WriteResult'",
         "interrupted": "(self) -> 'list[Interrupted]'",
+        "settled": "(self) -> 'list[str]'",     # added after 0.6.0, additive (Savecraft v0)
         "resolve": "(self, op_id: 'str', choice: 'str', confirmed: 'Iterable[str]' = ()) "
                    "-> 'WriteResult'",
         "plan_unlock": "(self, folder: 'str | Path', unlocks: 'Mapping[str, Sequence[str]]', *, "
