@@ -10,14 +10,16 @@ from __future__ import annotations
 #: Where state.json's ``ui`` preferences keep the last version whose notes were shown.
 SEEN_KEY = "whats_new_seen"
 
-NOTES_VERSION = "0.5.1"
+NOTES_VERSION = "0.6.0"
 
 #: The highlights, one short line each: word for word the top-level bullets of this version in
 #: CHANGELOG.md, which adds the detail (GGF 2026-11-26).
 NOTES = """\
-- Xbox saves from the 7.15 update are supported.
-- A new save folder is found at startup and offered.
-- Fixed: the Organizer's Live buttons crept right.
+- Fixed: other apps lost the vault after a test build.
+- Fixed: every restore step now survives a power cut.
+- An interrupted restore is always settled, and said.
+- A cut-off copy into an old vault is removed and said.
+- The waiting pointer shows in every window of the app.
 """
 
 

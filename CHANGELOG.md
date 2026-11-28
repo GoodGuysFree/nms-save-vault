@@ -7,6 +7,8 @@ indented lines under a bullet add detail. Releases before 0.5.0 are in the READM
 
 ## Unreleased
 
+## 0.6.0 - 2026-11-28
+
 - Fixed: other apps lost the vault after a test build.
   A copy of the app run from a development folder no longer changes the file that tells
   other apps (such as an editor sharing the vault) where the vault's settings are. If that

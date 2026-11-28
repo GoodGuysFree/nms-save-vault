@@ -29,7 +29,7 @@ All data below is invented (a demo world, not anyone's saves).
 
 **Just want to run it? No Python needed.** Download the ready-to-use Windows kit from the
 [**latest release**](https://github.com/GoodGuysFree/nms-save-vault/releases/latest) — grab
-`NMSSaveVault-Setup-v0.5.1.zip` under **Assets**.
+`NMSSaveVault-Setup-v0.6.0.zip` under **Assets**.
 
 Extract the zip, open the `NMSSaveVault` folder and run **`NMSSaveVault.exe`**. That is the
 whole thing — Python and Tkinter are bundled, nothing is installed, and because the app
@@ -212,8 +212,8 @@ Both platforms have a portable kit on the
 
 | Platform | Asset |
 |---|---|
-| Linux / Steam Deck (x86_64) | `NMSSaveVault-v0.5.1-linux-x86_64.tar.gz` |
-| macOS (Apple Silicon) | `NMSSaveVault-v0.5.1-macos-arm64.tar.gz` |
+| Linux / Steam Deck (x86_64) | `NMSSaveVault-v0.6.0-linux-x86_64.tar.gz` |
+| macOS (Apple Silicon) | `NMSSaveVault-v0.6.0-macos-arm64.tar.gz` |
 
 ### Read this first: back up your saves by hand
 
@@ -245,7 +245,7 @@ saw last. It is not a substitute for the copy above.
 ### Then run it
 
 ```sh
-tar -xzf NMSSaveVault-v0.5.1-linux-x86_64.tar.gz
+tar -xzf NMSSaveVault-v0.6.0-linux-x86_64.tar.gz
 cd NMSSaveVault
 ./NMSSaveVault          # the app;  ./nmsvault-cli status  for the command line
 ```
@@ -274,7 +274,7 @@ and can only draw ISO8859-1. Every string the app displays is therefore plain AS
 
 ## Run it (Windows, no Python needed)
 
-Download **`NMSSaveVault-Setup-v0.5.1.zip`** from the
+Download **`NMSSaveVault-Setup-v0.6.0.zip`** from the
 [**Releases**](https://github.com/GoodGuysFree/nms-save-vault/releases) page (under the
 release's **Assets**) and extract it. Open the `NMSSaveVault` folder and run
 **`NMSSaveVault.exe`** — that is all. Everything (Python + Tkinter) is bundled, nothing is
@@ -666,7 +666,7 @@ The vault lives outside `st_<id>`, so it is never scanned by the game or synced 
 ## Status
 
 Working. Core format/crypto and all operations are verified against the real save files and
-in a temp sandbox (3495 tests). Xbox / Game Pass saves are supported for reading **and**
+in a temp sandbox (3569 tests). Xbox / Game Pass saves are supported for reading **and**
 writing, including Steam ↔ Xbox moves (validated in the real game) — verified against a real install (reads) and synthetic `wgs` fixtures
 (writes). A full file-copy safety backup of the live folder was made before development
 (`C:\Devel\NMS-SaveBackup-SAFETY-2026-06-24`). The Organizer is in (see above); a
@@ -681,6 +681,7 @@ does the same.
 
 | Version | Date | Highlights |
 |---|---|---|
+| **0.6.0** | 2026-11-28 | **Hardening.** A restore or backup stopped by a crash, End task or a power cut is always finished or put back at the next start, its account data with it (Steam, GOG and Xbox), and the app says what it did; every file it replaces is on the disk before it goes on. Before each release an automatic test kills every restore and backup at every step and at random moments and checks the saves come out whole. A cut-off copy into an old vault is removed and named. The waiting pointer shows in every window. A copy of the app run from a development folder no longer changes where other apps find the vault, and a missing settings file says where it was expected. |
 | **0.5.1** | 2026-11-26 | **Xbox 7.15 and new save folders.** Xbox saves from the 7.15 update are supported (the Xbox game is not the Steam build, so the app waited for an Xbox save from it). A save folder the settings do not list yet, such as a GOG install, is offered at startup, and adding it backs it up at once. The Organizer's Live buttons no longer creep right on each click. A CHANGELOG.md now ships with the app, and What's new is its short highlights. |
 | **0.5.0** | 2026-11-26 | **GOG, as its own platform.** The GOG edition is supported live and in the vault, and counted on its own, never as Steam: its slots read G1-G15 in purple, its backups are named `full-gog-…`, the Organizer has a GOG filter beside Steam and Xbox ("On both" is now "On several"), and a save live on Steam and GOG shows each copy's progress ("GOG behind 2h"). Moves, restores and edits work in the GOG folder; moving between Steam and GOG asks first, as between two accounts. GOG's game version is checked on its own, so a save from a newer game is not put where GOG's game would load it. The core library (`.whl`) judges a save in GOG's folder by GOG's game version and adds the GOG Galaxy note to a plan there. |
 | **0.4.4** | 2026-11-25 | **The new game version.** Saves from the No Man's Sky update of 2026-11-25 on Steam are supported; before, the app refused them as written by a newer game version. Xbox / Game Pass follows when its game update arrives. **Faster writes:** apps that share the vault and bundle the core library (`.whl`) write and apply edits to a save faster: each new save is checked once instead of twice, a batch of edits already proven on a save is not proven again, and the LZ4 C library does the compression work when the app bundles it (the pure-Python code stays the fallback). |
