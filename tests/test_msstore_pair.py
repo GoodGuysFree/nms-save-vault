@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from nms_save_vault.core import msstore
+from nms_save_vault.core import msstore, safety
 from nms_save_vault.core.liveops import FaultInjector, SimulatedCrash
 
 from .conftest import chunked, xbox_meta
@@ -84,8 +84,8 @@ def test_one_index_write_flips_both_records_and_leaves_the_rest_raw(tmp_path, ma
     assert (acct / "containers.index").read_bytes() == before_raw    # prepare reads only
 
     index_writes = []
-    real_replace = os.replace
-    monkeypatch.setattr(os, "replace", lambda s, d: (
+    real_replace = safety.durable_replace
+    monkeypatch.setattr(safety, "durable_replace", lambda s, d: (
         index_writes.append(1) if Path(d).name == "containers.index" else None,
         real_replace(s, d))[1])
     msstore.apply_pair(plan, payload(writes))

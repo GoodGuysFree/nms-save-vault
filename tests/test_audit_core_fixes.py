@@ -24,7 +24,7 @@ from .test_liveops_opjournal import OP1, T7, preparing
 # --- H-02: atomic_write_bytes retries a transient sharing violation --------------------------
 
 def _flaky_replace(monkeypatch, fails: int) -> list:
-    real = os.replace
+    real = safety.durable_replace
     calls = []
 
     def replace(src, dst):
@@ -32,7 +32,7 @@ def _flaky_replace(monkeypatch, fails: int) -> list:
         if len(calls) <= fails:
             raise PermissionError(32, "The process cannot access the file")
         return real(src, dst)
-    monkeypatch.setattr(safety.os, "replace", replace)
+    monkeypatch.setattr(safety, "durable_replace", replace)
     monkeypatch.setattr(safety, "REPLACE_RETRY", True)
     monkeypatch.setattr(safety, "REPLACE_PAUSE", 0.001)
     return calls

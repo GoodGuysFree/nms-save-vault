@@ -170,17 +170,17 @@ def _objects_again(tmp_path) -> ObjectStore:
 def test_a_bad_read_back_is_quarantined_and_raised(tmp_path, monkeypatch):
     objs = _objects(tmp_path)
     digest = _sha(DATA)
-    real_replace = os.replace
+    real_replace = safety.durable_replace
 
     def lying_medium(src, dst):
         real_replace(src, dst)
         with open(dst, "r+b") as f:
             f.write(b"\x00")
 
-    monkeypatch.setattr(os, "replace", lying_medium)
+    monkeypatch.setattr(safety, "durable_replace", lying_medium)
     with pytest.raises(vstore.ObjectCorrupt):
         objs.put(DATA, digest)
-    monkeypatch.undo()
+    monkeypatch.setattr(safety, "durable_replace", real_replace)
     assert not objs.has(digest)
     assert (tmp_path / "quarantine" / f"{digest}.1").is_file()
 
@@ -188,16 +188,16 @@ def test_a_bad_read_back_is_quarantined_and_raised(tmp_path, monkeypatch):
 def test_a_busy_rename_onto_the_same_bytes_is_a_dedupe(tmp_path, monkeypatch):
     objs = _objects(tmp_path)
     digest = _sha(DATA)
-    real_replace = os.replace
+    real_replace = safety.durable_replace
 
     def other_process_wins(src, dst):
         objs.path_for(digest).parent.mkdir(parents=True, exist_ok=True)
         objs.path_for(digest).write_bytes(DATA)     # written meanwhile, and held open
         raise PermissionError(13, "in use")
 
-    monkeypatch.setattr(os, "replace", other_process_wins)
+    monkeypatch.setattr(safety, "durable_replace", other_process_wins)
     result = objs.put(DATA, digest)
-    monkeypatch.setattr(os, "replace", real_replace)
+    monkeypatch.setattr(safety, "durable_replace", real_replace)
     assert (result.written, result.healed) == (False, False)
     assert list((tmp_path / "tmp").iterdir()) == []
     assert objs.get(digest) == DATA

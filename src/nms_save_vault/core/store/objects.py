@@ -103,7 +103,7 @@ class ObjectStore:
                 os.fsync(f.fileno())
             self._fault("object.after_tmp")
             try:
-                os.replace(tmp, path)
+                safety.durable_replace(tmp, path)
             except PermissionError:
                 # Windows: another process holds the object open; it wrote the same bytes.
                 if path.is_file() and _hash_file(path) == digest:
@@ -169,7 +169,7 @@ class ObjectStore:
             except FileExistsError:
                 n += 1
         try:
-            os.replace(src, dest)          # onto the empty placeholder this call created
+            safety.durable_replace(src, dest)   # onto the empty placeholder this call made
         except BaseException:
             _silent_unlink(dest)
             raise

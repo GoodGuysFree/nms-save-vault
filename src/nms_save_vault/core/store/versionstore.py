@@ -870,7 +870,7 @@ class VersionStore:
                 f.flush()
                 os.fsync(f.fileno())
             self._fault("entry.before_replace")
-            os.replace(tmp, dest)                       # COMMIT POINT
+            safety.durable_replace(tmp, dest)           # COMMIT POINT
             safety.fsync_dir(dest.parent)
         finally:
             try:

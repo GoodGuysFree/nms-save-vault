@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from nms_save_vault.core import meta, savedir, slotmap
+from nms_save_vault.core import meta, safety, savedir, slotmap
 from nms_save_vault.core.liveops import FaultInjector, ResolvedTarget, RollbackError, SimulatedCrash
 from nms_save_vault.core.liveops import LiveChanged, WriteError
 from nms_save_vault.core.liveops import steamwrite as sw
@@ -95,8 +95,8 @@ def test_stage_then_swap_puts_the_pair_in_with_the_loading_meta_last(tmp_path, m
     assert {k: v for k, v in tree_hash(folder).items() if k not in staged} == before
 
     replaced = []
-    real_replace = os.replace
-    monkeypatch.setattr(sw.os, "replace", lambda s, d: (replaced.append(Path(d).name),
+    real_replace = safety.durable_replace
+    monkeypatch.setattr(sw.safety, "durable_replace", lambda s, d: (replaced.append(Path(d).name),
                                                         real_replace(s, d))[1])
     sw.swap(plan)
     assert replaced == [f.name for f in plan.files]
@@ -117,7 +117,7 @@ def test_a_rename_held_up_briefly_is_retried(tmp_path, monkeypatch):
     writes = source_writes(tmp_path)
     plan = sw.prepare(folder, writes, 7, TAG)
     sw.stage(plan, sw.payload_of(writes, 7))
-    real_replace = os.replace
+    real_replace = safety.durable_replace
     refusals = {"save13.hg": 2}
 
     def flaky(src, dst):
@@ -127,7 +127,7 @@ def test_a_rename_held_up_briefly_is_retried(tmp_path, monkeypatch):
             raise PermissionError(13, "held open")
         real_replace(src, dst)
 
-    monkeypatch.setattr(sw.os, "replace", flaky)
+    monkeypatch.setattr(sw.safety, "durable_replace", flaky)
     sw.swap(plan)
     assert refusals["save13.hg"] == 0
     assert (folder / "save13.hg").read_bytes() == writes[0][1]
@@ -141,7 +141,7 @@ def test_a_rename_that_keeps_failing_is_rolled_back_exactly(tmp_path, monkeypatc
     plan = sw.prepare(folder, writes, 7, TAG)
     saved = pre_bytes(folder, plan)
     sw.stage(plan, sw.payload_of(writes, 7))
-    real_replace = os.replace
+    real_replace = safety.durable_replace
     tries = []
 
     def stuck(src, dst):
@@ -150,12 +150,12 @@ def test_a_rename_that_keeps_failing_is_rolled_back_exactly(tmp_path, monkeypatc
             raise PermissionError(13, "held open")
         real_replace(src, dst)
 
-    monkeypatch.setattr(sw.os, "replace", stuck)
+    monkeypatch.setattr(sw.safety, "durable_replace", stuck)
     with pytest.raises(WriteError) as info:
         sw.swap(plan)
     assert info.value.swapped == ("save14.hg", "mf_save14.hg")
     assert len(tries) == sw.RETRIES + 1
-    monkeypatch.setattr(sw.os, "replace", real_replace)
+    monkeypatch.setattr(sw.safety, "durable_replace", real_replace)
     sw.rollback(plan, saved)
     assert tree_hash(folder) == before
 

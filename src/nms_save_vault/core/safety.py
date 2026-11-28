@@ -168,10 +168,48 @@ REPLACE_TRIES = 6
 REPLACE_PAUSE = 0.2
 
 
+MOVEFILE_REPLACE_EXISTING = 0x1
+MOVEFILE_WRITE_THROUGH = 0x8
+
+
+def _move_file_ex(src: str | Path, dst: str | Path, flags: int) -> None:
+    """Windows' MoveFileExW; raises the ``OSError`` its error code names (5/32: a
+    ``PermissionError``, as ``os.replace`` raises)."""
+    import ctypes
+    from ctypes import wintypes
+
+    global _MOVE
+    if _MOVE is None:
+        move = ctypes.WinDLL("kernel32", use_last_error=True).MoveFileExW
+        move.argtypes = (wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD)
+        move.restype = wintypes.BOOL
+        _MOVE = move
+    if not _MOVE(os.fspath(src), os.fspath(dst), flags):
+        code = ctypes.get_last_error()
+        raise OSError(None, ctypes.FormatError(code).strip(), os.fspath(dst), code)
+
+
+_MOVE = None
+
+
+def durable_replace(src: str | Path, dst: str | Path) -> None:
+    """``os.replace``, on disk when it returns (GGF 2026-11-28: a power-out must not leave a
+    rename only in memory while the journal's next line is on disk). Windows: MoveFileExW
+    with write-through, since a folder cannot be synced there. Elsewhere: the rename, then
+    the folders it touched are synced."""
+    if os.name == "nt":
+        _move_file_ex(src, dst, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)
+        return
+    os.replace(src, dst)
+    fsync_dir(Path(dst).parent)
+    if Path(src).parent != Path(dst).parent:
+        fsync_dir(Path(src).parent)
+
+
 def _replace_retrying(src: str | Path, dst: str | Path) -> None:
     for attempt in range(REPLACE_TRIES if REPLACE_RETRY else 1):
         try:
-            os.replace(src, dst)  # atomic on same volume (Windows & POSIX)
+            durable_replace(src, dst)  # atomic on same volume (Windows & POSIX), on disk
             return
         except PermissionError:
             if attempt + 1 >= (REPLACE_TRIES if REPLACE_RETRY else 1):
@@ -195,6 +233,7 @@ def atomic_write_bytes(path: str | Path, data: bytes, temp_prefix: str = ".tmp_"
     except BaseException:
         _silent_unlink(tmp)
         raise
+    fsync_dir(path.parent)      # a no-op on Windows, where the replace is written through
 
 
 def write_files_together(files: Mapping[Path, bytes]) -> None:

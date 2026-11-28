@@ -21,9 +21,9 @@ from .test_msstore_pair import account, pair, payload
 @pytest.fixture
 def events(monkeypatch):
     seen: list[tuple[str, str]] = []
-    real_replace = os.replace
+    real_replace = safety.durable_replace
     monkeypatch.setattr(safety, "fsync_dir", lambda p: seen.append(("fsync", Path(p).name)))
-    monkeypatch.setattr(os, "replace", lambda s, d: (seen.append(("replace", Path(d).name)),
+    monkeypatch.setattr(safety, "durable_replace", lambda s, d: (seen.append(("replace", Path(d).name)),
                                                      real_replace(s, d))[1])
     return seen
 

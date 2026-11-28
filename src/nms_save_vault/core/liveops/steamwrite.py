@@ -229,7 +229,7 @@ def _restore(path: Path, pre: FileState | None, data: bytes | None, tag: str) ->
 def _replace(src: Path, dst: Path) -> None:
     for attempt in range(RETRIES + 1):
         try:
-            os.replace(src, dst)
+            safety.durable_replace(src, dst)
             return
         except PermissionError:
             if attempt == RETRIES:
