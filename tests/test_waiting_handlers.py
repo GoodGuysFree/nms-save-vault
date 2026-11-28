@@ -178,3 +178,15 @@ def test_deeper_detail_that_never_comes_stops_waiting(gui_app, monkeypatch):
 
 def test_installing_an_update_shows_the_indicator_while_it_downloads():
     assert "_side_jobs" in inspect.getsource(gui.App._download_update)
+
+
+def test_what_recovery_settled_by_itself_is_said(gui_app, dialogs):
+    """GGF 2026-11-28 (the kill test): a restore killed before it changed anything was ended in
+    silence at the next start - "it should say!"."""
+    dialogs.expect()
+    gui_app.organizer_view._extras_shown({"verify": None, "store": None, "recovery": [],
+                                          "settled": ["A restore was stopped. Nothing was "
+                                                      "changed."]})
+    gui_app.update()
+    shown = dialogs.take()
+    assert any("Nothing was changed" in m for _k, _t, m in shown)

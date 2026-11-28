@@ -303,3 +303,53 @@ def test_an_edit_of_a_save_beside_a_stray_half_runs(tmp_path):
         assert outcome.status == "done", (outcome.status, outcome.code)
     finally:
         appinfo.set_app(previous.name, previous.version)
+
+
+# --- what recovery settles by itself is said (GGF 2026-11-28, the kill test: "it should say!") --
+
+
+def test_a_restore_killed_before_it_changed_anything_is_ended_and_said(world):
+    from nms_save_vault.core.liveops.recovery import take_settled
+    _place(world)
+    before = tree_hash(world.live)
+    take_settled(world.ctx)
+    plan = plan_panic_restore(world.ctx, LIVE)
+    world.ctx.faults = FaultInjector({"staged:1"})
+    with pytest.raises(SimulatedCrash):
+        execute(world.ctx, plan, plan.confirmations)
+    world.ctx.faults = None
+    world.refresh()
+    assert pending_recovery(world.ctx) == [] and tree_hash(world.live) == before
+    (said,) = take_settled(world.ctx)
+    assert "restore" in said and "Nothing was changed" in said
+    assert take_settled(world.ctx) == []                          # said once
+
+
+def test_a_restore_killed_after_it_was_written_is_finished_and_said(world):
+    from nms_save_vault.core.liveops.recovery import take_settled
+    _place(world)
+    take_settled(world.ctx)
+    plan = plan_panic_restore(world.ctx, LIVE)
+    world.ctx.faults = FaultInjector({"after_validated"})
+    with pytest.raises(SimulatedCrash):
+        execute(world.ctx, plan, plan.confirmations)
+    world.ctx.faults = None
+    world.refresh()
+    assert pending_recovery(world.ctx) == []
+    (said,) = take_settled(world.ctx)
+    assert "restore" in said and "finished" in said
+
+
+def test_a_restore_killed_before_it_wrote_is_said_too(world):
+    from nms_save_vault.core.liveops.recovery import take_settled
+    _place(world)
+    take_settled(world.ctx)
+    plan = plan_panic_restore(world.ctx, LIVE)
+    world.ctx.faults = FaultInjector({"after_preparing"})
+    with pytest.raises(SimulatedCrash):
+        execute(world.ctx, plan, plan.confirmations)
+    world.ctx.faults = None
+    world.refresh()
+    assert pending_recovery(world.ctx) == []
+    (said,) = take_settled(world.ctx)
+    assert "Nothing was changed" in said

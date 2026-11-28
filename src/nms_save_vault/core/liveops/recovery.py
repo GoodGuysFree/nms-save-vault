@@ -114,6 +114,46 @@ class _Open:
         return "torn"
 
 
+#: What an interrupted op of each kind is called when recovery says it settled one.
+_WHAT = {
+    "panic_restore": "A restore of the whole folder",
+    "undo": "An undo",
+    "place": "A move of a save", "place_into_empty": "A move of a save",
+    "restore_older": "A restore of an older save", "swap": "A swap of two saves",
+    "promote": "A change of the save the game loads", "keep": "Keeping a copy of a save",
+    account.KIND: "A change to the account data",
+    account.RESTORE_KIND: "A restore of the account data",
+    "index_repair": "A repair of the Xbox save index",
+    "xbox_account_data": "Giving an Xbox account the backup's account data",
+}
+_settled: list[tuple[str, str]] = []       # (the vault, what was said)
+
+
+def _vault_key(ctx: OpContext) -> str:
+    return os.path.normcase(os.path.abspath(str(ctx.vault.root)))
+
+
+def take_settled(ctx: OpContext) -> list[str]:
+    """What recovery settled by itself in ``ctx``'s vault since the last call (an op cut off
+    before it changed anything, ended; one cut off after it was written, finished), each said
+    once, for the front end to show (GGF 2026-11-28: never settled in silence)."""
+    key = _vault_key(ctx)
+    out = [text for vault, text in _settled if vault == key]
+    _settled[:] = [(vault, text) for vault, text in _settled if vault != key]
+    return out
+
+
+def _say(ctx: OpContext, rec: opjournal.OpRecord, how: str) -> None:
+    what = _WHAT.get(rec.kind or "", "A change to your saves")
+    when = f" (started {_local(rec.started)})" if rec.started else ""
+    if how == "ended":
+        _settled.append((_vault_key(ctx), f"{what}{when} was stopped before it changed anything: the program "
+                        "was closed or the computer went off. Nothing was changed."))
+    else:
+        _settled.append((_vault_key(ctx), f"{what}{when} was stopped after everything was written: the program "
+                        "was closed or the computer went off. It was finished now."))
+
+
 def pending_recovery(ctx: OpContext) -> list[RecoveryItem]:
     """The interrupted ops the owner must decide on, after the automatic cases are dealt
     with. Empty while another operation holds the live-op lock (it is running, not
@@ -154,6 +194,7 @@ def _pending(ctx: OpContext) -> list[RecoveryItem]:
         if rec.status == "preparing":                 # nothing live can have changed
             append_quietly(ctx, rec.op_id, "abandoned", {"reason": "not_started"})
             opjournal.remove_marker(ctx, rec.op_id)
+            _say(ctx, rec, "ended")
             continue
         if rec.kind == XBOX_ACCOUNT:            # an Xbox account's data from a backup (gap 4)
             if game_free:
@@ -181,11 +222,13 @@ def _pending(ctx: OpContext) -> list[RecoveryItem]:
             # one that changed since (the game ran) is the owner's to decide.
             if game_free and _is_post(op):
                 if _finish_validated(ctx, op).status == "done":
+                    _say(ctx, rec, "finished")
                     continue
         elif rec.status == "writing" and op.state == "pre" and game_free:
             if _back(ctx, op, recovered=False).status == "rolled_back":
                 append_quietly(ctx, rec.op_id, "abandoned", {"reason": "not_started"})
                 opjournal.remove_marker(ctx, rec.op_id)
+                _say(ctx, rec, "ended")
                 continue
             log.warning("op %s: the temporary files could not be removed", rec.op_id)
             items.append(_item(rec, "failed", "back", ("back", "leave")))
@@ -305,8 +348,10 @@ def _xbox_account_pending(ctx: OpContext, rec: opjournal.OpRecord) -> RecoveryIt
     if state == "post":
         append_quietly(ctx, rec.op_id, "done", {"oplog": False, "lineage": False,
                                                 "recovered": True})
+        _say(ctx, rec, "finished")
     elif state == "pre":
         append_quietly(ctx, rec.op_id, "abandoned", {"reason": "not_started"})
+        _say(ctx, rec, "ended")
     else:
         return RecoveryItem(rec.op_id, rec.kind, (), "superseded", "leave", ("leave",),
                             XBOX_ACCOUNT_OTHER, _local(rec.started))
@@ -351,10 +396,12 @@ def _index_repair_pending(ctx: OpContext, rec: opjournal.OpRecord) -> RecoveryIt
         append_quietly(ctx, rec.op_id, "done", {"oplog": False, "lineage": False,
                                                 "recovered": True})
         opjournal.remove_marker(ctx, rec.op_id)
+        _say(ctx, rec, "finished")
         return None
     if now == pre:
         append_quietly(ctx, rec.op_id, "abandoned", {"reason": "not_started"})
         opjournal.remove_marker(ctx, rec.op_id)
+        _say(ctx, rec, "ended")
         return None
     return RecoveryItem(rec.op_id, rec.kind, (label,), "superseded", "leave", ("leave",),
                         INDEX_REPAIR_TEXT.format(label=label), _local(rec.started))
@@ -414,12 +461,14 @@ def _account_pending(ctx: OpContext, rec: opjournal.OpRecord,
     if found.state == "post":
         if game_free:
             account.finish(ctx, rec.op_id, validated=rec.status == "validated")
+            _say(ctx, rec, "finished")
             return None
         return item("complete", "forward", ("forward", "back"))
     if found.state == "pre":
         if game_free:
             append_quietly(ctx, rec.op_id, "abandoned", {"reason": "not_started"})
             opjournal.remove_marker(ctx, rec.op_id)
+            _say(ctx, rec, "ended")
             return None
         return item("not_started", "back", ("back",))
     if found.state == "torn":

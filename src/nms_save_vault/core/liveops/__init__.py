@@ -48,12 +48,13 @@ from .execute import execute
 from .opjournal import busy_targets, liveop_lock
 from .guide import empty_slot_guide
 from .planner import eviction_picker, plan_keep, plan_place, plan_promote, plan_swap
-from .recovery import pending_recovery, resolve_recovery
+from .recovery import pending_recovery, resolve_recovery, take_settled
 from .undo import op_history, plan_undo
 from .verify import dismiss_verification, update_verification
 from .targets import resolve_target
 
 __all__ = [
+    "take_settled",
     "AccountChoice", "CloudInfo", "CloudMode", "ConfirmationRequired", "EmptySlotGuide",
     "Estimate", "EvictionPicker", "Eviction", "FaultInjector", "LiveAccount", "LiveChanged",
     "LiveOpError",

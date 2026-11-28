@@ -17,13 +17,13 @@ import time
 import tkinter as tk
 from collections.abc import Callable, MutableMapping
 from pathlib import Path
-from tkinter import ttk
+from tkinter import messagebox, ttk
 
 from ...core import aliases
 from ...core.api import vault_stamp
 from ...core.liveops import (
     OpContext, OpOutcome, PlacePlan, dismiss_verification, empty_slot_guide, execute,
-    pending_recovery, plan_keep, plan_promote, plan_swap, plan_undo, update_verification)
+    pending_recovery, take_settled, plan_keep, plan_promote, plan_swap, plan_undo, update_verification)
 from ...core.organizer import Organizer
 from ...core.organizer.model import platform_name
 from ...core.organizer.readmodel import BoardSlot, LiveSource, ReadModel
@@ -116,7 +116,7 @@ def default_context(organizer: Organizer) -> OpContext:
     host = organizer.host
     return context_for(organizer, host=host, machine_id=machine_id(host))
 
-
+
 #: How long a deep read asked for keeps the indicator on, at most (s).
 DEEP_WAIT_S = 30.0
 
@@ -480,6 +480,7 @@ class OrganizerView(ttk.Frame):
             if not self._recovery_checked:
                 self._recovery_checked = True
                 out["recovery"] = pending_recovery(ctx)
+                out["settled"] = take_settled(ctx)     # ended or finished by itself: said
         except Exception:  # noqa: BLE001
             log.exception("the live operations' look-over failed")
         try:
@@ -953,6 +954,10 @@ class OrganizerView(ttk.Frame):
                 self.alert("store-status", aliases.scrub("Vault: " + "; ".join(parts) + "."))
             else:
                 self.clear_alert("store-status")
+        if extras.get("settled"):           # never in silence (GGF 2026-11-28)
+            text = "\n\n".join(extras["settled"])
+            self.after_idle(lambda: messagebox.showinfo(
+                "Interrupted operation", text, parent=self.winfo_toplevel()))
         if extras.get("recovery"):
             self.open_recovery(extras["recovery"])
 
