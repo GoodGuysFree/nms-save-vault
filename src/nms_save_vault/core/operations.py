@@ -229,6 +229,64 @@ def _require_free_space(folder: Path, needed: int) -> None:
         )
 
 
+#: Beside a vault folder being written (``<id>.incomplete``): made before the folder, taken
+#: away once the catalog lists it. One still there at the next start names a folder a
+#: power-out cut off, which is removed and said (GGF 2026-11-28 rule 2).
+INCOMPLETE = ".incomplete"
+
+
+def _marker(folder: Path) -> Path:
+    return folder.with_name(folder.name + INCOMPLETE)
+
+
+def _mark_incomplete(folder: Path) -> None:
+    safety.atomic_write_bytes(_marker(folder), b"")     # on disk before the folder is made
+
+
+def _mark_complete(folder: Path) -> None:
+    try:
+        _marker(folder).unlink()
+        safety.fsync_dir(folder.parent)
+    except FileNotFoundError:
+        pass
+    except OSError as exc:        # the folder is listed: the next start only takes this away
+        log.warning("could not remove the marker of %s: %s", folder.name, exc)
+
+
+def incomplete_notice(vault_root: str | Path) -> str:
+    """What opening a vault does first: each vault folder whose marker (:data:`INCOMPLETE`)
+    is still there was cut off before the catalog listed it. It is removed (a part-written
+    copy is never a backup), and the message names it; "" when there was none. A folder the
+    catalog lists is complete: only its marker is taken away. A vault opened read-only is
+    left as it is."""
+    root = Path(vault_root)
+    markers = [m for name in ("backups", "snapshots", "extracts")
+               for m in sorted((root / name).glob("*" + INCOMPLETE)) if m.is_file()]
+    if not markers:
+        return ""
+    vault = Vault(root)
+    if vault.read_only:
+        return ""
+    removed: list[str] = []
+    with _store().guarded_write(root):
+        listed = {e.id for e in vault.entries}
+        for marker in markers:
+            folder = marker.with_name(marker.name[:-len(INCOMPLETE)])
+            if folder.name not in listed and folder.exists():
+                _remove_partial(folder)
+                if folder.exists():
+                    continue            # said and tried again at the next start
+                removed.append(folder.name)
+            _mark_complete(folder)
+    if not removed:
+        return ""
+    names = ", ".join(removed)
+    one = len(removed) == 1
+    return (f"{'A copy' if one else 'Copies'} into the vault that the program was stopped in "
+            f"the middle of ({names}) {'was' if one else 'were'} not complete, and "
+            f"{'was' if one else 'were'} removed. Everything else in the vault is complete.")
+
+
 def _remove_partial(folder: Path) -> None:
     """Delete a half-written vault folder. A failure is logged, not raised, so the caller
     still sees the error that made the copy fail."""
@@ -271,6 +329,7 @@ def _new_managed_entry(
     _require_free_space(parent, needed)
     entry_id = vault.new_id(kind, tag=tag, folder=parent)
     dest = parent / entry_id
+    _mark_incomplete(dest)
     dest.mkdir()
     try:
         copier = _Copier()
@@ -284,10 +343,12 @@ def _new_managed_entry(
             vault.upsert(entry)
     except BaseException as exc:
         _remove_partial(dest)
+        _mark_complete(dest)
         gone = next((f for f in files if not f.exists()), None)
         if isinstance(exc, OSError) and gone is not None:
             raise SourceChangedError(gone.name, vanished=True, live=live) from exc
         raise
+    _mark_complete(dest)
     return entry
 
 
@@ -741,6 +802,8 @@ def import_vault(vault: Vault, source_dir: Path, copy_into_vault: bool) -> OpRes
             continue
         with _store().guarded_write(vault.root):
             vault.upsert(new_entry)
+        if new_entry.managed and new_entry.path:
+            _mark_complete(Path(new_entry.path))      # listed now: the copy is complete
         have.add(e.id)
         added.append(e.id)
 
@@ -837,12 +900,16 @@ def _relocate_entry(
         dst_folder = _entry_folder(vault, entry)
         if not dst_folder.exists():  # idempotent: never re-copy over an existing folder
             copier = _Copier()
+            # marked until the catalog lists it (the caller's upsert): a cut-off copy is
+            # removed and said at the next start (incomplete_notice)
+            _mark_incomplete(dst_folder)
             try:
                 shutil.copytree(src_folder, dst_folder, copy_function=copier)
                 _verify_copy(src_folder, dst_folder, _all_files(src_folder), copier, False)
                 safety.fsync_tree(dst_folder)       # on disk before the catalog lists it
             except BaseException:
                 _remove_partial(dst_folder)
+                _mark_complete(dst_folder)
                 raise
         return replace(entry, path=str(dst_folder), managed=True)
     # In place: reference the source vault's folder, but do NOT manage it -- the files

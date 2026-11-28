@@ -834,6 +834,13 @@ class App(tk.Tk):
         notice = startup_notice(vault_root)
         if notice:
             self.after(notice_ms, lambda: _showinfo("Vault upgrade", notice, parent=self))
+        try:        # a copy a power-out cut off is removed and said (GGF 2026-11-28 rule 2)
+            cut = ops.incomplete_notice(vault_root)
+        except (OSError, ops.OperationError) as exc:
+            log.warning("cut-off vault copies were not looked for: %s", exc)
+            cut = ""
+        if cut:
+            self.after(notice_ms, lambda: _showinfo("Vault", cut, parent=self))
         self.after(offer_ms, self._offer_interrupted_undo)
         self.after(offer_ms, lambda: self._finish_thinning(vault_root))
 

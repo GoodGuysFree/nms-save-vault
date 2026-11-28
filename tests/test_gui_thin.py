@@ -324,3 +324,17 @@ def test_a_finish_that_fails_is_said_and_never_fatal(app, world, dialogs, monkey
     assert kind == "showwarning" and "in use by another program" in message
     assert "next start" in message and app.winfo_exists()
     assert thinning.thinning_pending(world.root)
+
+def test_opening_the_vault_removes_a_cut_off_copy_and_says_so(app, world, dialogs):
+    """GGF 2026-11-28 rule 2: a vault folder a power-out cut off is found, removed and said."""
+    from nms_save_vault.core import operations as ops
+    cut = world.root / "backups" / "full-cut-off"
+    (world.root / "backups").mkdir(exist_ok=True)
+    (world.root / "backups" / ("full-cut-off" + ops.INCOMPLETE)).write_bytes(b"")
+    cut.mkdir()
+    (cut / "save.hg").write_bytes(b"half")
+    dialogs.expect()
+    app._vault_start_checks(world.root, 0, 0)
+    _wait(app, lambda: any("full-cut-off" in m for _k, _t, m in dialogs.shown))
+    assert not cut.exists()
+    dialogs.take()
