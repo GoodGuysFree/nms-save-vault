@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 import os
 import shutil
+import time
 import warnings as pywarnings
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field, replace
@@ -260,6 +261,7 @@ def incomplete_notice(vault_root: str | Path) -> str:
     catalog lists is complete: only its marker is taken away. A vault opened read-only is
     left as it is."""
     root = Path(vault_root)
+    _sweep_temp(root)
     markers = [m for name in ("backups", "snapshots", "extracts")
                for m in sorted((root / name).glob("*" + INCOMPLETE)) if m.is_file()]
     if not markers:
@@ -285,6 +287,23 @@ def incomplete_notice(vault_root: str | Path) -> str:
     return (f"{'A copy' if one else 'Copies'} into the vault that the program was stopped in "
             f"the middle of ({names}) {'was' if one else 'were'} not complete, and "
             f"{'was' if one else 'were'} removed. Everything else in the vault is complete.")
+
+
+#: A temporary file (``safety.atomic_write_bytes``) older than this is a leftover (s).
+TEMP_AGE = 60.0
+
+
+def _sweep_temp(root: Path) -> None:
+    """A write cut off by a kill leaves its temporary file (``.tmp_*.part``, never a backup)
+    beside the vault's folders: one older than :data:`TEMP_AGE` is taken away."""
+    now = time.time()
+    for name in ("backups", "snapshots", "extracts"):
+        for tmp in (root / name).glob(".tmp_*.part"):
+            try:
+                if tmp.is_file() and now - tmp.stat().st_mtime > TEMP_AGE:
+                    tmp.unlink()
+            except OSError as exc:
+                log.warning("could not remove the leftover %s: %s", tmp.name, exc)
 
 
 def _remove_partial(folder: Path) -> None:

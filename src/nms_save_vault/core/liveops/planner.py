@@ -503,6 +503,10 @@ def recovery_pending(ctx: OpContext, accounts: Iterable[LiveRef]) -> Warning | N
     wanted = set(accounts)
     try:
         for op in opjournal.open_ops(ctx):
+            first = op.events[0] if op.events else {}
+            if op.kind in ("account_restore", "xbox_account_data") and \
+                    op.status == "preparing" and isinstance(first.get("entry"), str):
+                continue    # a restore's account data, journaled ahead of it: not begun
             # a slot's op names its slots; an account-data op its folder (review R22-2)
             if any(t.ref in wanted for t in op.targets) or opjournal.account_ref(op) in wanted:
                 return warning("RECOVERY_PENDING")

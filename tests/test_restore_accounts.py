@@ -387,7 +387,7 @@ def test_xbox_account_data_cut_before_its_mirror_is_found_and_finished(make_wgs_
     assert rec.status == "done"
 
 
-def test_xbox_account_data_cut_before_the_index_ends_with_nothing_changed(make_wgs_account,
+def test_xbox_account_data_cut_before_the_index_is_given_once_the_restore_went_through(make_wgs_account,
                                                                          tmp_path, monkeypatch):
     from nms_save_vault.core.liveops import SimulatedCrash
     from nms_save_vault.core.liveops.recovery import pending_recovery
@@ -409,9 +409,11 @@ def test_xbox_account_data_cut_before_the_index_ends_with_nothing_changed(make_w
     monkeypatch.setattr(classic, "_give_missing_xbox_account_data", give)
     with pytest.raises(SimulatedCrash):
         ops.restore_full(vault, backup, live, allow_game_running=True)
+    monkeypatch.setattr(classic, "_give_missing_xbox_account_data", real_give)  # the next start
     assert _wgs_account_data(live) is None
 
     ctx, _recs = _xbox_account_ops(vault, live)
-    assert pending_recovery(ctx) == []
+    assert pending_recovery(ctx) == []              # the restore went through: so does this
     _ctx, (rec,) = _xbox_account_ops(vault, live)
-    assert rec.status == "abandoned" and not (twin / "AccountData").exists()
+    assert rec.status == "done" and _wgs_account_data(live) is not None
+    assert (twin / "AccountData" / "data").read_bytes() == _wgs_account_data(live)

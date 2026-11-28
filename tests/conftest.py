@@ -674,3 +674,33 @@ def _build_app(gui, tmp_path):
     # No start-up scan: the organizer tests start theirs when they want one.
     return gui.App(vault=vault_root, state_path=tmp_path / "install" / "state.json",
                    scan_on_start=False)
+
+
+# --- the release gate: a whole kill-test run that passed is recorded (packaging/release_gate) ---
+
+
+def pytest_sessionfinish(session, exitstatus):
+    """``-m killtest`` over every case, all passed: write the stamp the release builds check.
+    A run narrowed by -k or to some of the tests records nothing."""
+    config = session.config
+    if hasattr(config, "workerinput") or exitstatus != 0:
+        return
+    if (config.option.markexpr or "").strip() != "killtest" or config.option.keyword:
+        return
+    if any("::" in str(a) for a in config.args):
+        return
+    reporter = config.pluginmanager.get_plugin("terminalreporter")
+    stats = reporter.stats if reporter is not None else {}
+    passed = [r for r in stats.get("passed", []) if getattr(r, "when", "call") == "call"]
+    if stats.get("failed") or stats.get("error"):
+        return
+    from . import test_kill_safety
+    expected = 2 * len(test_kill_safety.CASES)
+    if len(passed) < expected:
+        return
+    import importlib.util
+    gate_path = Path(__file__).resolve().parent.parent / "packaging" / "release_gate.py"
+    spec = importlib.util.spec_from_file_location("release_gate", gate_path)
+    gate = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(gate)
+    gate.write_stamp(len(passed))

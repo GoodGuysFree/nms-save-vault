@@ -37,11 +37,27 @@ time this version starts. `tests/test_whatsnew.py` fails until `NOTES_VERSION` m
 bullets match the changelog's, and each one is short. The kits ship `CHANGELOG.md` beside the
 program, so commit it before building.
 
-## 2. Run the tests
+## 2. Run the tests, then the kill tests
+
+Tell the Savecraft agent first, and run nothing while its tests run (GGF 2026-11-28: neither
+app's testing may affect the other's). Both runs go on the hidden desktop:
 
 ```pwsh
-uv run pytest          # or: & .venv\Scripts\python.exe -m pytest -q
+uv run python C:\Devel\NMSSavecraft\tools\hidden_desktop.py uv run pytest -n 12
+uv run python C:\Devel\NMSSavecraft\tools\hidden_desktop.py uv run pytest -m killtest -n 12
 ```
+
+The kill tests (`tests/test_kill_safety.py`, about three minutes) run each restore and backup
+in a child process and end it the way Task Manager does, at every step it takes and at random
+moments, then check what the next start makes of it: the save folder wholly as it was or
+wholly as the operation leaves it, nothing settled in silence, no temporary file left, the
+vault whole. They are not part of the everyday run. **They gate the release** (GGF 2026-11-28:
+"It needs to run every time before we release. We cannot compromise on the user's file
+safety"): a run of all of them that passes writes `build/killtest-pass.json`, the digest of
+the package as tested, and `build_core.py` and `make_installer_zip.ps1` refuse while the
+package differs from it. `uv run python packaging/release_gate.py check` says where it stands.
+A kit only for testing by hand is built with `make_installer_zip.ps1 -TestKit` and is never
+released.
 
 ## 3. Build the installer kit
 

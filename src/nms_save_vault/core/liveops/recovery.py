@@ -173,7 +173,10 @@ def resolve_recovery(ctx: OpContext, op_id: str, choice: Choice,
     checked, the owner confirms ``GAME_STATE_UNKNOWN`` first (as for a move)."""
     try:
         with opjournal.liveop_lock(ctx, timeout=LIVEOP_TIMEOUT):
-            return _resolve(ctx, op_id, choice, frozenset(confirmed))
+            out = _resolve(ctx, op_id, choice, frozenset(confirmed))
+            if ctx.game_probe() is False:
+                _settle_followers(ctx)          # a restore's account data ends with it
+            return out
     except LiveOpBusy:
         return refused(op_id, "BUSY", "Another operation is still running. Try again in a moment.")
 
@@ -190,6 +193,8 @@ def _pending(ctx: OpContext) -> list[RecoveryItem]:
             continue
         if newer:                       # this core writes nothing there, not even a recovery
             items.append(_unusable(rec, TOO_NEW, ()))
+            continue
+        if account.is_follower(rec):            # settled with its restore, below
             continue
         if rec.status == "preparing":                 # nothing live can have changed
             append_quietly(ctx, rec.op_id, "abandoned", {"reason": "not_started"})
@@ -234,8 +239,41 @@ def _pending(ctx: OpContext) -> list[RecoveryItem]:
             items.append(_item(rec, "failed", "back", ("back", "leave")))
             continue
         items.append(_classify(ctx, op, game_free))
+    if game_free:
+        _settle_followers(ctx)
     _drop_stale_markers(ctx)
     return items
+
+
+def _lead_of(ops: dict, rec: opjournal.OpRecord) -> opjournal.OpRecord | None:
+    """The restore an account follower was journaled ahead of: the first whole-folder restore
+    of this machine that started after it. None: it never started."""
+    leads = [r for r in ops.values() if r.kind == "panic_restore" and r.machine == rec.machine
+             and r.started >= rec.started and r.op_id != rec.op_id]
+    return min(leads, key=lambda r: r.started) if leads else None
+
+
+def _settle_followers(ctx: OpContext) -> None:
+    """Each open account follower whose restore has come to an end ends the same way: its
+    account data written when the restore went through, as it was when it did not; and said.
+    One whose restore is still open waits for it."""
+    ops = opjournal.read_ops(ctx)
+    for rec in ops.values():
+        if not rec.open or rec.machine != ctx.machine_id or not account.is_follower(rec):
+            continue
+        lead = _lead_of(ops, rec)
+        if lead is not None and lead.open:
+            continue
+        restored = lead is not None and lead.status == "done"
+        try:
+            how = (_settle_xbox_follower(ctx, rec, restored) if rec.kind == XBOX_ACCOUNT
+                   else account.settle_follower(ctx, rec, restored))
+        except (TargetError, OSError, ValueError) as exc:
+            log.warning("op %s: the account data of a restore was not settled: %r",
+                        rec.op_id, exc)
+            continue
+        if how is not None:
+            _say(ctx, rec, how)
 
 
 def _classify(ctx: OpContext, op: _Open, game_free: bool) -> RecoveryItem:
@@ -325,6 +363,34 @@ XBOX_ACCOUNT_TEXT = ("A restore was interrupted while it gave an Xbox account th
 XBOX_ACCOUNT_OTHER = ("A restore was interrupted while it gave an Xbox account the backup's "
                       "account data, and that account data has changed since. It is left as "
                       "it is.")
+
+
+def _settle_xbox_follower(ctx: OpContext, rec: opjournal.OpRecord,
+                          restored: bool) -> str | None:
+    """An Xbox account's data journaled ahead of its restore ends as the restore did: given
+    when the restore went through ("finished"), never written when it did not ("ended")."""
+    from .classic import _give_missing_xbox_account_data, settle_xbox_account
+    first = rec.events[0]
+    folder = Path(first["folder"])
+    if not folder.is_dir():
+        return None                     # waits for its drive
+    if rec.status == "writing":
+        (t,) = (rec.last("writing") or {})["targets"]
+        state = settle_xbox_account(t["xbox_account"])    # its own unlisted blobs out on "pre"
+        if state == "post":
+            append_quietly(ctx, rec.op_id, "done", {"oplog": False, "lineage": False,
+                                                    "recovered": True})
+            opjournal.remove_marker(ctx, rec.op_id)
+            return "finished"
+        if state == "other":
+            return None
+    if not restored:
+        append_quietly(ctx, rec.op_id, "abandoned", {"reason": "not_started"})
+        opjournal.remove_marker(ctx, rec.op_id)
+        return "ended"
+    _give_missing_xbox_account_data(ctx, first["entry"], folder, None, op_id=rec.op_id)
+    after = opjournal.read_ops(ctx).get(rec.op_id)
+    return "finished" if after is not None and not after.open else None
 
 
 def _xbox_account_pending(ctx: OpContext, rec: opjournal.OpRecord) -> RecoveryItem | None:
@@ -733,8 +799,14 @@ def _state(wt: OpTarget, op_id: str, settled: dict | None = None) -> str:
             kinds.add("pre" if now_sha == pre_sha else "post" if now_sha == posts.get(name) or own
                       else "other")
         return _combine(kinds)
+    msstore.sweep_pair_temp(wt.xbox)    # a cut-off write's temporary files (under the lock)
     index = msstore.pair_index_state(wt.xbox)
-    mirror = set(msstore.pair_xgs_states(wt.xbox).values())
+    # A save the write leaves as it was (the restore puts back the very bytes it holds) reads
+    # as written whatever happened: only the copies the write changes tell pre from post
+    # (the kill tests, 2026-11-28: an Xbox restore killed before it wrote was "changed since").
+    post = {b.identifier: (b.data_sha256, b.meta_sha256) for b in wt.xbox.blobs}
+    mirror = {state for ident, state in msstore.pair_xgs_states(wt.xbox).items()
+              if tuple(wt.xbox.pre_xgs.get(ident) or ("", "")) != post.get(ident)}
     if index == "other" or "other" in mirror:
         return "other"
     if index == "pre":

@@ -181,7 +181,7 @@ def _restore_accountdata(ctx: OpContext, plan: PlacePlan, account: LiveRef,
 
 
 def write_account_files(ctx: OpContext, account: LiveRef, entry_id: str, *,
-                        only_if_missing: bool = False):
+                        only_if_missing: bool = False, op_id: str | None = None):
     """Steam: the account data ``entry_id`` holds over the live account's, as one journaled
     account op (:func:`.account.write_files`): a power-out between its two files is found at
     the next start and put back or finished (GGF 2026-11-28). ``only_if_missing``: only for a
@@ -192,9 +192,12 @@ def write_account_files(ctx: OpContext, account: LiveRef, entry_id: str, *,
     kept = account_files(ctx, entry_id)
     folder = resolve_account(ctx, account).folder
     if not kept or (only_if_missing and (folder / formats.ACCOUNT_DATA_NAME).is_file()):
+        if op_id is not None:
+            account_ops.end_quietly(ctx, op_id, "nothing_to_do")
         return OpOutcome(None, "done", "The account data was left as it is.", (), None, "n/a",
                          None)
-    return account_ops.write_files(ctx, account, kept, "The account data was restored")
+    return account_ops.write_files(ctx, account, kept, "The account data was restored",
+                                   op_id=op_id)
 
 
 def account_files(ctx: OpContext, entry_id: str) -> dict[str, bytes]:

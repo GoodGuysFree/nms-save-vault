@@ -129,6 +129,12 @@ def main(argv: list[str]) -> int:
         print("Refusing: src/nms_save_vault differs from the commit, so the wheel would not "
               "match it:", *changed, sep="\n  ", file=sys.stderr)
         return 1
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from release_gate import problem            # the kill tests gate every release
+    why = problem()
+    if why:
+        print(f"Refusing: {why}.", file=sys.stderr)
+        return 1
     wheel = build(out_dir)
     print(wheel)
     print("sha256", hashlib.sha256(wheel.read_bytes()).hexdigest())

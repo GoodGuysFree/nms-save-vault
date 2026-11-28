@@ -73,6 +73,20 @@ def _sha(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def _temp(op_id: str) -> str:
+    """The temporary files of an op's account writes are named after it: a write cut off by a
+    kill leaves one, which recovery takes away (:func:`stopped`)."""
+    return f".tmp_{op_id}_"
+
+
+def sweep_temp(folder: Path, op_id: str) -> None:
+    for leftover in folder.glob(_temp(op_id) + "*.part"):
+        try:
+            leftover.unlink()
+        except OSError:
+            pass
+
+
 def _shas_now(folder: Path) -> tuple[str, str]:
     """Each account file's sha as it is now; "" for one that is not there (or not read)."""
     out = []
@@ -424,9 +438,9 @@ def _write(ctx: OpContext, plan: AccountPlan, confirmed: frozenset[str]) -> OpOu
         return OpOutcome(op_id, "stale", "The account data changed since you opened this. "
                          "Please check again.", (), None, "n/a", None, "STALE")
     try:
-        safety.atomic_write_bytes(acct.folder / DATA, new_data)
+        safety.atomic_write_bytes(acct.folder / DATA, new_data, temp_prefix=_temp(op_id))
         at(ctx.faults, "account_data_written")
-        safety.atomic_write_bytes(acct.folder / META, new_meta)
+        safety.atomic_write_bytes(acct.folder / META, new_meta, temp_prefix=_temp(op_id))
         at(ctx.faults, "account_meta_written")
         if _read(acct.folder) != (new_data, new_meta):
             raise OSError("the account files do not read back as written")
@@ -446,38 +460,129 @@ def _write(ctx: OpContext, plan: AccountPlan, confirmed: frozenset[str]) -> OpOu
                      f"account data.", (), None, "n/a", None)
 
 
+def prepare_follow(ctx: OpContext, account: LiveRef, entry_id: str, *,
+                   only_if_missing: bool) -> str:
+    """Journal, before a whole-folder restore starts, the account files it will write after its
+    slots (``entry_id``'s; ``only_if_missing``: only into a folder with none). The restore and
+    its account data are one operation for the owner: recovery settles this op with the
+    restore's (finished when the restore went through, ended when it did not; GGF 2026-11-28,
+    the kill tests). Returns the op's id, for :func:`write_files`."""
+    acct = resolve_account(ctx, account)
+    op_id = new_op_id(ctx.clock)
+    ref = {**source_to_json(acct.account)}
+    if not acct.account.instance:
+        ref["at"] = instance_of(acct.folder)
+    opjournal.append(ctx, op_id, "preparing", {
+        "kind": RESTORE_KIND, "app": ctx.app(), "targets": [], "account": ref,
+        "note": "the account data of a restore", "undo_of": None, "confirmed": [],
+        "plan_digest": "", "entry": entry_id, "only_if_missing": only_if_missing})
+    return op_id
+
+
+def end_quietly(ctx: OpContext, op_id: str, reason: str) -> None:
+    append_quietly(ctx, op_id, "abandoned", {"reason": reason})
+    opjournal.remove_marker(ctx, op_id)
+
+
+def is_follower(rec: opjournal.OpRecord) -> bool:
+    """An account op journaled ahead of a restore (:func:`prepare_follow`, or the Xbox one,
+    ``classic._prepare_xbox_follow``)."""
+    first = rec.events[0] if rec.events else {}
+    return rec.kind in (RESTORE_KIND, "xbox_account_data") and isinstance(first.get("entry"), str)
+
+
+def settle_follower(ctx: OpContext, rec: opjournal.OpRecord, restored: bool) -> str | None:
+    """Bring a cut-off :func:`prepare_follow` op to the end its restore came to: ``restored``
+    (the restore went through) -> the account files are written as the restore would have
+    ("finished"); otherwise they are as they were ("ended"). None: they changed since (the
+    game wrote them), which is left as it is and offered."""
+    from .panic import account_files
+    first = rec.events[0]
+    account = _account_of(rec)
+    if account is None:
+        end_quietly(ctx, rec.op_id, "unusable")
+        return "ended"
+    folder = resolve_account(ctx, account).folder
+    writing = rec.status != "preparing"
+    if not restored:
+        if not writing:
+            end_quietly(ctx, rec.op_id, "not_started")
+            return "ended"
+        found = stopped(ctx, rec)
+        if found.state == "pre":
+            end_quietly(ctx, rec.op_id, "not_started")
+            return "ended"
+        if found.state in ("post", "torn") and put_back(ctx, rec.op_id, found.snapshot_id,
+                                                         found.folder, found.pre):
+            return "ended"
+        return None
+    files = account_files(ctx, first["entry"])
+    if first.get("only_if_missing") and not writing and (folder / DATA).is_file():
+        files = {}
+    if not writing:
+        if not files:
+            end_quietly(ctx, rec.op_id, "nothing_to_do")
+            return "finished"
+        out = write_files(ctx, account, files, "The account data was restored", op_id=rec.op_id,
+                          locked=True)
+        return "finished" if out.status == "done" else None
+    found = stopped(ctx, rec)
+    if found.state == "other":
+        return None
+    if found.state != "post":
+        try:
+            for name in (DATA, META):
+                if name in files:
+                    safety.atomic_write_bytes(folder / name, files[name],
+                                              temp_prefix=_temp(rec.op_id))
+        except OSError:
+            return None
+        if stopped(ctx, rec).state != "post":
+            return None
+    finish(ctx, rec.op_id, validated=rec.status == "validated")
+    return "finished"
+
+
 def write_files(ctx: OpContext, account: LiveRef, files: Mapping[str, bytes],
-                what: str) -> OpOutcome:
+                what: str, *, op_id: str | None = None, locked: bool = False) -> OpOutcome:
     """Write a restore's account files whole into ``account``'s folder (:data:`RESTORE_KIND`),
     under the live-op lock and journaled as an account write: a safety snapshot of the folder
     first (it holds the files as they are, or that there are none), the record of both files'
     before and after, then each file, and both checked. A write cut off part-way is found at
     the next start and finished or put back (:func:`stopped`); a failure puts it back now.
     Files ``files`` does not name are left as they are."""
+    if locked:                          # the caller holds the live-op lock (recovery)
+        return _write_files(ctx, account, files, what, op_id)
     try:
         with opjournal.liveop_lock(ctx):
-            return _write_files(ctx, account, files, what)
+            return _write_files(ctx, account, files, what, op_id)
     except opjournal.LiveOpBusy:
+        if op_id is not None:
+            end_quietly(ctx, op_id, "busy")
         return refused(None, "BUSY", "Another operation is still running. Try again in a moment.")
 
 
 def _write_files(ctx: OpContext, account: LiveRef, files: Mapping[str, bytes],
-                 what: str) -> OpOutcome:
+                 what: str, prepared: str | None = None) -> OpOutcome:
     acct = resolve_account(ctx, account)
     pre = _shas_now(acct.folder)
     post = tuple(_sha(files[n]) if n in files else was for n, was in zip((DATA, META), pre))
     if post == pre:
-        return OpOutcome(None, "done", "The account data is already as wanted.", (), None,
+        if prepared is not None:
+            append_quietly(ctx, prepared, "done", {})
+            opjournal.remove_marker(ctx, prepared)
+        return OpOutcome(prepared, "done", "The account data is already as wanted.", (), None,
                          "n/a", None)
-    op_id = new_op_id(ctx.clock)
+    op_id = prepared or new_op_id(ctx.clock)
     ref = {**source_to_json(acct.account)}
     if not acct.account.instance:
         ref["at"] = instance_of(acct.folder)
     shas = {DATA: {"pre": pre[0], "post": post[0]}, META: {"pre": pre[1], "post": post[1]}}
     try:
-        opjournal.append(ctx, op_id, "preparing", {
-            "kind": RESTORE_KIND, "app": ctx.app(), "targets": [], "account": ref, "note": what,
-            "undo_of": None, "confirmed": [], "plan_digest": ""})
+        if prepared is None:
+            opjournal.append(ctx, op_id, "preparing", {
+                "kind": RESTORE_KIND, "app": ctx.app(), "targets": [], "account": ref,
+                "note": what, "undo_of": None, "confirmed": [], "plan_digest": ""})
     except (OrganizerBusy, StoreReadOnly) as exc:
         return refused(None, "BUSY", f"The vault is busy. Try again. ({exc})")
     except OSError as exc:
@@ -507,7 +612,8 @@ def _write_files(ctx: OpContext, account: LiveRef, files: Mapping[str, bytes],
     try:
         for name, point in ((DATA, "account_data_written"), (META, "account_meta_written")):
             if name in files:
-                safety.atomic_write_bytes(acct.folder / name, files[name])
+                safety.atomic_write_bytes(acct.folder / name, files[name],
+                                          temp_prefix=_temp(op_id))
             at(ctx.faults, point)
         if _shas_now(acct.folder) != post:
             raise OSError("the account files do not read back as written")
@@ -538,7 +644,7 @@ def put_back(ctx: OpContext, op_id: str, snapshot_id: str, folder: Path,
     try:
         for name, was in zip((DATA, META), pre):
             if name in kept:
-                safety.atomic_write_bytes(folder / name, kept[name])
+                safety.atomic_write_bytes(folder / name, kept[name], temp_prefix=_temp(op_id))
             elif not was and (folder / name).is_file():
                 (folder / name).unlink()
     except OSError:
@@ -582,6 +688,7 @@ def stopped(ctx: OpContext, rec: opjournal.OpRecord) -> Stopped:
         return Stopped(None, "", ("", ""), "unusable")
     except TargetError as exc:          # the folder, for now: it waits (review R22-1)
         return Stopped(None, "", ("", ""), "unavailable", exc.detail)
+    sweep_temp(folder, rec.op_id)      # a cut-off write's own temporary file
     shas = _shas_now(folder)
     if shas == pre:
         state = "pre"

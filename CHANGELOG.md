@@ -19,6 +19,11 @@ indented lines under a bullet add detail. Releases before 0.5.0 are in the READM
   is killed half-way, the next start finishes them or puts them back. Every file the app
   replaces is on the disk before it goes on (Windows writes it through; Linux and macOS sync
   the folder).
+- An interrupted restore is always settled, and said.
+  A restore stopped by a crash, End task or a power cut is finished or put back at the next
+  start, its account data with it (Steam and Xbox), and the app says what it did. Before
+  each release, every restore and backup is killed at every step it takes, and at random
+  moments, by an automatic test that checks the saves come out whole.
 - A cut-off copy into an old vault is removed and said.
   In a vault not yet upgraded to the version store, a backup cut off by a power cut left a
   half-written folder behind; it is now found at the next start, removed, and named.

@@ -1433,9 +1433,36 @@ def _is_ours(d: Path, b: XboxBlobWrite, name: str) -> bool:
         return False
 
 
+def sweep_pair_temp(plan: XboxPairPlan) -> None:
+    """Take away the temporary files (``.tmp_*.part``, :func:`safety.atomic_write_bytes`) a
+    write of ``plan`` cut off by a kill left in the account folder, its blob folders and its
+    xgs copies. Only under the live-op lock with the game closed (recovery): nothing else
+    writes such names there (the kill tests, 2026-11-28)."""
+    folders = [plan.folder, *(plan.folder / b.dir_name for b in plan.blobs)]
+    twin = xgs_twin(plan.folder) if plan.xgs else None
+    if twin is not None:
+        folders.append(twin)
+        folders += [twin / ident for ident in plan.pre_xgs if _SAFE_XGS_NAME(ident)]
+    for d in folders:
+        for leftover in (d.glob(".tmp_*.part") if d.is_dir() else ()):
+            try:
+                leftover.unlink()
+            except OSError:
+                pass
+
+
+def _SAFE_XGS_NAME(identifier: str) -> bool:
+    try:
+        _xgs_identifier_dir(Path("."), identifier)
+        return True
+    except ValueError:
+        return False
+
+
 def _remove_new(plan: XboxPairPlan) -> None:
     """Remove the files this op wrote; a file with the same name that holds other bytes is
     someone else's and stays."""
+    sweep_pair_temp(plan)               # a cut-off write's temporary files are its own too
     for b in plan.blobs:
         d = plan.folder / b.dir_name
         for name, _sha in _blob_files(plan, b):

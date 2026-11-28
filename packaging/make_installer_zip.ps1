@@ -18,6 +18,9 @@ Usage:
     pwsh -ExecutionPolicy Bypass -File packaging\make_installer_zip.ps1
 #>
 #Requires -Version 5
+# The kill tests gate every release (GGF 2026-11-28): this zip is what users install. A kit
+# only for testing by hand is built with -TestKit, and says so.
+param([switch]$TestKit)
 $ErrorActionPreference = "Stop"
 
 $pkgDir    = $PSScriptRoot
@@ -27,6 +30,13 @@ $appDir    = Join-Path $distDir "NMSSaveVault"
 $stageDir  = Join-Path $distDir "installer-stage"
 $zipPath   = Join-Path $distDir "NMSSaveVault-Setup.zip"
 $installer = Join-Path $root "installer"
+
+if ($TestKit) {
+    Write-Host "==> TEST KIT: the kill-test gate is skipped. Never release this zip."
+} else {
+    & uv run python (Join-Path $pkgDir "release_gate.py") check
+    if ($LASTEXITCODE -ne 0) { throw "The kill tests have not passed for this code (RELEASING.md step 2)." }
+}
 
 if (-not (Test-Path (Join-Path $appDir "NMSSaveVault.exe"))) {
     Write-Host "==> Portable app not found; building it first"

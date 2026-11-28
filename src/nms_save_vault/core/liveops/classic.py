@@ -163,24 +163,41 @@ def restore_full(vault: Vault, entry, live_dir: Path, mirror: bool = True,
     op = "undo" if undo_of else "restore_full"
     if undo_of:                       # the whole-folder Undo: later Undos step past it
         plan = dataclasses.replace(plan, via_undo=True)
-    result = _run(ctx, plan, op, allow_game_running, f"restored {entry.id}",
-                  asked={"ACCOUNTDATA_ROLLBACK"} if restore_accountdata else set())
+    # The account data it writes after the slots is journaled before the restore starts: one
+    # operation for the owner, settled with the restore's own end (GGF 2026-11-28, kill tests).
+    follow = None
+    from . import account as account_ops
+    if ref.platform == "steam" and not plan.blocked and (
+            restore_accountdata or not (live_dir / "accountdata.hg").is_file()):
+        follow = account_ops.prepare_follow(ctx, ref, entry.id,
+                                            only_if_missing=not restore_accountdata)
+    elif ref.platform == "xbox" and not plan.blocked and not restore_accountdata:
+        follow = _prepare_xbox_follow(ctx, live_dir, ref, entry.id)
+    try:
+        result = _run(ctx, plan, op, allow_game_running, f"restored {entry.id}",
+                      asked={"ACCOUNTDATA_ROLLBACK"} if restore_accountdata else set())
+    except Exception:
+        if follow is not None:
+            account_ops.end_quietly(ctx, follow, "restore_failed")
+        raise
     result.warnings += notes
     if ref.platform == "xbox" and not restore_accountdata:
         with jr.liveop_lock(ctx, timeout=LIVEOP_TIMEOUT):
-            kept = _give_missing_xbox_account_data(ctx, entry.id, live_dir, ref)
+            kept = _give_missing_xbox_account_data(ctx, entry.id, live_dir, ref,
+                                                   op_id=follow)
         if kept:
             result.warnings.append(kept)
     if restore_accountdata:
         # journaled (gap 1); the slots are restored already, so a failure is said, not raised
-        rolled = panic.write_account_files(ctx, ref, entry.id)
+        rolled = panic.write_account_files(ctx, ref, entry.id, op_id=follow)
         if rolled.status != "done":
             result.warnings.append(rolled.text)
     elif ref.platform == "steam":
         theirs = panic.account_files(ctx, entry.id)
-        if not (live_dir / "accountdata.hg").is_file():
+        if follow is not None:
             # a folder with none of its own gets the backup's, as one journaled op (gap 2)
-            given = panic.write_account_files(ctx, ref, entry.id, only_if_missing=True)
+            given = panic.write_account_files(ctx, ref, entry.id, only_if_missing=True,
+                                              op_id=follow)
             if given.status != "done":
                 result.warnings.append(given.text)
         elif any(not (live_dir / n).is_file() or (live_dir / n).read_bytes() != data
@@ -420,8 +437,40 @@ def _repair_files(vault, live_dir: Path, index: Path, raw: bytes, why: str,
 XBOX_ACCOUNT_KIND = "xbox_account_data"
 
 
+def _xbox_has_account_data(live_dir: Path) -> str | None:
+    """"wgs" / "xgs" when the live Xbox account holds account data of its own there; None."""
+    _info, live = msstore.parse_containers_index(live_dir)
+    if any(c.identifier == "AccountData" and c.data_file is not None and c.data_file.is_file()
+           for c in live):
+        return "wgs"
+    twin = msstore.xgs_twin(live_dir)
+    if twin is not None and (twin / "AccountData" / "data").is_file():
+        return "xgs"
+    return None
+
+
+def _prepare_xbox_follow(ctx: OpContext, live_dir: Path, ref: LiveRef,
+                         entry_id: str) -> str | None:
+    """Journal, before a whole-folder restore starts, the backup's account data it will give
+    an Xbox account with none: one operation for the owner, settled with the restore's own
+    end (GGF 2026-11-28, the kill tests). None when the account has its own."""
+    from ..organizer.model import new_op_id
+    try:
+        if _xbox_has_account_data(live_dir) is not None:
+            return None
+    except (OSError, ValueError):
+        return None
+    op_id = new_op_id(ctx.clock)
+    jr.append(ctx, op_id, "preparing", {
+        "kind": XBOX_ACCOUNT_KIND, "app": ctx.app(), "targets": [jr.target_json(ref.target(1))],
+        "sources": [None], "undo_of": None, "note": "account data from the backup",
+        "confirmed": [], "plan_digest": "", "entry": entry_id, "folder": str(Path(live_dir))})
+    return op_id
+
+
 def _give_missing_xbox_account_data(ctx: OpContext, entry_id: str, live_dir: Path,
-                                    ref: LiveRef | None = None) -> str:
+                                    ref: LiveRef | None = None, *,
+                                    op_id: str | None = None) -> str:
     """A live Xbox account with no AccountData record gets the backup's (it has none of its
     own to keep), unless the game's second copy (xgs) holds one: those bytes exist nowhere else
     and the mirror write would replace them, so they are left alone and a note is returned.
@@ -432,13 +481,17 @@ def _give_missing_xbox_account_data(ctx: OpContext, entry_id: str, live_dir: Pat
     unlisted blobs it left taken out again (:func:`settle_xbox_account`; GGF 2026-11-28)."""
     from ..store import listing
 
+    def end(reason: str) -> None:
+        if op_id is not None:
+            jr.append(ctx, op_id, "abandoned", {"reason": reason})
+
     try:
-        _info, live = msstore.parse_containers_index(live_dir)
-        if any(c.identifier == "AccountData" and c.data_file is not None and c.data_file.is_file()
-               for c in live):
+        own = _xbox_has_account_data(live_dir)
+        if own == "wgs":
+            end("nothing_to_do")
             return ""
-        twin = msstore.xgs_twin(live_dir)
-        if twin is not None and (twin / "AccountData" / "data").is_file():
+        if own == "xgs":
+            end("nothing_to_do")
             return ("This Xbox account's own account data was kept as it is; the backup's was "
                     "not copied over it.")
         entry = listing.get_vault_entry(ctx.vault, ctx.versions, entry_id, live_roots=[])
@@ -446,9 +499,11 @@ def _give_missing_xbox_account_data(ctx: OpContext, entry_id: str, live_dir: Pat
             _i, theirs = msstore.parse_containers_index(Path(folder))
             acct = next((c for c in theirs if c.identifier == "AccountData" and c.data_file
                          and c.data_file.is_file() and c.meta_file and c.meta_file.is_file()), None)
-            if acct is not None:
-                data, meta_bytes = acct.data_file.read_bytes(), acct.meta_file.read_bytes()
-                _write_xbox_account(ctx, live_dir, ref, data, meta_bytes)
+            if acct is None:
+                end("nothing_to_do")
+                return ""
+            data, meta_bytes = acct.data_file.read_bytes(), acct.meta_file.read_bytes()
+        _write_xbox_account(ctx, live_dir, ref, data, meta_bytes, op_id=op_id)
     except (OSError, ValueError) as exc:
         ops.log.warning("the backup's account data was not copied: %s", exc)
     return ""
@@ -460,17 +515,18 @@ def _blob_dirs(folder: Path) -> list[str]:
 
 
 def _write_xbox_account(ctx: OpContext, live_dir: Path, ref: LiveRef | None, data: bytes,
-                        meta_bytes: bytes) -> None:
+                        meta_bytes: bytes, *, op_id: str | None = None) -> None:
     from ..organizer.model import new_op_id
 
-    op_id = new_op_id(ctx.clock)
     target = {"folder": str(Path(live_dir)), "data": hashlib.sha256(data).hexdigest(),
               "meta": hashlib.sha256(meta_bytes).hexdigest(), "dirs": _blob_dirs(live_dir)}
-    jr.append(ctx, op_id, "preparing", {
-        "kind": XBOX_ACCOUNT_KIND, "app": ctx.app(),
-        "targets": [jr.target_json(ref.target(1))] if ref is not None else [],
-        "sources": [None], "undo_of": None, "note": "account data from the backup",
-        "confirmed": [], "plan_digest": ""})
+    if op_id is None:
+        op_id = new_op_id(ctx.clock)
+        jr.append(ctx, op_id, "preparing", {
+            "kind": XBOX_ACCOUNT_KIND, "app": ctx.app(),
+            "targets": [jr.target_json(ref.target(1))] if ref is not None else [],
+            "sources": [None], "undo_of": None, "note": "account data from the backup",
+            "confirmed": [], "plan_digest": ""})
     # the target names no slot: an older core reads it as a record it cannot use (leave only)
     jr.append(ctx, op_id, "writing", {"targets": [{"xbox_account": target}]})
     try:
@@ -492,6 +548,11 @@ def settle_xbox_account(target: dict) -> str:
     the owner's to decide, nothing is touched). Raises ``OSError``/``ValueError`` when the
     folder cannot be read or written."""
     folder = Path(target["folder"])
+    twin_dir = msstore.xgs_twin(folder)
+    for d in (folder, *(folder / n for n in _blob_dirs(folder)),
+              *((twin_dir, twin_dir / "AccountData") if twin_dir is not None else ())):
+        for leftover in (d.glob(".tmp_*.part") if d.is_dir() else ()):
+            leftover.unlink()           # a cut-off write's temporary file (under the lock)
     _info, containers = msstore.parse_containers_index(folder)
     rec = next((c for c in containers if c.identifier == "AccountData"), None)
     if rec is None:
